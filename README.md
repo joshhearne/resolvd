@@ -149,7 +149,7 @@ Roles can be assigned per-user globally, with optional per-project overrides.
 
 ## Backup
 
-PostgreSQL data lives in a Docker volume (`mot-issues-postgres-data`). Back it up with:
+PostgreSQL data lives in a Docker volume (`issues_pg-data`). Back it up with:
 
 ```bash
 docker compose exec postgres pg_dump -U punchlist punchlist > backup-$(date +%Y%m%d).sql
