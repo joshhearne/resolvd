@@ -4,7 +4,7 @@ const BrandingContext = createContext({});
 
 export function BrandingProvider({ children }) {
   const [branding, setBranding] = useState({
-    site_name: 'Punchlist',
+    site_name: 'Resolvd',
     tagline: 'Track every issue. Close every loop.',
     primary_color: '#1e40af',
     show_powered_by: true,

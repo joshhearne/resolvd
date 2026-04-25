@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 512 512" width="512" height="512">
+  <defs>
+    <filter id="glow" x="-80%" y="-80%" width="260%" height="260%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="18" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+    <filter id="softglow" x="-60%" y="-60%" width="220%" height="220%">
+      <feGaussianBlur in="SourceGraphic" stdDeviation="10" result="blur"/>
+      <feMerge>
+        <feMergeNode in="blur"/>
+        <feMergeNode in="SourceGraphic"/>
+      </feMerge>
+    </filter>
+  </defs>
+
+  <!-- Background -->
+  <rect width="512" height="512" rx="96" fill="#0f172a"/>
+
+  <!-- Top circle: unchecked white ring -->
+  <circle cx="256" cy="166.0" r="68" fill="none" stroke="rgba(255,255,255,0.85)" stroke-width="7" filter="url(#softglow)"/>
+
+  <!-- Bottom circle: green glow layer -->
+  <circle cx="256" cy="346.0" r="78" fill="#16a34a" opacity="0.35" filter="url(#glow)"/>
+  <!-- Bottom circle: solid green -->
+  <circle cx="256" cy="346.0" r="68" fill="#22c55e"/>
+
+  <!-- Checkmark -->
+  <polyline
+    points="230.2,347.4 251.2,369.1 284.6,327.0"
+    fill="none" stroke="white" stroke-width="9" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

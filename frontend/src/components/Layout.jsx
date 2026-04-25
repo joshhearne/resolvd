@@ -144,7 +144,7 @@ export default function Layout() {
                     <circle cx="16" cy="16" r="13" fill="none" stroke="#ffffff" strokeWidth="2.5" strokeDasharray="4 3" strokeLinecap="round" />
                   </svg>
                 )}
-                <span className="font-bold text-lg tracking-tight">{branding.site_name || 'Punchlist'}</span>
+                <span className="font-bold text-lg tracking-tight">{branding.site_name || 'Resolvd'}</span>
               </Link>
               <div className="hidden md:flex items-center gap-1">
                 <NavLink to="/dashboard" className={navLinkClass}>Dashboard</NavLink>

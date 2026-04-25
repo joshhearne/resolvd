@@ -185,7 +185,7 @@ export default function PrintExport() {
     }
   }, [tickets]);
 
-  const siteName = branding.site_name || 'Punchlist';
+  const siteName = branding.site_name || 'Resolvd';
   const primaryColor = branding.primary_color || '#1e40af';
 
   if (error) {
