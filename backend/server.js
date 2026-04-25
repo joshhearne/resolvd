@@ -9,6 +9,8 @@ const { pool } = require('./db/pool');
 const { initSchema } = require('./db/schema');
 
 const authRoutes = require('./routes/auth');
+const inviteRoutes = require('./routes/invites');
+const authSettingsRoutes = require('./routes/authSettings');
 const ticketRoutes = require('./routes/tickets');
 const commentRoutes = require('./routes/comments');
 const userRoutes = require('./routes/users');
@@ -19,6 +21,7 @@ const attachmentRoutes = require('./routes/attachments');
 const brandingRoutes = require('./routes/branding');
 const exportRoutes = require('./routes/export');
 const followerRoutes = require('./routes/followers');
+const statusRoutes = require('./routes/statuses');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -44,7 +47,7 @@ app.use(session({
   resave: false,
   saveUninitialized: false,
   cookie: {
-    secure: process.env.NODE_ENV === 'production',
+    secure: process.env.COOKIE_SECURE === 'true',
     httpOnly: true,
     maxAge: 8 * 60 * 60 * 1000, // 8 hours
     sameSite: 'lax',
@@ -53,6 +56,8 @@ app.use(session({
 
 // Routes
 app.use('/auth', authRoutes);
+app.use('/api/invites', inviteRoutes);
+app.use('/api/auth-settings', authSettingsRoutes);
 app.use('/api/tickets', ticketRoutes);
 app.use('/api/tickets', commentRoutes);
 app.use('/api/users', userRoutes);
@@ -63,6 +68,7 @@ app.use('/api', attachmentRoutes);
 app.use('/api/branding', brandingRoutes);
 app.use('/api/export', exportRoutes);
 app.use('/api/tickets/:ticketId', followerRoutes);
+app.use('/api/statuses', statusRoutes);
 
 // Health check
 app.get('/health', (req, res) => res.json({ ok: true }));
@@ -70,7 +76,7 @@ app.get('/health', (req, res) => res.json({ ok: true }));
 initSchema()
   .then(() => {
     app.listen(PORT, () => {
-      console.log(`MOT Issue Tracker backend running on port ${PORT}`);
+      console.log(`Punchlist backend running on port ${PORT}`);
     });
   })
   .catch(err => {

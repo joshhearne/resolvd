@@ -1,16 +1,27 @@
-import React, { useState } from 'react';
-
-const STATUS_OPTIONS = [
-  { value: 'Open', label: 'Open' },
-  { value: 'In Progress', label: 'In Progress' },
-  { value: 'Awaiting', label: 'Awaiting' },
-  { value: 'Pending Review', label: 'Pending Review' },
-  { value: 'Reopened', label: 'Reopened' },
-  { value: 'Closed', label: 'Closed' },
-];
+import React, { useState, useMemo, useEffect } from 'react';
+import { useStatuses } from '../context/StatusesContext';
 
 export default function AdminExport() {
-  const [selected, setSelected] = useState(new Set(['Open', 'In Progress', 'Awaiting', 'Pending Review', 'Reopened']));
+  const { internal } = useStatuses();
+  const STATUS_OPTIONS = useMemo(
+    () => internal.length
+      ? internal.map(s => ({ value: s.name, label: s.name, terminal: s.is_terminal }))
+      : [
+          { value: 'Open', label: 'Open' },
+          { value: 'In Progress', label: 'In Progress' },
+          { value: 'Awaiting MOT Input', label: 'Awaiting MOT Input' },
+          { value: 'Pending Review', label: 'Pending Review' },
+          { value: 'Reopened', label: 'Reopened' },
+          { value: 'Closed', label: 'Closed', terminal: true },
+        ],
+    [internal]
+  );
+  const defaultSelection = useMemo(
+    () => new Set(STATUS_OPTIONS.filter(s => !s.terminal).map(s => s.value)),
+    [STATUS_OPTIONS]
+  );
+  const [selected, setSelected] = useState(defaultSelection);
+  useEffect(() => { setSelected(defaultSelection); }, [defaultSelection]);
   const [loading, setLoading] = useState(false);
   const [previewCount, setPreviewCount] = useState(null);
   const [counted, setCounted] = useState(false);

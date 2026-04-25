@@ -178,7 +178,7 @@ export default function PrintExport() {
     }
   }, [tickets]);
 
-  const siteName = branding.site_name || 'MOT Operations';
+  const siteName = branding.site_name || 'Punchlist';
   const primaryColor = branding.primary_color || '#1e40af';
 
   if (error) {
@@ -281,8 +281,15 @@ export default function PrintExport() {
       )}
 
       {branding.show_powered_by && (
-        <div style={{ marginTop: '32px', paddingTop: '12px', borderTop: '1px solid #e5e7eb', textAlign: 'center', fontSize: '10px', color: '#9ca3af' }}>
-          Powered by Hearne Technologies
+        <div style={{ marginTop: '32px', paddingTop: '12px', borderTop: '1px solid #e5e7eb', display: 'flex', alignItems: 'center', justifyContent: 'center', gap: '6px', fontSize: '10px', color: '#9ca3af' }}>
+          <span>Powered by</span>
+          <a href="https://hearnetech.com/apps" target="_blank" rel="noopener noreferrer">
+            <img
+              src="/hearne-logo.png"
+              alt="Hearne Technologies"
+              style={{ height: '14px', width: 'auto', objectFit: 'contain' }}
+            />
+          </a>
         </div>
       )}
     </div>

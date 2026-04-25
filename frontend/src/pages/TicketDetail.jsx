@@ -7,6 +7,7 @@ import {
   formatDateTime, computePriority, priorityClass,
   INTERNAL_STATUSES, COASTAL_STATUSES, IMPACT_LABELS, URGENCY_LABELS
 } from '../utils/helpers';
+import { useStatuses, nextAllowedStatusIds, statusByName, suggestedExternalForInternal } from '../context/StatusesContext';
 import PriorityBadge from '../components/PriorityBadge';
 import StatusBadge from '../components/StatusBadge';
 import ConfirmDialog from '../components/ConfirmDialog';
@@ -80,6 +81,7 @@ export default function TicketDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
   const { user } = useAuth();
+  const statusCfg = useStatuses();
   const isAdmin = user?.role === 'Admin';
   const isSubmitter = user?.role === 'Submitter';
   const canEdit = isAdmin || isSubmitter;
@@ -538,10 +540,26 @@ export default function TicketDetail() {
               <Field label="Internal Status">
                 {isAdmin && editing.internal_status ? (
                   <div className="flex gap-2">
-                    <select value={editValues.internal_status} onChange={e => setEditValues(v => ({...v, internal_status: e.target.value}))}
-                      className="border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 flex-1">
-                      {INTERNAL_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
-                    </select>
+                    {(() => {
+                      const cur = statusByName(statusCfg.internal, ticket.internal_status);
+                      const allowedIds = cur ? new Set(nextAllowedStatusIds(statusCfg.transitions, cur.id)) : null;
+                      const opts = statusCfg.internal.length ? statusCfg.internal.map(s => s.name) : INTERNAL_STATUSES;
+                      const labelFor = (name) => {
+                        if (!cur || !allowedIds) return name;
+                        const def = statusByName(statusCfg.internal, name);
+                        if (def && def.id === cur.id) return name;
+                        return def && allowedIds.has(def.id) ? `→ ${name}` : name;
+                      };
+                      return (
+                        <select
+                          value={editValues.internal_status}
+                          onChange={e => setEditValues(v => ({ ...v, internal_status: e.target.value }))}
+                          className="border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 flex-1"
+                        >
+                          {opts.map(s => <option key={s} value={s}>{labelFor(s)}</option>)}
+                        </select>
+                      );
+                    })()}
                     <button onClick={() => patch({ internal_status: editValues.internal_status })} disabled={saving} className="btn-primary btn btn-sm">Save</button>
                     <button onClick={() => setEditing({})} className="btn-secondary btn btn-sm">×</button>
                   </div>
@@ -562,10 +580,37 @@ export default function TicketDetail() {
               <Field label="External Status">
                 {isAdmin && editing.coastal_status ? (
                   <div className="space-y-2">
-                    <select value={editValues.coastal_status} onChange={e => setEditValues(v => ({...v, coastal_status: e.target.value}))}
-                      className="border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 w-full">
-                      {COASTAL_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
-                    </select>
+                    {(() => {
+                      const opts = statusCfg.external.length ? statusCfg.external.map(s => s.name) : COASTAL_STATUSES;
+                      const cur = statusByName(statusCfg.external, ticket.coastal_status);
+                      const allowedIds = cur ? new Set(nextAllowedStatusIds(statusCfg.transitions, cur.id)) : null;
+                      const labelFor = (name) => {
+                        if (!cur || !allowedIds) return name;
+                        const def = statusByName(statusCfg.external, name);
+                        if (def && def.id === cur.id) return name;
+                        return def && allowedIds.has(def.id) ? `→ ${name}` : name;
+                      };
+                      return (
+                        <select
+                          value={editValues.coastal_status}
+                          onChange={e => setEditValues(v => ({ ...v, coastal_status: e.target.value }))}
+                          className="border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500 w-full"
+                        >
+                          {opts.map(s => <option key={s} value={s}>{labelFor(s)}</option>)}
+                        </select>
+                      );
+                    })()}
+                    {(() => {
+                      const internalCur = statusByName(statusCfg.internal, ticket.internal_status);
+                      if (!internalCur) return null;
+                      const sugg = suggestedExternalForInternal(statusCfg.mappings, internalCur.id);
+                      if (!sugg.length) return null;
+                      const names = sugg
+                        .map(m => statusCfg.external.find(s => s.id === m.external_status_id)?.name)
+                        .filter(Boolean);
+                      if (!names.length) return null;
+                      return <p className="text-xs text-gray-500">Suggested for {ticket.internal_status}: {names.join(', ')}</p>;
+                    })()}
                     <div className="flex gap-2">
                       <button onClick={() => patch({ coastal_status: editValues.coastal_status })} disabled={saving} className="btn-primary btn btn-sm">Save</button>
                       <button onClick={() => setEditing({})} className="btn-secondary btn btn-sm">Cancel</button>

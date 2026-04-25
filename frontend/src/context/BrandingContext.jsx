@@ -4,8 +4,8 @@ const BrandingContext = createContext({});
 
 export function BrandingProvider({ children }) {
   const [branding, setBranding] = useState({
-    site_name: 'MOT Operations',
-    tagline: 'Internal project & issue tracking',
+    site_name: 'Punchlist',
+    tagline: 'Track every issue. Close every loop.',
     primary_color: '#1e40af',
     show_powered_by: true,
     logo_url: null,

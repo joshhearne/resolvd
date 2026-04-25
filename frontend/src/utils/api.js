@@ -8,8 +8,16 @@ async function request(path, options = {}) {
   });
 
   if (res.status === 401) {
-    window.location.href = '/auth/login';
-    return;
+    // Send users to the login page (multi-provider chooser) instead of jumping
+    // straight into one provider's flow. Skip when already on /login or /accept-invite.
+    const here = window.location.pathname;
+    if (!here.startsWith('/login') && !here.startsWith('/accept-invite') &&
+        !here.startsWith('/reset-password') && !here.startsWith('/forgot-password') &&
+        !here.startsWith('/mfa-challenge')) {
+      window.location.href = '/login';
+    }
+    const data = await res.json().catch(() => ({}));
+    throw new Error(data.error || 'Unauthenticated');
   }
 
   const data = await res.json().catch(() => ({}));

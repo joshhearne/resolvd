@@ -5,6 +5,7 @@ const fs = require('fs');
 const { randomUUID } = require('crypto');
 const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
+const { invalidateBranding } = require('../services/branding');
 
 const UPLOADS_DIR = process.env.UPLOADS_DIR || '/data/uploads';
 
@@ -53,7 +54,7 @@ router.patch('/', requireAuth, requireRole('Admin'), async (req, res) => {
   try {
     const { site_name, tagline, primary_color, show_powered_by, logo_on_dark } = req.body;
     const updates = {};
-    if (site_name !== undefined) updates.site_name = site_name.trim() || 'MOT Operations';
+    if (site_name !== undefined) updates.site_name = site_name.trim() || 'Punchlist';
     if (tagline !== undefined) updates.tagline = tagline.trim();
     if (primary_color !== undefined && /^#[0-9a-fA-F]{6}$/.test(primary_color)) {
       updates.primary_color = primary_color;
@@ -75,6 +76,7 @@ router.patch('/', requireAuth, requireRole('Admin'), async (req, res) => {
       `UPDATE branding SET ${setClauses} WHERE id = 1 RETURNING *`,
       vals
     );
+    invalidateBranding();
     const row = result.rows[0];
     res.json({
       site_name: row.site_name,

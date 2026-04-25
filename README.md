@@ -1,6 +1,6 @@
-# MOT Website Issue Tracker
+# Punchlist
 
-Internal vendor issue management portal for tracking website problems with Coastal Technologies.
+Issue and project tracking portal — keep every ticket within reach until it's closed.
 
 ## Stack
 
@@ -15,7 +15,7 @@ Internal vendor issue management portal for tracking website problems with Coast
 ## 1. Azure App Registration Setup
 
 1. Go to [portal.azure.com](https://portal.azure.com) → **Entra ID** → **App registrations** → **New registration**
-2. Name: `MOT Issue Tracker`
+2. Name: `Punchlist`
 3. Supported account types: **Accounts in this organizational directory only**
 4. Redirect URI: `Web` → `https://issues.mot.local/auth/callback`
 5. After creation, note the **Application (client) ID** and **Directory (tenant) ID**
