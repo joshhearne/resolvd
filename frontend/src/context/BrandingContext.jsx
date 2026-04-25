@@ -1,32 +1,57 @@
-import React, { createContext, useContext, useEffect, useState } from 'react';
+import React, { createContext, useContext, useEffect, useState } from "react";
 
 const BrandingContext = createContext({});
 
+function hexToRgbTriplet(hex) {
+  const m = /^#([0-9a-fA-F]{6})$/.exec(hex || "");
+  if (!m) return null;
+  const v = parseInt(m[1], 16);
+  return `${(v >> 16) & 255} ${(v >> 8) & 255} ${v & 255}`;
+}
+
 export function BrandingProvider({ children }) {
   const [branding, setBranding] = useState({
-    site_name: 'Resolvd',
-    tagline: 'Track every issue. Close every loop.',
-    primary_color: '#1e40af',
+    site_name: "Resolvd",
+    tagline: "Track every issue. Close every loop.",
+    primary_color: "#16a34a",
     show_powered_by: true,
     logo_url: null,
+    logo_on_dark: false,
+    accent_override_enabled: false,
+    logo_designed_for: "light",
   });
 
   useEffect(() => {
-    fetch('/api/branding')
-      .then(r => r.ok ? r.json() : null)
-      .then(data => {
+    fetch("/api/branding")
+      .then((r) => (r.ok ? r.json() : null))
+      .then((data) => {
         if (data) {
-          setBranding(prev => ({ ...prev, ...data }));
+          setBranding((prev) => ({ ...prev, ...data }));
         }
       })
       .catch(() => {});
   }, []);
 
   useEffect(() => {
-    if (branding.primary_color) {
-      document.documentElement.style.setProperty('--brand-primary', branding.primary_color);
+    const root = document.documentElement;
+    if (branding.accent_override_enabled && branding.primary_color) {
+      const triplet = hexToRgbTriplet(branding.primary_color);
+      if (triplet) {
+        root.style.setProperty("--color-brand", triplet);
+        root.style.setProperty("--color-brand-bright", triplet);
+        root.style.setProperty("--color-brand-dim", triplet);
+      }
+      root.style.setProperty("--brand-primary", branding.primary_color);
+    } else {
+      root.style.removeProperty("--color-brand");
+      root.style.removeProperty("--color-brand-bright");
+      root.style.removeProperty("--color-brand-dim");
+      root.style.setProperty(
+        "--brand-primary",
+        branding.primary_color || "#16a34a",
+      );
     }
-  }, [branding.primary_color]);
+  }, [branding.accent_override_enabled, branding.primary_color]);
 
   return (
     <BrandingContext.Provider value={{ branding, setBranding }}>

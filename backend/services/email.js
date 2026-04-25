@@ -134,12 +134,12 @@ async function sendMail({ to, subject, html }) {
 function ticketUrl(ticketId) { return `${APP_URL}/tickets/${ticketId}`; }
 
 async function baseHtml(title, body) {
-  let siteName = 'Issue Tracker';
-  let primary = '#1e40af';
+  let siteName = 'Resolvd';
+  let primary = '#16a34a';
   try {
     const b = await getBranding();
     if (b?.site_name) siteName = b.site_name;
-    if (b?.primary_color) primary = b.primary_color;
+    if (b?.accent_override_enabled && b?.primary_color) primary = b.primary_color;
   } catch (_) {}
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"></head>

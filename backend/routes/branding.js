@@ -41,6 +41,8 @@ router.get('/', async (req, res) => {
       primary_color: row.primary_color,
       show_powered_by: row.show_powered_by,
       logo_on_dark: row.logo_on_dark,
+      accent_override_enabled: row.accent_override_enabled,
+      logo_designed_for: row.logo_designed_for,
       logo_url: row.logo_filename ? '/api/branding/logo' : null,
     });
   } catch (err) {
@@ -52,15 +54,27 @@ router.get('/', async (req, res) => {
 // PATCH /api/branding — Admin only
 router.patch('/', requireAuth, requireRole('Admin'), async (req, res) => {
   try {
-    const { site_name, tagline, primary_color, show_powered_by, logo_on_dark } = req.body;
+    const {
+      site_name,
+      tagline,
+      primary_color,
+      show_powered_by,
+      logo_on_dark,
+      accent_override_enabled,
+      logo_designed_for,
+    } = req.body;
     const updates = {};
-    if (site_name !== undefined) updates.site_name = site_name.trim() || 'Punchlist';
+    if (site_name !== undefined) updates.site_name = site_name.trim() || 'Resolvd';
     if (tagline !== undefined) updates.tagline = tagline.trim();
     if (primary_color !== undefined && /^#[0-9a-fA-F]{6}$/.test(primary_color)) {
       updates.primary_color = primary_color;
     }
     if (show_powered_by !== undefined) updates.show_powered_by = !!show_powered_by;
     if (logo_on_dark !== undefined) updates.logo_on_dark = !!logo_on_dark;
+    if (accent_override_enabled !== undefined) updates.accent_override_enabled = !!accent_override_enabled;
+    if (logo_designed_for !== undefined && ['light', 'dark'].includes(logo_designed_for)) {
+      updates.logo_designed_for = logo_designed_for;
+    }
 
     if (Object.keys(updates).length === 0) {
       const r = await pool.query('SELECT * FROM branding WHERE id = 1');
@@ -84,6 +98,8 @@ router.patch('/', requireAuth, requireRole('Admin'), async (req, res) => {
       primary_color: row.primary_color,
       show_powered_by: row.show_powered_by,
       logo_on_dark: row.logo_on_dark,
+      accent_override_enabled: row.accent_override_enabled,
+      logo_designed_for: row.logo_designed_for,
       logo_url: row.logo_filename ? '/api/branding/logo' : null,
     });
   } catch (err) {

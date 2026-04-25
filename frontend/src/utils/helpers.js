@@ -6,11 +6,19 @@ export function priorityClass(p) {
   return `p${p}`;
 }
 
+export function brandingLogoFilter(branding, resolvedTheme) {
+  if (!branding) return null;
+  const designedFor = branding.logo_designed_for || (branding.logo_on_dark ? 'dark' : 'light');
+  if (designedFor === 'light' && resolvedTheme === 'dark') return 'invert(1) hue-rotate(180deg)';
+  if (designedFor === 'dark' && resolvedTheme === 'light') return 'invert(1) hue-rotate(180deg)';
+  return null;
+}
+
 export function priorityRowClass(p) {
-  if (p === 1) return 'bg-red-50 hover:bg-red-100';
-  if (p === 2) return 'bg-orange-50 hover:bg-orange-100';
-  if (p === 3) return 'bg-yellow-50 hover:bg-yellow-100';
-  return 'bg-white hover:bg-gray-50';
+  if (p === 1) return 'bg-red-500/[0.06] hover:bg-red-500/[0.12] dark:bg-red-500/10 dark:hover:bg-red-500/[0.18]';
+  if (p === 2) return 'bg-orange-500/[0.06] hover:bg-orange-500/[0.12] dark:bg-orange-500/10 dark:hover:bg-orange-500/[0.18]';
+  if (p === 3) return 'bg-yellow-500/[0.06] hover:bg-yellow-500/[0.12] dark:bg-yellow-500/[0.08] dark:hover:bg-yellow-500/[0.14]';
+  return 'hover:bg-surface-2';
 }
 
 export function statusClass(status) {

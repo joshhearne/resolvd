@@ -45,7 +45,7 @@ router.get('/tickets/:ticketId/attachments', requireAuth, async (req, res) => {
 });
 
 // POST /api/tickets/:ticketId/attachments
-router.post('/tickets/:ticketId/attachments', requireAuth, requireRole('Admin', 'Submitter'),
+router.post('/tickets/:ticketId/attachments', requireAuth, requireRole('Admin', 'Manager', 'Submitter'),
   upload.array('files', 20), async (req, res) => {
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({ error: 'No files uploaded' });
@@ -59,15 +59,25 @@ router.post('/tickets/:ticketId/attachments', requireAuth, requireRole('Admin', 
         return res.status(404).json({ error: 'Ticket not found' });
       }
 
+      const commentId = req.body.comment_id ? Number(req.body.comment_id) : null;
+      if (commentId) {
+        const c = await pool.query('SELECT id FROM comments WHERE id = $1 AND ticket_id = $2', [commentId, req.params.ticketId]);
+        if (!c.rows[0]) {
+          req.files.forEach(f => fs.unlink(f.path, () => {}));
+          return res.status(400).json({ error: 'Invalid comment_id' });
+        }
+      }
+
       const inserted = [];
       for (const file of req.files) {
         const result = await pool.query(`
-          INSERT INTO attachments (ticket_id, user_id, filename, original_name, mimetype, size)
-          VALUES ($1, $2, $3, $4, $5, $6)
+          INSERT INTO attachments (ticket_id, user_id, comment_id, filename, original_name, mimetype, size)
+          VALUES ($1, $2, $3, $4, $5, $6, $7)
           RETURNING *
         `, [
           Number(req.params.ticketId),
           req.session.user.id,
+          commentId,
           file.filename,
           file.originalname,
           file.mimetype,

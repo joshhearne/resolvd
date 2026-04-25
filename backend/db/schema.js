@@ -205,14 +205,16 @@ async function initSchema() {
     `);
 
     await client.query(`CREATE INDEX IF NOT EXISTS idx_attachments_ticket ON attachments(ticket_id)`);
+    await client.query(`ALTER TABLE attachments ADD COLUMN IF NOT EXISTS comment_id INTEGER REFERENCES comments(id) ON DELETE SET NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_attachments_comment ON attachments(comment_id)`);
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS branding (
         id INTEGER PRIMARY KEY DEFAULT 1,
-        site_name TEXT NOT NULL DEFAULT 'Punchlist',
+        site_name TEXT NOT NULL DEFAULT 'Resolvd',
         tagline TEXT NOT NULL DEFAULT 'Track every issue. Close every loop.',
         logo_filename TEXT,
-        primary_color TEXT NOT NULL DEFAULT '#1e40af',
+        primary_color TEXT NOT NULL DEFAULT '#16a34a',
         show_powered_by BOOLEAN NOT NULL DEFAULT TRUE,
         updated_at TIMESTAMPTZ DEFAULT NOW(),
         CONSTRAINT single_row CHECK (id = 1)
@@ -220,6 +222,8 @@ async function initSchema() {
     `);
     await client.query(`INSERT INTO branding (id) VALUES (1) ON CONFLICT DO NOTHING`);
     await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS logo_on_dark BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS accent_override_enabled BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS logo_designed_for TEXT NOT NULL DEFAULT 'light' CHECK (logo_designed_for IN ('light','dark'))`);
     await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS has_external_vendor BOOLEAN NOT NULL DEFAULT TRUE`);
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS default_project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL`);
 
