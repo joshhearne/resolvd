@@ -82,7 +82,7 @@ export default function TicketDetail() {
   const navigate = useNavigate();
   const { user } = useAuth();
   const statusCfg = useStatuses();
-  const isAdmin = user?.role === 'Admin';
+  const isAdmin = ['Admin','Manager'].includes(user?.role);
   const isSubmitter = user?.role === 'Submitter';
   const canEdit = isAdmin || isSubmitter;
 
@@ -432,7 +432,7 @@ export default function TicketDetail() {
                             {formatBytes(a.size)} · {a.uploaded_by_name || 'Unknown'} · {formatDateTime(a.created_at)}
                           </span>
                         </div>
-                        {(user?.role === 'Admin' || a.user_id === user?.id) && (
+                        {(['Admin','Manager'].includes(user?.role) || a.user_id === user?.id) && (
                           <button onClick={() => deleteAttachment(a.id)}
                             className="text-xs text-gray-300 hover:text-red-500 transition-colors flex-shrink-0">
                             Delete

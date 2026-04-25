@@ -4,7 +4,8 @@ import { api } from '../utils/api';
 import { useAuth } from '../context/AuthContext';
 import { formatDateTime } from '../utils/helpers';
 
-const ROLES = ['Admin', 'Submitter', 'Viewer'];
+const ALL_ROLES = ['Admin', 'Manager', 'Submitter', 'Viewer'];
+const MANAGER_ROLES = ['Manager', 'Submitter', 'Viewer'];
 const PROVIDERS = [
   ['local', 'Local password'],
   ['entra', 'Microsoft Entra / M365'],
@@ -13,6 +14,8 @@ const PROVIDERS = [
 
 export default function AdminUsers() {
   const { user: currentUser } = useAuth();
+  const isSuperAdmin = currentUser?.role === 'Admin';
+  const ROLES = isSuperAdmin ? ALL_ROLES : MANAGER_ROLES;
   const [users, setUsers] = useState([]);
   const [invites, setInvites] = useState([]);
   const [loading, setLoading] = useState(true);

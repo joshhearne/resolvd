@@ -45,7 +45,7 @@ router.get('/', requireAuth, async (req, res) => {
 });
 
 // POST /api/projects — Admin only
-router.post('/', requireAuth, requireRole('Admin'), async (req, res) => {
+router.post('/', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
     const { name, prefix, description, has_external_vendor } = req.body;
     if (!name?.trim()) return res.status(400).json({ error: 'Name required' });
@@ -113,7 +113,7 @@ router.get('/:id', requireAuth, async (req, res) => {
 });
 
 // PATCH /api/projects/:id — Admin only
-router.patch('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
+router.patch('/:id', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
     const { name, description, status, has_external_vendor } = req.body;
     const updates = {};
@@ -145,7 +145,7 @@ router.patch('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
 });
 
 // DELETE /api/projects/:id — Admin only, only if no tickets
-router.delete('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
+router.delete('/:id', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
     const count = await pool.query('SELECT COUNT(*) as cnt FROM tickets WHERE project_id = $1', [req.params.id]);
     if (parseInt(count.rows[0].cnt, 10) > 0) {
@@ -161,7 +161,7 @@ router.delete('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
 });
 
 // POST /api/projects/:id/members — Admin only
-router.post('/:id/members', requireAuth, requireRole('Admin'), async (req, res) => {
+router.post('/:id/members', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
     const { user_id, role_override } = req.body;
     if (!user_id) return res.status(400).json({ error: 'user_id required' });
@@ -194,7 +194,7 @@ router.post('/:id/members', requireAuth, requireRole('Admin'), async (req, res) 
 });
 
 // PATCH /api/projects/:id/members/:uid — update role override
-router.patch('/:id/members/:uid', requireAuth, requireRole('Admin'), async (req, res) => {
+router.patch('/:id/members/:uid', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
     const { role_override } = req.body;
     if (role_override && !VALID_ROLES.includes(role_override)) {
@@ -213,7 +213,7 @@ router.patch('/:id/members/:uid', requireAuth, requireRole('Admin'), async (req,
 });
 
 // DELETE /api/projects/:id/members/:uid — remove member
-router.delete('/:id/members/:uid', requireAuth, requireRole('Admin'), async (req, res) => {
+router.delete('/:id/members/:uid', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
     const result = await pool.query(
       'DELETE FROM project_members WHERE project_id = $1 AND user_id = $2 RETURNING id',

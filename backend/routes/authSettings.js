@@ -6,7 +6,7 @@ const { sendMail } = require('../services/email');
 const router = express.Router();
 
 const VALID_BACKENDS = ['graph', 'gmail', 'smtp'];
-const VALID_ROLES = ['Admin', 'Submitter', 'Viewer'];
+const VALID_ROLES = ['Admin', 'Manager', 'Submitter', 'Viewer'];
 
 function sanitize(settings) {
   if (!settings) return null;

@@ -7,7 +7,7 @@ const router = express.Router();
 const ALL_STATUSES = ['Open', 'In Progress', 'Awaiting', 'Pending Review', 'Reopened', 'Closed'];
 
 // GET /api/export/tickets?statuses=...&project_ids=1,2&updated_from=YYYY-MM-DD&updated_to=YYYY-MM-DD
-router.get('/tickets', requireAuth, requireRole('Admin'), async (req, res) => {
+router.get('/tickets', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
     const requested = (req.query.statuses || '').split(',').map(s => s.trim()).filter(Boolean);
     const statuses = requested.filter(s => ALL_STATUSES.includes(s));

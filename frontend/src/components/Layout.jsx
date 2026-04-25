@@ -149,10 +149,10 @@ export default function Layout() {
               <div className="hidden md:flex items-center gap-1">
                 <NavLink to="/dashboard" className={navLinkClass}>Dashboard</NavLink>
                 <NavLink to="/tickets" className={navLinkClass}>Tickets</NavLink>
-                {(user?.role === 'Admin' || user?.role === 'Submitter') && (
+                {(['Admin','Manager'].includes(user?.role) || user?.role === 'Submitter') && (
                   <NavLink to="/tickets/new" className={navLinkClass}>+ New Ticket</NavLink>
                 )}
-                {user?.role === 'Admin' && (
+                {['Admin','Manager'].includes(user?.role) && (
                   <>
                     <NavLink to="/projects" className={navLinkClass}>Projects</NavLink>
                     <NavLink to="/admin" className={navLinkClass}>Admin</NavLink>
@@ -178,10 +178,10 @@ export default function Layout() {
           <div className="md:hidden border-t border-white/20 px-4 py-2 flex flex-col gap-1">
             <NavLink to="/dashboard" className={navLinkClass} onClick={() => setMobileOpen(false)}>Dashboard</NavLink>
             <NavLink to="/tickets" className={navLinkClass} onClick={() => setMobileOpen(false)}>Tickets</NavLink>
-            {(user?.role === 'Admin' || user?.role === 'Submitter') && (
+            {(['Admin','Manager'].includes(user?.role) || user?.role === 'Submitter') && (
               <NavLink to="/tickets/new" className={navLinkClass} onClick={() => setMobileOpen(false)}>+ New Ticket</NavLink>
             )}
-            {user?.role === 'Admin' && (
+            {['Admin','Manager'].includes(user?.role) && (
               <>
                 <NavLink to="/projects" className={navLinkClass} onClick={() => setMobileOpen(false)}>Projects</NavLink>
                 <NavLink to="/admin" className={navLinkClass} onClick={() => setMobileOpen(false)}>Admin</NavLink>

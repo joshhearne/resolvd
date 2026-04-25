@@ -75,7 +75,7 @@ const LIMIT = 50;
 
 export default function TicketList() {
   const { user, setDefaultProject } = useAuth();
-  const canManageViews = user?.role === 'Admin' || user?.role === 'Submitter';
+  const canManageViews = ['Admin','Manager'].includes(user?.role) || user?.role === 'Submitter';
   const [searchParams, setSearchParams] = useSearchParams();
 
   const [tickets, setTickets] = useState([]);
@@ -340,7 +340,7 @@ export default function TicketList() {
                 <button className="flex-1 text-left truncate" onClick={() => selectSavedView(v)} title={v.name}>
                   {v.name}
                 </button>
-                {(user?.role === 'Admin' || v.user_id === user?.id) && (
+                {(['Admin','Manager'].includes(user?.role) || v.user_id === user?.id) && (
                   <button onClick={e => deleteView(e, v.id)}
                     className={`flex-shrink-0 text-base leading-none ${activeKey === `saved_${v.id}` ? 'text-blue-200 hover:text-white' : 'text-gray-300 hover:text-red-500'}`}>×</button>
                 )}

@@ -22,7 +22,7 @@ async function systemComment(client, ticketId, body) {
 
 // Returns array of project IDs the user can access, or null if Admin (= all)
 async function getAccessibleProjectIds(user) {
-  if (user.role === 'Admin') return null;
+  if (['Admin','Manager'].includes(user.role)) return null;
   const result = await pool.query(
     'SELECT project_id FROM project_members WHERE user_id = $1',
     [user.id]
@@ -319,7 +319,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
     const ticket = ticketResult.rows[0];
     if (!ticket) return res.status(404).json({ error: 'Ticket not found' });
 
-    const isAdmin = user.role === 'Admin';
+    const isAdmin = ['Admin','Manager'].includes(user.role);
     const isSubmitter = user.role === 'Submitter';
     const updates = {};
     const body = req.body;

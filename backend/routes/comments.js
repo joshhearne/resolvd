@@ -23,7 +23,7 @@ router.get('/:id/comments', requireAuth, async (req, res) => {
 });
 
 // POST /api/tickets/:id/comments
-router.post('/:id/comments', requireAuth, requireRole('Admin', 'Submitter'), async (req, res) => {
+router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Submitter'), async (req, res) => {
   try {
     const { body } = req.body;
     if (!body || !body.trim()) return res.status(400).json({ error: 'Comment body required' });

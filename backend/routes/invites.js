@@ -9,17 +9,18 @@ const { loginUser, buildSessionUser } = require('../auth/session');
 
 const router = express.Router();
 
-const VALID_ROLES = ['Admin', 'Submitter', 'Viewer'];
+const VALID_ROLES = ['Admin', 'Manager', 'Submitter', 'Viewer'];
 const VALID_PROVIDERS = ['local', 'entra', 'google'];
 
 // POST /api/invites — admin invites a user
-router.post('/', requireAuth, requireRole('Admin'), async (req, res) => {
+router.post('/', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
     const { email, role = 'Viewer', intended_provider = 'local', display_name = '' } = req.body || {};
     if (!email || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email)) {
       return res.status(400).json({ error: 'Valid email required' });
     }
     if (!VALID_ROLES.includes(role)) return res.status(400).json({ error: 'Invalid role' });
+    if (role === 'Admin' && req.session.user.role !== 'Admin') return res.status(403).json({ error: 'Only Admins can invite as Admin' });
     if (!VALID_PROVIDERS.includes(intended_provider)) return res.status(400).json({ error: 'Invalid provider' });
 
     const settings = await getAuthSettings();
@@ -149,7 +150,7 @@ router.post('/:token/accept', async (req, res) => {
 });
 
 // DELETE /api/invites/:id — admin revokes an outstanding invite
-router.delete('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
+router.delete('/:id', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
     const r = await pool.query('DELETE FROM invite_tokens WHERE id = $1 RETURNING email', [req.params.id]);
     if (!r.rows[0]) return res.status(404).json({ error: 'Invite not found' });
@@ -161,7 +162,7 @@ router.delete('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
 });
 
 // GET /api/invites — admin lists outstanding invites
-router.get('/', requireAuth, requireRole('Admin'), async (req, res) => {
+router.get('/', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
     const r = await pool.query(
       `SELECT i.id, i.email, i.role, i.intended_provider, i.expires_at, i.accepted_at, i.created_at,

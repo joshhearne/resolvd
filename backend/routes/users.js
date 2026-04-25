@@ -76,6 +76,10 @@ router.patch('/:id/role', requireAuth, requireRole('Admin'), async (req, res) =>
       return res.status(400).json({ error: `Invalid role. Must be one of: ${VALID_ROLES.join(', ')}` });
     }
 
+    if (role === 'Admin' && req.session.user.role !== 'Admin') {
+      return res.status(403).json({ error: 'Only Admins can assign the Admin role' });
+    }
+
     if (Number(req.params.id) === req.session.user.id) {
       return res.status(400).json({ error: 'Cannot change your own role' });
     }
