@@ -1,205 +1,127 @@
 # Punchlist
 
-Issue and project tracking portal — keep every ticket within reach until it's closed.
+Internal issue and project tracking — keep every ticket in reach until it's closed.
 
 ## Stack
 
 - **Frontend**: React + Vite + Tailwind CSS
 - **Backend**: Node.js + Express
-- **Database**: SQLite (single file at `data/issues.db`)
-- **Auth**: Microsoft 365 / Entra ID via MSAL
-- **Proxy**: nginx
+- **Database**: PostgreSQL 16
+- **Auth**: Microsoft Entra ID, Google OAuth, and/or local username/password (configurable)
+- **Email**: Microsoft Graph API, Gmail API, or SMTP (configurable)
+- **Proxy**: nginx (Docker) + host reverse proxy
 
 ---
 
-## 1. Azure App Registration Setup
-
-1. Go to [portal.azure.com](https://portal.azure.com) → **Entra ID** → **App registrations** → **New registration**
-2. Name: `Punchlist`
-3. Supported account types: **Accounts in this organizational directory only**
-4. Redirect URI: `Web` → `https://issues.mot.local/auth/callback`
-5. After creation, note the **Application (client) ID** and **Directory (tenant) ID**
-6. Go to **Certificates & secrets** → **New client secret** → note the value immediately
-7. Go to **API permissions** → **Add a permission** → **Microsoft Graph** → **Delegated**:
-   - `User.Read`
-   - `offline_access`
-8. Click **Grant admin consent**
-
----
-
-## 2. Configure Environment
+## Quick Start
 
 ```bash
 cp .env.example .env
-```
+# Fill in required values — see Environment Variables below
 
-Edit `.env` and fill in:
-- `AZURE_TENANT_ID` — Directory (tenant) ID from App Registration
-- `AZURE_CLIENT_ID` — Application (client) ID
-- `AZURE_CLIENT_SECRET` — Client secret value
-- `AZURE_REDIRECT_URI` — Must exactly match what you entered in Azure: `https://issues.mot.local/auth/callback`
-- `SESSION_SECRET` — Run `openssl rand -hex 32` to generate
+mkdir -p data/uploads
 
----
-
-## 3. Start with Docker Compose
-
-```bash
-# Make sure the data directory exists and is writable
-mkdir -p data
-
-# Build and start
 docker compose up -d --build
-
-# Check logs
 docker compose logs -f
 ```
 
-The Docker stack binds to `127.0.0.1:8085` (localhost only). The host reverse proxy handles TLS and forwards to that port. The app is not reachable directly from the network — only through the proxy at `https://issues.mot.local`.
+The stack binds to `127.0.0.1:8090` by default. A host reverse proxy (nginx, Caddy, etc.) handles TLS and forwards to that port.
 
 ---
 
-## 4. Host Reverse Proxy Setup
+## Environment Variables
 
-The Docker stack does not terminate TLS. A reverse proxy running on wbsrv01 (the host) handles HTTPS and forwards to the Docker stack on port 8085.
+| Variable | Required | Description |
+|----------|----------|-------------|
+| `POSTGRES_PASSWORD` | Yes | PostgreSQL password |
+| `SESSION_SECRET` | Yes | Random string — `openssl rand -hex 32` |
+| `FRONTEND_URL` | Yes | Public base URL (e.g. `https://issues.example.com`) |
+| `COOKIE_SECURE` | Yes | `true` when behind HTTPS proxy |
+| `PORT` | No | Backend port (default `3001`) |
+| `UPLOADS_DIR` | No | File upload path (default `/data/uploads`) |
+| `MAX_UPLOAD_MB` | No | Max attachment size in MB (default `10`) |
 
-### Option A — nginx (recommended)
+**Microsoft Entra ID (optional)**
 
-A ready-to-use config is at `nginx/host-proxy.conf`. Copy it to the host:
+| Variable | Description |
+|----------|-------------|
+| `AZURE_TENANT_ID` | Directory (tenant) ID |
+| `AZURE_CLIENT_ID` | Application (client) ID |
+| `AZURE_CLIENT_SECRET` | Client secret |
+| `AZURE_REDIRECT_URI` | Must match App Registration redirect URI |
+| `AZURE_ALLOWED_ORIGINS` | Comma-separated allowed origins for multi-domain |
 
-```bash
-sudo cp nginx/host-proxy.conf /etc/nginx/sites-available/issues.mot.local
-sudo ln -s /etc/nginx/sites-available/issues.mot.local /etc/nginx/sites-enabled/issues.mot.local
-sudo nginx -t && sudo systemctl reload nginx
-```
+**Microsoft Graph email (optional)**
 
-The cert files must exist first — see **Internal CA Certificate Setup** below.
+| Variable | Description |
+|----------|-------------|
+| `MAIL_FROM` | Sender mailbox (must exist in your M365 tenant) |
 
-If `APP_INTERNAL_PORT` is changed from the default `8085`, update the `proxy_pass` line in `host-proxy.conf` to match.
+**Google OAuth (optional)**
 
-### Option B — Traefik
-
-If your host proxy is Traefik, see the Traefik labels block at the bottom of `nginx/host-proxy.conf`. Remove the localhost port binding from `docker-compose.yml` and add those labels to the `nginx` service instead.
-
----
-
-## 5. Internal CA Certificate Setup
-
-The cert for `issues.mot.local` is issued by the MOT internal CA and deployed to domain-joined machines via GPO. The application itself does not handle the cert — only the host nginx does.
-
-### Generate a CSR on wbsrv01
-
-```bash
-sudo mkdir -p /etc/ssl/mot
-
-sudo openssl req -new -newkey rsa:2048 -nodes \
-  -keyout /etc/nginx/certs/issues.mot.local.key \
-  -out /etc/nginx/certs/issues.mot.local.csr \
-  -subj "/CN=issues.mot.local/O=Motorhomes of Texas/C=US"
-```
-
-The CN **must** be `issues.mot.local`. Add a SAN if your CA requires it — create an ext file:
-
-```bash
-cat > /tmp/issues-san.ext << 'EOF'
-[req_ext]
-subjectAltName = DNS:issues.mot.local
-EOF
-```
-
-Then add `-extensions req_ext -extfile /tmp/issues-san.ext` to the openssl command.
-
-### Submit to Windows Server CA
-
-**Via web enrollment** (easiest):
-1. On a domain-joined machine, navigate to `https://[ca-server]/certsrv`
-2. Click **Request a certificate** → **Advanced certificate request**
-3. Paste the contents of `/etc/nginx/certs/issues.mot.local.csr`
-4. Template: **Web Server** (or equivalent)
-5. Submit and download the signed cert as Base64 `.cer`
-
-**Via certreq** (from a Windows machine):
-```cmd
-certreq -submit -attrib "CertificateTemplate:WebServer" issues.mot.local.csr issues.mot.local.cer
-```
-
-### Place the signed cert on wbsrv01
-
-```bash
-# Copy the signed .cer file to the server, then:
-sudo cp issues.mot.local.cer /etc/nginx/certs/issues.mot.local.crt
-sudo chmod 640 /etc/nginx/certs/issues.mot.local.key
-sudo chmod 644 /etc/nginx/certs/issues.mot.local.crt
-```
-
-The key stays on the server and never leaves. The `.crt` is what nginx presents to browsers.
-
-### GPO distribution
-
-Deploy the CA root cert (not the site cert) to domain-joined machines via GPO so browsers trust the chain automatically:
-
-`Computer Configuration → Policies → Windows Settings → Security Settings → Public Key Policies → Trusted Root Certification Authorities`
-
-Non-domain-joined devices (phones on guest WiFi, personal laptops) will not trust the cert and cannot reach the app — this is intentional.
+| Variable | Description |
+|----------|-------------|
+| `GOOGLE_CLIENT_ID` | Google OAuth client ID |
+| `GOOGLE_CLIENT_SECRET` | Google OAuth client secret |
+| `GOOGLE_REDIRECT_URI` | Must match Google Console redirect URI |
 
 ---
 
-## 6. DNS Setup
+## Authentication
 
-Add an A record in Windows Server DNS pointing `issues.mot.local` to wbsrv01's LAN IP.
+Punchlist supports multiple auth providers, configurable at runtime from **Admin → Authentication**:
 
-**DNS Manager** → Forward Lookup Zones → `mot.local` → New Host (A):
-- Name: `issues`
-- IP: `<wbsrv01 LAN IP>`
+- **Local** — username/password with Argon2 hashing, account lockout after 8 failed attempts
+- **Microsoft Entra ID** — SSO via MSAL
+- **Google OAuth** — SSO via Google Workspace or consumer accounts
 
-Devices must be on the MOT network (or VPN) to resolve `issues.mot.local`. Non-domain-joined or off-network devices cannot reach the app — this is intentional for an internal tool.
+MFA (TOTP) is available and can be enforced per role.
 
----
+### First-Time Setup (Bootstrap)
 
-## 7. First Login (Admin Bootstrap)
-
-The **very first user** to log in is automatically assigned the **Admin** role. All subsequent users default to **Viewer** until an Admin promotes them.
-
-1. Navigate to `https://issues.mot.local`
-2. Click **Sign in with Microsoft 365**
-3. Authenticate with your M365 account
-4. You are now Admin — go to **Users** to assign roles to teammates
+On a fresh install with local auth enabled, the login page shows a **Create Admin Account** form. The first account created this way gets the Admin role. Subsequent users are invited by an Admin or Manager.
 
 ---
 
-## 8. CSV Import Format
+## Host Reverse Proxy
 
-Use **Admin → Import** to bulk-ingest existing Coastal tickets.
+The Docker stack does not terminate TLS. Configure a host proxy to forward HTTPS traffic to `127.0.0.1:8090`.
 
-Required columns (case-insensitive):
+**nginx example:**
 
-| Column | Description |
-|--------|-------------|
-| `coastal_ref` | Coastal's ticket ID — used to skip duplicates |
-| `title` | Ticket title (required) |
-| `description` | Optional description |
-| `coastal_status` | `Unacknowledged`, `Acknowledged`, `In Progress`, `Resolved`, `Won't Fix` |
+```nginx
+server {
+    listen 443 ssl;
+    server_name issues.example.com;
 
-Example:
-```csv
-coastal_ref,title,description,coastal_status
-CT-1001,Homepage hero image broken,Image fails to load on mobile,In Progress
-CT-1002,Contact form not sending emails,,Acknowledged
-CT-1003,Old pricing page still live,Should redirect to /pricing,Resolved
+    ssl_certificate     /path/to/cert.pem;
+    ssl_certificate_key /path/to/key.pem;
+
+    location / {
+        proxy_pass http://127.0.0.1:8090;
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-Proto https;
+        proxy_set_header X-Real-IP $remote_addr;
+    }
+}
 ```
 
-Tickets with `coastal_status=Resolved` are created as **Pending Review** and flagged for MOT review.
+A ready-to-use config for Cloudflare Origin Certificates is in `nginx/host-proxy.conf`.
 
 ---
 
-## 9. Backup
+## Email Notifications
 
-The entire database is a single file: `data/issues.db`
+Followers of a ticket receive email when:
+- Ticket status changes
+- A comment is posted
 
-```bash
-# Simple backup
-cp data/issues.db data/issues.db.$(date +%Y%m%d-%H%M%S).bak
-```
+Admins are notified when a ticket reaches **Pending Review**.
+
+Configure the email backend in **Admin → Authentication → Email**:
+- **Microsoft Graph** — requires `Mail.Send` application permission granted in Entra ID
+- **Gmail** — requires a service account with domain-wide delegation
+- **SMTP** — any standard SMTP server
 
 ---
 
@@ -207,6 +129,36 @@ cp data/issues.db data/issues.db.$(date +%Y%m%d-%H%M%S).bak
 
 | Role | Permissions |
 |------|-------------|
-| **Admin** | Full access: create/edit/delete tickets, override priority, manage Coastal status, manage user roles, close/reopen tickets |
-| **Submitter** | Create tickets, comment on any ticket, view all tickets |
-| **Viewer** | Read-only: view tickets and comments |
+| **Admin** | Full access — branding, auth configuration, status workflows, all Manager actions |
+| **Manager** | Projects, users, tickets, export, invitations |
+| **Submitter** | Create tickets, comment, follow, upload attachments |
+| **Viewer** | Read-only |
+
+Roles can be assigned per-user globally, with optional per-project overrides.
+
+---
+
+## Projects
+
+- Tickets are scoped to projects
+- Projects can be marked **internal** (no external vendor fields) or with an external vendor
+- Each project has a prefix used for ticket references (e.g. `WEB-0042`)
+- Projects can be archived when no longer active
+
+---
+
+## Backup
+
+PostgreSQL data lives in a Docker volume (`mot-issues-postgres-data`). Back it up with:
+
+```bash
+docker compose exec postgres pg_dump -U punchlist punchlist > backup-$(date +%Y%m%d).sql
+```
+
+Restore:
+
+```bash
+docker compose exec -T postgres psql -U punchlist punchlist < backup.sql
+```
+
+Uploaded files are stored in `data/uploads/` — include this directory in your backup.
