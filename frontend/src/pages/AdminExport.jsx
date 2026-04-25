@@ -23,7 +23,7 @@ export default function AdminExport() {
       : [
           { value: 'Open', label: 'Open' },
           { value: 'In Progress', label: 'In Progress' },
-          { value: 'Awaiting MOT Input', label: 'Awaiting MOT Input' },
+          { value: 'Awaiting Input', label: 'Awaiting Input' },
           { value: 'Pending Review', label: 'Pending Review' },
           { value: 'Reopened', label: 'Reopened' },
           { value: 'Closed', label: 'Closed', terminal: true },

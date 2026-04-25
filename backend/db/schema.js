@@ -285,7 +285,7 @@ async function initSchema() {
       const seedInternal = [
         ['Open',                 '#2563eb', 10,  true,  false, false, null],
         ['In Progress',          '#0891b2', 20,  false, false, false, 'in_progress'],
-        ['Awaiting MOT Input',   '#d97706', 30,  false, false, true,  null],
+        ['Awaiting Input',       '#d97706', 30,  false, false, true,  null],
         ['Pending Review',       '#7c3aed', 40,  false, false, false, null],
         ['Closed',               '#16a34a', 50,  false, true,  false, null],
         ['Reopened',             '#dc2626', 60,  false, false, false, 'reopened'],
@@ -312,6 +312,12 @@ async function initSchema() {
         );
       }
     }
+
+    // Rename legacy status label if it exists from an older install.
+    await client.query(`
+      UPDATE statuses SET name = 'Awaiting Input'
+      WHERE kind = 'internal' AND name = 'Awaiting MOT Input'
+    `);
 
     await client.query('COMMIT');
   } catch (err) {

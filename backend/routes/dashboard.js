@@ -26,7 +26,7 @@ router.get('/stats', requireAuth, async (req, res) => {
     res.json({
       total_open: statusMap['Open'] || 0,
       total_in_progress: statusMap['In Progress'] || 0,
-      total_awaiting_mot: statusMap['Awaiting MOT Input'] || 0,
+      total_awaiting_mot: statusMap['Awaiting Input'] || 0,
       total_pending_review: statusMap['Pending Review'] || 0,
       total_closed: statusMap['Closed'] || 0,
       total_reopened: statusMap['Reopened'] || 0,

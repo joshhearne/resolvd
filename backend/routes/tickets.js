@@ -65,7 +65,7 @@ router.get('/counts', requireAuth, async (req, res) => {
         SUM(CASE WHEN internal_status != 'Closed' THEN 1 ELSE 0 END)::int as active,
         SUM(CASE WHEN internal_status = 'Open' THEN 1 ELSE 0 END)::int as open,
         SUM(CASE WHEN internal_status = 'In Progress' THEN 1 ELSE 0 END)::int as in_progress,
-        SUM(CASE WHEN internal_status = 'Awaiting MOT Input' THEN 1 ELSE 0 END)::int as awaiting_mot,
+        SUM(CASE WHEN internal_status = 'Awaiting Input' THEN 1 ELSE 0 END)::int as awaiting_mot,
         SUM(CASE WHEN internal_status = 'Pending Review' THEN 1 ELSE 0 END)::int as pending_review,
         SUM(CASE WHEN internal_status = 'Reopened' THEN 1 ELSE 0 END)::int as reopened,
         SUM(CASE WHEN internal_status = 'Closed' THEN 1 ELSE 0 END)::int as closed,
@@ -364,8 +364,8 @@ router.patch('/:id', requireAuth, async (req, res) => {
         if (body.coastal_status === 'Resolved') {
           updates.internal_status = 'Pending Review';
           updates.flagged_for_review = true;
-          await auditLog(client, { ticketId: ticket.id, userId: user.id, action: 'status_change', oldValue: ticket.internal_status, newValue: 'Pending Review', note: 'Coastal marked resolved — flagged for MOT review' });
-          await systemComment(client, ticket.id, 'Coastal Technologies has marked this issue as Resolved. Please review and confirm the fix, then close or reopen this ticket.');
+          await auditLog(client, { ticketId: ticket.id, userId: user.id, action: 'status_change', oldValue: ticket.internal_status, newValue: 'Pending Review', note: 'External partner marked resolved — flagged for review' });
+          await systemComment(client, ticket.id, 'The external partner has marked this issue as Resolved. Please review and confirm the fix, then close or reopen this ticket.');
         }
       }
 
@@ -382,16 +382,16 @@ router.patch('/:id', requireAuth, async (req, res) => {
         } else if (body.blocker_type === 'mot_input') {
           updates.mot_blocker_note = body.mot_blocker_note || null;
           updates.blocked_by_ticket = null;
-          if (ticket.internal_status !== 'Awaiting MOT Input') {
-            updates.internal_status = 'Awaiting MOT Input';
-            await auditLog(client, { ticketId: ticket.id, userId: user.id, action: 'status_change', oldValue: ticket.internal_status, newValue: 'Awaiting MOT Input', note: 'Blocker set: MOT input required' });
+          if (ticket.internal_status !== 'Awaiting Input') {
+            updates.internal_status = 'Awaiting Input';
+            await auditLog(client, { ticketId: ticket.id, userId: user.id, action: 'status_change', oldValue: ticket.internal_status, newValue: 'Awaiting Input', note: 'Blocker set: team input required' });
           }
         } else if (!body.blocker_type) {
           updates.blocked_by_ticket = null;
           updates.mot_blocker_note = null;
-          if (ticket.internal_status === 'Awaiting MOT Input') {
+          if (ticket.internal_status === 'Awaiting Input') {
             updates.internal_status = 'In Progress';
-            await auditLog(client, { ticketId: ticket.id, userId: user.id, action: 'status_change', oldValue: 'Awaiting MOT Input', newValue: 'In Progress', note: 'Blocker cleared' });
+            await auditLog(client, { ticketId: ticket.id, userId: user.id, action: 'status_change', oldValue: 'Awaiting Input', newValue: 'In Progress', note: 'Blocker cleared' });
           }
         }
         await auditLog(client, { ticketId: ticket.id, userId: user.id, action: 'blocker_change', oldValue: oldBlocker, newValue: body.blocker_type || null });

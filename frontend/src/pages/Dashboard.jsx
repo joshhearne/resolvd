@@ -57,7 +57,7 @@ export default function Dashboard() {
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
         <StatCard label="Open" value={stats?.total_open || 0} color="blue" to="/tickets?preset=open" />
         <StatCard label="In Progress" value={stats?.total_in_progress || 0} color="indigo" to="/tickets?preset=in_progress" />
-        <StatCard label="Awaiting MOT Input" value={stats?.total_awaiting_mot || 0} color="amber" urgent={stats?.total_awaiting_mot > 0} to="/tickets?preset=awaiting_mot" />
+        <StatCard label="Awaiting Input" value={stats?.total_awaiting_mot || 0} color="amber" urgent={stats?.total_awaiting_mot > 0} to="/tickets?preset=awaiting_mot" />
         <StatCard label="Pending Review" value={stats?.total_pending_review || 0} color="purple" urgent={stats?.total_pending_review > 0} to="/tickets?preset=pending_review" />
         <StatCard label="Flagged for Review" value={stats?.flagged_for_review || 0} color="red" urgent={stats?.flagged_for_review > 0} to="/tickets?preset=flagged" />
         <StatCard label="Closed" value={stats?.total_closed || 0} color="gray" to="/tickets?preset=closed" />

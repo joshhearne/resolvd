@@ -288,13 +288,13 @@ export default function TicketDetail() {
         </div>
       </div>
 
-      {/* Awaiting MOT Input banner */}
+      {/* Awaiting Input banner */}
       {ticket.blocker_type === 'mot_input' && (
         <div className="bg-amber-50 border-2 border-amber-400 rounded-lg px-4 py-3 flex items-start gap-3">
           <span className="text-amber-500 text-xl mt-0.5">⚠</span>
           <div>
-            <div className="font-semibold text-amber-800">Awaiting MOT Input</div>
-            <div className="text-sm text-amber-700 mt-0.5">{ticket.mot_blocker_note || 'MOT action required before the external partner can proceed.'}</div>
+            <div className="font-semibold text-amber-800">Awaiting Team Input</div>
+            <div className="text-sm text-amber-700 mt-0.5">{ticket.mot_blocker_note || 'Action required before the external partner can proceed.'}</div>
           </div>
         </div>
       )}
@@ -658,7 +658,7 @@ export default function TicketDetail() {
               {!editing.blocker && !ticket.blocker_type && (
                 <div className="flex gap-2">
                   <button onClick={() => { setEditing({ blocker: 'internal' }); setEditValues({ blocked_by_ticket: null }); }} className="btn-secondary btn btn-sm">+ Internal Blocker</button>
-                  <button onClick={() => { setEditing({ blocker: 'mot_input' }); setEditValues({ mot_blocker_note: '' }); }} className="btn-secondary btn btn-sm">+ MOT Input</button>
+                  <button onClick={() => { setEditing({ blocker: 'mot_input' }); setEditValues({ mot_blocker_note: '' }); }} className="btn-secondary btn btn-sm">+ Team Input</button>
                 </div>
               )}
               {ticket.blocker_type === 'internal' && !editing.blocker && (
@@ -696,7 +696,7 @@ export default function TicketDetail() {
               {editing.blocker === 'mot_input' && (
                 <div className="space-y-2">
                   <textarea value={editValues.mot_blocker_note || ''} onChange={e => setEditValues(v => ({...v, mot_blocker_note: e.target.value}))}
-                    rows={3} placeholder="What does MOT need to provide to the external partner?"
+                    rows={3} placeholder="What needs to be provided to the external partner?"
                     className="w-full border border-gray-300 rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-blue-500" />
                   <div className="flex gap-2">
                     <button onClick={() => patch({ blocker_type: 'mot_input', mot_blocker_note: editValues.mot_blocker_note })} disabled={saving} className="btn-primary btn btn-sm">Set Blocker</button>

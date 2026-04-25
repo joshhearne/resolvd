@@ -34,7 +34,7 @@ const PREDEFINED = [
     items: [
       { key: 'open',           label: 'Open',               countKey: 'open',         filters: { ...BLANK_FILTERS, internal_status: 'Open' } },
       { key: 'in_progress',    label: 'In Progress',        countKey: 'in_progress',  filters: { ...BLANK_FILTERS, internal_status: 'In Progress' } },
-      { key: 'awaiting_mot',   label: 'Awaiting MOT Input', countKey: 'awaiting_mot', filters: { ...BLANK_FILTERS, internal_status: 'Awaiting MOT Input' } },
+      { key: 'awaiting_mot',   label: 'Awaiting Input',     countKey: 'awaiting_mot', filters: { ...BLANK_FILTERS, internal_status: 'Awaiting Input' } },
       { key: 'pending_review', label: 'Pending Review',     countKey: 'pending_review', filters: { ...BLANK_FILTERS, internal_status: 'Pending Review' } },
       { key: 'reopened',       label: 'Reopened',           countKey: 'reopened',     filters: { ...BLANK_FILTERS, internal_status: 'Reopened' } },
       { key: 'flagged',        label: 'Flagged for Review', countKey: 'flagged',      filters: { ...BLANK_FILTERS, flagged_for_review: 'true' } },
@@ -53,7 +53,7 @@ const PREDEFINED = [
     items: [
       { key: 'coastal_unacked',  label: 'Unacknowledged', countKey: 'coastal_unacked',  filters: { ...BLANK_FILTERS, coastal_status: 'Unacknowledged' } },
       { key: 'coastal_resolved', label: 'Marked Resolved', countKey: 'coastal_resolved', filters: { ...BLANK_FILTERS, coastal_status: 'Resolved' } },
-      { key: 'mot_blocker',      label: 'MOT Owes Input', countKey: 'mot_blocker',      filters: { ...BLANK_FILTERS, blocker_type: 'mot_input' } },
+      { key: 'mot_blocker',      label: 'Team Owes Input', countKey: 'mot_blocker',      filters: { ...BLANK_FILTERS, blocker_type: 'mot_input' } },
     ],
   },
 ];
@@ -443,7 +443,7 @@ export default function TicketList() {
                       <td className="px-4 py-3"><StatusBadge status={t.internal_status} /></td>
                       {showVendorCols && <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">{t.coastal_status}</td>}
                       <td className="px-4 py-3 text-sm">
-                        {t.blocker_type === 'mot_input' && <span className="text-amber-600 font-medium">MOT Input</span>}
+                        {t.blocker_type === 'mot_input' && <span className="text-amber-600 font-medium">Team Input</span>}
                         {t.blocker_type === 'internal' && <span className="text-red-600 font-medium">{t.blocking_ticket_ref || 'Internal'}</span>}
                       </td>
                       <td className="px-4 py-3 text-center">

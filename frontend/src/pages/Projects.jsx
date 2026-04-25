@@ -80,7 +80,7 @@ export default function Projects() {
               </label>
               <input type="text" value={form.name}
                 onChange={e => set('name', e.target.value)}
-                placeholder="e.g. Motorhomes of Texas Website"
+                placeholder="e.g. Client Website"
                 className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
             </div>
             <div>

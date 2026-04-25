@@ -17,7 +17,7 @@ export function statusClass(status) {
   const map = {
     'Open': 'status-open',
     'In Progress': 'status-in-progress',
-    'Awaiting MOT Input': 'status-awaiting',
+    'Awaiting Input': 'status-awaiting',
     'Pending Review': 'status-pending-review',
     'Closed': 'status-closed',
     'Reopened': 'status-reopened',
@@ -49,7 +49,7 @@ export function computePriority(impact, urgency) {
   return Math.min(Math.max(Number(impact) + Number(urgency) - 1, 1), 5);
 }
 
-export const INTERNAL_STATUSES = ['Open', 'In Progress', 'Awaiting MOT Input', 'Pending Review', 'Closed', 'Reopened'];
+export const INTERNAL_STATUSES = ['Open', 'In Progress', 'Awaiting Input', 'Pending Review', 'Closed', 'Reopened'];
 export const COASTAL_STATUSES = ['Unacknowledged', 'Acknowledged', 'In Progress', 'Resolved', "Won't Fix"];
 export const IMPACT_LABELS = { 1: 'High (1)', 2: 'Medium (2)', 3: 'Low (3)' };
 export const URGENCY_LABELS = { 1: 'High (1)', 2: 'Medium (2)', 3: 'Low (3)' };
