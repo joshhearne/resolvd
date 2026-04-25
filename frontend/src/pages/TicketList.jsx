@@ -114,6 +114,9 @@ export default function TicketList() {
     api.get('/api/views').then(setSavedViews).catch(() => {});
   }, []);
 
+  const selectedProject = selectedProjectId ? projects.find(p => p.id === selectedProjectId) : null;
+  const showVendorCols = !selectedProject || selectedProject.has_external_vendor !== false;
+
   // Load counts — scoped to selected project if set
   useEffect(() => {
     const qs = selectedProjectId ? `?project_id=${selectedProjectId}` : '';
@@ -263,7 +266,7 @@ export default function TicketList() {
           <button onClick={() => setSidebarOpen(false)}
             className="text-gray-400 hover:text-gray-600 text-2xl leading-none">×</button>
         </div>
-        {PREDEFINED.map(group => (
+        {PREDEFINED.filter(group => showVendorCols || group.group !== 'External').map(group => (
           <div key={group.group}>
             <div className="text-xs font-semibold uppercase tracking-wider text-gray-400 px-3 mb-1">{group.group}</div>
             <div className="space-y-0.5">
@@ -419,7 +422,7 @@ export default function TicketList() {
                     <th className="px-4 py-2.5 text-left"><SortHeader col="title" label="Title" /></th>
                     <th className="px-4 py-2.5"><SortHeader col="effective_priority" label="Pri" /></th>
                     <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wide">Internal</th>
-                    <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wide">External</th>
+                    {showVendorCols && <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wide">External</th>}
                     <th className="px-4 py-2.5 text-left text-xs font-medium text-gray-500 uppercase tracking-wide">Blocker</th>
                     <th className="px-4 py-2.5 text-xs font-medium text-gray-500 uppercase tracking-wide">★</th>
                     <th className="px-4 py-2.5"><SortHeader col="updated_at" label="Updated" /></th>
@@ -438,7 +441,7 @@ export default function TicketList() {
                         <PriorityBadge priority={t.effective_priority} override={t.priority_override} computed={t.computed_priority} showOverrideInfo={false} />
                       </td>
                       <td className="px-4 py-3"><StatusBadge status={t.internal_status} /></td>
-                      <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">{t.coastal_status}</td>
+                      {showVendorCols && <td className="px-4 py-3 text-sm text-gray-600 whitespace-nowrap">{t.coastal_status}</td>}
                       <td className="px-4 py-3 text-sm">
                         {t.blocker_type === 'mot_input' && <span className="text-amber-600 font-medium">MOT Input</span>}
                         {t.blocker_type === 'internal' && <span className="text-red-600 font-medium">{t.blocking_ticket_ref || 'Internal'}</span>}

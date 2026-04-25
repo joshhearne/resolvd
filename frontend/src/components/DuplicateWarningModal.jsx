@@ -127,11 +127,11 @@ export default function DuplicateWarningModal({ matches, newDescription, onCreat
         </div>
 
         {/* Footer */}
-        <div className="p-4 border-t border-gray-200 flex items-center justify-between gap-3 bg-gray-50 rounded-b-xl">
+        <div className="p-4 border-t border-gray-200 flex flex-wrap items-center justify-between gap-3 bg-gray-50 rounded-b-xl">
           <button onClick={onClose} className="btn-secondary btn text-sm">
             ← Go back and edit
           </button>
-          <button onClick={onCreateAnyway} className="btn-danger btn text-sm">
+          <button onClick={onCreateAnyway} className="btn-danger btn text-sm w-full sm:w-auto">
             Create new ticket anyway
           </button>
         </div>

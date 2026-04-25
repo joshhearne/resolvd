@@ -13,7 +13,7 @@ export default function Projects() {
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
-  const [form, setForm] = useState({ name: '', prefix: '', description: '' });
+  const [form, setForm] = useState({ name: '', prefix: '', description: '', has_external_vendor: true });
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
@@ -37,7 +37,7 @@ export default function Projects() {
     try {
       const p = await api.post('/api/projects', form);
       setProjects(prev => [...prev, p].sort((a, b) => a.name.localeCompare(b.name)));
-      setForm({ name: '', prefix: '', description: '' });
+      setForm({ name: '', prefix: '', description: '', has_external_vendor: true });
       setShowForm(false);
       toast.success(`Project "${p.name}" created`);
     } catch (err) {
@@ -101,6 +101,15 @@ export default function Projects() {
               onChange={e => set('description', e.target.value)}
               placeholder="Brief description of this project"
               className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+          </div>
+          <div className="flex items-center gap-2">
+            <input type="checkbox" id="has_external_vendor" checked={form.has_external_vendor}
+              onChange={e => set('has_external_vendor', e.target.checked)}
+              className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
+            <label htmlFor="has_external_vendor" className="text-sm text-gray-700">
+              This project has an external vendor
+              <span className="text-gray-400 font-normal ml-1">(shows vendor status/ref fields on tickets)</span>
+            </label>
           </div>
           <div className="flex gap-2">
             <button type="submit" disabled={saving} className="btn-primary btn btn-sm disabled:opacity-60">

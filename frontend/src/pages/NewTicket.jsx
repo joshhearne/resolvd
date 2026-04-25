@@ -38,6 +38,8 @@ export default function NewTicket() {
   }, []);
 
   const computed = computePriority(form.impact, form.urgency);
+  const selectedProject = projects.find(p => String(p.id) === String(form.project_id));
+  const hasExternalVendor = selectedProject ? selectedProject.has_external_vendor !== false : true;
 
   function set(field, value) {
     setForm(f => ({ ...f, [field]: value }));
@@ -52,7 +54,8 @@ export default function NewTicket() {
     if (duplicates !== null) { doCreate(); return; }
 
     try {
-      const qs = new URLSearchParams({ title: form.title.trim(), description: form.description.trim() });
+      const qs = new URLSearchParams({ title: form.title.trim() });
+      if (form.coastal_ticket_ref?.trim()) qs.set('external_ref', form.coastal_ticket_ref.trim());
       if (form.project_id) qs.set('project_id', form.project_id);
       const matches = await api.get(`/api/tickets/similar?${qs}`);
       if (matches.length > 0) {
@@ -60,8 +63,13 @@ export default function NewTicket() {
       } else {
         doCreate();
       }
-    } catch {
-      doCreate(); // similarity check failed, just proceed
+    } catch (err) {
+      console.error('Duplicate check failed:', err);
+      toast('Could not check for duplicates — please verify no similar ticket exists before submitting.', {
+        icon: '⚠️', duration: 6000,
+      });
+      setDuplicates([]); // treat as checked so next submit goes through
+      // Don't auto-create — let user confirm with a second submit
     }
   }
 
@@ -149,14 +157,16 @@ export default function NewTicket() {
           <span className="text-xs text-gray-400">(Impact {form.impact} + Urgency {form.urgency})</span>
         </div>
 
-        <div>
-          <label className="block text-sm font-medium text-gray-700 mb-1">
-            External Ticket Ref <span className="text-gray-400 font-normal">(optional)</span>
-          </label>
-          <input type="text" value={form.coastal_ticket_ref} onChange={e => set('coastal_ticket_ref', e.target.value)}
-            className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-            placeholder="External ticket ID if known" />
-        </div>
+        {hasExternalVendor && (
+          <div>
+            <label className="block text-sm font-medium text-gray-700 mb-1">
+              External Ticket Ref <span className="text-gray-400 font-normal">(optional)</span>
+            </label>
+            <input type="text" value={form.coastal_ticket_ref} onChange={e => set('coastal_ticket_ref', e.target.value)}
+              className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
+              placeholder="External ticket ID if known" />
+          </div>
+        )}
 
         <div className="flex gap-3 pt-2">
           <button type="submit" disabled={submitting} className="btn-primary btn disabled:opacity-60">

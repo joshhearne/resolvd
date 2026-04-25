@@ -28,7 +28,7 @@ export default function ProjectDetail() {
 
   // Settings edit state
   const [editing, setEditing] = useState(false);
-  const [editForm, setEditForm] = useState({ name: '', description: '' });
+  const [editForm, setEditForm] = useState({ name: '', description: '', has_external_vendor: true });
   const [savingSettings, setSavingSettings] = useState(false);
 
   // Add member state
@@ -47,7 +47,7 @@ export default function ProjectDetail() {
     ])
       .then(([proj, users]) => {
         setProject(proj);
-        setEditForm({ name: proj.name, description: proj.description || '' });
+        setEditForm({ name: proj.name, description: proj.description || '', has_external_vendor: proj.has_external_vendor !== false });
         setAllUsers(users);
       })
       .catch(() => toast.error('Failed to load project'))
@@ -62,6 +62,7 @@ export default function ProjectDetail() {
       const updated = await api.patch(`/api/projects/${id}`, {
         name: editForm.name.trim(),
         description: editForm.description.trim() || null,
+        has_external_vendor: editForm.has_external_vendor,
       });
       setProject(p => ({ ...p, ...updated }));
       setEditing(false);
@@ -193,6 +194,14 @@ export default function ProjectDetail() {
               <input type="text" value={editForm.description}
                 onChange={e => setEditForm(f => ({ ...f, description: e.target.value }))}
                 className="w-full border border-gray-300 rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500" />
+            </div>
+            <div className="flex items-center gap-2">
+              <input type="checkbox" id="edit_has_vendor" checked={editForm.has_external_vendor}
+                onChange={e => setEditForm(f => ({ ...f, has_external_vendor: e.target.checked }))}
+                className="h-4 w-4 rounded border-gray-300 text-blue-600 focus:ring-blue-500" />
+              <label htmlFor="edit_has_vendor" className="text-sm text-gray-700">
+                This project has an external vendor
+              </label>
             </div>
             <div className="flex gap-2">
               <button type="submit" disabled={savingSettings} className="btn-primary btn btn-sm disabled:opacity-60">

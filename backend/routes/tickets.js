@@ -231,18 +231,20 @@ router.post('/', requireAuth, requireRole('Admin', 'Submitter'), async (req, res
   }
 });
 
-// GET /api/tickets/similar?title=...&description=...&project_id=...
+// GET /api/tickets/similar?title=...&external_ref=...&project_id=...
 router.get('/similar', requireAuth, async (req, res) => {
   try {
-    const { title = '', description = '', project_id } = req.query;
-    const searchText = [title, description].filter(Boolean).join(' ').trim();
-    if (searchText.length < 4) return res.json([]);
+    const { title = '', external_ref = '', project_id } = req.query;
+    const searchText = title.trim();
+    const extRef = external_ref.trim();
+    if (searchText.length < 4 && !extRef) return res.json([]);
 
     const user = req.session.user;
     const accessibleIds = await getAccessibleProjectIds(user);
 
-    const params = [searchText];
-    let p = 2;
+    // params: $1=searchText, $2=extRef, then project filters
+    const params = [searchText, extRef];
+    let p = 3;
     const where = [`t.internal_status = ANY(ARRAY['Open','In Progress','Awaiting','Pending Review','Reopened'])`];
 
     if (project_id) {
@@ -254,12 +256,12 @@ router.get('/similar', requireAuth, async (req, res) => {
       params.push(accessibleIds);
     }
 
-    const whereClause = where.length ? 'AND ' + where.join(' AND ') : '';
+    const whereClause = 'AND ' + where.join(' AND ');
 
     const result = await pool.query(`
-      SELECT
+      SELECT DISTINCT ON (t.id)
         t.id, t.mot_ref, t.title, t.internal_status, t.effective_priority,
-        t.description,
+        t.description, t.coastal_ticket_ref,
         proj.name AS project_name,
         ts_rank(
           to_tsvector('english', t.title || ' ' || COALESCE(t.description, '')),
@@ -267,10 +269,13 @@ router.get('/similar', requireAuth, async (req, res) => {
         ) AS rank
       FROM tickets t
       LEFT JOIN projects proj ON t.project_id = proj.id
-      WHERE to_tsvector('english', t.title || ' ' || COALESCE(t.description, ''))
-            @@ plainto_tsquery('english', $1)
-        ${whereClause}
-      ORDER BY rank DESC
+      WHERE (
+        ($1 <> '' AND to_tsvector('english', t.title || ' ' || COALESCE(t.description, ''))
+          @@ plainto_tsquery('english', $1))
+        OR ($2 <> '' AND t.coastal_ticket_ref IS NOT NULL AND t.coastal_ticket_ref = $2)
+      )
+      ${whereClause}
+      ORDER BY t.id, rank DESC
       LIMIT 5
     `, params);
 
@@ -286,7 +291,7 @@ router.get('/:id', requireAuth, async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT t.*,
-        proj.name as project_name, proj.prefix as project_prefix,
+        proj.name as project_name, proj.prefix as project_prefix, proj.has_external_vendor as project_has_external_vendor,
         sub.display_name as submitted_by_name, sub.email as submitted_by_email,
         asgn.display_name as assigned_to_name,
         bt.mot_ref as blocking_ticket_ref, bt.title as blocking_ticket_title, bt.internal_status as blocking_ticket_status

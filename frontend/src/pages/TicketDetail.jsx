@@ -556,7 +556,7 @@ export default function TicketDetail() {
           </div>
 
           {/* External */}
-          <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-4 space-y-3">
+          {ticket.project_has_external_vendor !== false && <div className="bg-white rounded-lg border border-gray-200 shadow-sm p-4 space-y-3">
             <h2 className="text-sm font-semibold text-gray-700">External Vendor</h2>
             <dl className="space-y-3">
               <Field label="External Status">
@@ -599,7 +599,7 @@ export default function TicketDetail() {
                 </Field>
               )}
             </dl>
-          </div>
+          </div>}
 
           {/* Blocker */}
           {isAdmin && (

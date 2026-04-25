@@ -47,18 +47,19 @@ router.get('/', requireAuth, async (req, res) => {
 // POST /api/projects — Admin only
 router.post('/', requireAuth, requireRole('Admin'), async (req, res) => {
   try {
-    const { name, prefix, description } = req.body;
+    const { name, prefix, description, has_external_vendor } = req.body;
     if (!name?.trim()) return res.status(400).json({ error: 'Name required' });
     if (!prefix?.trim()) return res.status(400).json({ error: 'Prefix required' });
 
     const cleanPrefix = prefix.trim().toUpperCase().replace(/[^A-Z0-9]/g, '');
     if (!cleanPrefix) return res.status(400).json({ error: 'Prefix must contain letters or numbers' });
 
+    const hasVendor = has_external_vendor !== false && has_external_vendor !== 'false';
     const result = await pool.query(`
-      INSERT INTO projects (name, prefix, description, created_by)
-      VALUES ($1, $2, $3, $4)
+      INSERT INTO projects (name, prefix, description, has_external_vendor, created_by)
+      VALUES ($1, $2, $3, $4, $5)
       RETURNING *
-    `, [name.trim(), cleanPrefix, description?.trim() || null, req.session.user.id]);
+    `, [name.trim(), cleanPrefix, description?.trim() || null, hasVendor, req.session.user.id]);
 
     res.status(201).json(result.rows[0]);
   } catch (err) {
@@ -114,7 +115,7 @@ router.get('/:id', requireAuth, async (req, res) => {
 // PATCH /api/projects/:id — Admin only
 router.patch('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
   try {
-    const { name, description, status } = req.body;
+    const { name, description, status, has_external_vendor } = req.body;
     const updates = {};
     if (name !== undefined) updates.name = name.trim();
     if (description !== undefined) updates.description = description?.trim() || null;
@@ -122,6 +123,7 @@ router.patch('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
       if (!['active', 'archived'].includes(status)) return res.status(400).json({ error: 'Invalid status' });
       updates.status = status;
     }
+    if (has_external_vendor !== undefined) updates.has_external_vendor = has_external_vendor !== false && has_external_vendor !== 'false';
     if (Object.keys(updates).length === 0) {
       const r = await pool.query('SELECT * FROM projects WHERE id = $1', [req.params.id]);
       return res.json(r.rows[0]);
