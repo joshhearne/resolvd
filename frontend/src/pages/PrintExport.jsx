@@ -163,13 +163,20 @@ export default function PrintExport() {
   const didPrint = useRef(false);
 
   const statuses = params.get('statuses') || '';
+  const projectIds = params.get('project_ids') || '';
+  const updatedFrom = params.get('updated_from') || '';
+  const updatedTo = params.get('updated_to') || '';
 
   useEffect(() => {
-    fetch(`/api/export/tickets?statuses=${encodeURIComponent(statuses)}`, { credentials: 'include' })
+    const qs = new URLSearchParams({ statuses });
+    if (projectIds) qs.set('project_ids', projectIds);
+    if (updatedFrom) qs.set('updated_from', updatedFrom);
+    if (updatedTo) qs.set('updated_to', updatedTo);
+    fetch(`/api/export/tickets?${qs}`, { credentials: 'include' })
       .then(r => r.ok ? r.json() : Promise.reject(r))
       .then(data => setTickets(groupSort(data)))
       .catch(() => setError('Failed to load tickets. Are you signed in?'));
-  }, [statuses]);
+  }, [statuses, projectIds, updatedFrom, updatedTo]);
 
   useEffect(() => {
     if (tickets && !didPrint.current) {
