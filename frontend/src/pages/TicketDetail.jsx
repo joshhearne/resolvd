@@ -138,7 +138,12 @@ export default function TicketDetail() {
   const [commentBody, setCommentBody] = useState("");
   const [commentFiles, setCommentFiles] = useState([]);
   const [submittingComment, setSubmittingComment] = useState(false);
+  const [shareWithVendor, setShareWithVendor] = useState(false);
+  const [showMuted, setShowMuted] = useState(false);
   const [activeTab, setActiveTab] = useState("comments");
+  const [vendorContacts, setVendorContacts] = useState([]);
+  const [allContacts, setAllContacts] = useState([]);
+  const [addContactId, setAddContactId] = useState("");
   const [confirm, setConfirm] = useState(null);
   const [uploading, setUploading] = useState(false);
   const [dragOver, setDragOver] = useState(false);
@@ -168,15 +173,68 @@ export default function TicketDetail() {
       api.get(`/api/tickets/${id}/audit`),
       api.get(`/api/tickets/${id}/attachments`),
       api.get(`/api/tickets/${id}/followers`),
+      api.get(`/api/tickets/${id}/contacts`).catch(() => []),
     ])
-      .then(([, audit, atts, fols]) => {
+      .then(([, audit, atts, fols, vcs]) => {
         setAuditLog(audit);
         setAttachments(atts);
         setFollowers(fols);
+        setVendorContacts(vcs);
         setLoading(false);
       })
       .catch(() => setLoading(false));
   }, [id, loadTicket]);
+
+  // Lazy-load every active contact for the project (only when admin/manager
+  // is on the page) so the "Add contact to ticket" picker has options.
+  useEffect(() => {
+    if (!isAdmin || !ticket?.project_id) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const companies = await api.get(`/api/companies?project_id=${ticket.project_id}`);
+        const all = [];
+        for (const co of companies) {
+          const cs = await api.get(`/api/companies/${co.id}/contacts`);
+          for (const c of cs) all.push({ ...c, company_name: co.name });
+        }
+        if (!cancelled) setAllContacts(all);
+      } catch { /* silent — feature degrades to "no picker" */ }
+    })();
+    return () => { cancelled = true; };
+  }, [isAdmin, ticket?.project_id]);
+
+  async function reloadContactsList() {
+    try { setVendorContacts(await api.get(`/api/tickets/${id}/contacts`)); } catch {}
+  }
+  async function attachContact() {
+    if (!addContactId) return;
+    try {
+      await api.post(`/api/tickets/${id}/contacts`, { contact_id: Number(addContactId) });
+      setAddContactId("");
+      await reloadContactsList();
+    } catch (e) { toast.error(e.message); }
+  }
+  async function detachContact(cid) {
+    try {
+      await api.delete(`/api/tickets/${id}/contacts/${cid}`);
+      await reloadContactsList();
+    } catch (e) { toast.error(e.message); }
+  }
+  async function toggleAutoMute() {
+    try {
+      const updated = await api.patch(`/api/tickets/${id}`, {
+        auto_mute_vendor_replies: !ticket.auto_mute_vendor_replies,
+      });
+      setTicket(updated);
+    } catch (e) { toast.error(e.message); }
+  }
+  async function setCommentMuted(commentId, value) {
+    try {
+      const r = await api.post(`/api/comments/${commentId}/${value ? "mute" : "unmute"}`, {});
+      setComments(prev => prev.map(c => c.id === commentId ? { ...c, is_muted: r.is_muted } : c));
+    } catch (e) { toast.error(e.message); }
+  }
 
   async function uploadFiles(files) {
     if (!files || files.length === 0) return;
@@ -242,6 +300,7 @@ export default function TicketDetail() {
       if (commentBody.trim()) {
         c = await api.post(`/api/tickets/${id}/comments`, {
           body: commentBody.trim(),
+          is_external_visible: shareWithVendor,
         });
         setComments((prev) => [...prev, c]);
       }
@@ -260,6 +319,7 @@ export default function TicketDetail() {
       }
       setCommentBody("");
       setCommentFiles([]);
+      setShareWithVendor(false);
       if (andStatus) {
         const updated = await api.patch(`/api/tickets/${id}`, {
           internal_status: andStatus,
@@ -420,6 +480,49 @@ export default function TicketDetail() {
         </div>
       </div>
 
+      {/* Vendor contacts strip (only when ticket has attached contacts or admin can attach) */}
+      {(vendorContacts.length > 0 || (isAdmin && allContacts.length > 0)) && (
+        <div className="bg-surface border border-border rounded-lg p-3 flex flex-wrap items-center gap-2">
+          <span className="text-xs uppercase tracking-wider text-fg-dim">Vendor contacts</span>
+          {vendorContacts.map(c => (
+            <span key={c.id}
+              className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded-full bg-surface-2 border border-border">
+              <strong className="text-fg">{c.name || c.email}</strong>
+              {c.company_name && <span className="text-fg-dim">· {c.company_name}</span>}
+              {isAdmin && (
+                <button onClick={() => detachContact(c.id)}
+                  className="text-fg-dim hover:text-red-500 ml-1" title="Detach">×</button>
+              )}
+            </span>
+          ))}
+          {isAdmin && (
+            <>
+              <select value={addContactId}
+                onChange={(e) => setAddContactId(e.target.value)}
+                className="bg-surface-2 border border-border rounded px-2 py-1 text-xs">
+                <option value="">+ Attach contact…</option>
+                {allContacts
+                  .filter(c => !vendorContacts.some(v => v.id === c.id))
+                  .map(c => (
+                    <option key={c.id} value={c.id}>
+                      {c.name || c.email} {c.company_name ? `(${c.company_name})` : ""}
+                    </option>
+                  ))}
+              </select>
+              {addContactId && (
+                <button onClick={attachContact}
+                  className="text-xs bg-brand text-white rounded px-2 py-1">Attach</button>
+              )}
+              <label className="ml-auto inline-flex items-center gap-1 text-xs text-fg-muted">
+                <input type="checkbox" checked={!!ticket.auto_mute_vendor_replies}
+                  onChange={toggleAutoMute} />
+                Auto-mute vendor replies
+              </label>
+            </>
+          )}
+        </div>
+      )}
+
       {/* Awaiting Input banner */}
       {ticket.blocker_type === "mot_input" && (
         <div className="bg-amber-50 dark:bg-amber-950/40 border-2 border-amber-400 dark:border-amber-900/50 rounded-lg px-4 py-3 flex items-start gap-3">
@@ -565,55 +668,74 @@ export default function TicketDetail() {
                     No comments yet
                   </p>
                 )}
-                {comments.map((c) => (
-                  <div
-                    key={c.id}
-                    className={`rounded-lg p-3 ${c.is_system ? "bg-brand/10 border border-brand/30" : "bg-surface-2"}`}
-                  >
-                    <div className="flex items-center justify-between mb-1">
-                      <span className="text-xs font-semibold text-fg-muted">
-                        {c.is_system ? "🤖 System" : c.user_name}
-                      </span>
-                      <span className="text-xs text-fg-dim">
-                        {formatDateTime(c.created_at)}
-                      </span>
-                    </div>
-                    <p className="text-sm text-fg whitespace-pre-wrap">
-                      {c.body}
-                    </p>
-                    {attachments.filter((a) => a.comment_id === c.id).length >
-                      0 && (
-                      <div className="mt-2 flex flex-wrap gap-1.5">
-                        {attachments
-                          .filter((a) => a.comment_id === c.id)
-                          .map((a) => (
-                            <a
-                              key={a.id}
-                              href={`/api/attachments/${a.id}`}
-                              className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded bg-surface border border-border hover:border-border-strong hover:bg-surface-2 text-fg-muted hover:text-fg transition-colors"
-                            >
-                              <svg
-                                className="w-3 h-3"
-                                fill="none"
-                                stroke="currentColor"
-                                viewBox="0 0 24 24"
-                              >
-                                <path
-                                  strokeLinecap="round"
-                                  strokeLinejoin="round"
-                                  strokeWidth={2}
-                                  d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 10-5.656-5.656L4.586 11.172a6 6 0 108.486 8.486L19.07 13.7"
-                                />
+                {(() => {
+                  const visible = comments.filter(c => !c.is_muted);
+                  const muted   = comments.filter(c =>  c.is_muted);
+                  const renderComment = (c) => (
+                    <div
+                      key={c.id}
+                      className={`rounded-lg p-3 ${c.is_system ? "bg-brand/10 border border-brand/30" : c.is_muted ? "bg-surface-2 border border-dashed border-border opacity-90" : "bg-surface-2"}`}
+                    >
+                      <div className="flex items-center justify-between mb-1 gap-2">
+                        <span className="text-xs font-semibold text-fg-muted flex items-center gap-1.5">
+                          {c.is_system ? "🤖 System" : (c.vendor_contact_id ? `↩ ${c.user_name || "Vendor"}` : c.user_name)}
+                          {c.is_external_visible && !c.vendor_contact_id && (
+                            <span className="text-[10px] px-1 py-0.5 rounded bg-brand/15 text-brand uppercase">to vendor</span>
+                          )}
+                          {c.vendor_contact_id && (
+                            <span className="text-[10px] px-1 py-0.5 rounded bg-amber-500/15 text-amber-700 uppercase">from vendor</span>
+                          )}
+                          {c.is_muted && (
+                            <span className="text-[10px] px-1 py-0.5 rounded bg-surface text-fg-dim uppercase">muted</span>
+                          )}
+                        </span>
+                        <span className="flex items-center gap-2">
+                          {isAdmin && !c.is_system && (
+                            <button onClick={() => setCommentMuted(c.id, !c.is_muted)}
+                              className="text-[11px] text-fg-dim hover:text-fg">
+                              {c.is_muted ? "Unmute" : "Mute"}
+                            </button>
+                          )}
+                          <span className="text-xs text-fg-dim">{formatDateTime(c.created_at)}</span>
+                        </span>
+                      </div>
+                      <p className="text-sm text-fg whitespace-pre-wrap">{c.body}</p>
+                      {attachments.filter((a) => a.comment_id === c.id).length > 0 && (
+                        <div className="mt-2 flex flex-wrap gap-1.5">
+                          {attachments.filter((a) => a.comment_id === c.id).map((a) => (
+                            <a key={a.id} href={`/api/attachments/${a.id}`}
+                              className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded bg-surface border border-border hover:border-border-strong hover:bg-surface-2 text-fg-muted hover:text-fg transition-colors">
+                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                  d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 10-5.656-5.656L4.586 11.172a6 6 0 108.486 8.486L19.07 13.7" />
                               </svg>
-                              <span className="truncate max-w-[180px]">
-                                {a.original_name}
-                              </span>
+                              <span className="truncate max-w-[180px]">{a.original_name}</span>
                             </a>
                           ))}
-                      </div>
-                    )}
-                  </div>
-                ))}
+                        </div>
+                      )}
+                    </div>
+                  );
+                  return (
+                    <>
+                      {visible.map(renderComment)}
+                      {muted.length > 0 && (
+                        <div className="border border-dashed border-border rounded-lg">
+                          <button onClick={() => setShowMuted(s => !s)}
+                            className="w-full flex items-center justify-between px-3 py-2 text-xs text-fg-muted hover:text-fg">
+                            <span>{muted.length} muted vendor {muted.length === 1 ? "reply" : "replies"} {showMuted ? "(hide)" : "(show)"}</span>
+                            <span>{showMuted ? "▾" : "▸"}</span>
+                          </button>
+                          {showMuted && (
+                            <div className="p-3 space-y-3 border-t border-dashed border-border bg-surface/40">
+                              {muted.map(renderComment)}
+                            </div>
+                          )}
+                        </div>
+                      )}
+                    </>
+                  );
+                })()}
                 {canEdit && (
                   <form
                     onSubmit={submitComment}
@@ -626,6 +748,13 @@ export default function TicketDetail() {
                       className="w-full border border-border-strong rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40"
                       placeholder="Add a comment..."
                     />
+                    {isAdmin && vendorContacts.length > 0 && (
+                      <label className="flex items-center gap-2 text-xs text-fg-muted">
+                        <input type="checkbox" checked={shareWithVendor}
+                          onChange={(e) => setShareWithVendor(e.target.checked)} />
+                        Share with vendor — sends this comment to the {vendorContacts.length} attached contact{vendorContacts.length === 1 ? "" : "s"} via email
+                      </label>
+                    )}
                     {commentFiles.length > 0 && (
                       <ul className="divide-y divide-border border border-border rounded-md">
                         {commentFiles.map((f, i) => (
