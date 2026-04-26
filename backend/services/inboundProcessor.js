@@ -36,7 +36,7 @@ const UPLOADS_DIR = process.env.UPLOADS_DIR || '/data/uploads';
 const APP_URL = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
 const AUTHORIZED_SUBMIT_ROLES = new Set(['Admin', 'Manager', 'Submitter']);
 
-const SUBJECT_PREFIX_RE = /^\s*#([A-Z][A-Z0-9]+)\b\s*[-:]?\s*(.*)$/;
+const SUBJECT_PREFIX_RE = /^\s*#([A-Za-z][A-Za-z0-9]+)\b\s*[-:]?\s*(.*)$/;
 
 // Pre-compiled in priority order. The earliest match wins.
 const SIGNATURE_BOUNDARIES = [
