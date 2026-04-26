@@ -142,6 +142,20 @@ function pickFromAddress(settings, backend) {
 async function sendMail({ to, subject, html, headers, replyTo }) {
   const addresses = (Array.isArray(to) ? to : [to]).filter(Boolean);
   if (!addresses.length) return;
+
+  // Prefer a connected email_backend_accounts row when present. Falls back
+  // to the legacy auth_settings.email_backend (graph/gmail/smtp via env)
+  // so existing deployments keep working until they migrate to OAuth.
+  try {
+    const eb = require('./emailBackends');
+    const active = await eb.getActiveAccount();
+    if (active) {
+      return await sendMailViaAccount(active, { to: addresses, subject, html, headers, replyTo });
+    }
+  } catch (err) {
+    console.error('sendMail: active backend lookup failed, falling back to legacy:', err.message);
+  }
+
   const settings = await getAuthSettings();
   const backend = settings?.email_backend || 'graph';
   const from = pickFromAddress(settings, backend);
@@ -152,6 +166,109 @@ async function sendMail({ to, subject, html, headers, replyTo }) {
     else await sendViaGraph(opts);
   } catch (err) {
     console.error(`sendMail (${backend}) error:`, err.message);
+  }
+}
+
+// sendMailViaAccount: dispatch a message through a specific
+// email_backend_accounts row. Refreshes the OAuth access token if it's
+// near expiry. Used by both the active-account fast path above and by
+// the admin "test send" endpoint.
+async function sendMailViaAccount(rawAccount, { to, subject, html, headers, replyTo }, req) {
+  const eb = require('./emailBackends');
+  // Decrypt secrets if not already decrypted (recordTest etc. might have
+  // bypassed the helper).
+  let account = rawAccount;
+  if (rawAccount.oauth_access_token_enc || rawAccount.oauth_refresh_token_enc || rawAccount.smtp_password_enc) {
+    const { decryptRow } = require('./fields');
+    account = { ...rawAccount };
+    await decryptRow('email_backend_accounts', account);
+  }
+  if (account.provider === 'graph_user' || account.provider === 'gmail_user') {
+    account = await eb.refreshIfNeeded(account, req);
+  }
+  const addresses = Array.isArray(to) ? to : [to];
+  const opts = { from: account.from_address, to: addresses, subject, html, headers, replyTo };
+  if (account.provider === 'smtp') {
+    return await sendViaSmtpAccount(account, opts);
+  }
+  if (account.provider === 'graph_user') {
+    return await sendViaGraphUser(account, opts);
+  }
+  if (account.provider === 'gmail_user') {
+    return await sendViaGmailUser(account, opts);
+  }
+  throw new Error(`Unsupported provider: ${account.provider}`);
+}
+
+async function sendViaSmtpAccount(account, { from, to, subject, html, headers, replyTo }) {
+  const transport = nodemailer.createTransport({
+    host: account.smtp_host,
+    port: account.smtp_port || 587,
+    secure: !!account.smtp_secure,
+    auth: account.smtp_user ? { user: account.smtp_user, pass: account.smtp_password } : undefined,
+  });
+  await transport.sendMail({
+    from, to: to.join(', '), subject, html,
+    replyTo: replyTo || undefined,
+    headers: headers || undefined,
+  });
+}
+
+async function sendViaGraphUser(account, { from, to, subject, html, headers, replyTo }) {
+  // Delegated /me/sendMail uses the user's own access token; no app-level
+  // Mail.Send permission required.
+  const message = {
+    subject,
+    body: { contentType: 'HTML', content: html },
+    toRecipients: to.map(addr => ({ emailAddress: { address: addr } })),
+  };
+  if (replyTo) message.replyTo = [{ emailAddress: { address: replyTo } }];
+  if (headers && Object.keys(headers).length) {
+    message.internetMessageHeaders = Object.entries(headers)
+      .filter(([k]) => /^[a-z0-9-]+$/i.test(k))
+      .map(([name, value]) => ({ name, value: String(value) }));
+  }
+  const r = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${account.oauth_access_token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ message, saveToSentItems: true }),
+  });
+  if (!r.ok) {
+    const text = await r.text();
+    throw new Error(`Graph /me/sendMail ${r.status}: ${text}`);
+  }
+}
+
+async function sendViaGmailUser(account, { from, to, subject, html, headers, replyTo }) {
+  const headerLines = [
+    `From: ${from}`,
+    `To: ${to.join(', ')}`,
+    `Subject: ${subject}`,
+    'MIME-Version: 1.0',
+    'Content-Type: text/html; charset=UTF-8',
+  ];
+  if (replyTo) headerLines.push(`Reply-To: ${replyTo}`);
+  if (headers) {
+    for (const [k, v] of Object.entries(headers)) {
+      if (/^[a-z0-9-]+$/i.test(k)) headerLines.push(`${k}: ${String(v).replace(/[\r\n]/g, ' ')}`);
+    }
+  }
+  const raw = Buffer.from(`${headerLines.join('\r\n')}\r\n\r\n${html}`)
+    .toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const r = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
+    method: 'POST',
+    headers: {
+      Authorization: `Bearer ${account.oauth_access_token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ raw }),
+  });
+  if (!r.ok) {
+    const text = await r.text();
+    throw new Error(`Gmail send ${r.status}: ${text}`);
   }
 }
 
@@ -274,6 +391,7 @@ async function getFollowerEmails(pool, ticketId, excludeUserId) {
 
 module.exports = {
   sendMail,
+  sendMailViaAccount,
   notifyStatusChange,
   notifyPendingReview,
   notifyNewComment,

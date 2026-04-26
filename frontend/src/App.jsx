@@ -21,6 +21,7 @@ import AdminEmailTemplates from "./pages/AdminEmailTemplates";
 import AdminInbound from "./pages/AdminInbound";
 import AdminSupport from "./pages/AdminSupport";
 import AdminEncryption from "./pages/AdminEncryption";
+import AdminEmailBackends from "./pages/AdminEmailBackends";
 import PrintExport from "./pages/PrintExport";
 import Projects from "./pages/Projects";
 import ProjectDetail from "./pages/ProjectDetail";
@@ -145,6 +146,7 @@ function AppRoutes() {
           <Route path="inbound" element={<AdminInbound />} />
           <Route path="support" element={<AdminSupport />} />
           <Route path="encryption" element={<AdminEncryption />} />
+          <Route path="email-backends" element={<AdminEmailBackends />} />
         </Route>
       </Route>
     </Routes>

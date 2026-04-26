@@ -564,6 +564,45 @@ async function initSchema() {
       ON CONFLICT DO NOTHING
     `);
 
+    // OAuth-backed email backend accounts. Each row is one connected
+    // outbound mailbox: a Microsoft 365 user (Graph delegated), a Gmail
+    // user (Workspace or consumer with refresh token), or a legacy SMTP
+    // box. Refresh tokens / SMTP passwords encrypt under standard mode
+    // via the same envelope wrapper used elsewhere; *_enc columns hold
+    // the ciphertext and the plaintext column is NULLed when mode flips.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS email_backend_accounts (
+        id SERIAL PRIMARY KEY,
+        provider TEXT NOT NULL CHECK (provider IN ('graph_user','gmail_user','smtp')),
+        display_name TEXT,
+        from_address TEXT NOT NULL,
+        oauth_provider_user_id TEXT,
+        oauth_access_token TEXT,
+        oauth_access_token_enc BYTEA,
+        oauth_refresh_token TEXT,
+        oauth_refresh_token_enc BYTEA,
+        oauth_expires_at TIMESTAMPTZ,
+        oauth_scope TEXT,
+        smtp_host TEXT,
+        smtp_port INTEGER,
+        smtp_user TEXT,
+        smtp_password TEXT,
+        smtp_password_enc BYTEA,
+        smtp_secure BOOLEAN NOT NULL DEFAULT TRUE,
+        is_active BOOLEAN NOT NULL DEFAULT FALSE,
+        last_test_at TIMESTAMPTZ,
+        last_test_status TEXT,
+        last_test_error TEXT,
+        created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    // Only one row may have is_active=TRUE; partial unique index enforces it.
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_email_backend_one_active
+      ON email_backend_accounts ((1)) WHERE is_active = TRUE`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_email_backend_provider ON email_backend_accounts(provider)`);
+
     // Inbound email queue. Webhook adapters (Graph subscription, Gmail
     // push, SMTP/Mailgun) all funnel into this table with status='unmatched'.
     // Inbound NEVER auto-creates tickets or comments — admin matches each

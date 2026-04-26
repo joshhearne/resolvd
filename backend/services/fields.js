@@ -67,6 +67,11 @@ const FIELD_MAP = {
     subject: 'subject_enc',
     body: 'body_enc',
   },
+  email_backend_accounts: {
+    oauth_access_token: 'oauth_access_token_enc',
+    oauth_refresh_token: 'oauth_refresh_token_enc',
+    smtp_password: 'smtp_password_enc',
+  },
 };
 
 // Build a column/value patch for a write. `plainObj` carries the human-
