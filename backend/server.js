@@ -96,6 +96,9 @@ app.get('/health', (req, res) => res.json({ ok: true }));
 
 initSchema()
   .then(() => {
+    // Scheduled jobs: muted-vendor digest fires at the configured local
+    // time once per day (cadence checked every 5 min).
+    require('./services/mutedDigest').startScheduler();
     app.listen(PORT, () => {
       console.log(`Punchlist backend running on port ${PORT}`);
     });

@@ -534,6 +534,35 @@ async function initSchema() {
     // manually by Admin/Manager via the mute/unmute endpoints.
     await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS is_muted BOOLEAN NOT NULL DEFAULT FALSE`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_comments_muted ON comments(ticket_id, is_muted)`);
+    // digested_at lets the daily muted-digest job mark which muted
+    // comments have already been rolled into a digest email so a single
+    // comment never appears in two days' worth of summaries.
+    await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS digested_at TIMESTAMPTZ`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_comments_pending_digest ON comments(created_at) WHERE is_muted = TRUE AND digested_at IS NULL`);
+
+    // Workspace-level scheduling for the muted-digest job. The scheduler
+    // checks every 5 minutes and runs once the wall-clock has crossed
+    // muted_digest_local_hour:minute in the configured timezone for
+    // today (system_jobs records the last run).
+    await client.query(`ALTER TABLE auth_settings ADD COLUMN IF NOT EXISTS muted_digest_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
+    await client.query(`ALTER TABLE auth_settings ADD COLUMN IF NOT EXISTS muted_digest_local_hour INTEGER NOT NULL DEFAULT 15`);
+    await client.query(`ALTER TABLE auth_settings ADD COLUMN IF NOT EXISTS muted_digest_local_minute INTEGER NOT NULL DEFAULT 0`);
+    await client.query(`ALTER TABLE auth_settings ADD COLUMN IF NOT EXISTS muted_digest_timezone TEXT NOT NULL DEFAULT 'UTC'`);
+
+    // Generic system-job ledger so the in-process scheduler is idempotent
+    // across restarts: if the digest already fired today, skip.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS system_jobs (
+        name TEXT PRIMARY KEY,
+        last_run_at TIMESTAMPTZ,
+        last_status TEXT,
+        metadata JSONB
+      )
+    `);
+    await client.query(`
+      INSERT INTO system_jobs (name) VALUES ('muted_digest')
+      ON CONFLICT DO NOTHING
+    `);
 
     // Inbound email queue. Webhook adapters (Graph subscription, Gmail
     // push, SMTP/Mailgun) all funnel into this table with status='unmatched'.

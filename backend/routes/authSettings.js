@@ -34,6 +34,9 @@ router.patch('/', requireAuth, requireRole('Admin'), async (req, res) => {
       'local_enabled', 'mfa_required_roles',
       'email_backend', 'smtp_host', 'smtp_port', 'smtp_user', 'smtp_password',
       'smtp_secure', 'smtp_from', 'google_mail_from', 'invite_ttl_hours',
+      'email_blocklist',
+      'muted_digest_enabled', 'muted_digest_local_hour',
+      'muted_digest_local_minute', 'muted_digest_timezone',
     ];
     for (const k of allowed) {
       if (k in req.body) patch[k] = req.body[k];
@@ -50,11 +53,37 @@ router.patch('/', requireAuth, requireRole('Admin'), async (req, res) => {
     }
     if (patch.smtp_password === '') delete patch.smtp_password; // empty string = no change
     if (typeof patch.smtp_port === 'string') patch.smtp_port = parseInt(patch.smtp_port, 10);
+    if (patch.muted_digest_local_hour !== undefined) {
+      const h = parseInt(patch.muted_digest_local_hour, 10);
+      if (!Number.isFinite(h) || h < 0 || h > 23) return res.status(400).json({ error: 'muted_digest_local_hour must be 0..23' });
+      patch.muted_digest_local_hour = h;
+    }
+    if (patch.muted_digest_local_minute !== undefined) {
+      const m = parseInt(patch.muted_digest_local_minute, 10);
+      if (!Number.isFinite(m) || m < 0 || m > 59) return res.status(400).json({ error: 'muted_digest_local_minute must be 0..59' });
+      patch.muted_digest_local_minute = m;
+    }
+    if (patch.muted_digest_timezone !== undefined) {
+      try { new Intl.DateTimeFormat('en-US', { timeZone: patch.muted_digest_timezone }); }
+      catch { return res.status(400).json({ error: 'Invalid IANA timezone' }); }
+    }
     const s = await updateAuthSettings(patch);
     res.json(sanitize(s));
   } catch (err) {
     console.error('auth settings patch error:', err);
     res.status(500).json({ error: 'Update failed' });
+  }
+});
+
+// POST /api/auth-settings/muted-digest/run-now — admin manual trigger
+router.post('/muted-digest/run-now', requireAuth, requireRole('Admin'), async (req, res) => {
+  try {
+    const { runDigest } = require('../services/mutedDigest');
+    const r = await runDigest();
+    res.json({ ok: true, ...r });
+  } catch (err) {
+    console.error('muted digest run-now error:', err);
+    res.status(500).json({ error: err.message });
   }
 });
 
