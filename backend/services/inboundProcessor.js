@@ -127,6 +127,135 @@ async function findContactInProject(email, projectId) {
   return r.rows[0] || null;
 }
 
+// Dedup decision for an inbound auto-create. Two cases:
+//
+//   exact   — same project, same submitter, OPEN ticket created in the
+//             last 7 days, with an identical title (case-insensitive).
+//             Resolution: append this email's body as a new comment on
+//             that ticket; do NOT create a new ticket.
+//
+//   similar — same project, OPEN ticket created in the last 24h whose
+//             title shares ≥80% of its meaningful tokens with the new
+//             email's title. Resolution: bail out of auto-create and
+//             leave the row in the unmatched queue with reject_reason
+//             "possible_dup:TICKET_REF" so an admin can decide whether
+//             to merge or create new.
+//
+// Encrypted mode (standard) uses the existing title_blind_idx HMAC
+// array — exact match by Postgres array equality, similar by overlap
+// (`&&`) and ratio computed in JS. Off-mode falls back to plaintext
+// LOWER() comparison and JS tokenisation. No new columns required.
+const SIMILARITY_THRESHOLD = 0.8;
+
+async function findDuplicateOrSimilar({ projectId, submitterId, title }) {
+  const tokens = blindIndex.tokenize(title);
+  if (tokens.length === 0) return null;
+  const mode = await getMode(pool);
+  const normalized = String(title).trim().toLowerCase();
+
+  // Case 1: exact title match from same submitter on an open ticket in
+  // the last 7 days. Resolution = reuse + comment-append.
+  let exact;
+  if (mode === 'standard') {
+    const idx = blindIndex.buildIndex(title);
+    exact = await pool.query(`
+      SELECT id, mot_ref FROM tickets
+       WHERE project_id = $1 AND submitted_by = $2
+         AND internal_status NOT IN ('Closed')
+         AND created_at >= NOW() - INTERVAL '7 days'
+         AND title_blind_idx = $3::text[]
+       ORDER BY created_at DESC LIMIT 1
+    `, [projectId, submitterId, idx]);
+  } else {
+    exact = await pool.query(`
+      SELECT id, mot_ref FROM tickets
+       WHERE project_id = $1 AND submitted_by = $2
+         AND internal_status NOT IN ('Closed')
+         AND created_at >= NOW() - INTERVAL '7 days'
+         AND LOWER(title) = $3
+       ORDER BY created_at DESC LIMIT 1
+    `, [projectId, submitterId, normalized]);
+  }
+  if (exact.rows[0]) {
+    return { kind: 'exact', ticketId: exact.rows[0].id, ticketRef: exact.rows[0].mot_ref };
+  }
+
+  // Case 2: meaningful overlap with any open ticket in the project from
+  // the last 24h. Threshold = SIMILARITY_THRESHOLD of the smaller token
+  // set. Resolution = defer to manual queue.
+  if (tokens.length < 2) return null;
+  let candidates;
+  if (mode === 'standard') {
+    const hashes = blindIndex.hashQuery(title);
+    if (hashes.length < 2) return null;
+    candidates = await pool.query(`
+      SELECT id, mot_ref, title_blind_idx,
+             cardinality(title_blind_idx) AS token_count
+        FROM tickets
+       WHERE project_id = $1
+         AND internal_status NOT IN ('Closed')
+         AND created_at >= NOW() - INTERVAL '24 hours'
+         AND title_blind_idx && $2::text[]
+    `, [projectId, hashes]);
+  } else {
+    candidates = await pool.query(`
+      SELECT id, mot_ref, title FROM tickets
+       WHERE project_id = $1
+         AND internal_status NOT IN ('Closed')
+         AND created_at >= NOW() - INTERVAL '24 hours'
+    `, [projectId]);
+  }
+
+  const newTokenSet = new Set(tokens);
+  let bestMatch = null;
+  let bestScore = 0;
+  for (const c of candidates.rows) {
+    let score;
+    if (mode === 'standard') {
+      const newHashes = blindIndex.hashQuery(title);
+      const candHashSet = new Set(c.title_blind_idx || []);
+      let shared = 0;
+      for (const h of newHashes) if (candHashSet.has(h)) shared++;
+      const denom = Math.min(newHashes.length, c.token_count || newHashes.length);
+      score = denom ? shared / denom : 0;
+    } else {
+      const candTokens = new Set(blindIndex.tokenize(c.title || ''));
+      let shared = 0;
+      for (const t of newTokenSet) if (candTokens.has(t)) shared++;
+      const denom = Math.min(newTokenSet.size, candTokens.size || newTokenSet.size);
+      score = denom ? shared / denom : 0;
+    }
+    if (score >= SIMILARITY_THRESHOLD && score > bestScore) {
+      bestScore = score;
+      bestMatch = { ticketId: c.id, ticketRef: c.mot_ref };
+    }
+  }
+  return bestMatch ? { kind: 'similar', ...bestMatch, score: bestScore } : null;
+}
+
+// Append a comment to an existing ticket from the inbound flow. The
+// comment is internal-only (is_external_visible=FALSE) and attributes
+// the originating user. Used by the dedup "exact" branch when reusing
+// an existing ticket instead of creating a new one.
+async function appendCommentToTicket({ ticketId, submitter, body, queueRowId }) {
+  const trimmed = (body || '').trim() || '(no body)';
+  const patch = await buildWritePatch(pool, 'comments', { body: trimmed });
+  const cols = ['ticket_id', 'user_id', 'is_external_visible', 'is_internal',
+    'source_inbound_email_id', ...patch.cols];
+  const values = [ticketId, submitter.id, false, true, queueRowId || null, ...patch.values];
+  const placeholders = cols.map((_, i) => `$${i + 1}`).join(', ');
+  await pool.query(
+    `INSERT INTO comments (${cols.join(', ')}) VALUES (${placeholders})`,
+    values
+  );
+  await pool.query(`UPDATE tickets SET updated_at = NOW() WHERE id = $1`, [ticketId]);
+  await pool.query(
+    `INSERT INTO audit_log (ticket_id, user_id, action, note)
+     VALUES ($1, $2, 'comment_appended_via_email', 'Email-to-ticket dedup matched this open ticket')`,
+    [ticketId, submitter.id]
+  );
+}
+
 async function persistAttachment({ ticketId, userId, filename, mimetype, contentBuffer }) {
   const ext = filename.includes('.') ? path.extname(filename) : '';
   const onDiskName = `${randomUUID()}${ext}`;
@@ -163,6 +292,42 @@ async function tryAutoCreate({ subject, body, fromAddress, ccAddresses, attachme
   if (!submitter) return { ok: false, reason: `sender_not_authorized:${fromAddress}` };
 
   const cleanedDescription = stripSignature(body) || '(no description)';
+
+  // Dedup: same-submitter exact-title open ticket in last 7d → append
+  // body as comment instead of creating a new ticket. Strong-overlap
+  // match in the same project last 24h → defer to manual queue.
+  const dup = await findDuplicateOrSimilar({
+    projectId: project.id, submitterId: submitter.id, title: parsed.title,
+  });
+  if (dup?.kind === 'exact') {
+    await appendCommentToTicket({
+      ticketId: dup.ticketId, submitter, body: cleanedDescription, queueRowId,
+    });
+    // Persist any attachments onto the EXISTING ticket so the email's
+    // payload still reaches the right place.
+    for (const att of (attachments || [])) {
+      try {
+        const buf = Buffer.from(att.content_base64 || '', 'base64');
+        if (buf.length === 0) continue;
+        await persistAttachment({
+          ticketId: dup.ticketId, userId: submitter.id,
+          filename: att.filename || 'attachment.bin',
+          mimetype: att.mimetype, contentBuffer: buf,
+        });
+      } catch (e) {
+        console.error(`inbound attachment "${att?.filename}" (reuse) failed:`, e.message);
+      }
+    }
+    return {
+      ok: true, kind: 'reused',
+      ticket: { id: dup.ticketId, mot_ref: dup.ticketRef },
+      submitter, project,
+      attachedContactIds: [], unknownCcs: [],
+    };
+  }
+  if (dup?.kind === 'similar') {
+    return { ok: false, reason: `possible_dup:${dup.ticketRef}` };
+  }
 
   // Build INSERT — mirrors POST /api/tickets
   const ticket = await (async () => {
@@ -259,6 +424,7 @@ async function tryAutoCreate({ subject, body, fromAddress, ccAddresses, attachme
 
   return {
     ok: true,
+    kind: 'created',
     ticket,
     submitter,
     project,

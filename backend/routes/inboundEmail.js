@@ -135,10 +135,13 @@ router.post('/generic', async (req, res) => {
 
     if (autoResult?.ok) {
       // Mark queue row matched to the new ticket; record any unknown CCs
-      // on reject_reason so admins can curate later.
-      const note = autoResult.unknownCcs.length
-        ? `unknown_cc:${autoResult.unknownCcs.join(',')}`
-        : null;
+      // on reject_reason so admins can curate later. Reused-ticket case
+      // tags the row so an admin browsing the queue knows the email
+      // attached to an existing thread instead of opening a new one.
+      const noteParts = [];
+      if (autoResult.kind === 'reused') noteParts.push(`reused:${autoResult.ticket.mot_ref}`);
+      if (autoResult.unknownCcs?.length) noteParts.push(`unknown_cc:${autoResult.unknownCcs.join(',')}`);
+      const note = noteParts.length ? noteParts.join(' ') : null;
       await pool.query(
         `UPDATE inbound_email_queue
             SET status = 'matched',
@@ -157,6 +160,7 @@ router.post('/generic', async (req, res) => {
 
       return res.status(201).json({
         ok: true, id: queueRowId,
+        kind: autoResult.kind,
         ticket_id: autoResult.ticket.id,
         ticket_ref: autoResult.ticket.mot_ref,
         attached_contacts: autoResult.attachedContactIds,
