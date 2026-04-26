@@ -19,6 +19,7 @@ const { requireAuth, requireRole } = require('../middleware/auth');
 const { buildWritePatch, decryptRow, decryptRows } = require('../services/fields');
 const { hashWhole } = require('../services/blindIndex');
 const { notifyNewComment } = require('../services/email');
+const inboundProcessor = require('../services/inboundProcessor');
 
 const router = express.Router();
 
@@ -62,12 +63,14 @@ router.post('/generic', async (req, res) => {
       from,
       from_name,
       to,
+      cc,
       subject,
       body,
       message_id,
       in_reply_to,
       references,
       headers,
+      attachments,
     } = req.body || {};
 
     if (!from || !body) {
@@ -89,7 +92,10 @@ router.post('/generic', async (req, res) => {
 
     const candidateRef = extractCandidateRef(subject, body);
     const fromBlind = hashWhole(from);
+    const ccList = Array.isArray(cc) ? cc : (cc ? String(cc).split(',').map(s => s.trim()).filter(Boolean) : []);
 
+    // 1. Persist the raw inbound row first so we always have a record,
+    //    regardless of what happens next.
     const patch = await buildWritePatch(pool, 'inbound_email_queue', {
       subject: subject || null,
       body,
@@ -108,8 +114,71 @@ router.post('/generic', async (req, res) => {
       `INSERT INTO inbound_email_queue (${cols.join(', ')}) VALUES (${placeholders}) RETURNING id, candidate_ticket_ref`,
       values
     );
+    const queueRowId = result.rows[0].id;
 
-    res.status(201).json({ ok: true, id: result.rows[0].id, candidate_ref: result.rows[0].candidate_ticket_ref });
+    // 2. If subject carries a #PREFIX, try the auto-create flow. Failures
+    //    fall through to leave the row as 'unmatched' for admin attention.
+    let autoResult = null;
+    try {
+      autoResult = await inboundProcessor.tryAutoCreate({
+        subject,
+        body,
+        fromAddress: String(from).toLowerCase().trim(),
+        ccAddresses: ccList,
+        attachments,
+        queueRowId,
+      });
+    } catch (e) {
+      console.error('auto-create attempt failed:', e);
+      autoResult = { ok: false, reason: `error:${e.message}` };
+    }
+
+    if (autoResult?.ok) {
+      // Mark queue row matched to the new ticket; record any unknown CCs
+      // on reject_reason so admins can curate later.
+      const note = autoResult.unknownCcs.length
+        ? `unknown_cc:${autoResult.unknownCcs.join(',')}`
+        : null;
+      await pool.query(
+        `UPDATE inbound_email_queue
+            SET status = 'matched',
+                matched_ticket_id = $1,
+                matched_at = NOW(),
+                reject_reason = $2
+          WHERE id = $3`,
+        [autoResult.ticket.id, note, queueRowId]
+      );
+      // Confirmation goes ONLY to the originator — not the CCs.
+      inboundProcessor.sendCreationConfirmation({
+        submitter: autoResult.submitter,
+        ticket: autoResult.ticket,
+        project: autoResult.project,
+      }).catch(err => console.error('creation confirmation failed:', err.message));
+
+      return res.status(201).json({
+        ok: true, id: queueRowId,
+        ticket_id: autoResult.ticket.id,
+        ticket_ref: autoResult.ticket.mot_ref,
+        attached_contacts: autoResult.attachedContactIds,
+        unknown_ccs: autoResult.unknownCcs,
+      });
+    }
+
+    // Auto-create declined or unparseable. If a #PREFIX was present but
+    // failed (project not found / sender unauthorised), surface that to
+    // the admin via reject_reason so they know why it didn't auto-land.
+    if (autoResult && autoResult.reason && autoResult.reason !== 'no_prefix') {
+      await pool.query(
+        `UPDATE inbound_email_queue SET reject_reason = $1 WHERE id = $2`,
+        [autoResult.reason, queueRowId]
+      );
+    }
+
+    res.status(201).json({
+      ok: true, id: queueRowId,
+      candidate_ref: result.rows[0].candidate_ticket_ref,
+      auto_create: autoResult?.reason || 'no_prefix',
+    });
   } catch (err) {
     console.error('inbound webhook error:', err);
     res.status(500).json({ error: 'Server error' });
@@ -123,7 +192,7 @@ router.get('/', requireAuth, requireRole('Admin', 'Manager'), async (req, res) =
     const r = await pool.query(`
       SELECT q.id, q.received_at, q.source, q.from_addr, q.from_name, q.to_addr,
              q.subject, q.subject_enc, q.candidate_ticket_ref, q.status,
-             q.matched_ticket_id, q.matched_at,
+             q.matched_ticket_id, q.matched_at, q.reject_reason,
              c.id AS contact_id, c.name AS contact_name, c.name_enc AS contact_name_enc,
              c.company_id, co.name AS company_name, co.name_enc AS company_name_enc,
              t.mot_ref AS matched_ticket_ref, t.title AS matched_ticket_title,

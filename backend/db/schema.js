@@ -640,6 +640,12 @@ async function initSchema() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_inbound_from_blind ON inbound_email_queue(from_addr_blind_idx)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_inbound_received ON inbound_email_queue(received_at DESC)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_inbound_external_id ON inbound_email_queue(external_message_id) WHERE external_message_id IS NOT NULL`);
+    // Why a row went unmatched / rejected — surfaces in the admin queue UI.
+    await client.query(`ALTER TABLE inbound_email_queue ADD COLUMN IF NOT EXISTS reject_reason TEXT`);
+    // Auto-created tickets via the #PREFIX subject route record their
+    // origin queue row id so the audit trail back to the email is one
+    // hop, not a join chain through comments.
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS source_inbound_email_id INTEGER REFERENCES inbound_email_queue(id) ON DELETE SET NULL`);
 
     // Comments authored by an external contact (matched in from the
     // inbound queue). Preserves attribution without forcing a fake user
@@ -666,6 +672,9 @@ async function initSchema() {
         ['inbound_matched', 'submitter',
           'Vendor reply on {ticket.ref}',
           'A reply from the vendor was matched to ticket {ticket.ref} ("{ticket.title}"):\n\n{ticket.reply}\n\n{ticket.url}'],
+        ['ticket_created_via_email', 'submitter',
+          'Ticket created: {ticket.ref}',
+          'Hi {actor.name},\n\nYour email was logged as ticket {ticket.ref}.\n\n  Title: {ticket.title}\n  Project: {site.name}\n\nView and follow up: {ticket.url}\n\nReply directly to this email or visit the link to add comments.'],
       ];
       for (const [event, audience, subj, body] of defaults) {
         await client.query(

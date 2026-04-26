@@ -84,6 +84,7 @@ export default function AdminInbound() {
                         From {it.from_name ? `${it.from_name} <${it.from_addr}>` : it.from_addr}
                         {it.candidate_ticket_ref && <> · candidate <span className="font-mono">{it.candidate_ticket_ref}</span></>}
                         {it.contact_name && <> · matches contact <strong>{it.contact_name}</strong></>}
+                        {it.reject_reason && <> · <span className="text-amber-700">{it.reject_reason}</span></>}
                       </div>
                     </div>
                     <div className="text-xs text-fg-dim whitespace-nowrap">
