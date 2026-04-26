@@ -6,6 +6,7 @@ const { notifyStatusChange, notifyPendingReview, notifyNewComment } = require('.
 const { getMode, buildWritePatch, decryptRow, decryptRows } = require('../services/fields');
 const blindIndex = require('../services/blindIndex');
 const { logSupportRead } = require('../middleware/supportAccess');
+const { sendVendorEmail } = require('../services/vendorOutbound');
 
 const router = express.Router();
 
@@ -550,6 +551,13 @@ router.patch('/:id', requireAuth, async (req, res) => {
       if (body.internal_status === 'Pending Review') {
         notifyPendingReview(pool, { ticket: updated, actorId: user.id }).catch(() => {});
       }
+      // Vendor-bound: 'Closed' uses the ticket_resolved template, every
+      // other transition uses status_change. The template renderer
+      // falls back to the next-best match if the specific event has
+      // no template configured.
+      const event = body.internal_status === 'Closed' ? 'ticket_resolved' : 'status_change';
+      sendVendorEmail({ eventType: event, ticketId: ticket.id, actorId: user.id })
+        .catch(err => console.error('vendor outbound failed:', err.message));
     }
     // coastal_status → Resolved sets internal_status to Pending Review
     if (body.coastal_status === 'Resolved' && ticket.internal_status !== 'Pending Review') {

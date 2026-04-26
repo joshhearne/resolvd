@@ -1,0 +1,119 @@
+// Vendor-bound outbound: send a templated email to every active contact
+// linked to a ticket when an admin/manager fires a vendor-visible event
+// (new_ticket, vendor-visible comment, status change, resolved).
+//
+// Loop prevention strategy:
+//   1. Outbound carries Auto-Submitted: auto-generated so RFC-3834-aware
+//      auto-responders on the vendor side won't auto-reply.
+//   2. Custom X-Resolvd-No-Reply: 1 marker — Phase D's inbound webhook
+//      drops anything carrying it, killing reflective loops cold.
+//   3. Reply-To, when INBOUND_REPLY_TO is configured, points at the
+//      tenant's inbound mailbox so the vendor's reply lands in our
+//      unmatched-email queue, not in someone's personal inbox.
+//
+// Encryption note: under standard mode the renderer pulls plaintext from
+// services/fields.decryptRow before composing. The outbound message
+// body is therefore plaintext on the wire — this is unavoidable: the
+// recipient is an external party who has no key. Vault mode (Phase 4)
+// will route this through the browser instead.
+
+const { pool } = require('../db/pool');
+const { decryptRow, decryptRows } = require('./fields');
+const { sendMail } = require('./email');
+const { loadTemplate, render } = require('./emailTemplate');
+const { getBranding } = require('./branding');
+
+const APP_URL = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
+const REPLY_TO = process.env.INBOUND_REPLY_TO || null;
+
+async function fetchTicketContext(ticketId, actorId) {
+  const t = await pool.query(`SELECT * FROM tickets WHERE id = $1`, [ticketId]);
+  if (!t.rows[0]) return null;
+  await decryptRow('tickets', t.rows[0]);
+
+  let actor = null;
+  if (actorId) {
+    const u = await pool.query(`SELECT id, display_name, email FROM users WHERE id = $1`, [actorId]);
+    actor = u.rows[0] || null;
+  }
+
+  const branding = await getBranding().catch(() => null);
+  return {
+    ticket: { ...t.rows[0], url: `${APP_URL}/tickets/${ticketId}` },
+    actor,
+    site: { name: branding?.site_name || 'Resolvd', url: APP_URL },
+  };
+}
+
+async function fetchTicketContacts(ticketId) {
+  const r = await pool.query(`
+    SELECT c.*, co.id AS company_id, co.name AS company_name, co.name_enc AS company_name_enc,
+           co.domain AS company_domain
+      FROM ticket_contacts tc
+      JOIN contacts c ON c.id = tc.contact_id
+      JOIN companies co ON co.id = c.company_id
+     WHERE tc.ticket_id = $1
+       AND c.is_active = TRUE
+  `, [ticketId]);
+  await decryptRows('contacts', r.rows, { aliases: { company_name: 'companies.name' } });
+  return r.rows;
+}
+
+function htmlify(body) {
+  // Plaintext template body → minimally-formatted HTML for backends that
+  // expect content-type text/html (Graph default).
+  const escaped = body.replace(/[&<>]/g, (c) => c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;');
+  return `<div style="font-family:system-ui,-apple-system,sans-serif;white-space:pre-wrap;font-size:14px;color:#111827">${escaped}</div>`;
+}
+
+async function sendVendorEmail({ eventType, ticketId, actorId }) {
+  const tplRow = await loadTemplate(eventType, 'vendor');
+  if (!tplRow) {
+    console.warn(`vendorOutbound: no template for event=${eventType} audience=vendor`);
+    return { sent: 0, skipped: 0 };
+  }
+  const ctx = await fetchTicketContext(ticketId, actorId);
+  if (!ctx) return { sent: 0, skipped: 0 };
+  const contacts = await fetchTicketContacts(ticketId);
+  if (!contacts.length) return { sent: 0, skipped: 0 };
+
+  let sent = 0;
+  let failed = 0;
+  for (const contact of contacts) {
+    if (!contact.email) { failed++; continue; }
+    const personalCtx = {
+      ...ctx,
+      contact: {
+        name: contact.name,
+        email: contact.email,
+        role_title: contact.role_title,
+      },
+      company: { name: contact.company_name, domain: contact.company_domain },
+    };
+    try {
+      const rendered = await render(tplRow, personalCtx);
+      const html = tplRow.is_html ? rendered.body : htmlify(rendered.body);
+      await sendMail({
+        to: contact.email,
+        subject: rendered.subject,
+        html,
+        replyTo: REPLY_TO,
+        headers: {
+          'Auto-Submitted': 'auto-generated',
+          'X-Auto-Response-Suppress': 'All',
+          'Precedence': 'bulk',
+          'X-Resolvd-No-Reply': '1',
+          'X-Resolvd-Event': eventType,
+          'X-Resolvd-Ticket': String(ctx.ticket.mot_ref || ticketId),
+        },
+      });
+      sent++;
+    } catch (err) {
+      console.error(`vendorOutbound to ${contact.email} failed:`, err.message);
+      failed++;
+    }
+  }
+  return { sent, failed, audience: contacts.length };
+}
+
+module.exports = { sendVendorEmail };

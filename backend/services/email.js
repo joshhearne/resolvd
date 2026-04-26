@@ -28,22 +28,27 @@ async function getGraphAppToken() {
   return result.accessToken;
 }
 
-async function sendViaGraph({ from, to, subject, html }) {
+async function sendViaGraph({ from, to, subject, html, headers, replyTo }) {
   const token = await getGraphAppToken();
+  const message = {
+    subject,
+    body: { contentType: 'HTML', content: html },
+    toRecipients: to.map(addr => ({ emailAddress: { address: addr } })),
+    from: { emailAddress: { address: from } },
+  };
+  if (replyTo) message.replyTo = [{ emailAddress: { address: replyTo } }];
+  if (headers && Object.keys(headers).length) {
+    message.internetMessageHeaders = Object.entries(headers)
+      // Graph requires header names to be x-prefixed for custom headers.
+      .filter(([k]) => /^[a-z0-9-]+$/i.test(k))
+      .map(([name, value]) => ({ name, value: String(value) }));
+  }
   const res = await fetch(
     `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(from)}/sendMail`,
     {
       method: 'POST',
       headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        message: {
-          subject,
-          body: { contentType: 'HTML', content: html },
-          toRecipients: to.map(addr => ({ emailAddress: { address: addr } })),
-          from: { emailAddress: { address: from } },
-        },
-        saveToSentItems: false,
-      }),
+      body: JSON.stringify({ message, saveToSentItems: false }),
     }
   );
   if (!res.ok) {
@@ -56,12 +61,11 @@ async function sendViaGraph({ from, to, subject, html }) {
 // Uses the same OAuth client credentials as login; admin must grant gmail.send
 // scope when configuring the Google app, and the from-address mailbox must be
 // authorized for impersonation (or use SMTP fallback for consumer accounts).
-async function sendViaGmail({ from, to, subject, html }) {
+async function sendViaGmail({ from, to, subject, html, headers, replyTo }) {
   const settings = await getAuthSettings();
   if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
     throw new Error('Gmail backend requires GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET');
   }
-  // Service-account flow if a JSON key is provided via env, otherwise SMTP fallback
   const keyJson = process.env.GOOGLE_SERVICE_ACCOUNT_JSON;
   if (!keyJson) {
     throw new Error('Gmail API backend requires GOOGLE_SERVICE_ACCOUNT_JSON (service account with domain-wide delegation). Use SMTP backend for OAuth-only setups.');
@@ -76,9 +80,22 @@ async function sendViaGmail({ from, to, subject, html }) {
   await jwt.authorize();
   const gmail = google.gmail({ version: 'v1', auth: jwt });
 
-  const raw = Buffer.from(
-    `From: ${from}\r\nTo: ${to.join(', ')}\r\nSubject: ${subject}\r\nMIME-Version: 1.0\r\nContent-Type: text/html; charset=UTF-8\r\n\r\n${html}`
-  ).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+  const headerLines = [
+    `From: ${from}`,
+    `To: ${to.join(', ')}`,
+    `Subject: ${subject}`,
+    'MIME-Version: 1.0',
+    'Content-Type: text/html; charset=UTF-8',
+  ];
+  if (replyTo) headerLines.push(`Reply-To: ${replyTo}`);
+  if (headers) {
+    for (const [k, v] of Object.entries(headers)) {
+      if (/^[a-z0-9-]+$/i.test(k)) headerLines.push(`${k}: ${String(v).replace(/[\r\n]/g, ' ')}`);
+    }
+  }
+
+  const raw = Buffer.from(`${headerLines.join('\r\n')}\r\n\r\n${html}`)
+    .toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
 
   await gmail.users.messages.send({ userId: 'me', requestBody: { raw } });
 }
@@ -102,10 +119,17 @@ function getSmtpTransport(settings) {
   return _smtpTransport;
 }
 
-async function sendViaSmtp({ from, to, subject, html }) {
+async function sendViaSmtp({ from, to, subject, html, headers, replyTo }) {
   const settings = await getAuthSettings();
   const transport = getSmtpTransport(settings || {});
-  await transport.sendMail({ from, to: to.join(', '), subject, html });
+  await transport.sendMail({
+    from,
+    to: to.join(', '),
+    subject,
+    html,
+    replyTo: replyTo || undefined,
+    headers: headers || undefined,
+  });
 }
 
 // ─── Dispatcher ──────────────────────────────────────────────────────────────
@@ -115,16 +139,17 @@ function pickFromAddress(settings, backend) {
   return FALLBACK_FROM; // graph
 }
 
-async function sendMail({ to, subject, html }) {
+async function sendMail({ to, subject, html, headers, replyTo }) {
   const addresses = (Array.isArray(to) ? to : [to]).filter(Boolean);
   if (!addresses.length) return;
   const settings = await getAuthSettings();
   const backend = settings?.email_backend || 'graph';
   const from = pickFromAddress(settings, backend);
+  const opts = { from, to: addresses, subject, html, headers, replyTo };
   try {
-    if (backend === 'smtp') await sendViaSmtp({ from, to: addresses, subject, html });
-    else if (backend === 'gmail') await sendViaGmail({ from, to: addresses, subject, html });
-    else await sendViaGraph({ from, to: addresses, subject, html });
+    if (backend === 'smtp') await sendViaSmtp(opts);
+    else if (backend === 'gmail') await sendViaGmail(opts);
+    else await sendViaGraph(opts);
   } catch (err) {
     console.error(`sendMail (${backend}) error:`, err.message);
   }

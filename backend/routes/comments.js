@@ -3,6 +3,7 @@ const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { notifyNewComment } = require('../services/email');
 const { buildWritePatch, decryptRow, decryptRows } = require('../services/fields');
+const { sendVendorEmail } = require('../services/vendorOutbound');
 
 const router = express.Router();
 
@@ -27,7 +28,7 @@ router.get('/:id/comments', requireAuth, async (req, res) => {
 // POST /api/tickets/:id/comments
 router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Submitter'), async (req, res) => {
   try {
-    const { body } = req.body;
+    const { body, is_external_visible } = req.body;
     if (!body || !body.trim()) return res.status(400).json({ error: 'Comment body required' });
 
     const ticket = await pool.query(
@@ -37,10 +38,17 @@ router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Submi
     if (!ticket.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
     await decryptRow('tickets', ticket.rows[0]);
 
+    // Vendor-visible comments require a privileged role — submitters can
+    // log internal comments but not flag content as outbound to vendors.
+    const wantsExternal = !!is_external_visible;
+    if (wantsExternal && !['Admin', 'Manager'].includes(req.session.user.role)) {
+      return res.status(403).json({ error: 'Only Admin/Manager can mark a comment as vendor-visible' });
+    }
+
     const trimmedBody = body.trim();
     const patch = await buildWritePatch(pool, 'comments', { body: trimmedBody });
-    const cols = ['ticket_id', 'user_id', ...patch.cols];
-    const values = [Number(req.params.id), req.session.user.id, ...patch.values];
+    const cols = ['ticket_id', 'user_id', 'is_external_visible', ...patch.cols];
+    const values = [Number(req.params.id), req.session.user.id, wantsExternal, ...patch.values];
     const placeholders = cols.map((_, i) => `$${i + 1}`).join(', ');
     const insertResult = await pool.query(
       `INSERT INTO comments (${cols.join(', ')}) VALUES (${placeholders}) RETURNING id`,
@@ -69,6 +77,16 @@ router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Submi
         actorId: req.session.user.id,
         actorName: req.session.user.displayName,
       }).catch(() => {});
+    }
+
+    // Vendor-bound outbound fires only when the comment is flagged for
+    // external visibility AND there are contacts attached to the ticket.
+    if (wantsExternal && !result.is_system) {
+      sendVendorEmail({
+        eventType: 'new_comment',
+        ticketId: ticket.rows[0].id,
+        actorId: req.session.user.id,
+      }).catch(err => console.error('vendor outbound failed:', err.message));
     }
   } catch (err) {
     console.error(err);
