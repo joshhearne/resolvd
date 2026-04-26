@@ -346,6 +346,41 @@ docker run --rm -v issues_uploads-data:/src:ro -v "$(pwd)":/dst alpine \
 
 ---
 
+## Releases
+
+Resolvd follows **semantic versioning** (`vMAJOR.MINOR.PATCH`):
+
+- **patch** (`v1.2.X`) — bug fixes, security patches. Cut as needed; no migration drama expected.
+- **minor** (`v1.X.0`) — new features, additive schema changes. Roughly monthly.
+- **major** (`vX.0.0`) — breaking schema migrations or API changes. Read the release notes carefully before upgrading.
+
+### Cutting a release
+
+```bash
+# 1. Land your changes on main (CI green).
+# 2. Tag locally and push:
+git tag v1.2.3
+git push origin v1.2.3
+```
+
+`.github/workflows/release.yml` then:
+- generates release notes from every commit since the previous tag,
+- publishes a GitHub Release with that body,
+- marks any tag containing a hyphen (`v1.2.3-rc.1`, `v1.2.3-beta.0`) as a pre-release.
+
+`.github/workflows/notify-website.yml` listens for `release: published` and POSTs the configured deploy hook (Vercel / Netlify / Cloudflare Pages — set `RESOLVD_DEPLOY_HOOK_URL` in repo Secrets) so the marketing site's changelog rebuilds with the new release.
+
+### Pre-release tracks
+
+```bash
+git tag v1.3.0-rc.1
+git push origin v1.3.0-rc.1
+```
+
+Pre-release tags are flagged on GitHub and skipped by the website's "latest stable" pill but still appear in the full changelog.
+
+---
+
 ## License
 
 Resolvd is **source-available** under the [Functional Source License (FSL-1.1-ALv2)](./LICENSE).

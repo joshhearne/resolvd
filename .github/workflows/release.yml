@@ -1,0 +1,78 @@
+name: Release
+
+# Triggered when a semver tag is pushed (`git tag v1.2.3 && git push --tags`).
+# Generates release notes from the commits since the previous tag and
+# publishes a GitHub Release. The "release: published" event then fans
+# out to .github/workflows/notify-website.yml so the marketing site
+# rebuilds the changelog automatically.
+
+on:
+  push:
+    tags:
+      - 'v[0-9]+.[0-9]+.[0-9]+'        # v1.2.3
+      - 'v[0-9]+.[0-9]+.[0-9]+-*'      # v1.2.3-rc.1, v1.2.3-beta.0
+
+permissions:
+  contents: write   # required to create the GitHub Release
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0   # full history so previous tag lookup works
+
+      - name: Determine previous tag
+        id: prev
+        run: |
+          PREV=$(git describe --tags --abbrev=0 "${GITHUB_REF_NAME}^" 2>/dev/null || echo "")
+          echo "tag=${PREV}" >> "$GITHUB_OUTPUT"
+          echo "Previous tag: ${PREV:-<none>}"
+
+      - name: Build release notes
+        id: notes
+        run: |
+          set -e
+          PREV="${{ steps.prev.outputs.tag }}"
+          if [ -z "$PREV" ]; then
+            RANGE="HEAD"
+            HEADING="Initial release"
+          else
+            RANGE="${PREV}..HEAD"
+            HEADING="Changes since ${PREV}"
+          fi
+
+          {
+            echo "## ${HEADING}"
+            echo ""
+            echo "### Commits"
+            echo ""
+            # Commit subjects, one per bullet, with short SHA links.
+            git log "$RANGE" --pretty=format:'- %s (%h)' --reverse
+            echo ""
+            echo ""
+            echo "### Compare"
+            if [ -n "$PREV" ]; then
+              echo "[Full diff: ${PREV}…${GITHUB_REF_NAME}](https://github.com/${GITHUB_REPOSITORY}/compare/${PREV}...${GITHUB_REF_NAME})"
+            else
+              echo "[Tree at ${GITHUB_REF_NAME}](https://github.com/${GITHUB_REPOSITORY}/tree/${GITHUB_REF_NAME})"
+            fi
+          } > release-notes.md
+
+          echo "Wrote release-notes.md ($(wc -l < release-notes.md) lines)"
+
+      - name: Create GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          # Pre-release flag is set automatically when the tag has a
+          # hyphen suffix (rc / beta / alpha).
+          PRERELEASE=""
+          case "${GITHUB_REF_NAME}" in
+            *-*) PRERELEASE="--prerelease" ;;
+          esac
+          gh release create "${GITHUB_REF_NAME}" \
+            --title "${GITHUB_REF_NAME}" \
+            --notes-file release-notes.md \
+            $PRERELEASE
