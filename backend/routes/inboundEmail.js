@@ -193,17 +193,16 @@ router.post('/:id/match', requireAuth, requireRole('Admin', 'Manager'), async (r
     }
 
     const ticket = await pool.query(
-      `SELECT id, mot_ref, title, title_enc, allow_inbound_email FROM tickets WHERE id = $1`,
+      `SELECT id, mot_ref, title, title_enc, auto_mute_vendor_replies FROM tickets WHERE id = $1`,
       [Number(ticket_id)]
     );
     if (!ticket.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
-    if (ticket.rows[0].allow_inbound_email === false) {
-      return res.status(403).json({
-        error: 'Ticket does not accept inbound email. Toggle "allow inbound" on the ticket first.',
-        code: 'inbound_disabled_for_ticket',
-      });
-    }
     await decryptRow('tickets', ticket.rows[0]);
+    // Ticket-level mute does NOT block the match — the comment still
+    // lands in the thread so nothing is lost in a separate bucket. It
+    // arrives with is_muted=TRUE; the UI collapses muted comments and
+    // Admin/Manager can un-mute the ones they consider relevant.
+    const muteByDefault = !!ticket.rows[0].auto_mute_vendor_replies;
 
     await decryptRow('inbound_email_queue', queue.rows[0]);
     const queueRow = queue.rows[0];
@@ -219,9 +218,10 @@ router.post('/:id/match', requireAuth, requireRole('Admin', 'Manager'), async (r
 
     const patch = await buildWritePatch(pool, 'comments', { body: commentBody });
     const cols = ['ticket_id', 'user_id', 'is_external_visible', 'is_internal',
-      'vendor_contact_id', 'source_inbound_email_id', ...patch.cols];
+      'is_muted', 'vendor_contact_id', 'source_inbound_email_id', ...patch.cols];
     const values = [
       Number(ticket_id), null, true, false,
+      muteByDefault,
       contact_id ? Number(contact_id) : null,
       queueRow.id,
       ...patch.values,
@@ -244,15 +244,18 @@ router.post('/:id/match', requireAuth, requireRole('Admin', 'Manager'), async (r
     );
     await pool.query(`UPDATE tickets SET updated_at = NOW() WHERE id = $1`, [Number(ticket_id)]);
 
-    res.status(201).json({ ok: true, comment_id: ins.rows[0].id });
+    res.status(201).json({ ok: true, comment_id: ins.rows[0].id, muted: muteByDefault });
 
-    // Notify followers async — they get the same shape as a normal comment.
-    notifyNewComment(pool, {
-      ticket: ticket.rows[0],
-      comment: commentBody,
-      actorId: req.session.user.id,
-      actorName: queueRow.from_name || queueRow.from_addr,
-    }).catch(() => {});
+    // Followers only get pinged for non-muted comments — the whole point
+    // of muting at the ticket level is to silence the noise.
+    if (!muteByDefault) {
+      notifyNewComment(pool, {
+        ticket: ticket.rows[0],
+        comment: commentBody,
+        actorId: req.session.user.id,
+        actorName: queueRow.from_name || queueRow.from_addr,
+      }).catch(() => {});
+    }
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Server error' });

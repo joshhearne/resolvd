@@ -465,17 +465,17 @@ router.patch('/:id', requireAuth, async (req, res) => {
       if (isAdmin && body.coastal_ticket_ref !== undefined) updates.coastal_ticket_ref = body.coastal_ticket_ref;
       if (isAdmin && body.review_note !== undefined) updates.review_note = body.review_note;
       if (isAdmin && body.flagged_for_review !== undefined) updates.flagged_for_review = !!body.flagged_for_review;
-      // Per-ticket inbound email toggle. When off, the inbound queue's
-      // /match endpoint refuses (HTTP 403) so a chatty vendor mailbox
-      // can be silenced for a specific ticket without disabling the
-      // workspace-wide pipe.
-      if ((isAdmin || user.role === 'Manager') && body.allow_inbound_email !== undefined) {
-        updates.allow_inbound_email = !!body.allow_inbound_email;
+      // Per-ticket "mute the vendor" toggle. Vendor replies still land
+      // in the thread, but arrive with is_muted=TRUE (the UI collapses
+      // them) and don't ping followers. Admin/Manager can un-mute any
+      // single comment they decide is relevant.
+      if ((isAdmin || user.role === 'Manager') && body.auto_mute_vendor_replies !== undefined) {
+        updates.auto_mute_vendor_replies = !!body.auto_mute_vendor_replies;
         await auditLog(client, {
           ticketId: ticket.id, userId: user.id,
-          action: 'allow_inbound_email_change',
-          oldValue: String(ticket.allow_inbound_email),
-          newValue: String(!!body.allow_inbound_email),
+          action: 'auto_mute_vendor_replies_change',
+          oldValue: String(ticket.auto_mute_vendor_replies),
+          newValue: String(!!body.auto_mute_vendor_replies),
         });
       }
 

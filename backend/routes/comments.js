@@ -94,4 +94,35 @@ router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Submi
   }
 });
 
+// POST /api/comments/:id/mute   — Admin/Manager flips is_muted=TRUE
+// POST /api/comments/:id/unmute — Admin/Manager flips is_muted=FALSE
+async function setMuted(req, res, value) {
+  try {
+    const r = await pool.query(
+      `UPDATE comments SET is_muted = $1
+        WHERE id = $2
+        RETURNING id, ticket_id, is_muted`,
+      [value, req.params.id]
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'Comment not found' });
+    // Audit on ticket so the timeline shows who un-muted what.
+    await pool.query(
+      `INSERT INTO audit_log (ticket_id, user_id, action, new_value, note)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [r.rows[0].ticket_id, req.session.user.id,
+       value ? 'comment_muted' : 'comment_unmuted',
+       String(r.rows[0].id), null]
+    );
+    res.json(r.rows[0]);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Database error' });
+  }
+}
+
+router.post('/comments/:id/mute',   requireAuth, requireRole('Admin', 'Manager'),
+  (req, res) => setMuted(req, res, true));
+router.post('/comments/:id/unmute', requireAuth, requireRole('Admin', 'Manager'),
+  (req, res) => setMuted(req, res, false));
+
 module.exports = router;

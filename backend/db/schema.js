@@ -508,11 +508,32 @@ async function initSchema() {
       )
     `);
 
-    // Per-ticket toggle for the inbound match flow. Default TRUE so the
-    // queue + match UI works on every ticket out of the box; an admin
-    // can flip a single ticket to FALSE to refuse any further inbound
-    // matches (Phase E wires the PATCH-route plumbing for this).
-    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS allow_inbound_email BOOLEAN NOT NULL DEFAULT TRUE`);
+    // Per-ticket "mute the vendor" toggle. When TRUE, vendor replies
+    // matched into the ticket are inserted with comments.is_muted=TRUE
+    // and the UI collapses them. Admin/Manager can un-mute any single
+    // muted comment they decide is relevant. Default FALSE = vendor
+    // replies show normally.
+    //
+    // The original Phase D shipped this as `allow_inbound_email
+    // (DEFAULT TRUE = accept) / FALSE = refuse`. The redesign keeps the
+    // signal in-thread instead of throwing it away, so we rename the
+    // column and flip the value semantics: NOT(old) = new.
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS auto_mute_vendor_replies BOOLEAN NOT NULL DEFAULT FALSE`);
+    // Migrate from the old column if it exists, then drop it.
+    const hasOldCol = await client.query(`
+      SELECT 1 FROM information_schema.columns
+       WHERE table_name = 'tickets' AND column_name = 'allow_inbound_email'
+    `);
+    if (hasOldCol.rows[0]) {
+      await client.query(`UPDATE tickets SET auto_mute_vendor_replies = NOT allow_inbound_email`);
+      await client.query(`ALTER TABLE tickets DROP COLUMN allow_inbound_email`);
+    }
+
+    // Per-comment muted flag. Set automatically when a vendor reply is
+    // matched into a ticket whose auto_mute_vendor_replies=TRUE; toggled
+    // manually by Admin/Manager via the mute/unmute endpoints.
+    await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS is_muted BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_comments_muted ON comments(ticket_id, is_muted)`);
 
     // Inbound email queue. Webhook adapters (Graph subscription, Gmail
     // push, SMTP/Mailgun) all funnel into this table with status='unmatched'.

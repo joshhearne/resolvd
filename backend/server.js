@@ -75,6 +75,8 @@ app.use('/api/invites', inviteRoutes);
 app.use('/api/auth-settings', authSettingsRoutes);
 app.use('/api/tickets', ticketRoutes);
 app.use('/api/tickets', commentRoutes);
+// commentRoutes also mounts /comments/:id/mute|unmute at /api/comments/...
+app.use('/api', commentRoutes);
 app.use('/api/users', userRoutes);
 app.use('/api/dashboard', dashboardRoutes);
 app.use('/api/views', viewRoutes);
