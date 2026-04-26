@@ -66,6 +66,14 @@ export default function AdminEmailBackends() {
     catch (e) { toast.error(e.message); }
   }
 
+  async function toggleMonitor(id, enabled) {
+    try {
+      await api.post(`/api/email-backends/${id}/monitor`, { enabled });
+      await reload();
+      toast.success(enabled ? "Inbox monitoring on" : "Inbox monitoring off");
+    } catch (e) { toast.error(e.message); }
+  }
+
   async function saveSmtp(e) {
     e.preventDefault();
     try {
@@ -158,6 +166,20 @@ export default function AdminEmailBackends() {
                         </span>
                         {" · "}{new Date(a.last_test_at).toLocaleString()}
                         {a.last_test_error && <div className="text-fg-dim text-[11px] mt-0.5 truncate">{a.last_test_error}</div>}
+                      </div>
+                    )}
+                    {a.provider !== "smtp" && (
+                      <div className="text-xs mt-2 flex items-center gap-2 flex-wrap">
+                        <label className="inline-flex items-center gap-1 text-fg-muted">
+                          <input type="checkbox" checked={!!a.inbox_monitor_enabled}
+                            onChange={(e) => toggleMonitor(a.id, e.target.checked)} />
+                          Monitor inbox (auto-ingest mail)
+                        </label>
+                        {a.inbox_monitor_enabled && a.inbox_subscription_expires_at && (
+                          <span className="text-fg-dim">
+                            renews before {new Date(a.inbox_subscription_expires_at).toLocaleString()}
+                          </span>
+                        )}
                       </div>
                     )}
                   </div>

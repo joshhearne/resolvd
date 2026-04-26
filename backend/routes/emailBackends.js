@@ -138,4 +138,33 @@ router.delete('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// POST /api/email-backends/:id/monitor — toggle inbox monitoring
+// Body: { enabled: true|false }. Creates the provider subscription on
+// "true" and tears it down on "false".
+router.post('/:id/monitor', requireAuth, requireRole('Admin'), async (req, res) => {
+  try {
+    const enabled = !!req.body?.enabled;
+    const r = await pool.query(`SELECT * FROM email_backend_accounts WHERE id = $1`, [req.params.id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'Not found' });
+    const { decryptRow } = require('../services/fields');
+    await decryptRow('email_backend_accounts', r.rows[0]);
+    const account = r.rows[0];
+    const graphInbox = require('../services/graphInbox');
+    const gmailInbox = require('../services/gmailInbox');
+    if (enabled) {
+      if (account.provider === 'graph_user')      await graphInbox.createSubscription(account);
+      else if (account.provider === 'gmail_user') await gmailInbox.createWatch(account);
+      else return res.status(400).json({ error: 'Inbox monitoring is OAuth-only (graph_user / gmail_user).' });
+    } else {
+      if (account.provider === 'graph_user')      await graphInbox.deleteSubscription(account);
+      else if (account.provider === 'gmail_user') await gmailInbox.stopWatch(account);
+      else return res.status(400).json({ error: 'Inbox monitoring is OAuth-only.' });
+    }
+    res.json({ ok: true, enabled });
+  } catch (e) {
+    console.error('monitor toggle failed:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 module.exports = router;

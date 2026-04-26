@@ -603,6 +603,27 @@ async function initSchema() {
       ON email_backend_accounts ((1)) WHERE is_active = TRUE`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_email_backend_provider ON email_backend_accounts(provider)`);
 
+    // Inbox monitoring fields. When inbox_monitor_enabled=TRUE we keep
+    // a live subscription with the provider so new mail flows into the
+    // inbound queue without an external glue (Mailgun/SES/etc).
+    //
+    //   Graph: subscription_id is /subscriptions/{id}, expires every 3
+    //          days, validated via clientState (we store as
+    //          inbox_subscription_secret).
+    //   Gmail: subscription_id is the Pub/Sub topic name, state holds
+    //          historyId from the last watch response, expires every 7d.
+    await client.query(`ALTER TABLE email_backend_accounts ADD COLUMN IF NOT EXISTS inbox_monitor_enabled BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`ALTER TABLE email_backend_accounts ADD COLUMN IF NOT EXISTS inbox_subscription_id TEXT`);
+    await client.query(`ALTER TABLE email_backend_accounts ADD COLUMN IF NOT EXISTS inbox_subscription_secret TEXT`);
+    await client.query(`ALTER TABLE email_backend_accounts ADD COLUMN IF NOT EXISTS inbox_subscription_state TEXT`);
+    await client.query(`ALTER TABLE email_backend_accounts ADD COLUMN IF NOT EXISTS inbox_subscription_expires_at TIMESTAMPTZ`);
+    await client.query(`ALTER TABLE email_backend_accounts ADD COLUMN IF NOT EXISTS inbox_last_renewed_at TIMESTAMPTZ`);
+
+    await client.query(`
+      INSERT INTO system_jobs (name) VALUES ('inbox_subscription_renewal')
+      ON CONFLICT DO NOTHING
+    `);
+
     // Inbound email queue. Webhook adapters (Graph subscription, Gmail
     // push, SMTP/Mailgun) all funnel into this table with status='unmatched'.
     // Inbound NEVER auto-creates tickets or comments — admin matches each

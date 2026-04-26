@@ -27,6 +27,7 @@ const companyRoutes = require('./routes/companies');
 const contactRoutes = require('./routes/contacts');
 const emailTemplateRoutes = require('./routes/emailTemplates');
 const inboundEmailRoutes = require('./routes/inboundEmail');
+const inboundProviderRoutes = require('./routes/inboundProviders');
 const emailBackendRoutes = require('./routes/emailBackends');
 const { requireSupportAccessIfSupport } = require('./middleware/supportAccess');
 
@@ -91,6 +92,7 @@ app.use('/api/companies', companyRoutes);
 app.use('/api', contactRoutes);
 app.use('/api/email-templates', emailTemplateRoutes);
 app.use('/api/inbound', inboundEmailRoutes);
+app.use('/api/inbound', inboundProviderRoutes);
 app.use('/api/email-backends', emailBackendRoutes);
 
 // Health check
@@ -101,6 +103,9 @@ initSchema()
     // Scheduled jobs: muted-vendor digest fires at the configured local
     // time once per day (cadence checked every 5 min).
     require('./services/mutedDigest').startScheduler();
+    // Inbox monitor renewal: walks active subscriptions hourly and
+    // renews any within 12h of expiring.
+    require('./services/inboxMonitorScheduler').startScheduler();
     app.listen(PORT, () => {
       console.log(`Punchlist backend running on port ${PORT}`);
     });

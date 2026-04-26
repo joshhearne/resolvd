@@ -172,6 +172,8 @@ async function listAccounts() {
     SELECT id, provider, display_name, from_address, oauth_expires_at,
            is_active, last_test_at, last_test_status, last_test_error,
            smtp_host, smtp_port, smtp_user, smtp_secure,
+           inbox_monitor_enabled, inbox_subscription_expires_at,
+           inbox_last_renewed_at,
            created_at, updated_at
       FROM email_backend_accounts
      ORDER BY is_active DESC, updated_at DESC
