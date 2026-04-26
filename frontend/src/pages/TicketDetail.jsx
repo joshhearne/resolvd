@@ -471,6 +471,15 @@ export default function TicketDetail() {
           </button>
           {isAdmin && (
             <button
+              onClick={() => setConfirm("merge")}
+              className="btn-secondary btn btn-sm whitespace-nowrap"
+              title="Merge this ticket into another (closes this one, reassigns comments/attachments/etc.)"
+            >
+              Merge…
+            </button>
+          )}
+          {isAdmin && (
+            <button
               onClick={() => setConfirm("delete")}
               className="btn-danger btn btn-sm whitespace-nowrap"
             >
@@ -1576,6 +1585,55 @@ export default function TicketDetail() {
         onConfirm={deleteTicket}
         onCancel={() => setConfirm(null)}
       />
+      <MergeDialog
+        open={confirm === "merge"}
+        loserRef={ticket.mot_ref}
+        onCancel={() => setConfirm(null)}
+        onConfirm={async (winnerId) => {
+          try {
+            const r = await api.post(`/api/tickets/${ticket.id}/merge`, { winner_id: winnerId });
+            toast.success(`${r.loser_ref} merged into ${r.winner_ref}`);
+            navigate(`/tickets/${winnerId}`);
+          } catch (e) { toast.error(e.message); }
+          finally { setConfirm(null); }
+        }}
+      />
+    </div>
+  );
+}
+
+function MergeDialog({ open, loserRef, onCancel, onConfirm }) {
+  const [winnerId, setWinnerId] = React.useState("");
+  React.useEffect(() => { if (!open) setWinnerId(""); }, [open]);
+  if (!open) return null;
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+      <div className="bg-surface border border-border rounded-lg shadow-xl max-w-md w-full p-5">
+        <h3 className="text-lg font-semibold text-fg mb-2">Merge ticket</h3>
+        <p className="text-sm text-fg-muted mb-3">
+          Merging <strong>{loserRef}</strong> into another ticket reassigns its comments,
+          attachments, audit history, vendor contacts, and followers, then closes <strong>{loserRef}</strong>.
+        </p>
+        <p className="text-xs text-fg-muted mb-2">Tickets must be in the same project.</p>
+        <input
+          type="number"
+          autoFocus
+          value={winnerId}
+          onChange={(e) => setWinnerId(e.target.value)}
+          placeholder="Winner ticket id (numeric)"
+          className="w-full bg-surface-2 border border-border rounded px-3 py-2 text-sm"
+        />
+        <div className="flex justify-end gap-2 mt-4">
+          <button onClick={onCancel} className="btn-secondary btn btn-sm">Cancel</button>
+          <button
+            onClick={() => onConfirm(parseInt(winnerId, 10))}
+            disabled={!winnerId}
+            className="btn-primary btn btn-sm disabled:opacity-50"
+          >
+            Merge
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

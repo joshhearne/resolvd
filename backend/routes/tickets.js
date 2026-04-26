@@ -583,6 +583,82 @@ router.patch('/:id', requireAuth, async (req, res) => {
   }
 });
 
+// POST /api/tickets/:id/merge — Admin merges this ticket (loser) INTO
+// the winner ticket (request body: { winner_id }). All comments,
+// attachments, audit entries, vendor contacts, and followers are
+// reassigned to the winner. Loser is closed with an audit row pointing
+// at the winner; winner gets a "Merged in MOT-XX" audit row. Both
+// tickets must exist in the same project.
+router.post('/:id/merge', requireAuth, requireRole('Admin'), async (req, res) => {
+  try {
+    const loserId = parseInt(req.params.id, 10);
+    const winnerId = parseInt(req.body?.winner_id, 10);
+    if (!winnerId || winnerId === loserId) {
+      return res.status(400).json({ error: 'winner_id required and distinct from loser' });
+    }
+    const merged = await transaction(async (client) => {
+      const both = await client.query(
+        `SELECT id, mot_ref, project_id, internal_status FROM tickets WHERE id = ANY($1::int[])`,
+        [[loserId, winnerId]]
+      );
+      const loser  = both.rows.find(r => r.id === loserId);
+      const winner = both.rows.find(r => r.id === winnerId);
+      if (!loser || !winner) throw Object.assign(new Error('Ticket not found'), { http: 404 });
+      if (loser.project_id !== winner.project_id) {
+        throw Object.assign(new Error('Tickets must be in the same project'), { http: 400 });
+      }
+
+      // Reassign children. Followers and contacts use ON CONFLICT to
+      // collapse duplicates that already exist on the winner.
+      await client.query(`UPDATE comments      SET ticket_id = $1 WHERE ticket_id = $2`, [winnerId, loserId]);
+      await client.query(`UPDATE attachments   SET ticket_id = $1 WHERE ticket_id = $2`, [winnerId, loserId]);
+      await client.query(`UPDATE audit_log     SET ticket_id = $1 WHERE ticket_id = $2`, [winnerId, loserId]);
+      await client.query(`
+        INSERT INTO ticket_followers (ticket_id, user_id, created_at)
+          SELECT $1, user_id, created_at FROM ticket_followers WHERE ticket_id = $2
+          ON CONFLICT DO NOTHING
+      `, [winnerId, loserId]);
+      await client.query(`DELETE FROM ticket_followers WHERE ticket_id = $1`, [loserId]);
+      await client.query(`
+        INSERT INTO ticket_contacts (ticket_id, contact_id, added_by_user_id, added_at)
+          SELECT $1, contact_id, added_by_user_id, added_at FROM ticket_contacts WHERE ticket_id = $2
+          ON CONFLICT DO NOTHING
+      `, [winnerId, loserId]);
+      await client.query(`DELETE FROM ticket_contacts WHERE ticket_id = $1`, [loserId]);
+
+      // Audit on both sides so the timeline records the operation. The
+      // loser's audit was reassigned above, but a final entry on the
+      // loser still helps if anyone visits its row directly via SQL.
+      await client.query(
+        `INSERT INTO audit_log (ticket_id, user_id, action, new_value, note)
+         VALUES ($1, $2, 'merged_in', $3, $4)`,
+        [winnerId, req.session.user.id, loser.mot_ref, `Merged in ${loser.mot_ref}`]
+      );
+      await client.query(
+        `INSERT INTO audit_log (ticket_id, user_id, action, new_value, note)
+         VALUES ($1, $2, 'merged_into', $3, $4)`,
+        [loserId, req.session.user.id, winner.mot_ref, `Merged into ${winner.mot_ref}`]
+      );
+
+      // Close the loser. Plaintext title intentionally untouched so the
+      // operation is reversible by manual SQL if absolutely necessary —
+      // a "Merged into MOT-XX" annotation lives in audit only.
+      await client.query(
+        `UPDATE tickets SET internal_status = 'Closed', updated_at = NOW() WHERE id = $1`,
+        [loserId]
+      );
+      // Bump winner's updated_at so it sorts to the top.
+      await client.query(`UPDATE tickets SET updated_at = NOW() WHERE id = $1`, [winnerId]);
+
+      return { winner_ref: winner.mot_ref, loser_ref: loser.mot_ref };
+    });
+    res.json({ ok: true, ...merged });
+  } catch (err) {
+    console.error(err);
+    res.status(err.http || 500).json({ error: err.message || 'Database error' });
+  }
+});
+
 // DELETE /api/tickets/:id
 router.delete('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
   try {
