@@ -76,3 +76,23 @@ jobs:
             --title "${GITHUB_REF_NAME}" \
             --notes-file release-notes.md \
             $PRERELEASE
+
+      # Fire the marketing site's deploy hook so the changelog rebuilds.
+      # This step runs in the SAME workflow as the release creation
+      # because GITHUB_TOKEN-created releases don't trigger downstream
+      # workflows on the `release: published` event by GitHub policy.
+      # Tolerates a missing secret with a warning so a half-configured
+      # repo doesn't fail every release.
+      - name: Notify website
+        env:
+          HOOK_URL: ${{ secrets.RESOLVD_DEPLOY_HOOK_URL }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if [ -z "$HOOK_URL" ]; then
+            echo "::warning::RESOLVD_DEPLOY_HOOK_URL secret not set — skipping site rebuild for ${TAG}"
+            exit 0
+          fi
+          curl -fsSL -X POST "$HOOK_URL" \
+            -H 'Content-Type: application/json' \
+            -d "{\"trigger\":\"resolvd-release\",\"tag\":\"${TAG}\"}"
+          echo "Deploy hook fired for ${TAG}"
