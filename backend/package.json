@@ -2,6 +2,7 @@
   "name": "resolvd-backend",
   "version": "1.0.0",
   "type": "commonjs",
+  "license": "SEE LICENSE IN LICENSE",
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js"

@@ -1,5 +1,7 @@
 # Resolvd
 
+![License: FSL-1.1-ALv2](https://img.shields.io/badge/license-FSL--1.1--ALv2-2da44e)
+
 Internal issue and project tracking — keep every ticket in reach until it's closed.
 
 ## Stack
@@ -341,3 +343,23 @@ docker run --rm -v issues_uploads-data:/src:ro -v "$(pwd)":/dst alpine \
 | Email backends | Admin | Connect M365/Gmail via OAuth, SMTP fallback, monitor inbox toggle |
 | Support access | Admin | JIT grants — approve, revoke, deny, view access log |
 | Encryption | Admin | Mode reference + Standard-mode runbook |
+
+---
+
+## License
+
+Resolvd is **source-available** under the [Functional Source License (FSL-1.1-ALv2)](./LICENSE).
+
+- ✓ Free to self-host, fork, modify, and audit
+- ✓ Free for internal commercial use at your company
+- ✓ Free to use in client work and managed services
+- ✗ Not for reselling Resolvd as a hosted SaaS (during the 2-year non-compete window)
+
+Each release converts to **Apache 2.0** two years after publication.
+
+Plain-English explainer: https://resolvd.dev/license
+Need a different license for procurement? hosted@resolvd.dev
+
+### Contributing
+
+By contributing, you agree your contribution is licensed under the same FSL-1.1-ALv2 terms as the rest of the project. We use the **Developer Certificate of Origin (DCO)** instead of a CLA — every commit must be signed off (`git commit -s`). See [CONTRIBUTING.md](./.github/CONTRIBUTING.md) for details.
