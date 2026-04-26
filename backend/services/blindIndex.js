@@ -23,7 +23,7 @@ let cachedKey = null;
 function getBlindKey() {
   if (cachedKey) return cachedKey;
   const raw = process.env.RESOLVD_MASTER_KEY;
-  if (!raw) throw new Error('RESOLVD_MASTER_KEY not set');
+  if (!raw) return null;
   const ikm = Buffer.from(raw, 'base64');
   const salt = Buffer.alloc(32, 0);
   cachedKey = crypto.hkdfSync('sha256', ikm, salt, HKDF_INFO, 32);
@@ -42,7 +42,9 @@ function tokenize(text) {
 }
 
 function hashToken(token) {
-  const h = crypto.createHmac('sha256', getBlindKey());
+  const key = getBlindKey();
+  if (!key) return null;
+  const h = crypto.createHmac('sha256', key);
   h.update(token, 'utf8');
   return h.digest('hex').slice(0, HASH_BYTES * 2);
 }
@@ -51,7 +53,9 @@ function buildIndex(text) {
   const tokens = tokenize(text);
   if (tokens.length === 0) return [];
   // De-duplicate so rows with repeated words don't carry redundant entries.
-  return [...new Set(tokens.map(hashToken))];
+  // Skip if master key isn't configured (e.g. encryption mode 'off').
+  const hashes = tokens.map(hashToken).filter(Boolean);
+  return [...new Set(hashes)];
 }
 
 function hashQuery(query) {

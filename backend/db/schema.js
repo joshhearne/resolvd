@@ -508,6 +508,56 @@ async function initSchema() {
       )
     `);
 
+    // Per-ticket toggle for the inbound match flow. Default TRUE so the
+    // queue + match UI works on every ticket out of the box; an admin
+    // can flip a single ticket to FALSE to refuse any further inbound
+    // matches (Phase E wires the PATCH-route plumbing for this).
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS allow_inbound_email BOOLEAN NOT NULL DEFAULT TRUE`);
+
+    // Inbound email queue. Webhook adapters (Graph subscription, Gmail
+    // push, SMTP/Mailgun) all funnel into this table with status='unmatched'.
+    // Inbound NEVER auto-creates tickets or comments — admin matches each
+    // message to a ticket explicitly. Subject/body encrypt under standard
+    // mode; from_addr_blind_idx is HMAC of normalised sender for fast
+    // contact lookup.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS inbound_email_queue (
+        id SERIAL PRIMARY KEY,
+        source TEXT NOT NULL,
+        external_message_id TEXT,
+        received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        from_addr TEXT,
+        from_addr_blind_idx TEXT,
+        from_name TEXT,
+        to_addr TEXT,
+        subject TEXT,
+        subject_enc BYTEA,
+        body TEXT,
+        body_enc BYTEA,
+        message_id TEXT,
+        in_reply_to TEXT,
+        ref_headers TEXT,
+        candidate_ticket_ref TEXT,
+        status TEXT NOT NULL DEFAULT 'unmatched'
+          CHECK (status IN ('unmatched','matched','discarded','spam')),
+        matched_ticket_id INTEGER REFERENCES tickets(id) ON DELETE SET NULL,
+        matched_contact_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL,
+        matched_at TIMESTAMPTZ,
+        matched_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        raw_headers JSONB
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_inbound_status ON inbound_email_queue(status)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_inbound_from_blind ON inbound_email_queue(from_addr_blind_idx)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_inbound_received ON inbound_email_queue(received_at DESC)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_inbound_external_id ON inbound_email_queue(external_message_id) WHERE external_message_id IS NOT NULL`);
+
+    // Comments authored by an external contact (matched in from the
+    // inbound queue). Preserves attribution without forcing a fake user
+    // row in the users table.
+    await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS vendor_contact_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL`);
+    await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS source_inbound_email_id INTEGER REFERENCES inbound_email_queue(id) ON DELETE SET NULL`);
+
     // Seed default templates the first time the table is created.
     const tplExisting = await client.query('SELECT COUNT(*)::int AS cnt FROM email_templates');
     if (tplExisting.rows[0].cnt === 0) {

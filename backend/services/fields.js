@@ -63,6 +63,10 @@ const FIELD_MAP = {
     phone: 'phone_enc',
     notes: 'notes_enc',
   },
+  inbound_email_queue: {
+    subject: 'subject_enc',
+    body: 'body_enc',
+  },
 };
 
 // Build a column/value patch for a write. `plainObj` carries the human-

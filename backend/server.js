@@ -26,6 +26,7 @@ const supportRoutes = require('./routes/support');
 const companyRoutes = require('./routes/companies');
 const contactRoutes = require('./routes/contacts');
 const emailTemplateRoutes = require('./routes/emailTemplates');
+const inboundEmailRoutes = require('./routes/inboundEmail');
 const { requireSupportAccessIfSupport } = require('./middleware/supportAccess');
 
 const app = express();
@@ -86,6 +87,7 @@ app.use('/api/statuses', statusRoutes);
 app.use('/api/companies', companyRoutes);
 app.use('/api', contactRoutes);
 app.use('/api/email-templates', emailTemplateRoutes);
+app.use('/api/inbound', inboundEmailRoutes);
 
 // Health check
 app.get('/health', (req, res) => res.json({ ok: true }));
