@@ -323,6 +323,57 @@ async function initSchema() {
       WHERE kind = 'internal' AND name = 'Awaiting MOT Input'
     `);
 
+    // Encryption foundation (Phase 1). Default mode 'off' — no read/write
+    // paths consult these columns yet. Backfill script populates *_enc
+    // shadow columns once a key is configured; Phase 2 flips reads/writes.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS encryption_settings (
+        id INTEGER PRIMARY KEY DEFAULT 1,
+        mode TEXT NOT NULL DEFAULT 'off' CHECK (mode IN ('off','standard','vault')),
+        kms_provider TEXT NOT NULL DEFAULT 'local',
+        active_kek_id TEXT NOT NULL DEFAULT 'local:v1',
+        backfill_completed_at TIMESTAMPTZ,
+        updated_at TIMESTAMPTZ DEFAULT NOW(),
+        CONSTRAINT encryption_settings_single CHECK (id = 1)
+      )
+    `);
+    await client.query(`INSERT INTO encryption_settings (id) VALUES (1) ON CONFLICT DO NOTHING`);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS encryption_keys (
+        kek_id TEXT PRIMARY KEY,
+        provider TEXT NOT NULL DEFAULT 'local',
+        label TEXT,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        retired_at TIMESTAMPTZ
+      )
+    `);
+    await client.query(`
+      INSERT INTO encryption_keys (kek_id, provider, label)
+      VALUES ('local:v1', 'local', 'initial local KEK')
+      ON CONFLICT DO NOTHING
+    `);
+
+    // Shadow ciphertext columns. Plaintext stays until Phase 2 cutover.
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS title_enc BYTEA`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS description_enc BYTEA`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS review_note_enc BYTEA`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS mot_blocker_note_enc BYTEA`);
+    await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS body_enc BYTEA`);
+    await client.query(`ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS old_value_enc BYTEA`);
+    await client.query(`ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS new_value_enc BYTEA`);
+    await client.query(`ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS note_enc BYTEA`);
+    // Attachments: encrypt original_name in DB; file content on disk handled
+    // separately in Phase 2 with a sidecar blob layout.
+    await client.query(`ALTER TABLE attachments ADD COLUMN IF NOT EXISTS original_name_enc BYTEA`);
+    await client.query(`ALTER TABLE attachments ADD COLUMN IF NOT EXISTS encrypted_at_rest BOOLEAN NOT NULL DEFAULT FALSE`);
+
+    // Drop NOT NULL on plaintext columns that get NULLed under standard mode.
+    // App-layer validation enforces non-empty input on writes.
+    await client.query(`ALTER TABLE tickets ALTER COLUMN title DROP NOT NULL`).catch(() => {});
+    await client.query(`ALTER TABLE comments ALTER COLUMN body DROP NOT NULL`).catch(() => {});
+    await client.query(`ALTER TABLE attachments ALTER COLUMN original_name DROP NOT NULL`).catch(() => {});
+
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');

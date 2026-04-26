@@ -58,6 +58,17 @@ services:
       - backend
       - frontend
 
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: resolvd-cloudflared
+    restart: unless-stopped
+    env_file: .env
+    command: tunnel --no-autoupdate run --token ${CLOUDFLARE_TUNNEL_TOKEN}
+    networks:
+      - internal
+    depends_on:
+      - nginx
+
 volumes:
   pg-data:
   uploads-data:
