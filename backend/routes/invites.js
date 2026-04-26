@@ -9,7 +9,7 @@ const { loginUser, buildSessionUser } = require('../auth/session');
 
 const router = express.Router();
 
-const VALID_ROLES = ['Admin', 'Manager', 'Submitter', 'Viewer'];
+const VALID_ROLES = ['Admin', 'Manager', 'Submitter', 'Viewer', 'Support'];
 const VALID_PROVIDERS = ['local', 'entra', 'google'];
 
 // POST /api/invites — admin invites a user

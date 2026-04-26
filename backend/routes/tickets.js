@@ -5,6 +5,7 @@ const { requireAuth, requireRole } = require('../middleware/auth');
 const { notifyStatusChange, notifyPendingReview, notifyNewComment } = require('../services/email');
 const { getMode, buildWritePatch, decryptRow, decryptRows } = require('../services/fields');
 const blindIndex = require('../services/blindIndex');
+const { logSupportRead } = require('../middleware/supportAccess');
 
 const router = express.Router();
 
@@ -394,6 +395,7 @@ router.get('/:id', requireAuth, async (req, res) => {
 
     if (!result.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
     await decryptRow('tickets', result.rows[0], { aliases: TICKET_JOIN_ALIASES });
+    await logSupportRead(req, { action: 'ticket.view', targetTable: 'tickets', targetId: result.rows[0].id });
     res.json(result.rows[0]);
   } catch (err) {
     console.error(err);

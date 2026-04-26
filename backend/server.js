@@ -22,6 +22,8 @@ const brandingRoutes = require('./routes/branding');
 const exportRoutes = require('./routes/export');
 const followerRoutes = require('./routes/followers');
 const statusRoutes = require('./routes/statuses');
+const supportRoutes = require('./routes/support');
+const { requireSupportAccessIfSupport } = require('./middleware/supportAccess');
 
 const app = express();
 const PORT = process.env.PORT || 3001;
@@ -56,6 +58,15 @@ app.use(session({
 
 // Routes
 app.use('/auth', authRoutes);
+// Support routes mounted BEFORE the JIT guard so support principals can
+// poll their own grant status (/api/support/grants/me) and admins can
+// approve/revoke without being self-locked out.
+app.use('/api/support', supportRoutes);
+
+// JIT guard: blocks role='Support' on every other /api/* path unless they
+// have an active, non-expired grant. No-op for non-Support users.
+app.use('/api', requireSupportAccessIfSupport);
+
 app.use('/api/invites', inviteRoutes);
 app.use('/api/auth-settings', authSettingsRoutes);
 app.use('/api/tickets', ticketRoutes);

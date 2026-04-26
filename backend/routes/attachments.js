@@ -8,6 +8,7 @@ const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { buildWritePatch, decryptRow, decryptRows, getMode } = require('../services/fields');
 const { encrypt, decrypt } = require('../services/crypto');
+const { logSupportRead } = require('../middleware/supportAccess');
 
 const UPLOADS_DIR = process.env.UPLOADS_DIR || '/data/uploads';
 
@@ -162,6 +163,7 @@ router.get('/attachments/:id', requireAuth, async (req, res) => {
     const downloadName = attachment.original_name || attachment.filename;
     res.setHeader('Content-Type', attachment.mimetype || 'application/octet-stream');
     res.setHeader('Content-Disposition', `attachment; filename="${downloadName}"`);
+    await logSupportRead(req, { action: 'attachment.download', targetTable: 'attachments', targetId: attachment.id });
     res.send(body);
   } catch (err) {
     console.error(err);

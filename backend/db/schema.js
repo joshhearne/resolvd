@@ -379,6 +379,45 @@ async function initSchema() {
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS title_blind_idx TEXT[]`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_title_blind ON tickets USING GIN (title_blind_idx)`);
 
+    // Phase 3: JIT support access. Tenant admin approves time-bound access
+    // grants for support users; the live `effective_status` is computed at
+    // query time from columns + clock so no background job is required.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS support_access_grants (
+        id SERIAL PRIMARY KEY,
+        support_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        requested_by_email TEXT,
+        reason TEXT,
+        scope TEXT NOT NULL DEFAULT 'read' CHECK (scope IN ('read','read_write')),
+        status TEXT NOT NULL DEFAULT 'pending'
+          CHECK (status IN ('pending','active','revoked','denied')),
+        approved_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        requested_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        approved_at TIMESTAMPTZ,
+        expires_at TIMESTAMPTZ,
+        revoked_at TIMESTAMPTZ,
+        revoked_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_support_grants_status ON support_access_grants(status)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_support_grants_user ON support_access_grants(support_user_id)`);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS support_access_log (
+        id BIGSERIAL PRIMARY KEY,
+        grant_id INTEGER REFERENCES support_access_grants(id) ON DELETE SET NULL,
+        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        action TEXT NOT NULL,
+        target_table TEXT,
+        target_id INTEGER,
+        ip TEXT,
+        user_agent TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_support_log_grant ON support_access_log(grant_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_support_log_created ON support_access_log(created_at DESC)`);
+
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');

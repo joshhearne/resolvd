@@ -18,7 +18,7 @@ const avatarUpload = multer({
   },
 });
 
-const VALID_ROLES = ['Admin', 'Submitter', 'Viewer'];
+const VALID_ROLES = ['Admin', 'Manager', 'Submitter', 'Viewer', 'Support'];
 
 // GET /api/users (Admin only)
 router.get('/', requireAuth, requireRole('Admin'), async (req, res) => {
