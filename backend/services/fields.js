@@ -53,6 +53,16 @@ const FIELD_MAP = {
   attachments: {
     original_name: 'original_name_enc',
   },
+  companies: {
+    name: 'name_enc',
+    notes: 'notes_enc',
+  },
+  contacts: {
+    name: 'name_enc',
+    email: 'email_enc',
+    phone: 'phone_enc',
+    notes: 'notes_enc',
+  },
 };
 
 // Build a column/value patch for a write. `plainObj` carries the human-

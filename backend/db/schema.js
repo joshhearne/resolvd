@@ -418,6 +418,68 @@ async function initSchema() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_support_log_grant ON support_access_log(grant_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_support_log_created ON support_access_log(created_at DESC)`);
 
+    // CRM: external companies and contacts attached to tickets via
+    // projects with has_external_vendor=true. Names/emails/phones/notes
+    // encrypt via shadow columns; contacts.email_blind_idx is a single-
+    // token HMAC so the inbound webhook can resolve sender → contact
+    // without needing plaintext.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS companies (
+        id SERIAL PRIMARY KEY,
+        project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+        name TEXT,
+        name_enc BYTEA,
+        domain TEXT,
+        notes TEXT,
+        notes_enc BYTEA,
+        is_archived BOOLEAN NOT NULL DEFAULT FALSE,
+        created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_companies_project ON companies(project_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_companies_domain ON companies(domain)`);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS contacts (
+        id SERIAL PRIMARY KEY,
+        company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        name TEXT,
+        name_enc BYTEA,
+        email TEXT,
+        email_enc BYTEA,
+        email_blind_idx TEXT,
+        phone TEXT,
+        phone_enc BYTEA,
+        role_title TEXT,
+        notes TEXT,
+        notes_enc BYTEA,
+        is_active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_at TIMESTAMPTZ DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_contacts_company ON contacts(company_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_contacts_email_blind ON contacts(email_blind_idx)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_contacts_active ON contacts(is_active)`);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ticket_contacts (
+        ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+        contact_id INTEGER NOT NULL REFERENCES contacts(id) ON DELETE CASCADE,
+        added_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        added_at TIMESTAMPTZ DEFAULT NOW(),
+        PRIMARY KEY (ticket_id, contact_id)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_contacts_contact ON ticket_contacts(contact_id)`);
+
+    // Workspace-level extension to the generic-mailbox blocklist used when
+    // adding vendor contacts. Comma-separated local-parts (e.g. "ops,it").
+    await client.query(`ALTER TABLE auth_settings ADD COLUMN IF NOT EXISTS email_blocklist TEXT NOT NULL DEFAULT ''`);
+
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');

@@ -573,6 +573,69 @@ router.delete('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
   }
 });
 
+// GET /api/tickets/:id/contacts — vendor contacts on a ticket
+router.get('/:id/contacts', requireAuth, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT c.*, co.id AS company_id, co.name AS company_name, co.name_enc AS company_name_enc,
+             co.domain AS company_domain
+        FROM ticket_contacts tc
+        JOIN contacts c ON c.id = tc.contact_id
+        JOIN companies co ON co.id = c.company_id
+       WHERE tc.ticket_id = $1
+       ORDER BY tc.added_at ASC
+    `, [req.params.id]);
+    await decryptRows('contacts', result.rows, {
+      aliases: { company_name: 'companies.name' },
+    });
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// POST /api/tickets/:id/contacts — link a contact to a ticket
+router.post('/:id/contacts', requireAuth, requireRole('Admin', 'Manager', 'Submitter'), async (req, res) => {
+  try {
+    const { contact_id } = req.body || {};
+    if (!contact_id) return res.status(400).json({ error: 'contact_id required' });
+    const ticket = await pool.query(`SELECT id FROM tickets WHERE id = $1`, [req.params.id]);
+    if (!ticket.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
+    const contact = await pool.query(
+      `SELECT id FROM contacts WHERE id = $1 AND is_active = TRUE`,
+      [Number(contact_id)]
+    );
+    if (!contact.rows[0]) return res.status(404).json({ error: 'Contact not found or inactive' });
+    await pool.query(
+      `INSERT INTO ticket_contacts (ticket_id, contact_id, added_by_user_id)
+       VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+      [Number(req.params.id), Number(contact_id), req.session.user.id]
+    );
+    res.status(201).json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// DELETE /api/tickets/:id/contacts/:contactId — unlink a contact
+router.delete('/:id/contacts/:contactId', requireAuth, requireRole('Admin', 'Manager', 'Submitter'),
+  async (req, res) => {
+    try {
+      const result = await pool.query(
+        `DELETE FROM ticket_contacts WHERE ticket_id = $1 AND contact_id = $2 RETURNING ticket_id`,
+        [req.params.id, req.params.contactId]
+      );
+      if (!result.rows[0]) return res.status(404).json({ error: 'Link not found' });
+      res.json({ ok: true });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: 'Database error' });
+    }
+  }
+);
+
 // GET /api/tickets/:id/audit
 router.get('/:id/audit', requireAuth, async (req, res) => {
   try {

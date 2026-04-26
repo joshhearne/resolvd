@@ -58,4 +58,15 @@ function hashQuery(query) {
   return tokenize(query).map(hashToken);
 }
 
-module.exports = { buildIndex, hashQuery, tokenize, MIN_TOKEN_LEN };
+// Whole-string HMAC for fields where you want exact-equality lookup
+// (vendor contact email, sender address on inbound webhook). The value is
+// lowercased and trimmed; no token splitting. Returns the same hex
+// truncation as token hashes so the column type stays consistent.
+function hashWhole(value) {
+  if (value == null) return null;
+  const normalized = String(value).trim().toLowerCase();
+  if (!normalized) return null;
+  return hashToken(normalized);
+}
+
+module.exports = { buildIndex, hashQuery, hashWhole, tokenize, MIN_TOKEN_LEN };

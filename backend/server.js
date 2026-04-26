@@ -23,6 +23,8 @@ const exportRoutes = require('./routes/export');
 const followerRoutes = require('./routes/followers');
 const statusRoutes = require('./routes/statuses');
 const supportRoutes = require('./routes/support');
+const companyRoutes = require('./routes/companies');
+const contactRoutes = require('./routes/contacts');
 const { requireSupportAccessIfSupport } = require('./middleware/supportAccess');
 
 const app = express();
@@ -80,6 +82,8 @@ app.use('/api/branding', brandingRoutes);
 app.use('/api/export', exportRoutes);
 app.use('/api/tickets/:ticketId', followerRoutes);
 app.use('/api/statuses', statusRoutes);
+app.use('/api/companies', companyRoutes);
+app.use('/api', contactRoutes);
 
 // Health check
 app.get('/health', (req, res) => res.json({ ok: true }));
