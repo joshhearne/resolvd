@@ -480,6 +480,64 @@ async function initSchema() {
     // adding vendor contacts. Comma-separated local-parts (e.g. "ops,it").
     await client.query(`ALTER TABLE auth_settings ADD COLUMN IF NOT EXISTS email_blocklist TEXT NOT NULL DEFAULT ''`);
 
+    // Per-comment "share with vendor" toggle. Default FALSE keeps internal
+    // discussion internal even when ticket has external contacts attached.
+    // The template renderer (services/emailTemplate.js) filters
+    // {ticket.reply} / {ticket.replies.N} on this flag, so an admin can
+    // never accidentally leak internal threads through a vendor template.
+    await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS is_external_visible BOOLEAN NOT NULL DEFAULT FALSE`);
+
+    // Admin-editable email templates. event_type + audience is the lookup
+    // key; templates carry tag placeholders rendered at send time
+    // (services/emailTemplate.js). Not encrypted — no PII in the template
+    // text, only structure. is_html toggles between escaped HTML and
+    // plaintext rendering.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS email_templates (
+        id SERIAL PRIMARY KEY,
+        event_type TEXT NOT NULL,
+        audience TEXT NOT NULL,
+        subject_template TEXT NOT NULL,
+        body_template TEXT NOT NULL,
+        is_html BOOLEAN NOT NULL DEFAULT FALSE,
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        default_replies_count INTEGER NOT NULL DEFAULT 3,
+        updated_at TIMESTAMPTZ DEFAULT NOW(),
+        updated_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        UNIQUE(event_type, audience)
+      )
+    `);
+
+    // Seed default templates the first time the table is created.
+    const tplExisting = await client.query('SELECT COUNT(*)::int AS cnt FROM email_templates');
+    if (tplExisting.rows[0].cnt === 0) {
+      const defaults = [
+        ['new_ticket', 'vendor',
+          'New ticket {ticket.ref}: {ticket.title}',
+          'Hi {vendor.contact},\n\nA new ticket has been opened with {site.name}:\n\n  Ref: {ticket.ref}\n  Title: {ticket.title}\n  Priority: {ticket.priority}\n\n{ticket.description}\n\nView and reply: {ticket.url}\n\n— {actor.name}'],
+        ['new_comment', 'vendor',
+          'Update on {ticket.ref}: {ticket.title}',
+          'Hi {vendor.contact},\n\nThere is a new update on ticket {ticket.ref}.\n\n{ticket.reply}\n\nFor context, the most recent activity:\n{ticket.replies.3}\n\nView the full thread: {ticket.url}\n\n— {actor.name}'],
+        ['status_change', 'vendor',
+          '{ticket.ref} status: {ticket.status}',
+          'Hi {vendor.contact},\n\nTicket {ticket.ref} ("{ticket.title}") is now {ticket.status}.\n\n{ticket.url}\n\n— {actor.name}'],
+        ['ticket_resolved', 'vendor',
+          'Resolved: {ticket.ref} {ticket.title}',
+          'Hi {vendor.contact},\n\n{ticket.ref} has been marked Resolved.\n\nLast update:\n{ticket.reply}\n\nIf this is incorrect please reply via {ticket.url}.\n\n— {actor.name}'],
+        ['inbound_matched', 'submitter',
+          'Vendor reply on {ticket.ref}',
+          'A reply from the vendor was matched to ticket {ticket.ref} ("{ticket.title}"):\n\n{ticket.reply}\n\n{ticket.url}'],
+      ];
+      for (const [event, audience, subj, body] of defaults) {
+        await client.query(
+          `INSERT INTO email_templates (event_type, audience, subject_template, body_template)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT DO NOTHING`,
+          [event, audience, subj, body]
+        );
+      }
+    }
+
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');
