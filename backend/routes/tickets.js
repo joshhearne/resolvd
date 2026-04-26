@@ -534,6 +534,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
       const updResult = await client.query(`
         SELECT t.*,
           proj.name as project_name, proj.prefix as project_prefix,
+          proj.has_external_vendor as project_has_external_vendor,
           sub.display_name as submitted_by_name,
           asgn.display_name as assigned_to_name,
           bt.mot_ref as blocking_ticket_ref, bt.title as blocking_ticket_title,
