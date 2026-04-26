@@ -4,6 +4,8 @@ import { useAuth } from "../context/AuthContext";
 
 const MANAGER_TABS = [
   { to: "/admin/users", label: "Users" },
+  { to: "/admin/companies", label: "Companies" },
+  { to: "/admin/inbound", label: "Inbound" },
   { to: "/admin/export", label: "Export" },
 ];
 
@@ -11,6 +13,9 @@ const ADMIN_ONLY_TABS = [
   { to: "/admin/auth", label: "Authentication" },
   { to: "/admin/statuses", label: "Statuses" },
   { to: "/admin/branding", label: "Branding" },
+  { to: "/admin/email-templates", label: "Email templates" },
+  { to: "/admin/support", label: "Support access" },
+  { to: "/admin/encryption", label: "Encryption" },
 ];
 
 export default function Admin() {

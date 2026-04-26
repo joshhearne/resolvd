@@ -16,6 +16,11 @@ import AdminAuth from "./pages/AdminAuth";
 import AdminBranding from "./pages/AdminBranding";
 import AdminExport from "./pages/AdminExport";
 import AdminStatuses from "./pages/AdminStatuses";
+import AdminCompanies from "./pages/AdminCompanies";
+import AdminEmailTemplates from "./pages/AdminEmailTemplates";
+import AdminInbound from "./pages/AdminInbound";
+import AdminSupport from "./pages/AdminSupport";
+import AdminEncryption from "./pages/AdminEncryption";
 import PrintExport from "./pages/PrintExport";
 import Projects from "./pages/Projects";
 import ProjectDetail from "./pages/ProjectDetail";
@@ -135,6 +140,11 @@ function AppRoutes() {
           <Route path="statuses" element={<AdminStatuses />} />
           <Route path="branding" element={<AdminBranding />} />
           <Route path="export" element={<AdminExport />} />
+          <Route path="companies" element={<AdminCompanies />} />
+          <Route path="email-templates" element={<AdminEmailTemplates />} />
+          <Route path="inbound" element={<AdminInbound />} />
+          <Route path="support" element={<AdminSupport />} />
+          <Route path="encryption" element={<AdminEncryption />} />
         </Route>
       </Route>
     </Routes>

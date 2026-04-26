@@ -239,6 +239,55 @@ export default function AdminAuth() {
         />
       </Section>
 
+      <Section title="Vendor outbound &amp; muted-reply digest">
+        <Field
+          label="Generic-mailbox blocklist (extra local-parts)"
+          value={s.email_blocklist || ""}
+          onChange={(v) => update("email_blocklist", v)}
+          hint="Comma-separated. Adds to the built-in list (support, helpdesk, noreply, info, …) so adding contacts at those addresses is rejected."
+        />
+        <Toggle
+          label="Send daily digest of muted vendor replies"
+          checked={s.muted_digest_enabled}
+          onChange={(v) => update("muted_digest_enabled", v)}
+          hint="Followers get one summary email per day with every muted vendor reply that arrived in the prior 24h."
+        />
+        <div className="grid grid-cols-3 gap-3">
+          <Field
+            label="Local hour (0-23)"
+            type="number"
+            value={s.muted_digest_local_hour}
+            onChange={(v) => update("muted_digest_local_hour", parseInt(v, 10))}
+          />
+          <Field
+            label="Local minute (0-59)"
+            type="number"
+            value={s.muted_digest_local_minute}
+            onChange={(v) => update("muted_digest_local_minute", parseInt(v, 10))}
+          />
+          <Field
+            label="Timezone (IANA)"
+            value={s.muted_digest_timezone || "UTC"}
+            onChange={(v) => update("muted_digest_timezone", v)}
+            hint="e.g. America/New_York, Europe/London."
+          />
+        </div>
+        <div className="flex gap-2 pt-1">
+          <button
+            type="button"
+            onClick={async () => {
+              try {
+                const r = await api.post("/api/auth-settings/muted-digest/run-now", {});
+                toast.success(`Digest sent to ${r.recipients} follower${r.recipients === 1 ? "" : "s"}`);
+              } catch (e) { toast.error(e.message); }
+            }}
+            className="text-xs px-3 py-1 rounded border border-border bg-surface-2 hover:bg-surface text-fg-muted hover:text-fg"
+          >
+            Send digest now
+          </button>
+        </div>
+      </Section>
+
       <div className="flex gap-2">
         <button
           onClick={save}
