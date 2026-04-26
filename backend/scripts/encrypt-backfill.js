@@ -1,8 +1,8 @@
 #!/usr/bin/env node
 // Encrypt-backfill: populates *_enc shadow columns from existing plaintext.
 // Idempotent — rows whose shadow column is already non-null are skipped.
-// Read/write code paths still use plaintext during Phase 1; this script
-// only stages ciphertext so Phase 2 can flip the switch atomically.
+// Under standard mode, also encrypts file bodies on disk and NULLs the
+// plaintext columns so live reads stop falling back to plaintext.
 //
 // Usage:
 //   RESOLVD_MASTER_KEY=... node backend/scripts/encrypt-backfill.js
@@ -10,15 +10,20 @@
 
 require('dotenv').config({ path: require('path').join(__dirname, '../../.env') });
 
+const path = require('path');
+const fsp = require('fs').promises;
 const { pool } = require('../db/pool');
 const { encrypt, decrypt } = require('../services/crypto');
+const blindIndex = require('../services/blindIndex');
+
+const UPLOADS_DIR = process.env.UPLOADS_DIR || '/data/uploads';
 
 const VERIFY = process.argv.includes('--verify');
 const BATCH = 200;
 
 // Each entry: table, primary key column, [{ plain, enc, ctx }]
-// ctx string is `<table>.<col>` so it stays stable when Phase 2 wires the
-// live read path through services/fields.js.
+// ctx string must match what services/fields.js uses on the live read path
+// (`<table>.<col>`) so backfilled rows decrypt cleanly under standard mode.
 const TARGETS = [
   {
     table: 'tickets',
@@ -55,7 +60,7 @@ const TARGETS = [
   },
 ];
 
-async function backfillTable(client, target) {
+async function backfillTable(client, target, mode) {
   const { table, pk, cols } = target;
   let totalEncrypted = 0;
   let totalSkipped = 0;
@@ -105,6 +110,19 @@ async function backfillTable(client, target) {
           }
           totalVerified++;
         }
+
+        // Maintain the blind index for ticket titles in lockstep so search
+        // keeps working after the plaintext is dropped.
+        if (table === 'tickets' && col.plain === 'title' && mode === 'standard') {
+          updates.push(`title_blind_idx = $${placeholderIdx++}`);
+          values.push(blindIndex.buildIndex(plain));
+        }
+
+        // Under standard mode, NULL the plaintext alongside writing the
+        // ciphertext so live reads stop falling back to plaintext.
+        if (mode === 'standard') {
+          updates.push(`${col.plain} = NULL`);
+        }
       }
 
       if (updates.length > 0) {
@@ -129,16 +147,46 @@ async function backfillTable(client, target) {
 
   const client = await pool.connect();
   try {
+    const settingsRow = await client.query('SELECT mode FROM encryption_settings WHERE id = 1');
+    const mode = settingsRow.rows[0]?.mode || 'off';
+    console.log(`encryption_settings.mode = ${mode}`);
+
     const results = [];
     for (const target of TARGETS) {
-      const r = await backfillTable(client, target);
+      const r = await backfillTable(client, target, mode);
       console.log(`[${r.table}] encrypted=${r.totalEncrypted} skipped=${r.totalSkipped}` +
                   (VERIFY ? ` verified=${r.totalVerified}` : ''));
       results.push(r);
     }
 
+    // Encrypt attachment file bodies on disk under standard mode.
+    let fileEncrypted = 0;
+    let fileSkipped = 0;
+    if (mode === 'standard') {
+      const { rows } = await client.query(
+        `SELECT id, filename FROM attachments WHERE encrypted_at_rest = FALSE`
+      );
+      for (const row of rows) {
+        const fp = path.join(UPLOADS_DIR, row.filename);
+        try {
+          const buf = await fsp.readFile(fp);
+          const blob = await encrypt(buf, `attachments.file:${row.filename}`);
+          await fsp.writeFile(fp, blob);
+          await client.query(
+            `UPDATE attachments SET encrypted_at_rest = TRUE WHERE id = $1`,
+            [row.id]
+          );
+          fileEncrypted++;
+        } catch (err) {
+          console.error(`  ! attachment id=${row.id} (${row.filename}): ${err.message}`);
+          fileSkipped++;
+        }
+      }
+      console.log(`[attachments:file] encrypted=${fileEncrypted} skipped=${fileSkipped}`);
+    }
+
     // Mark backfill complete only when nothing remained to encrypt this run.
-    const totalEncrypted = results.reduce((a, r) => a + r.totalEncrypted, 0);
+    const totalEncrypted = results.reduce((a, r) => a + r.totalEncrypted, 0) + fileEncrypted;
     if (totalEncrypted === 0) {
       await client.query(
         `UPDATE encryption_settings SET backfill_completed_at = NOW(), updated_at = NOW() WHERE id = 1`

@@ -45,14 +45,19 @@ router.get('/stats', requireAuth, async (req, res) => {
 // GET /api/dashboard/activity
 router.get('/activity', requireAuth, async (req, res) => {
   try {
+    const { decryptRows } = require('../services/fields');
     const result = await pool.query(`
-      SELECT a.*, u.display_name as user_name, t.mot_ref, t.title as ticket_title
+      SELECT a.*, u.display_name as user_name, t.mot_ref,
+        t.title as ticket_title, t.title_enc as ticket_title_enc
       FROM audit_log a
       LEFT JOIN users u ON a.user_id = u.id
       LEFT JOIN tickets t ON a.ticket_id = t.id
       ORDER BY a.created_at DESC
       LIMIT 10
     `);
+    await decryptRows('audit_log', result.rows, {
+      aliases: { ticket_title: 'tickets.title' },
+    });
     res.json(result.rows);
   } catch (err) {
     console.error(err);

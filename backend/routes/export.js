@@ -1,6 +1,8 @@
 const express = require('express');
 const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
+const { decryptRows } = require('../services/fields');
+const { decrypt } = require('../services/crypto');
 
 const router = express.Router();
 
@@ -29,12 +31,17 @@ router.get('/tickets', requireAuth, requireRole('Admin', 'Manager'), async (req,
 
     const result = await pool.query(`
       SELECT
-        t.id, t.mot_ref, t.title, t.description,
+        t.id, t.mot_ref,
+        t.title, t.title_enc,
+        t.description, t.description_enc,
         t.internal_status, t.coastal_status, t.coastal_ticket_ref,
         t.effective_priority, t.priority_override, t.computed_priority,
         t.impact, t.urgency,
-        t.blocker_type, t.mot_blocker_note, t.blocked_by_ticket,
-        t.flagged_for_review, t.review_note,
+        t.blocker_type,
+        t.mot_blocker_note, t.mot_blocker_note_enc,
+        t.blocked_by_ticket,
+        t.flagged_for_review,
+        t.review_note, t.review_note_enc,
         t.created_at, t.updated_at,
         u_sub.display_name AS submitter_name,
         u_asgn.display_name AS assignee_name,
@@ -45,6 +52,7 @@ router.get('/tickets', requireAuth, requireRole('Admin', 'Manager'), async (req,
             json_build_object(
               'id', a.id,
               'original_name', a.original_name,
+              'original_name_enc_b64', encode(a.original_name_enc, 'base64'),
               'mimetype', a.mimetype,
               'size', a.size
             ) ORDER BY a.created_at ASC
@@ -63,6 +71,26 @@ router.get('/tickets', requireAuth, requireRole('Admin', 'Manager'), async (req,
         proj.name, proj.prefix
       ORDER BY t.effective_priority ASC, t.mot_ref ASC
     `, params);
+
+    await decryptRows('tickets', result.rows);
+    // Image attachments arrive as JSON arrays; decrypt original_name per item.
+    for (const row of result.rows) {
+      if (Array.isArray(row.images)) {
+        for (const img of row.images) {
+          if (img.original_name_enc_b64) {
+            try {
+              img.original_name = await decrypt(
+                Buffer.from(img.original_name_enc_b64, 'base64'),
+                'attachments.original_name'
+              );
+            } catch (e) {
+              img.original_name = img.original_name || null;
+            }
+          }
+          delete img.original_name_enc_b64;
+        }
+      }
+    }
 
     res.json(result.rows);
   } catch (err) {

@@ -374,6 +374,11 @@ async function initSchema() {
     await client.query(`ALTER TABLE comments ALTER COLUMN body DROP NOT NULL`).catch(() => {});
     await client.query(`ALTER TABLE attachments ALTER COLUMN original_name DROP NOT NULL`).catch(() => {});
 
+    // Blind index: HMAC-of-tokens for ticket title under encrypted mode.
+    // Restores word-level search without exposing plaintext.
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS title_blind_idx TEXT[]`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_title_blind ON tickets USING GIN (title_blind_idx)`);
+
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');

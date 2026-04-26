@@ -3,21 +3,41 @@ const { pool, transaction } = require('../db/pool');
 const { nextMotRef, computePriority } = require('../db/schema');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { notifyStatusChange, notifyPendingReview, notifyNewComment } = require('../services/email');
+const { getMode, buildWritePatch, decryptRow, decryptRows } = require('../services/fields');
+const blindIndex = require('../services/blindIndex');
 
 const router = express.Router();
 
+// Aliases used in JOIN result rows so decryptRow can also recover ciphertext
+// stored under aliased column names (`bt.title AS blocking_ticket_title`).
+const TICKET_JOIN_ALIASES = {
+  blocking_ticket_title: 'tickets.title',
+};
+
 async function auditLog(client, { ticketId, userId, action, oldValue, newValue, note }) {
-  await client.query(`
-    INSERT INTO audit_log (ticket_id, user_id, action, old_value, new_value, note)
-    VALUES ($1, $2, $3, $4, $5, $6)
-  `, [ticketId || null, userId || null, action, oldValue || null, newValue || null, note || null]);
+  const patch = await buildWritePatch(client, 'audit_log', {
+    old_value: oldValue ?? null,
+    new_value: newValue ?? null,
+    note: note ?? null,
+  });
+  const cols = ['ticket_id', 'user_id', 'action', ...patch.cols];
+  const values = [ticketId || null, userId || null, action, ...patch.values];
+  const placeholders = cols.map((_, i) => `$${i + 1}`).join(', ');
+  await client.query(
+    `INSERT INTO audit_log (${cols.join(', ')}) VALUES (${placeholders})`,
+    values
+  );
 }
 
 async function systemComment(client, ticketId, body) {
-  await client.query(`
-    INSERT INTO comments (ticket_id, user_id, body, is_internal, is_system)
-    VALUES ($1, NULL, $2, TRUE, TRUE)
-  `, [ticketId, body]);
+  const patch = await buildWritePatch(client, 'comments', { body });
+  const cols = ['ticket_id', 'user_id', 'is_internal', 'is_system', ...patch.cols];
+  const values = [ticketId, null, true, true, ...patch.values];
+  const placeholders = cols.map((_, i) => `$${i + 1}`).join(', ');
+  await client.query(
+    `INSERT INTO comments (${cols.join(', ')}) VALUES (${placeholders})`,
+    values
+  );
 }
 
 // Returns array of project IDs the user can access, or null if Admin (= all)
@@ -119,11 +139,29 @@ router.get('/', requireAuth, async (req, res) => {
       }
     }
 
+    // Search: under encrypted mode the title ciphertext is opaque to ILIKE.
+    // Use the title_blind_idx HMAC array for word-equality candidate match,
+    // then post-filter the decrypted rows for the actual substring match.
+    let postFilterTerm = null;
     if (q && q.trim()) {
       const term = `%${q.trim()}%`;
-      where.push(`(t.title ILIKE $${p} OR t.mot_ref ILIKE $${p+1} OR t.description ILIKE $${p+2} OR t.coastal_ticket_ref ILIKE $${p+3})`);
-      params.push(term, term, term, term);
-      p += 4;
+      const mode = await getMode(pool);
+      if (mode === 'off') {
+        where.push(`(t.title ILIKE $${p} OR t.mot_ref ILIKE $${p+1} OR t.description ILIKE $${p+2} OR t.coastal_ticket_ref ILIKE $${p+3})`);
+        params.push(term, term, term, term);
+        p += 4;
+      } else {
+        const tokenHashes = blindIndex.hashQuery(q);
+        const titleClause = tokenHashes.length
+          ? `t.title_blind_idx && $${p++}::text[]`
+          : null;
+        if (tokenHashes.length) params.push(tokenHashes);
+        const refClauses = [`t.mot_ref ILIKE $${p++}`, `t.coastal_ticket_ref ILIKE $${p++}`];
+        params.push(term, term);
+        const clauses = titleClause ? [titleClause, ...refClauses] : refClauses;
+        where.push(`(${clauses.join(' OR ')})`);
+        postFilterTerm = q.trim().toLowerCase();
+      }
     }
     if (internal_status) { where.push(`t.internal_status = $${p++}`); params.push(internal_status); }
     if (coastal_status) { where.push(`t.coastal_status = $${p++}`); params.push(coastal_status); }
@@ -148,7 +186,8 @@ router.get('/', requireAuth, async (req, res) => {
         sub.display_name as submitted_by_name,
         asgn.display_name as assigned_to_name,
         bt.mot_ref as blocking_ticket_ref,
-        bt.title as blocking_ticket_title
+        bt.title as blocking_ticket_title,
+        bt.title_enc as blocking_ticket_title_enc
       FROM tickets t
       LEFT JOIN projects proj ON t.project_id = proj.id
       LEFT JOIN users sub ON t.submitted_by = sub.id
@@ -161,9 +200,25 @@ router.get('/', requireAuth, async (req, res) => {
 
     const total = await pool.query(`SELECT COUNT(*) as cnt FROM tickets t ${whereClause}`, params);
 
+    await decryptRows('tickets', tickets.rows, { aliases: TICKET_JOIN_ALIASES });
+
+    let outRows = tickets.rows;
+    let outTotal = parseInt(total.rows[0].cnt, 10);
+    if (postFilterTerm) {
+      outRows = outRows.filter(r =>
+        (r.title && r.title.toLowerCase().includes(postFilterTerm)) ||
+        (r.description && r.description.toLowerCase().includes(postFilterTerm)) ||
+        (r.mot_ref && r.mot_ref.toLowerCase().includes(postFilterTerm)) ||
+        (r.coastal_ticket_ref && r.coastal_ticket_ref.toLowerCase().includes(postFilterTerm))
+      );
+      // Total in encrypted mode is approximate — the filter is partly
+      // post-fetch, so we report the visible count rather than recompute.
+      outTotal = outRows.length;
+    }
+
     res.json({
-      tickets: tickets.rows,
-      total: parseInt(total.rows[0].cnt, 10),
+      tickets: outRows,
+      total: outTotal,
       page: Number(page),
       limit: Number(limit),
     });
@@ -202,17 +257,29 @@ router.post('/', requireAuth, requireRole('Admin', 'Submitter'), async (req, res
     const ticket = await transaction(async (client) => {
       const mot_ref = await nextMotRef(client, Number(project_id));
 
-      const result = await client.query(`
-        INSERT INTO tickets (project_id, mot_ref, title, description, submitted_by, assigned_to,
-          impact, urgency, computed_priority, effective_priority, coastal_ticket_ref)
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $9, $10)
-        RETURNING *
-      `, [
-        Number(project_id), mot_ref, title, description || null, user.id,
+      const sensitivePatch = await buildWritePatch(client, 'tickets', {
+        title,
+        description: description || null,
+      });
+      const mode = await getMode(client);
+      const baseCols = ['project_id', 'mot_ref', 'submitted_by', 'assigned_to',
+        'impact', 'urgency', 'computed_priority', 'effective_priority', 'coastal_ticket_ref',
+        'title_blind_idx'];
+      const baseValues = [
+        Number(project_id), mot_ref, user.id,
         assigned_to ? Number(assigned_to) : null,
-        imp, urg, computed,
+        imp, urg, computed, computed,
         coastal_ticket_ref || null,
-      ]);
+        mode === 'standard' ? blindIndex.buildIndex(title) : null,
+      ];
+      const cols = [...baseCols, ...sensitivePatch.cols];
+      const values = [...baseValues, ...sensitivePatch.values];
+      const placeholders = cols.map((_, i) => `$${i + 1}`).join(', ');
+
+      const result = await client.query(
+        `INSERT INTO tickets (${cols.join(', ')}) VALUES (${placeholders}) RETURNING *`,
+        values
+      );
 
       const t = result.rows[0];
       await auditLog(client, { ticketId: t.id, userId: user.id, action: 'ticket_created', newValue: mot_ref });
@@ -224,6 +291,7 @@ router.post('/', requireAuth, requireRole('Admin', 'Submitter'), async (req, res
       return t;
     });
 
+    await decryptRow('tickets', ticket);
     res.status(201).json(ticket);
   } catch (err) {
     console.error(err);
@@ -258,27 +326,48 @@ router.get('/similar', requireAuth, async (req, res) => {
 
     const whereClause = 'AND ' + where.join(' AND ');
 
-    const result = await pool.query(`
-      SELECT DISTINCT ON (t.id)
-        t.id, t.mot_ref, t.title, t.internal_status, t.effective_priority,
-        t.description, t.coastal_ticket_ref,
-        proj.name AS project_name,
-        ts_rank(
-          to_tsvector('english', t.title || ' ' || COALESCE(t.description, '')),
-          plainto_tsquery('english', $1)
-        ) AS rank
-      FROM tickets t
-      LEFT JOIN projects proj ON t.project_id = proj.id
-      WHERE (
-        ($1 <> '' AND to_tsvector('english', t.title || ' ' || COALESCE(t.description, ''))
-          @@ plainto_tsquery('english', $1))
-        OR ($2 <> '' AND t.coastal_ticket_ref IS NOT NULL AND t.coastal_ticket_ref = $2)
-      )
-      ${whereClause}
-      ORDER BY t.id, rank DESC
-      LIMIT 5
-    `, params);
+    // Encrypted mode disables Postgres full-text on title/description.
+    // Phase 2c will reintroduce title fuzzy match via a HMAC blind index.
+    // External-ref exact match still works either way.
+    const mode = await getMode(pool);
+    let result;
+    if (mode === 'off') {
+      result = await pool.query(`
+        SELECT DISTINCT ON (t.id)
+          t.id, t.mot_ref, t.title, t.internal_status, t.effective_priority,
+          t.description, t.coastal_ticket_ref,
+          proj.name AS project_name,
+          ts_rank(
+            to_tsvector('english', t.title || ' ' || COALESCE(t.description, '')),
+            plainto_tsquery('english', $1)
+          ) AS rank
+        FROM tickets t
+        LEFT JOIN projects proj ON t.project_id = proj.id
+        WHERE (
+          ($1 <> '' AND to_tsvector('english', t.title || ' ' || COALESCE(t.description, ''))
+            @@ plainto_tsquery('english', $1))
+          OR ($2 <> '' AND t.coastal_ticket_ref IS NOT NULL AND t.coastal_ticket_ref = $2)
+        )
+        ${whereClause}
+        ORDER BY t.id, rank DESC
+        LIMIT 5
+      `, params);
+    } else {
+      // External-ref exact match only.
+      if (!extRef) return res.json([]);
+      result = await pool.query(`
+        SELECT t.id, t.mot_ref, t.title, t.title_enc, t.internal_status, t.effective_priority,
+          t.description, t.description_enc, t.coastal_ticket_ref,
+          proj.name AS project_name, 0 AS rank
+        FROM tickets t
+        LEFT JOIN projects proj ON t.project_id = proj.id
+        WHERE t.coastal_ticket_ref = $2
+        ${whereClause}
+        LIMIT 5
+      `, params);
+    }
 
+    await decryptRows('tickets', result.rows);
     res.json(result.rows);
   } catch (err) {
     console.error(err);
@@ -294,7 +383,7 @@ router.get('/:id', requireAuth, async (req, res) => {
         proj.name as project_name, proj.prefix as project_prefix, proj.has_external_vendor as project_has_external_vendor,
         sub.display_name as submitted_by_name, sub.email as submitted_by_email,
         asgn.display_name as assigned_to_name,
-        bt.mot_ref as blocking_ticket_ref, bt.title as blocking_ticket_title, bt.internal_status as blocking_ticket_status
+        bt.mot_ref as blocking_ticket_ref, bt.title as blocking_ticket_title, bt.title_enc as blocking_ticket_title_enc, bt.internal_status as blocking_ticket_status
       FROM tickets t
       LEFT JOIN projects proj ON t.project_id = proj.id
       LEFT JOIN users sub ON t.submitted_by = sub.id
@@ -304,6 +393,7 @@ router.get('/:id', requireAuth, async (req, res) => {
     `, [req.params.id]);
 
     if (!result.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
+    await decryptRow('tickets', result.rows[0], { aliases: TICKET_JOIN_ALIASES });
     res.json(result.rows[0]);
   } catch (err) {
     console.error(err);
@@ -400,13 +490,29 @@ router.patch('/:id', requireAuth, async (req, res) => {
       if (Object.keys(updates).length === 0) return ticket;
       updates.updated_at = new Date().toISOString();
 
-      const keys = Object.keys(updates);
-      const vals = Object.values(updates);
-      const setClauses = keys.map((k, i) => `${k} = $${i + 1}`).join(', ');
+      // Split sensitive vs pass-through fields, then encrypt the sensitive
+      // ones via buildWritePatch so writes go to *_enc when mode='standard'.
+      const SENSITIVE = new Set(['title', 'description', 'review_note', 'mot_blocker_note']);
+      const plainObj = {};
+      const passthrough = {};
+      for (const [k, v] of Object.entries(updates)) {
+        if (SENSITIVE.has(k)) plainObj[k] = v; else passthrough[k] = v;
+      }
+      const sensitivePatch = await buildWritePatch(client, 'tickets', plainObj);
+      const updMode = await getMode(client);
+      const extraCols = [];
+      const extraVals = [];
+      if ('title' in plainObj) {
+        extraCols.push('title_blind_idx');
+        extraVals.push(updMode === 'standard' ? blindIndex.buildIndex(plainObj.title) : null);
+      }
+      const finalCols = [...Object.keys(passthrough), ...sensitivePatch.cols, ...extraCols];
+      const finalVals = [...Object.values(passthrough), ...sensitivePatch.values, ...extraVals];
+      const setClauses = finalCols.map((k, i) => `${k} = $${i + 1}`).join(', ');
 
       await client.query(
-        `UPDATE tickets SET ${setClauses} WHERE id = $${keys.length + 1}`,
-        [...vals, ticket.id]
+        `UPDATE tickets SET ${setClauses} WHERE id = $${finalCols.length + 1}`,
+        [...finalVals, ticket.id]
       );
 
       const updResult = await client.query(`
@@ -414,7 +520,8 @@ router.patch('/:id', requireAuth, async (req, res) => {
           proj.name as project_name, proj.prefix as project_prefix,
           sub.display_name as submitted_by_name,
           asgn.display_name as assigned_to_name,
-          bt.mot_ref as blocking_ticket_ref, bt.title as blocking_ticket_title, bt.internal_status as blocking_ticket_status
+          bt.mot_ref as blocking_ticket_ref, bt.title as blocking_ticket_title,
+          bt.title_enc as blocking_ticket_title_enc, bt.internal_status as blocking_ticket_status
         FROM tickets t
         LEFT JOIN projects proj ON t.project_id = proj.id
         LEFT JOIN users sub ON t.submitted_by = sub.id
@@ -423,7 +530,9 @@ router.patch('/:id', requireAuth, async (req, res) => {
         WHERE t.id = $1
       `, [ticket.id]);
 
-      return updResult.rows[0];
+      const row = updResult.rows[0];
+      await decryptRow('tickets', row, { aliases: TICKET_JOIN_ALIASES });
+      return row;
     });
 
     res.json(updated);
@@ -472,6 +581,7 @@ router.get('/:id/audit', requireAuth, async (req, res) => {
       WHERE a.ticket_id = $1
       ORDER BY a.created_at ASC
     `, [req.params.id]);
+    await decryptRows('audit_log', result.rows);
     res.json(result.rows);
   } catch (err) {
     console.error(err);
