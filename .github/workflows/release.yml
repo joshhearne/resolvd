@@ -32,15 +32,36 @@ jobs:
 
       - name: Build release notes
         id: notes
+        env:
+          # First-release floor. When no previous tag exists, walk
+          # commits from this anchor instead of the dawn of the repo —
+          # the pre-rebrand history (MOT Operations / Punchlist /
+          # Motorhomes) is irrelevant to the Resolvd changelog.
+          # 14c6613 = "Finish Resolvd rebrand" (the cutover commit).
+          FIRST_RELEASE_BASELINE: 14c6613
+          # Belt-and-braces filter: drop any commit subject that still
+          # mentions the legacy product names so a stray future commit
+          # can't leak them into release notes.
+          NOISE_RE: '\b(MOT|Coastal|Motorhomes|Punchlist)\b'
         run: |
           set -e
           PREV="${{ steps.prev.outputs.tag }}"
           if [ -z "$PREV" ]; then
-            RANGE="HEAD"
+            RANGE="${FIRST_RELEASE_BASELINE}..HEAD"
             HEADING="Initial release"
           else
             RANGE="${PREV}..HEAD"
             HEADING="Changes since ${PREV}"
+          fi
+
+          # Pipe through grep -v to strip noise lines. `|| true` keeps
+          # the step green when grep filters everything (zero matches
+          # exits 1).
+          BODY_LIST=$(git log "$RANGE" --pretty=format:'- %s (%h)' --reverse \
+            | grep -viE "$NOISE_RE" \
+            || true)
+          if [ -z "$BODY_LIST" ]; then
+            BODY_LIST="- (no notable commits since previous release)"
           fi
 
           {
@@ -48,9 +69,7 @@ jobs:
             echo ""
             echo "### Commits"
             echo ""
-            # Commit subjects, one per bullet, with short SHA links.
-            git log "$RANGE" --pretty=format:'- %s (%h)' --reverse
-            echo ""
+            echo "$BODY_LIST"
             echo ""
             echo "### Compare"
             if [ -n "$PREV" ]; then
