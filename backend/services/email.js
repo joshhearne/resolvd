@@ -8,6 +8,35 @@ const { getBranding } = require('./branding');
 const FALLBACK_FROM = process.env.MAIL_FROM || 'noreply@localhost';
 const APP_URL = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
 
+// ─── MIME helper (Gmail raw send) ────────────────────────────────────────────
+function buildRawMimeEmail({ from, to, subject, html, headers, replyTo, attachments }) {
+  const boundary = `----=_Part_${Date.now()}_${Math.random().toString(36).slice(2)}`;
+  const toStr = Array.isArray(to) ? to.join(', ') : to;
+  const lines = [`From: ${from}`, `To: ${toStr}`, `Subject: ${subject}`, 'MIME-Version: 1.0'];
+  if (replyTo) lines.push(`Reply-To: ${replyTo}`);
+  if (headers) {
+    for (const [k, v] of Object.entries(headers)) {
+      if (/^[a-z0-9-]+$/i.test(k)) lines.push(`${k}: ${String(v).replace(/[\r\n]/g, ' ')}`);
+    }
+  }
+  if (!attachments?.length) {
+    lines.push('Content-Type: text/html; charset=UTF-8', '', html);
+  } else {
+    lines.push(`Content-Type: multipart/mixed; boundary="${boundary}"`, '',
+      `--${boundary}`, 'Content-Type: text/html; charset=UTF-8', '', html);
+    for (const att of attachments) {
+      lines.push(`--${boundary}`,
+        `Content-Type: ${att.mimetype}`,
+        'Content-Transfer-Encoding: base64',
+        `Content-Disposition: attachment; filename="${att.filename}"`,
+        '', att.data.toString('base64'));
+    }
+    lines.push(`--${boundary}--`);
+  }
+  return Buffer.from(lines.join('\r\n'))
+    .toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+}
+
 // ─── Backend: Microsoft Graph ────────────────────────────────────────────────
 let _graphTokenCache = null;
 async function getGraphAppToken() {
@@ -28,7 +57,7 @@ async function getGraphAppToken() {
   return result.accessToken;
 }
 
-async function sendViaGraph({ from, to, subject, html, headers, replyTo }) {
+async function sendViaGraph({ from, to, subject, html, headers, replyTo, attachments }) {
   const token = await getGraphAppToken();
   const message = {
     subject,
@@ -41,6 +70,13 @@ async function sendViaGraph({ from, to, subject, html, headers, replyTo }) {
     message.internetMessageHeaders = Object.entries(headers)
       .filter(([k]) => /^x-/i.test(k))
       .map(([name, value]) => ({ name, value: String(value) }));
+  }
+  if (attachments?.length) {
+    message.attachments = attachments.map(a => ({
+      '@odata.type': '#microsoft.graph.fileAttachment',
+      name: a.filename, contentType: a.mimetype,
+      contentBytes: a.data.toString('base64'),
+    }));
   }
   const res = await fetch(
     `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(from)}/sendMail`,
@@ -60,7 +96,7 @@ async function sendViaGraph({ from, to, subject, html, headers, replyTo }) {
 // Uses the same OAuth client credentials as login; admin must grant gmail.send
 // scope when configuring the Google app, and the from-address mailbox must be
 // authorized for impersonation (or use SMTP fallback for consumer accounts).
-async function sendViaGmail({ from, to, subject, html, headers, replyTo }) {
+async function sendViaGmail({ from, to, subject, html, headers, replyTo, attachments }) {
   const settings = await getAuthSettings();
   if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
     throw new Error('Gmail backend requires GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET');
@@ -78,24 +114,7 @@ async function sendViaGmail({ from, to, subject, html, headers, replyTo }) {
   });
   await jwt.authorize();
   const gmail = google.gmail({ version: 'v1', auth: jwt });
-
-  const headerLines = [
-    `From: ${from}`,
-    `To: ${to.join(', ')}`,
-    `Subject: ${subject}`,
-    'MIME-Version: 1.0',
-    'Content-Type: text/html; charset=UTF-8',
-  ];
-  if (replyTo) headerLines.push(`Reply-To: ${replyTo}`);
-  if (headers) {
-    for (const [k, v] of Object.entries(headers)) {
-      if (/^[a-z0-9-]+$/i.test(k)) headerLines.push(`${k}: ${String(v).replace(/[\r\n]/g, ' ')}`);
-    }
-  }
-
-  const raw = Buffer.from(`${headerLines.join('\r\n')}\r\n\r\n${html}`)
-    .toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-
+  const raw = buildRawMimeEmail({ from, to, subject, html, headers, replyTo, attachments });
   await gmail.users.messages.send({ userId: 'me', requestBody: { raw } });
 }
 
@@ -118,16 +137,14 @@ function getSmtpTransport(settings) {
   return _smtpTransport;
 }
 
-async function sendViaSmtp({ from, to, subject, html, headers, replyTo }) {
+async function sendViaSmtp({ from, to, subject, html, headers, replyTo, attachments }) {
   const settings = await getAuthSettings();
   const transport = getSmtpTransport(settings || {});
   await transport.sendMail({
-    from,
-    to: to.join(', '),
-    subject,
-    html,
+    from, to: to.join(', '), subject, html,
     replyTo: replyTo || undefined,
     headers: headers || undefined,
+    attachments: attachments?.map(a => ({ filename: a.filename, content: a.data, contentType: a.mimetype })),
   });
 }
 
@@ -138,7 +155,7 @@ function pickFromAddress(settings, backend) {
   return FALLBACK_FROM; // graph
 }
 
-async function sendMail({ to, subject, html, headers, replyTo, submitterEmail }) {
+async function sendMail({ to, subject, html, headers, replyTo, submitterEmail, attachments }) {
   const addresses = (Array.isArray(to) ? to : [to]).filter(Boolean);
   if (!addresses.length) return;
 
@@ -149,7 +166,7 @@ async function sendMail({ to, subject, html, headers, replyTo, submitterEmail })
     const eb = require('./emailBackends');
     const active = await eb.getActiveAccount();
     if (active) {
-      return await sendMailViaAccount(active, { to: addresses, subject, html, headers, replyTo, submitterEmail });
+      return await sendMailViaAccount(active, { to: addresses, subject, html, headers, replyTo, submitterEmail, attachments });
     }
   } catch (err) {
     console.error('sendMail: active backend lookup failed, falling back to legacy:', err.message);
@@ -158,7 +175,7 @@ async function sendMail({ to, subject, html, headers, replyTo, submitterEmail })
   const settings = await getAuthSettings();
   const backend = settings?.email_backend || 'graph';
   const from = pickFromAddress(settings, backend);
-  const opts = { from, to: addresses, subject, html, headers, replyTo };
+  const opts = { from, to: addresses, subject, html, headers, replyTo, attachments };
   try {
     if (backend === 'smtp') await sendViaSmtp(opts);
     else if (backend === 'gmail') await sendViaGmail(opts);
@@ -172,7 +189,7 @@ async function sendMail({ to, subject, html, headers, replyTo, submitterEmail })
 // email_backend_accounts row. Refreshes the OAuth access token if it's
 // near expiry. Used by both the active-account fast path above and by
 // the admin "test send" endpoint.
-async function sendMailViaAccount(rawAccount, { to, subject, html, headers, replyTo, submitterEmail }, req) {
+async function sendMailViaAccount(rawAccount, { to, subject, html, headers, replyTo, submitterEmail, attachments }, req) {
   const eb = require('./emailBackends');
   // Decrypt secrets if not already decrypted (recordTest etc. might have
   // bypassed the helper).
@@ -193,7 +210,7 @@ async function sendMailViaAccount(rawAccount, { to, subject, html, headers, repl
     ['graph_user', 'gmail_user'].includes(account.provider);
   const effectiveFrom = useSubmitter ? submitterEmail : account.from_address;
   const effectiveReplyTo = useSubmitter ? account.from_address : replyTo;
-  const opts = { from: effectiveFrom, to: addresses, subject, html, headers, replyTo: effectiveReplyTo };
+  const opts = { from: effectiveFrom, to: addresses, subject, html, headers, replyTo: effectiveReplyTo, attachments };
   if (account.provider === 'smtp') {
     return await sendViaSmtpAccount(account, opts);
   }
@@ -206,7 +223,7 @@ async function sendMailViaAccount(rawAccount, { to, subject, html, headers, repl
   throw new Error(`Unsupported provider: ${account.provider}`);
 }
 
-async function sendViaSmtpAccount(account, { from, to, subject, html, headers, replyTo }) {
+async function sendViaSmtpAccount(account, { from, to, subject, html, headers, replyTo, attachments }) {
   const transport = nodemailer.createTransport({
     host: account.smtp_host,
     port: account.smtp_port || 587,
@@ -217,10 +234,11 @@ async function sendViaSmtpAccount(account, { from, to, subject, html, headers, r
     from, to: to.join(', '), subject, html,
     replyTo: replyTo || undefined,
     headers: headers || undefined,
+    attachments: attachments?.map(a => ({ filename: a.filename, content: a.data, contentType: a.mimetype })),
   });
 }
 
-async function sendViaGraphUser(account, { from, to, subject, html, headers, replyTo }) {
+async function sendViaGraphUser(account, { from, to, subject, html, headers, replyTo, attachments }) {
   // Delegated /me/sendMail uses the user's own access token; no app-level
   // Mail.Send permission required.
   const message = {
@@ -233,6 +251,13 @@ async function sendViaGraphUser(account, { from, to, subject, html, headers, rep
     message.internetMessageHeaders = Object.entries(headers)
       .filter(([k]) => /^x-/i.test(k))
       .map(([name, value]) => ({ name, value: String(value) }));
+  }
+  if (attachments?.length) {
+    message.attachments = attachments.map(a => ({
+      '@odata.type': '#microsoft.graph.fileAttachment',
+      name: a.filename, contentType: a.mimetype,
+      contentBytes: a.data.toString('base64'),
+    }));
   }
   const r = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
     method: 'POST',
@@ -248,22 +273,8 @@ async function sendViaGraphUser(account, { from, to, subject, html, headers, rep
   }
 }
 
-async function sendViaGmailUser(account, { from, to, subject, html, headers, replyTo }) {
-  const headerLines = [
-    `From: ${from}`,
-    `To: ${to.join(', ')}`,
-    `Subject: ${subject}`,
-    'MIME-Version: 1.0',
-    'Content-Type: text/html; charset=UTF-8',
-  ];
-  if (replyTo) headerLines.push(`Reply-To: ${replyTo}`);
-  if (headers) {
-    for (const [k, v] of Object.entries(headers)) {
-      if (/^[a-z0-9-]+$/i.test(k)) headerLines.push(`${k}: ${String(v).replace(/[\r\n]/g, ' ')}`);
-    }
-  }
-  const raw = Buffer.from(`${headerLines.join('\r\n')}\r\n\r\n${html}`)
-    .toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
+async function sendViaGmailUser(account, { from, to, subject, html, headers, replyTo, attachments }) {
+  const raw = buildRawMimeEmail({ from, to, subject, html, headers, replyTo, attachments });
   const r = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
     method: 'POST',
     headers: {

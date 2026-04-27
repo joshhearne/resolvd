@@ -17,14 +17,40 @@
 // recipient is an external party who has no key. Vault mode (Phase 4)
 // will route this through the browser instead.
 
+const path = require('path');
+const fsp = require('fs').promises;
 const { pool } = require('../db/pool');
 const { decryptRow, decryptRows } = require('./fields');
+const { decrypt } = require('./crypto');
 const { sendMail } = require('./email');
 const { loadTemplate, render } = require('./emailTemplate');
 const { getBranding } = require('./branding');
 
 const APP_URL = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
 const REPLY_TO = process.env.INBOUND_REPLY_TO || null;
+const UPLOADS_DIR = process.env.UPLOADS_DIR || '/data/uploads';
+
+async function fetchTicketImages(ticketId) {
+  const r = await pool.query(
+    `SELECT filename, original_name, mimetype, encrypted_at_rest
+     FROM attachments WHERE ticket_id = $1 AND mimetype LIKE 'image/%'
+     ORDER BY created_at ASC`,
+    [ticketId]
+  );
+  const result = [];
+  for (const row of r.rows) {
+    try {
+      const raw = await fsp.readFile(path.join(UPLOADS_DIR, row.filename));
+      const data = row.encrypted_at_rest
+        ? await decrypt(raw, `attachments.file:${row.filename}`, { raw: true })
+        : raw;
+      result.push({ filename: row.original_name || row.filename, mimetype: row.mimetype, data });
+    } catch (e) {
+      console.warn(`vendorOutbound: skipping attachment ${row.filename}:`, e.message);
+    }
+  }
+  return result;
+}
 
 async function fetchTicketContext(ticketId, actorId) {
   const t = await pool.query(`SELECT * FROM tickets WHERE id = $1`, [ticketId]);
@@ -84,6 +110,8 @@ async function sendVendorEmail({ eventType, ticketId, actorId }) {
   const contacts = await fetchTicketContacts(ticketId);
   if (!contacts.length) return { sent: 0, skipped: 0 };
 
+  const imageAttachments = await fetchTicketImages(ticketId);
+
   let sent = 0;
   let failed = 0;
   for (const contact of contacts) {
@@ -106,6 +134,7 @@ async function sendVendorEmail({ eventType, ticketId, actorId }) {
         html,
         replyTo: REPLY_TO,
         submitterEmail: ctx.submitterEmail,
+        attachments: imageAttachments,
         headers: {
           'Auto-Submitted': 'auto-generated',
           'X-Auto-Response-Suppress': 'All',
