@@ -170,9 +170,9 @@ export default function TicketDetail() {
   useEffect(() => {
     Promise.all([
       loadTicket(),
-      api.get(`/api/tickets/${id}/audit`),
-      api.get(`/api/tickets/${id}/attachments`),
-      api.get(`/api/tickets/${id}/followers`),
+      api.get(`/api/tickets/${id}/audit`).catch(() => []),
+      api.get(`/api/tickets/${id}/attachments`).catch(() => []),
+      api.get(`/api/tickets/${id}/followers`).catch(() => []),
       api.get(`/api/tickets/${id}/contacts`).catch(() => []),
     ])
       .then(([, audit, atts, fols, vcs]) => {
