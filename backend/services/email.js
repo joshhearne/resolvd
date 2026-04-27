@@ -39,8 +39,7 @@ async function sendViaGraph({ from, to, subject, html, headers, replyTo }) {
   if (replyTo) message.replyTo = [{ emailAddress: { address: replyTo } }];
   if (headers && Object.keys(headers).length) {
     message.internetMessageHeaders = Object.entries(headers)
-      // Graph requires header names to be x-prefixed for custom headers.
-      .filter(([k]) => /^[a-z0-9-]+$/i.test(k))
+      .filter(([k]) => /^x-/i.test(k))
       .map(([name, value]) => ({ name, value: String(value) }));
   }
   const res = await fetch(
@@ -232,7 +231,7 @@ async function sendViaGraphUser(account, { from, to, subject, html, headers, rep
   if (replyTo) message.replyTo = [{ emailAddress: { address: replyTo } }];
   if (headers && Object.keys(headers).length) {
     message.internetMessageHeaders = Object.entries(headers)
-      .filter(([k]) => /^[a-z0-9-]+$/i.test(k))
+      .filter(([k]) => /^x-/i.test(k))
       .map(([name, value]) => ({ name, value: String(value) }));
   }
   const r = await fetch('https://graph.microsoft.com/v1.0/me/sendMail', {
