@@ -229,6 +229,15 @@ export default function TicketDetail() {
       setTicket(updated);
     } catch (e) { toast.error(e.message); }
   }
+  async function notifyVendor() {
+    try {
+      const r = await api.post(`/api/tickets/${id}/notify-vendor`, {});
+      toast.success(r.sent > 0 ? `Vendor notified (${r.sent} recipient${r.sent !== 1 ? "s" : ""})` : "No active contacts to notify");
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }
+
   async function deleteComment(commentId) {
     if (!window.confirm("Delete this comment? This cannot be undone.")) return;
     try {
@@ -479,6 +488,15 @@ export default function TicketDetail() {
               </span>
             )}
           </button>
+          {["Admin", "Manager"].includes(user?.role) && vendorContacts.length > 0 && (
+            <button
+              onClick={notifyVendor}
+              className="btn-secondary btn btn-sm whitespace-nowrap"
+              title="Send new_ticket vendor email now (includes any uploaded attachments)"
+            >
+              Notify Vendor
+            </button>
+          )}
           {isAdmin && (
             <button
               onClick={() => setConfirm("merge")}

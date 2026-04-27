@@ -246,6 +246,9 @@ async function sendViaGraphUser(account, { from, to, subject, html, headers, rep
     body: { contentType: 'HTML', content: html },
     toRecipients: to.map(addr => ({ emailAddress: { address: addr } })),
   };
+  // from is set when send_as_submitter is on — requires Exchange "Send As"
+  // or "Send on Behalf Of" permission granted to this account by tenant admin.
+  if (from) message.from = { emailAddress: { address: from } };
   if (replyTo) message.replyTo = [{ emailAddress: { address: replyTo } }];
   if (headers && Object.keys(headers).length) {
     message.internetMessageHeaders = Object.entries(headers)
