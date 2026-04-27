@@ -118,7 +118,7 @@ Fresh install with local auth enabled shows a **Create Admin Account** form. Fir
 | Role | Permissions |
 |---|---|
 | **Admin** | Everything — branding, auth, encryption mode, support grants, email templates, email backends, status workflows, all Manager actions |
-| **Manager** | Projects, users, tickets, exports, invites, vendor companies/contacts, comments + attachments, vendor-visible comments |
+| **Manager** | Projects, users, tickets, exports, invites, vendor companies/contacts, comments + attachments, vendor-visible comments, delete any comment |
 | **Submitter** | Create tickets, comment, follow, upload attachments |
 | **Viewer** | Read-only |
 | **Support** | External support principals — every request blocked unless an active grant exists (see "JIT support access") |
@@ -151,6 +151,10 @@ Comments marked **Share with vendor** by an Admin/Manager fire an outbound email
 - `Reply-To: $INBOUND_REPLY_TO` when configured
 
 so vendor helpdesks don't auto-reply and reflective loops are dropped on ingest.
+
+Images attached to the ticket are included as file attachments in the outbound email (Graph, SMTP, and Gmail backends all supported).
+
+The `new_ticket` event is **not** fired automatically on ticket creation. An Admin/Manager must click the **Notify Vendor** button on the ticket detail page to send the initial vendor notification. This gives staff a chance to review the ticket before contacting the vendor.
 
 ### Mute vendor + daily digest
 
@@ -335,7 +339,7 @@ docker run --rm -v issues_uploads-data:/src:ro -v "$(pwd)":/dst alpine \
 | Users | Admin/Mgr | Invite, role, MFA, status |
 | Companies | Admin/Mgr | Vendor CRM (companies + contacts) |
 | Inbound | Admin/Mgr | Manual-match queue, with auto-create reject reasons surfaced |
-| Export | Admin/Mgr | Bulk PDF/print export |
+| Export | Admin/Mgr | Bulk PDF/print export and CSV download; toggle to include/exclude images |
 | Authentication | Admin | SSO providers, MFA enforcement, email blocklist, digest schedule |
 | Statuses | Admin | Internal/external status workflow |
 | Branding | Admin | Site name, logo, accent color |
