@@ -307,17 +307,23 @@ export default function PrintExport() {
   const projectIds = params.get("project_ids") || "";
   const updatedFrom = params.get("updated_from") || "";
   const updatedTo = params.get("updated_to") || "";
+  const externalStatuses = params.get("external_statuses") || "";
+  const statusLogic = params.get("status_logic") || "";
+  const companyIds = params.get("company_ids") || "";
 
   useEffect(() => {
     const qs = new URLSearchParams({ statuses });
     if (projectIds) qs.set("project_ids", projectIds);
     if (updatedFrom) qs.set("updated_from", updatedFrom);
     if (updatedTo) qs.set("updated_to", updatedTo);
+    if (externalStatuses) qs.set("external_statuses", externalStatuses);
+    if (statusLogic) qs.set("status_logic", statusLogic);
+    if (companyIds) qs.set("company_ids", companyIds);
     fetch(`/api/export/tickets?${qs}`, { credentials: "include" })
       .then((r) => (r.ok ? r.json() : Promise.reject(r)))
       .then((data) => setTickets(groupSort(data)))
       .catch(() => setError("Failed to load tickets. Are you signed in?"));
-  }, [statuses, projectIds, updatedFrom, updatedTo]);
+  }, [statuses, projectIds, updatedFrom, updatedTo, externalStatuses, statusLogic, companyIds]);
 
   useEffect(() => {
     if (tickets && !didPrint.current) {
