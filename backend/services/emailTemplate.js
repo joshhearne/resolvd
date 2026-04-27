@@ -79,6 +79,7 @@ function makeResolver(ctx, replies, escape) {
       case 'company.name':          return enc(ctx.company?.name);
       case 'ticket.id':             return enc(ctx.ticket?.id);
       case 'ticket.ref':            return enc(ctx.ticket?.mot_ref);
+      case 'ticket.external_ref':   return enc(ctx.ticket?.external_ticket_ref);
       case 'ticket.title':          return enc(ctx.ticket?.title);
       case 'ticket.description':    return enc(ctx.ticket?.description);
       case 'ticket.status':         return enc(ctx.ticket?.internal_status);
@@ -155,6 +156,7 @@ function sampleContext() {
       created_at: new Date().toISOString(),
       updated_at: new Date().toISOString(),
       url: 'https://resolvd.example/tickets/1234',
+      external_ticket_ref: 'VND-5678',
     },
     company: { name: 'Vendor Co', domain: 'vendorco.com' },
     contact: { name: 'Jamie Vendor', email: 'jamie@vendorco.com', role_title: 'Account Manager' },

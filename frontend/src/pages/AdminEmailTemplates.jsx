@@ -4,7 +4,7 @@ import { api } from "../utils/api";
 
 const TAGS = [
   "{vendor.name}", "{vendor.contact}", "{vendor.contact_email}", "{vendor.contact_role}",
-  "{ticket.ref}", "{ticket.title}", "{ticket.description}",
+  "{ticket.ref}", "{ticket.external_ref}", "{ticket.title}", "{ticket.description}",
   "{ticket.status}", "{ticket.priority}", "{ticket.url}",
   "{ticket.reply}", "{ticket.replies.3}", "{ticket.replies.5}",
   "{actor.name}", "{site.name}", "{site.url}",

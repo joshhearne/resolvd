@@ -138,6 +138,26 @@ router.delete('/contacts/:id', requireAuth, requireRole('Admin', 'Manager'), asy
 });
 
 // GET /api/contacts/lookup?email=... — admin tool for the inbound-match UI
+// GET /api/projects/:projectId/contacts — all active contacts for a project,
+// grouped with company info. Used by the new-ticket contact picker.
+router.get('/projects/:projectId/contacts', requireAuth, async (req, res) => {
+  try {
+    const result = await pool.query(`
+      SELECT c.id, c.name, c.name_enc, c.email, c.email_enc, c.role_title,
+             co.id AS company_id, co.name AS company_name, co.name_enc AS company_name_enc
+        FROM contacts c
+        JOIN companies co ON co.id = c.company_id
+       WHERE co.project_id = $1 AND c.is_active = TRUE AND co.is_archived = FALSE
+       ORDER BY co.name, c.name
+    `, [req.params.projectId]);
+    await decryptRows('contacts', result.rows, { aliases: { company_name: 'companies.name' } });
+    res.json(result.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
 router.get('/contacts-lookup', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
     const email = req.query.email;

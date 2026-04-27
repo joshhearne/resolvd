@@ -37,10 +37,17 @@ async function fetchTicketContext(ticketId, actorId) {
     actor = u.rows[0] || null;
   }
 
+  let submitterEmail = null;
+  if (t.rows[0].submitted_by) {
+    const s = await pool.query(`SELECT email FROM users WHERE id = $1`, [t.rows[0].submitted_by]);
+    submitterEmail = s.rows[0]?.email || null;
+  }
+
   const branding = await getBranding().catch(() => null);
   return {
     ticket: { ...t.rows[0], url: `${APP_URL}/tickets/${ticketId}` },
     actor,
+    submitterEmail,
     site: { name: branding?.site_name || 'Resolvd', url: APP_URL },
   };
 }
@@ -98,6 +105,7 @@ async function sendVendorEmail({ eventType, ticketId, actorId }) {
         subject: rendered.subject,
         html,
         replyTo: REPLY_TO,
+        submitterEmail: ctx.submitterEmail,
         headers: {
           'Auto-Submitted': 'auto-generated',
           'X-Auto-Response-Suppress': 'All',

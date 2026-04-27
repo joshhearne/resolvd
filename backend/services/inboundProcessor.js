@@ -31,6 +31,7 @@ const { sendVendorEmail } = require('./vendorOutbound');
 const tpl = require('./emailTemplate');
 const { sendMail } = require('./email');
 const { getBranding } = require('./branding');
+const { notifyManagersAndAdmins } = require('./notifications');
 
 const UPLOADS_DIR = process.env.UPLOADS_DIR || '/data/uploads';
 const APP_URL = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
@@ -123,6 +124,19 @@ async function findContactInProject(email, projectId) {
         AND co.project_id = $2 AND c.is_active = TRUE
       LIMIT 1`,
     [blind, projectId]
+  );
+  return r.rows[0] || null;
+}
+
+// Find a company in the given project by its domain — used to suggest a
+// vendor when an unmatched CC address shares a known company's domain.
+async function findCompanyByDomain(domain, projectId) {
+  if (!domain) return null;
+  const r = await pool.query(
+    `SELECT id, name FROM companies
+      WHERE LOWER(domain) = LOWER($1) AND project_id = $2 AND is_archived = FALSE
+      LIMIT 1`,
+    [domain, projectId]
   );
   return r.rows[0] || null;
 }
@@ -394,30 +408,58 @@ async function tryAutoCreate({ subject, body, fromAddress, ccAddresses, attachme
     }
   }
 
-  // CC fan-out: attach existing project contacts only. Track unknown
-  // CCs on the queue row's reject_reason so the admin sees a hint.
+  // CC fan-out: auto-follow internal users, attach known vendor contacts,
+  // fire admin notifications for unmatched external addresses.
   const attachedContactIds = [];
   const unknownCcs = [];
-  if (project.has_external_vendor) {
-    for (const cc of (ccAddresses || [])) {
-      const lc = String(cc).toLowerCase().trim();
-      if (!lc || lc === fromAddress.toLowerCase()) continue;
-      // Don't attach internal users as "contacts" — they're followers.
-      const internal = await pool.query(
-        `SELECT 1 FROM users WHERE LOWER(email) = $1 LIMIT 1`,
-        [lc]
+  for (const cc of (ccAddresses || [])) {
+    const lc = String(cc).toLowerCase().trim();
+    if (!lc || lc === fromAddress.toLowerCase()) continue;
+
+    // Internal user → add as follower, not a contact row.
+    const internalRow = await pool.query(
+      `SELECT id FROM users WHERE LOWER(email) = $1 AND status = 'active' LIMIT 1`,
+      [lc]
+    );
+    if (internalRow.rows[0]) {
+      await pool.query(
+        `INSERT INTO ticket_followers (ticket_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+        [ticket.id, internalRow.rows[0].id]
       );
-      if (internal.rows[0]) continue;
-      const contact = await findContactInProject(lc, project.id);
-      if (contact) {
-        await pool.query(
-          `INSERT INTO ticket_contacts (ticket_id, contact_id, added_by_user_id)
-           VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
-          [ticket.id, contact.id, submitter.id]
-        );
-        attachedContactIds.push(contact.id);
-      } else {
-        unknownCcs.push(lc);
+      continue;
+    }
+
+    if (!project.has_external_vendor) continue;
+
+    const contact = await findContactInProject(lc, project.id);
+    if (contact) {
+      await pool.query(
+        `INSERT INTO ticket_contacts (ticket_id, contact_id, added_by_user_id)
+         VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+        [ticket.id, contact.id, submitter.id]
+      );
+      attachedContactIds.push(contact.id);
+    } else {
+      unknownCcs.push(lc);
+      const domain = lc.includes('@') ? lc.split('@')[1] : null;
+      const company = domain ? await findCompanyByDomain(domain, project.id) : null;
+      try {
+        await notifyManagersAndAdmins(null, {
+          type: 'unmatched_cc',
+          title: `Unmatched CC on ${ticket.mot_ref}`,
+          body: `${lc} was CC'd on a new ticket but is not a known contact.${company ? ` Possible match: ${company.name}.` : ''}`,
+          data: {
+            ticket_id: ticket.id,
+            ticket_ref: ticket.mot_ref,
+            email: lc,
+            domain,
+            suggested_company_id: company?.id || null,
+            suggested_company_name: company?.name || null,
+            project_id: project.id,
+          },
+        });
+      } catch (e) {
+        console.error('Failed to create unmatched_cc notification:', e.message);
       }
     }
   }

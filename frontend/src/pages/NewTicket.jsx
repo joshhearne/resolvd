@@ -21,11 +21,13 @@ export default function NewTicket() {
     description: "",
     impact: 2,
     urgency: 2,
-    coastal_ticket_ref: "",
+    external_ticket_ref: "",
   });
   const [submitting, setSubmitting] = useState(false);
   const [duplicates, setDuplicates] = useState(null); // null = no check yet, [] = none found, [...] = matches
   const [pendingFiles, setPendingFiles] = useState([]);
+  const [projectContacts, setProjectContacts] = useState([]);
+  const [selectedContactIds, setSelectedContactIds] = useState([]);
 
   useEffect(() => {
     api
@@ -51,6 +53,22 @@ export default function NewTicket() {
     ? selectedProject.has_external_vendor !== false
     : true;
 
+  useEffect(() => {
+    if (!form.project_id) { setProjectContacts([]); setSelectedContactIds([]); return; }
+    const proj = projects.find(p => String(p.id) === String(form.project_id));
+    if (!proj || proj.has_external_vendor === false) { setProjectContacts([]); setSelectedContactIds([]); return; }
+    api.get(`/api/projects/${form.project_id}/contacts`)
+      .then(setProjectContacts)
+      .catch(() => setProjectContacts([]));
+    setSelectedContactIds([]);
+  }, [form.project_id, projects]);
+
+  function toggleContact(id) {
+    setSelectedContactIds(prev =>
+      prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
+    );
+  }
+
   function set(field, value) {
     setForm((f) => ({ ...f, [field]: value }));
   }
@@ -74,8 +92,8 @@ export default function NewTicket() {
 
     try {
       const qs = new URLSearchParams({ title: form.title.trim() });
-      if (form.coastal_ticket_ref?.trim())
-        qs.set("external_ref", form.coastal_ticket_ref.trim());
+      if (form.external_ticket_ref?.trim())
+        qs.set("external_ref", form.external_ticket_ref.trim());
       if (form.project_id) qs.set("project_id", form.project_id);
       const matches = await api.get(`/api/tickets/similar?${qs}`);
       if (matches.length > 0) {
@@ -106,7 +124,8 @@ export default function NewTicket() {
         description: form.description.trim() || null,
         impact: Number(form.impact),
         urgency: Number(form.urgency),
-        coastal_ticket_ref: form.coastal_ticket_ref.trim() || null,
+        external_ticket_ref: form.external_ticket_ref.trim() || null,
+        contact_ids: selectedContactIds,
       });
 
       if (pendingFiles.length > 0) {
@@ -265,11 +284,55 @@ export default function NewTicket() {
             </label>
             <input
               type="text"
-              value={form.coastal_ticket_ref}
-              onChange={(e) => set("coastal_ticket_ref", e.target.value)}
+              value={form.external_ticket_ref}
+              onChange={(e) => set("external_ticket_ref", e.target.value)}
               className="w-full border border-border-strong rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40"
               placeholder="External ticket ID if known"
             />
+          </div>
+        )}
+
+        {hasExternalVendor && projectContacts.length > 0 && (
+          <div>
+            <label className="block text-sm font-medium text-fg mb-1">
+              Vendor Contacts{" "}
+              <span className="text-fg-dim font-normal">(optional)</span>
+            </label>
+            <div className="border border-border rounded-md divide-y divide-border max-h-48 overflow-y-auto">
+              {(() => {
+                const byCompany = projectContacts.reduce((acc, c) => {
+                  const key = c.company_id;
+                  if (!acc[key]) acc[key] = { name: c.company_name, contacts: [] };
+                  acc[key].contacts.push(c);
+                  return acc;
+                }, {});
+                return Object.values(byCompany).map(group => (
+                  <div key={group.name}>
+                    <div className="px-3 py-1 bg-surface-2 text-[11px] font-semibold text-fg-muted uppercase tracking-wide">
+                      {group.name}
+                    </div>
+                    {group.contacts.map(c => (
+                      <label key={c.id} className="flex items-center gap-2 px-3 py-1.5 hover:bg-surface-2 cursor-pointer">
+                        <input
+                          type="checkbox"
+                          checked={selectedContactIds.includes(c.id)}
+                          onChange={() => toggleContact(c.id)}
+                          className="rounded"
+                        />
+                        <span className="text-sm text-fg">{c.name}</span>
+                        {c.role_title && <span className="text-xs text-fg-muted">· {c.role_title}</span>}
+                        {c.email && <span className="text-xs text-fg-dim ml-auto">{c.email}</span>}
+                      </label>
+                    ))}
+                  </div>
+                ));
+              })()}
+            </div>
+            {selectedContactIds.length > 0 && (
+              <p className="text-xs text-fg-muted mt-1">
+                {selectedContactIds.length} contact{selectedContactIds.length !== 1 ? "s" : ""} will be attached
+              </p>
+            )}
           </div>
         )}
 

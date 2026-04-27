@@ -141,7 +141,7 @@ async function initSchema() {
         effective_priority INTEGER NOT NULL DEFAULT 3,
         internal_status TEXT NOT NULL DEFAULT 'Open',
         coastal_status TEXT NOT NULL DEFAULT 'Unacknowledged',
-        coastal_ticket_ref TEXT,
+        external_ticket_ref TEXT,
         coastal_updated_at TIMESTAMPTZ,
         blocker_type TEXT,
         blocked_by_ticket INTEGER REFERENCES tickets(id),
@@ -706,6 +706,40 @@ async function initSchema() {
         );
       }
     }
+
+    // Rename coastal_ticket_ref → external_ticket_ref (generic sanitization).
+    const hasCoastalCol = await client.query(`
+      SELECT 1 FROM information_schema.columns
+       WHERE table_name = 'tickets' AND column_name = 'coastal_ticket_ref'
+    `);
+    if (hasCoastalCol.rows[0]) {
+      await client.query(`ALTER TABLE tickets RENAME COLUMN coastal_ticket_ref TO external_ticket_ref`);
+    }
+
+    // Send-as-submitter toggle. When TRUE on a graph_user or gmail_user
+    // backend, outbound vendor emails set From to the submitting user and
+    // Reply-To to the monitored mailbox (if inbox monitoring is on).
+    // Requires Exchange "Send on Behalf Of" (M365) or Gmail delegation
+    // granted to the backend account by a tenant admin outside the app.
+    await client.query(`ALTER TABLE email_backend_accounts ADD COLUMN IF NOT EXISTS send_as_submitter BOOLEAN NOT NULL DEFAULT FALSE`);
+
+    // In-app notification tray. Surfaces actionable system events to
+    // Managers and Admins — e.g. unmatched CC addresses from email intake
+    // that need to be resolved as contacts. data JSONB carries
+    // event-specific payload (ticket_id, email, domain, suggested_company_id).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS notifications (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        type TEXT NOT NULL,
+        title TEXT NOT NULL,
+        body TEXT,
+        data JSONB,
+        read_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_notifications_user_unread ON notifications(user_id, created_at DESC) WHERE read_at IS NULL`);
 
     await client.query('COMMIT');
   } catch (err) {

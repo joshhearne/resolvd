@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { useParams, useNavigate, Link } from "react-router-dom";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
+import { useAuth } from "../context/AuthContext";
 
 const ROLES = ["Admin", "Manager", "Submitter", "Viewer"];
 
@@ -24,6 +25,8 @@ function RolePill({ role }) {
 export default function ProjectDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const { user } = useAuth();
+  const canEditProject = ["Admin", "Manager"].includes(user?.role);
 
   const [project, setProject] = useState(null);
   const [loading, setLoading] = useState(true);
@@ -208,7 +211,7 @@ export default function ProjectDetail() {
             )}
           </div>
           <div className="flex gap-2">
-            {!editing && (
+            {!editing && canEditProject && (
               <button
                 onClick={() => setEditing(true)}
                 className="btn-secondary btn btn-sm"
@@ -216,12 +219,14 @@ export default function ProjectDetail() {
                 Edit
               </button>
             )}
-            <button
-              onClick={toggleArchive}
-              className={`btn btn-sm ${project.status === "active" ? "btn-secondary text-amber-600 border-amber-300 dark:border-amber-900/50 hover:bg-amber-50 dark:hover:bg-amber-950/40 dark:bg-amber-950/40" : "btn-primary"}`}
-            >
-              {project.status === "active" ? "Archive" : "Restore"}
-            </button>
+            {canEditProject && (
+              <button
+                onClick={toggleArchive}
+                className={`btn btn-sm ${project.status === "active" ? "btn-secondary text-amber-600 border-amber-300 dark:border-amber-900/50 hover:bg-amber-50 dark:hover:bg-amber-950/40 dark:bg-amber-950/40" : "btn-primary"}`}
+              >
+                {project.status === "active" ? "Archive" : "Restore"}
+              </button>
+            )}
           </div>
         </div>
 

@@ -74,6 +74,14 @@ export default function AdminEmailBackends() {
     } catch (e) { toast.error(e.message); }
   }
 
+  async function toggleSendAs(id, enabled) {
+    try {
+      await api.post(`/api/email-backends/${id}/send-as-submitter`, { enabled });
+      await reload();
+      toast.success(enabled ? "Send as submitter on" : "Send as submitter off");
+    } catch (e) { toast.error(e.message); }
+  }
+
   async function saveSmtp(e) {
     e.preventDefault();
     try {
@@ -169,17 +177,55 @@ export default function AdminEmailBackends() {
                       </div>
                     )}
                     {a.provider !== "smtp" && (
-                      <div className="text-xs mt-2 flex items-center gap-2 flex-wrap">
-                        <label className="inline-flex items-center gap-1 text-fg-muted">
-                          <input type="checkbox" checked={!!a.inbox_monitor_enabled}
-                            onChange={(e) => toggleMonitor(a.id, e.target.checked)} />
-                          Monitor inbox (auto-ingest mail)
-                        </label>
-                        {a.inbox_monitor_enabled && a.inbox_subscription_expires_at && (
-                          <span className="text-fg-dim">
-                            renews before {new Date(a.inbox_subscription_expires_at).toLocaleString()}
-                          </span>
-                        )}
+                      <div className="text-xs mt-2 space-y-1.5">
+                        <div className="flex items-center gap-2 flex-wrap">
+                          <label className="inline-flex items-center gap-1 text-fg-muted">
+                            <input type="checkbox" checked={!!a.inbox_monitor_enabled}
+                              onChange={(e) => toggleMonitor(a.id, e.target.checked)} />
+                            Monitor inbox (auto-ingest mail)
+                          </label>
+                          {a.inbox_monitor_enabled && a.inbox_subscription_expires_at && (
+                            <span className="text-fg-dim">
+                              renews before {new Date(a.inbox_subscription_expires_at).toLocaleString()}
+                            </span>
+                          )}
+                        </div>
+                        <div>
+                          <label className="inline-flex items-center gap-1 text-fg-muted">
+                            <input type="checkbox" checked={!!a.send_as_submitter}
+                              onChange={(e) => toggleSendAs(a.id, e.target.checked)} />
+                            Send vendor emails as submitting user
+                          </label>
+                          {a.send_as_submitter && a.provider === "graph_user" && (
+                            <div className="mt-1.5 rounded bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 px-2.5 py-2 text-[11px] text-amber-800 dark:text-amber-300 leading-snug">
+                              <strong>Exchange admin action required.</strong> This mailbox must have{" "}
+                              <em>Send on Behalf Of</em> permission granted for each submitter in Exchange Online.
+                              Open{" "}
+                              <a
+                                href="https://admin.exchange.microsoft.com/#/mailboxes"
+                                target="_blank" rel="noopener noreferrer"
+                                className="underline font-medium"
+                              >
+                                Exchange admin center → Mailboxes
+                              </a>
+                              {" "}→ select this mailbox → Delegation → Send on behalf → add your users.
+                            </div>
+                          )}
+                          {a.send_as_submitter && a.provider === "gmail_user" && (
+                            <div className="mt-1.5 rounded bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 px-2.5 py-2 text-[11px] text-amber-800 dark:text-amber-300 leading-snug">
+                              <strong>Google Workspace admin action required.</strong> Delegation must be enabled
+                              for this mailbox in{" "}
+                              <a
+                                href="https://admin.google.com/ac/apps/gmail/defaultsettings"
+                                target="_blank" rel="noopener noreferrer"
+                                className="underline font-medium"
+                              >
+                                Google Admin → Gmail → Default settings
+                              </a>
+                              {" "}and each submitter added as a delegate.
+                            </div>
+                          )}
+                        </div>
                       </div>
                     )}
                   </div>

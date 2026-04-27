@@ -139,7 +139,7 @@ function pickFromAddress(settings, backend) {
   return FALLBACK_FROM; // graph
 }
 
-async function sendMail({ to, subject, html, headers, replyTo }) {
+async function sendMail({ to, subject, html, headers, replyTo, submitterEmail }) {
   const addresses = (Array.isArray(to) ? to : [to]).filter(Boolean);
   if (!addresses.length) return;
 
@@ -150,7 +150,7 @@ async function sendMail({ to, subject, html, headers, replyTo }) {
     const eb = require('./emailBackends');
     const active = await eb.getActiveAccount();
     if (active) {
-      return await sendMailViaAccount(active, { to: addresses, subject, html, headers, replyTo });
+      return await sendMailViaAccount(active, { to: addresses, subject, html, headers, replyTo, submitterEmail });
     }
   } catch (err) {
     console.error('sendMail: active backend lookup failed, falling back to legacy:', err.message);
@@ -173,7 +173,7 @@ async function sendMail({ to, subject, html, headers, replyTo }) {
 // email_backend_accounts row. Refreshes the OAuth access token if it's
 // near expiry. Used by both the active-account fast path above and by
 // the admin "test send" endpoint.
-async function sendMailViaAccount(rawAccount, { to, subject, html, headers, replyTo }, req) {
+async function sendMailViaAccount(rawAccount, { to, subject, html, headers, replyTo, submitterEmail }, req) {
   const eb = require('./emailBackends');
   // Decrypt secrets if not already decrypted (recordTest etc. might have
   // bypassed the helper).
@@ -187,7 +187,14 @@ async function sendMailViaAccount(rawAccount, { to, subject, html, headers, repl
     account = await eb.refreshIfNeeded(account, req);
   }
   const addresses = Array.isArray(to) ? to : [to];
-  const opts = { from: account.from_address, to: addresses, subject, html, headers, replyTo };
+  // When send_as_submitter is on and a submitter email is available, send
+  // From the submitter and route replies back to the monitored mailbox.
+  // Requires Exchange "Send on Behalf Of" (M365) or Gmail delegation.
+  const useSubmitter = account.send_as_submitter && submitterEmail &&
+    ['graph_user', 'gmail_user'].includes(account.provider);
+  const effectiveFrom = useSubmitter ? submitterEmail : account.from_address;
+  const effectiveReplyTo = useSubmitter ? account.from_address : replyTo;
+  const opts = { from: effectiveFrom, to: addresses, subject, html, headers, replyTo: effectiveReplyTo };
   if (account.provider === 'smtp') {
     return await sendViaSmtpAccount(account, opts);
   }

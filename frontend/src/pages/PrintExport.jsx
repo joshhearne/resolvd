@@ -131,7 +131,7 @@ function TicketCard({ ticket }) {
         >
           {ticket.mot_ref}
         </span>
-        {ticket.coastal_ticket_ref && (
+        {ticket.external_ticket_ref && (
           <span
             style={{
               fontSize: "11px",
@@ -143,7 +143,7 @@ function TicketCard({ ticket }) {
               flexShrink: 0,
             }}
           >
-            Ext: {ticket.coastal_ticket_ref}
+            Ext: {ticket.external_ticket_ref}
           </span>
         )}
         <span

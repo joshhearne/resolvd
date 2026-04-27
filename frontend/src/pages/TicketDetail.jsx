@@ -1354,15 +1354,15 @@ export default function TicketDetail() {
                   )}
                 </Field>
                 <Field label="External Ticket Ref">
-                  {isAdmin && editing.coastal_ticket_ref ? (
+                  {isAdmin && editing.external_ticket_ref ? (
                     <div className="flex gap-2">
                       <input
                         type="text"
-                        value={editValues.coastal_ticket_ref || ""}
+                        value={editValues.external_ticket_ref || ""}
                         onChange={(e) =>
                           setEditValues((v) => ({
                             ...v,
-                            coastal_ticket_ref: e.target.value,
+                            external_ticket_ref: e.target.value,
                           }))
                         }
                         className="border border-border-strong rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-brand/40 flex-1"
@@ -1370,7 +1370,7 @@ export default function TicketDetail() {
                       <button
                         onClick={() =>
                           patch({
-                            coastal_ticket_ref: editValues.coastal_ticket_ref,
+                            external_ticket_ref: editValues.external_ticket_ref,
                           })
                         }
                         disabled={saving}
@@ -1388,17 +1388,17 @@ export default function TicketDetail() {
                   ) : (
                     <div className="flex items-center justify-between">
                       <span className="text-sm text-fg">
-                        {ticket.coastal_ticket_ref || (
+                        {ticket.external_ticket_ref || (
                           <span className="text-fg-dim">—</span>
                         )}
                       </span>
                       {isAdmin && (
                         <button
                           onClick={() => {
-                            setEditing({ coastal_ticket_ref: true });
+                            setEditing({ external_ticket_ref: true });
                             setEditValues({
-                              coastal_ticket_ref:
-                                ticket.coastal_ticket_ref || "",
+                              external_ticket_ref:
+                                ticket.external_ticket_ref || "",
                             });
                           }}
                           className="text-xs text-brand hover:underline"

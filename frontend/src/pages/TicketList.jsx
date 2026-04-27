@@ -188,23 +188,39 @@ export default function TicketList() {
   const presetItem = presetKey
     ? allItems.find((i) => i.key === presetKey)
     : null;
+  // Restore filter state from sessionStorage unless URL specifies a preset.
+  const STORAGE_KEY = "ticket_list_v1";
+  const saved = !presetKey ? (() => { try { return JSON.parse(sessionStorage.getItem(STORAGE_KEY) || "null"); } catch { return null; } })() : null;
+
   const [activeKey, setActiveKey] = useState(
-    presetItem ? presetItem.key : "active",
+    presetItem ? presetItem.key : (saved?.activeKey ?? "active"),
   );
   const [filters, setFilters] = useState(
-    presetItem ? { ...presetItem.filters } : { ...BLANK_FILTERS },
+    presetItem ? { ...presetItem.filters } : (saved?.filters ?? { ...BLANK_FILTERS }),
   );
-  const [sortBy, setSortBy] = useState("updated_at");
-  const [sortDir, setSortDir] = useState("desc");
+  const [sortBy, setSortBy] = useState(saved?.sortBy ?? "updated_at");
+  const [sortDir, setSortDir] = useState(saved?.sortDir ?? "desc");
   const [page, setPage] = useState(1);
+
+  // Persist filter state to sessionStorage whenever it changes
+  const [selectedProjectId, setSelectedProjectIdState] = useState(
+    searchParams.get("project_id")
+      ? Number(searchParams.get("project_id"))
+      : (saved?.selectedProjectId ?? user?.defaultProjectId ?? null),
+  );
+  function setSelectedProjectId(id) {
+    setSelectedProjectIdState(id);
+    try { sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ activeKey, filters, selectedProjectId: id, sortBy, sortDir })); } catch {}
+  }
+
+  useEffect(() => {
+    try {
+      sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ activeKey, filters, selectedProjectId, sortBy, sortDir }));
+    } catch {}
+  }, [activeKey, filters, selectedProjectId, sortBy, sortDir]);
 
   // Projects
   const [projects, setProjects] = useState([]);
-  const [selectedProjectId, setSelectedProjectId] = useState(
-    searchParams.get("project_id")
-      ? Number(searchParams.get("project_id"))
-      : user?.defaultProjectId || null,
-  );
 
   // Sidebar mobile state
   const [sidebarOpen, setSidebarOpen] = useState(false);

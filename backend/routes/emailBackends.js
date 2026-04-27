@@ -133,6 +133,25 @@ router.post('/:id/test', requireAuth, requireRole('Admin'), async (req, res) => 
   }
 });
 
+// POST /api/email-backends/:id/send-as-submitter  body: { enabled: bool }
+// OAuth providers only — SMTP has no per-user delegation mechanism.
+router.post('/:id/send-as-submitter', requireAuth, requireRole('Admin'), async (req, res) => {
+  try {
+    const enabled = !!req.body?.enabled;
+    const r = await pool.query(
+      `UPDATE email_backend_accounts
+          SET send_as_submitter = $1, updated_at = NOW()
+        WHERE id = $2 AND provider IN ('graph_user','gmail_user')
+        RETURNING id, provider, send_as_submitter`,
+      [enabled, req.params.id]
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'Not found, or SMTP accounts do not support send-as' });
+    res.json({ ok: true, send_as_submitter: r.rows[0].send_as_submitter });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.delete('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
   try { await eb.deleteAccount(req.params.id); res.json({ ok: true }); }
   catch (e) { res.status(500).json({ error: e.message }); }

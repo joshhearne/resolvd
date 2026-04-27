@@ -5,6 +5,7 @@ import { useBranding } from "../context/BrandingContext";
 import { useTheme } from "../context/ThemeContext";
 import { brandingLogoFilter } from "../utils/helpers";
 import Avatar from "./Avatar";
+import NotificationTray from "./NotificationTray";
 
 function SearchBar() {
   const [q, setQ] = useState("");
@@ -318,6 +319,7 @@ export default function Layout() {
               <SearchBar />
             </div>
             <div className="flex items-center gap-1">
+              {["Admin", "Manager"].includes(user?.role) && <NotificationTray />}
               <ThemeToggle />
               <UserMenu user={user} logout={logout} />
               <button

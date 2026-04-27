@@ -149,7 +149,7 @@ router.get('/', requireAuth, async (req, res) => {
       const term = `%${q.trim()}%`;
       const mode = await getMode(pool);
       if (mode === 'off') {
-        where.push(`(t.title ILIKE $${p} OR t.mot_ref ILIKE $${p+1} OR t.description ILIKE $${p+2} OR t.coastal_ticket_ref ILIKE $${p+3})`);
+        where.push(`(t.title ILIKE $${p} OR t.mot_ref ILIKE $${p+1} OR t.description ILIKE $${p+2} OR t.external_ticket_ref ILIKE $${p+3})`);
         params.push(term, term, term, term);
         p += 4;
       } else {
@@ -158,7 +158,7 @@ router.get('/', requireAuth, async (req, res) => {
           ? `t.title_blind_idx && $${p++}::text[]`
           : null;
         if (tokenHashes.length) params.push(tokenHashes);
-        const refClauses = [`t.mot_ref ILIKE $${p++}`, `t.coastal_ticket_ref ILIKE $${p++}`];
+        const refClauses = [`t.mot_ref ILIKE $${p++}`, `t.external_ticket_ref ILIKE $${p++}`];
         params.push(term, term);
         const clauses = titleClause ? [titleClause, ...refClauses] : refClauses;
         where.push(`(${clauses.join(' OR ')})`);
@@ -211,7 +211,7 @@ router.get('/', requireAuth, async (req, res) => {
         (r.title && r.title.toLowerCase().includes(postFilterTerm)) ||
         (r.description && r.description.toLowerCase().includes(postFilterTerm)) ||
         (r.mot_ref && r.mot_ref.toLowerCase().includes(postFilterTerm)) ||
-        (r.coastal_ticket_ref && r.coastal_ticket_ref.toLowerCase().includes(postFilterTerm))
+        (r.external_ticket_ref && r.external_ticket_ref.toLowerCase().includes(postFilterTerm))
       );
       // Total in encrypted mode is approximate — the filter is partly
       // post-fetch, so we report the visible count rather than recompute.
@@ -234,7 +234,7 @@ router.get('/', requireAuth, async (req, res) => {
 router.post('/', requireAuth, requireRole('Admin', 'Submitter'), async (req, res) => {
   try {
     const user = req.session.user;
-    const { project_id, title, description, impact = 2, urgency = 2, coastal_ticket_ref, assigned_to } = req.body;
+    const { project_id, title, description, impact = 2, urgency = 2, external_ticket_ref, assigned_to, contact_ids } = req.body;
 
     if (!project_id) return res.status(400).json({ error: 'project_id required' });
     if (!title) return res.status(400).json({ error: 'Title required' });
@@ -265,13 +265,13 @@ router.post('/', requireAuth, requireRole('Admin', 'Submitter'), async (req, res
       });
       const mode = await getMode(client);
       const baseCols = ['project_id', 'mot_ref', 'submitted_by', 'assigned_to',
-        'impact', 'urgency', 'computed_priority', 'effective_priority', 'coastal_ticket_ref',
+        'impact', 'urgency', 'computed_priority', 'effective_priority', 'external_ticket_ref',
         'title_blind_idx'];
       const baseValues = [
         Number(project_id), mot_ref, user.id,
         assigned_to ? Number(assigned_to) : null,
         imp, urg, computed, computed,
-        coastal_ticket_ref || null,
+        external_ticket_ref || null,
         mode === 'standard' ? blindIndex.buildIndex(title) : null,
       ];
       const cols = [...baseCols, ...sensitivePatch.cols];
@@ -290,6 +290,16 @@ router.post('/', requireAuth, requireRole('Admin', 'Submitter'), async (req, res
         'INSERT INTO ticket_followers (ticket_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
         [t.id, user.id]
       );
+      // Attach any contacts selected at creation time.
+      if (Array.isArray(contact_ids) && contact_ids.length) {
+        for (const cid of contact_ids) {
+          await client.query(
+            `INSERT INTO ticket_contacts (ticket_id, contact_id, added_by_user_id)
+             VALUES ($1, $2, $3) ON CONFLICT DO NOTHING`,
+            [t.id, Number(cid), user.id]
+          );
+        }
+      }
       return t;
     });
 
@@ -337,7 +347,7 @@ router.get('/similar', requireAuth, async (req, res) => {
       result = await pool.query(`
         SELECT DISTINCT ON (t.id)
           t.id, t.mot_ref, t.title, t.internal_status, t.effective_priority,
-          t.description, t.coastal_ticket_ref,
+          t.description, t.external_ticket_ref,
           proj.name AS project_name,
           ts_rank(
             to_tsvector('english', t.title || ' ' || COALESCE(t.description, '')),
@@ -348,7 +358,7 @@ router.get('/similar', requireAuth, async (req, res) => {
         WHERE (
           ($1 <> '' AND to_tsvector('english', t.title || ' ' || COALESCE(t.description, ''))
             @@ plainto_tsquery('english', $1))
-          OR ($2 <> '' AND t.coastal_ticket_ref IS NOT NULL AND t.coastal_ticket_ref = $2)
+          OR ($2 <> '' AND t.external_ticket_ref IS NOT NULL AND t.external_ticket_ref = $2)
         )
         ${whereClause}
         ORDER BY t.id, rank DESC
@@ -359,11 +369,11 @@ router.get('/similar', requireAuth, async (req, res) => {
       if (!extRef) return res.json([]);
       result = await pool.query(`
         SELECT t.id, t.mot_ref, t.title, t.title_enc, t.internal_status, t.effective_priority,
-          t.description, t.description_enc, t.coastal_ticket_ref,
+          t.description, t.description_enc, t.external_ticket_ref,
           proj.name AS project_name, 0 AS rank
         FROM tickets t
         LEFT JOIN projects proj ON t.project_id = proj.id
-        WHERE t.coastal_ticket_ref = $2
+        WHERE t.external_ticket_ref = $2
         ${whereClause}
         LIMIT 5
       `, params);
@@ -462,7 +472,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
         }
       }
 
-      if (isAdmin && body.coastal_ticket_ref !== undefined) updates.coastal_ticket_ref = body.coastal_ticket_ref;
+      if (isAdmin && body.external_ticket_ref !== undefined) updates.external_ticket_ref = body.external_ticket_ref;
       if (isAdmin && body.review_note !== undefined) updates.review_note = body.review_note;
       if (isAdmin && body.flagged_for_review !== undefined) updates.flagged_for_review = !!body.flagged_for_review;
       // Per-ticket "mute the vendor" toggle. Vendor replies still land

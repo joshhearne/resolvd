@@ -104,6 +104,15 @@ export default function AdminCompanies() {
   const [form, setForm] = useState({ name: "", domain: "", notes: "" });
   const [creating, setCreating] = useState(false);
 
+  async function deleteCompany(id, name) {
+    if (!window.confirm(`Delete "${name}" and all its contacts? This cannot be undone.`)) return;
+    try {
+      await api.delete(`/api/companies/${id}`);
+      await reload();
+      toast.success("Company deleted");
+    } catch (e) { toast.error(e.message); }
+  }
+
   async function reload() {
     setLoading(true);
     try {
@@ -175,16 +184,22 @@ export default function AdminCompanies() {
           <div className="space-y-3">
             {companies.map(c => (
               <div key={c.id} className="bg-surface border border-border rounded-lg p-4">
-                <button onClick={() => setOpenId(openId === c.id ? null : c.id)}
-                  className="flex items-center justify-between w-full text-left">
-                  <div>
-                    <div className="font-semibold text-fg">{c.name}</div>
-                    <div className="text-xs text-fg-muted">
-                      {c.project_name}{c.domain ? ` · ${c.domain}` : ""} · {c.active_contact_count || 0} active contact{c.active_contact_count === 1 ? "" : "s"}
+                <div className="flex items-start justify-between gap-2">
+                  <button onClick={() => setOpenId(openId === c.id ? null : c.id)}
+                    className="flex items-center justify-between flex-1 text-left min-w-0">
+                    <div className="min-w-0">
+                      <div className="font-semibold text-fg">{c.name}</div>
+                      <div className="text-xs text-fg-muted">
+                        {c.project_name}{c.domain ? ` · ${c.domain}` : ""} · {c.active_contact_count || 0} active contact{c.active_contact_count === 1 ? "" : "s"}
+                      </div>
                     </div>
-                  </div>
-                  <span className="text-fg-dim text-xs">{openId === c.id ? "▾" : "▸"}</span>
-                </button>
+                    <span className="text-fg-dim text-xs ml-2">{openId === c.id ? "▾" : "▸"}</span>
+                  </button>
+                  <button onClick={() => deleteCompany(c.id, c.name)}
+                    className="shrink-0 text-xs text-red-600 hover:underline ml-2">
+                    Delete
+                  </button>
+                </div>
                 {openId === c.id && <ContactsPanel company={c} onChange={reload} />}
               </div>
             ))}
