@@ -305,6 +305,9 @@ router.post('/', requireAuth, requireRole('Admin', 'Submitter'), async (req, res
 
     await decryptRow('tickets', ticket);
     res.status(201).json(ticket);
+
+    sendVendorEmail({ eventType: 'new_ticket', ticketId: ticket.id, actorId: user.id })
+      .catch(err => console.error('vendor outbound (new_ticket) failed:', err.message));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Database error' });
