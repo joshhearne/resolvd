@@ -50,16 +50,22 @@ function SearchBar() {
 }
 
 function ThemeToggle() {
-  const { resolved, toggle } = useTheme();
-  const isDark = resolved === "dark";
+  const { theme, setTheme } = useTheme();
+  const order = ["light", "dark", "system"];
+  const next = order[(order.indexOf(theme) + 1) % order.length];
+  const labels = {
+    light: "Light mode (click for dark)",
+    dark: "Dark mode (click for system)",
+    system: "System mode (click for light)",
+  };
   return (
     <button
-      onClick={toggle}
-      aria-label={isDark ? "Switch to light mode" : "Switch to dark mode"}
-      title={isDark ? "Switch to light mode" : "Switch to dark mode"}
+      onClick={() => setTheme(next)}
+      aria-label={labels[theme]}
+      title={labels[theme]}
       className="p-2 rounded-md text-fg-muted hover:text-fg hover:bg-surface-2 transition-colors"
     >
-      {isDark ? (
+      {theme === "light" && (
         <svg
           className="w-4 h-4"
           fill="none"
@@ -73,7 +79,8 @@ function ThemeToggle() {
             d="M12 2v2m0 16v2m10-10h-2M4 12H2m15.07-7.07l-1.41 1.41M6.34 17.66l-1.41 1.41M17.66 17.66l1.41 1.41M4.93 4.93l1.41 1.41"
           />
         </svg>
-      ) : (
+      )}
+      {theme === "dark" && (
         <svg
           className="w-4 h-4"
           fill="none"
@@ -88,6 +95,19 @@ function ThemeToggle() {
           />
         </svg>
       )}
+      {theme === "system" && (
+        <svg className="w-4 h-4" viewBox="0 0 24 24">
+          <circle
+            cx="12"
+            cy="12"
+            r="9"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth={2}
+          />
+          <path d="M12 3a9 9 0 010 18z" fill="currentColor" />
+        </svg>
+      )}
     </button>
   );
 }
@@ -95,7 +115,6 @@ function ThemeToggle() {
 function UserMenu({ user, logout }) {
   const [open, setOpen] = useState(false);
   const ref = useRef(null);
-  const { theme, setTheme } = useTheme();
 
   useEffect(() => {
     if (!open) return;
@@ -207,30 +226,6 @@ function UserMenu({ user, logout }) {
               {user?.mfaEnabled ? "On" : "Off"}
             </span>
           </Link>
-          <div className="border-t border-border px-4 py-2">
-            <div className="text-[10px] uppercase tracking-wide text-fg-dim mb-1.5">
-              Theme
-            </div>
-            <div className="grid grid-cols-3 gap-1 rounded-md bg-surface-2 p-0.5">
-              {[
-                { v: "light", label: "Light" },
-                { v: "dark", label: "Dark" },
-                { v: "system", label: "Auto" },
-              ].map((opt) => (
-                <button
-                  key={opt.v}
-                  onClick={() => setTheme(opt.v)}
-                  className={`text-xs py-1 rounded transition-colors ${
-                    theme === opt.v
-                      ? "bg-surface text-fg shadow-sm"
-                      : "text-fg-muted hover:text-fg"
-                  }`}
-                >
-                  {opt.label}
-                </button>
-              ))}
-            </div>
-          </div>
           <button
             onClick={logout}
             className="w-full flex items-center gap-2 px-4 py-2 text-sm hover:bg-surface-2 border-t border-border text-fg"
