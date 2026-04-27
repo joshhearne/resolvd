@@ -257,7 +257,7 @@ echo "RESOLVD_MASTER_KEY=$KEY" >> .env
 docker compose up -d --force-recreate backend
 
 # 3. Flip the mode
-docker compose exec postgres psql -U mot_issues -d mot_issues \
+docker compose exec postgres psql -U resolvd -d resolvd \
   -c "UPDATE encryption_settings SET mode='standard' WHERE id = 1;"
 
 # 4. Backfill existing rows (idempotent; --verify on first run)
@@ -308,13 +308,13 @@ server {
 Postgres data lives in the `<project>_pg-data` volume. Encrypted ciphertext backs up exactly the same as plaintext — but **the master key is not in the dump**. Lose `RESOLVD_MASTER_KEY` and your backup is unrecoverable.
 
 ```bash
-docker compose exec postgres pg_dump -U mot_issues mot_issues > backup-$(date +%Y%m%d).sql
+docker compose exec postgres pg_dump -U resolvd resolvd > backup-$(date +%Y%m%d).sql
 ```
 
 Restore:
 
 ```bash
-docker compose exec -T postgres psql -U mot_issues mot_issues < backup.sql
+docker compose exec -T postgres psql -U resolvd resolvd < backup.sql
 ```
 
 Uploaded files (encrypted on disk under standard mode):
