@@ -111,7 +111,6 @@ async function sendVendorEmail({ eventType, ticketId, actorId }) {
           'X-Auto-Response-Suppress': 'All',
           'Precedence': 'bulk',
           'X-Resolvd-No-Reply': '1',
-          'X-Resolvd-Event': eventType,
           'X-Resolvd-Ticket': String(ctx.ticket.mot_ref || ticketId),
         },
       });
