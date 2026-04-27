@@ -409,6 +409,7 @@ async function getFollowerEmails(pool, ticketId, excludeUserId) {
 module.exports = {
   sendMail,
   sendMailViaAccount,
+  baseHtml,
   notifyStatusChange,
   notifyPendingReview,
   notifyNewComment,

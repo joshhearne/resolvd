@@ -22,7 +22,7 @@ const fsp = require('fs').promises;
 const { pool } = require('../db/pool');
 const { decryptRow, decryptRows } = require('./fields');
 const { decrypt } = require('./crypto');
-const { sendMail } = require('./email');
+const { sendMail, baseHtml } = require('./email');
 const { loadTemplate, render } = require('./emailTemplate');
 const { getBranding } = require('./branding');
 
@@ -127,7 +127,12 @@ async function sendVendorEmail({ eventType, ticketId, actorId }) {
     };
     try {
       const rendered = await render(tplRow, personalCtx);
-      const html = tplRow.is_html ? rendered.body : htmlify(rendered.body);
+      // Always convert to structured HTML. Plain-text templates need htmlify
+      // so newlines render as visual line breaks (white-space:pre-wrap).
+      // HTML templates are treated as partial markup — not full documents.
+      // Either way, wrap in baseHtml for consistent branded email layout.
+      const bodyHtml = tplRow.is_html ? rendered.body : htmlify(rendered.body);
+      const html = await baseHtml(rendered.subject, bodyHtml);
       await sendMail({
         to: contact.email,
         subject: rendered.subject,
