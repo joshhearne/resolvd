@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useRef } from "react";
+import React, { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useBranding } from "../context/BrandingContext";
 
@@ -62,7 +62,7 @@ function GroupHeading({ label }) {
   );
 }
 
-function TicketCard({ ticket }) {
+function TicketCard({ ticket, showImages }) {
   const isReopened = ticket.internal_status === "Reopened";
   const pri = ticket.effective_priority || 3;
 
@@ -238,7 +238,7 @@ function TicketCard({ ticket }) {
       )}
 
       {/* Inline images */}
-      {Array.isArray(ticket.images) && ticket.images.length > 0 && (
+      {showImages && Array.isArray(ticket.images) && ticket.images.length > 0 && (
         <div style={{ padding: "0 14px 12px" }}>
           <div
             style={{
@@ -290,7 +290,6 @@ export default function PrintExport() {
   const { branding } = useBranding();
   const [tickets, setTickets] = useState(null);
   const [error, setError] = useState(null);
-  const didPrint = useRef(false);
 
   useEffect(() => {
     const root = document.documentElement;
@@ -310,6 +309,7 @@ export default function PrintExport() {
   const externalStatuses = params.get("external_statuses") || "";
   const statusLogic = params.get("status_logic") || "";
   const companyIds = params.get("company_ids") || "";
+  const showImages = params.get("include_images") !== "0";
 
   useEffect(() => {
     const qs = new URLSearchParams({ statuses });
@@ -324,13 +324,6 @@ export default function PrintExport() {
       .then((data) => setTickets(groupSort(data)))
       .catch(() => setError("Failed to load tickets. Are you signed in?"));
   }, [statuses, projectIds, updatedFrom, updatedTo, externalStatuses, statusLogic, companyIds]);
-
-  useEffect(() => {
-    if (tickets && !didPrint.current) {
-      didPrint.current = true;
-      setTimeout(() => window.print(), 800);
-    }
-  }, [tickets]);
 
   const siteName = branding.site_name || "Resolvd";
   const primaryColor =
@@ -479,7 +472,7 @@ export default function PrintExport() {
         <>
           <GroupHeading label={`Blocked (${blocked.length})`} />
           {blocked.map((t) => (
-            <TicketCard key={t.id} ticket={t} />
+            <TicketCard key={t.id} ticket={t} showImages={showImages} />
           ))}
         </>
       )}
@@ -488,7 +481,7 @@ export default function PrintExport() {
         <>
           <GroupHeading label={`Active (${active.length})`} />
           {active.map((t) => (
-            <TicketCard key={t.id} ticket={t} />
+            <TicketCard key={t.id} ticket={t} showImages={showImages} />
           ))}
         </>
       )}
@@ -497,7 +490,7 @@ export default function PrintExport() {
         <>
           <GroupHeading label={`Closed (${closed.length})`} />
           {closed.map((t) => (
-            <TicketCard key={t.id} ticket={t} />
+            <TicketCard key={t.id} ticket={t} showImages={showImages} />
           ))}
         </>
       )}

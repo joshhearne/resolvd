@@ -52,6 +52,7 @@ export default function AdminExport() {
   const [selectedCompanies, setSelectedCompanies] = useState(new Set());
 
   const [dateRange, setDateRange] = useState(defaultDateRange());
+  const [includeImages, setIncludeImages] = useState(true);
   const [loading, setLoading] = useState(false);
   const [previewCount, setPreviewCount] = useState(null);
   const [counted, setCounted] = useState(false);
@@ -106,7 +107,8 @@ export default function AdminExport() {
     const dateParam = `&updated_from=${dateRange.from}&updated_to=${dateRange.to}`;
     const extParam = extStatuses ? `&external_statuses=${encodeURIComponent(extStatuses)}&status_logic=${statusLogic}` : "";
     const coParam = selectedCompanies.size ? `&company_ids=${[...selectedCompanies].join(",")}` : "";
-    return { statuses, projectParam, dateParam, extParam, coParam };
+    const imgParam = includeImages ? "" : "&include_images=0";
+    return { statuses, projectParam, dateParam, extParam, coParam, imgParam };
   }
 
   async function previewCount_() {
@@ -128,10 +130,19 @@ export default function AdminExport() {
   }
 
   function openExport() {
+    const { statuses, projectParam, dateParam, extParam, coParam, imgParam } = buildQS();
+    const statusPart = statuses ? `statuses=${encodeURIComponent(statuses)}` : "";
+    window.open(
+      `/print-export?${statusPart}${projectParam}${dateParam}${extParam}${coParam}${imgParam}`,
+      "_blank",
+    );
+  }
+
+  function downloadCsv() {
     const { statuses, projectParam, dateParam, extParam, coParam } = buildQS();
     const statusPart = statuses ? `statuses=${encodeURIComponent(statuses)}` : "";
     window.open(
-      `/print-export?${statusPart}${projectParam}${dateParam}${extParam}${coParam}`,
+      `/api/export/tickets?${statusPart}${projectParam}${dateParam}${extParam}${coParam}&format=csv`,
       "_blank",
     );
   }
@@ -285,7 +296,7 @@ export default function AdminExport() {
       )}
 
       {/* Actions */}
-      <div className="bg-surface rounded-lg border border-border p-6 space-y-3">
+      <div className="bg-surface rounded-lg border border-border p-6 space-y-4">
         <p className="text-xs text-fg-muted">
           Export order: <strong>Blocked</strong> → <strong>Active</strong> → <strong>Closed</strong>.
           Within each group: priority then ticket number.
@@ -296,17 +307,31 @@ export default function AdminExport() {
           </button>
           {counted && previewCount !== null && (
             <span className="text-sm text-fg-muted">
-              <strong>{previewCount}</strong> ticket{previewCount !== 1 ? "s" : ""} will be exported
+              <strong>{previewCount}</strong> ticket{previewCount !== 1 ? "s" : ""} matched
             </span>
           )}
         </div>
-        <button onClick={openExport} disabled={!canExport} className="btn-primary btn w-full justify-center">
-          <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-              d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
-          </svg>
-          Generate Export
-        </button>
+        <label className="flex items-center gap-2 cursor-pointer select-none">
+          <input type="checkbox" checked={includeImages} onChange={e => setIncludeImages(e.target.checked)}
+            className="h-4 w-4 rounded border-border-strong text-brand focus:ring-brand/40" />
+          <span className="text-sm text-fg">Include images in print view</span>
+        </label>
+        <div className="flex gap-2">
+          <button onClick={openExport} disabled={!canExport} className="btn-primary btn flex-1 justify-center">
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 00-2-2H9a2 2 0 00-2 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
+            </svg>
+            Print Preview
+          </button>
+          <button onClick={downloadCsv} disabled={!canExport} className="btn-secondary btn flex-1 justify-center">
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+            </svg>
+            Download CSV
+          </button>
+        </div>
       </div>
     </div>
   );

@@ -151,6 +151,32 @@ router.get('/tickets', requireAuth, requireRole('Admin', 'Manager'), async (req,
       }
     }
 
+    if (req.query.format === 'csv') {
+      const cols = [
+        'Ref', 'Title', 'Internal Status', 'External Status', 'External Ticket Ref',
+        'Priority', 'Impact', 'Urgency', 'Blocker', 'Assignee', 'Submitter',
+        'Project', 'Created', 'Updated',
+      ];
+      const escape = (v) => {
+        if (v == null) return '';
+        const s = String(v);
+        return s.includes(',') || s.includes('"') || s.includes('\n')
+          ? `"${s.replace(/"/g, '""')}"` : s;
+      };
+      const rows = result.rows.map(r => [
+        r.mot_ref, r.title, r.internal_status, r.coastal_status, r.external_ticket_ref,
+        r.effective_priority, r.impact, r.urgency, r.blocker_type,
+        r.assignee_name, r.submitter_name, r.project_name,
+        r.created_at ? new Date(r.created_at).toISOString().slice(0,10) : '',
+        r.updated_at ? new Date(r.updated_at).toISOString().slice(0,10) : '',
+      ].map(escape).join(','));
+      const csv = [cols.map(escape).join(','), ...rows].join('\r\n');
+      const filename = `export-${new Date().toISOString().slice(0,10)}.csv`;
+      res.setHeader('Content-Type', 'text/csv');
+      res.setHeader('Content-Disposition', `attachment; filename="${filename}"`);
+      return res.send(csv);
+    }
+
     res.json(result.rows);
   } catch (err) {
     console.error(err);
