@@ -125,4 +125,19 @@ router.post('/comments/:id/mute',   requireAuth, requireRole('Admin', 'Manager')
 router.post('/comments/:id/unmute', requireAuth, requireRole('Admin', 'Manager'),
   (req, res) => setMuted(req, res, false));
 
+// DELETE /api/comments/:id — Admin only
+router.delete('/comments/:id', requireAuth, requireRole('Admin'), async (req, res) => {
+  try {
+    const r = await pool.query(
+      `DELETE FROM comments WHERE id = $1 RETURNING id, ticket_id`,
+      [req.params.id]
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'Comment not found' });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
 module.exports = router;

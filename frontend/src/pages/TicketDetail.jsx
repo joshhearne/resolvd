@@ -229,6 +229,16 @@ export default function TicketDetail() {
       setTicket(updated);
     } catch (e) { toast.error(e.message); }
   }
+  async function deleteComment(commentId) {
+    if (!window.confirm("Delete this comment? This cannot be undone.")) return;
+    try {
+      await api.delete(`/api/comments/${commentId}`);
+      setComments(prev => prev.filter(c => c.id !== commentId));
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }
+
   async function setCommentMuted(commentId, value) {
     try {
       const r = await api.post(`/api/comments/${commentId}/${value ? "mute" : "unmute"}`, {});
@@ -700,10 +710,16 @@ export default function TicketDetail() {
                         </span>
                         <span className="flex items-center gap-2">
                           {isAdmin && !c.is_system && (
-                            <button onClick={() => setCommentMuted(c.id, !c.is_muted)}
-                              className="text-[11px] text-fg-dim hover:text-fg">
-                              {c.is_muted ? "Unmute" : "Mute"}
-                            </button>
+                            <>
+                              <button onClick={() => setCommentMuted(c.id, !c.is_muted)}
+                                className="text-[11px] text-fg-dim hover:text-fg">
+                                {c.is_muted ? "Unmute" : "Mute"}
+                              </button>
+                              <button onClick={() => deleteComment(c.id)}
+                                className="text-[11px] text-fg-dim hover:text-red-500 transition-colors">
+                                Delete
+                              </button>
+                            </>
                           )}
                           <span className="text-xs text-fg-dim">{formatDateTime(c.created_at)}</span>
                         </span>
