@@ -5,6 +5,7 @@ const { notifyNewComment } = require('../services/email');
 const { buildWritePatch, decryptRow, decryptRows } = require('../services/fields');
 const { sendVendorEmail } = require('../services/vendorOutbound');
 const { resolveMentions } = require('../services/mentions');
+const { applyCommentToTerminalTicket } = require('../services/autoResolve');
 const { createNotification } = require('../services/notifications');
 const { sendMail, baseHtml } = require('../services/email');
 
@@ -87,6 +88,15 @@ router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Submi
     await decryptRow('comments', result);
     res.status(201).json(result);
 
+    // Auto-reopen if ticket is terminal and comment is substantive.
+    if (!result.is_system) {
+      applyCommentToTerminalTicket({
+        ticketId: ticket.rows[0].id,
+        commentBody: trimmedBody,
+        actorUserId: req.session.user.id,
+      }).catch(err => console.error('auto-reopen check failed:', err.message));
+    }
+
     // Notify followers async (skip system comments)
     if (!result.is_system) {
       notifyNewComment(pool, {
@@ -131,7 +141,7 @@ router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Submi
               type: 'mention',
               title: `Mentioned on ${ticketRef}`,
               body: `${req.session.user.displayName || 'Someone'} mentioned you in a comment.`,
-              data: { ticket_id: ticket.rows[0].id, ticket_ref: ticketRef },
+              data: { ticket_id: ticket.rows[0].id, ticket_ref: ticketRef, comment_id: insertResult.rows[0].id },
             }).catch(() => {});
             // Best-effort email; gated by recipient pref.
             try {

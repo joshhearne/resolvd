@@ -61,7 +61,11 @@ export default function NotificationTray() {
 
   function handleAction(item) {
     if (!item.read_at) markRead(item.id);
-    if (item.type === "unmatched_cc" && item.data?.suggested_company_id) {
+    if (item.data?.ticket_id) {
+      const state = item.data.comment_id ? { highlightComment: item.data.comment_id } : undefined;
+      navigate(`/tickets/${item.data.ticket_id}`, { state });
+      setOpen(false);
+    } else if (item.type === "unmatched_cc" && item.data?.suggested_company_id) {
       navigate(`/companies/${item.data.suggested_company_id}`);
       setOpen(false);
     } else if (item.type === "unmatched_cc" && item.data?.project_id) {
@@ -105,7 +109,8 @@ export default function NotificationTray() {
             ) : items.map(item => (
               <div
                 key={item.id}
-                className={`px-3 py-2.5 border-b border-border last:border-0 ${!item.read_at ? "bg-brand/5" : ""}`}
+                onClick={() => handleAction(item)}
+                className={`px-3 py-2.5 border-b border-border last:border-0 ${!item.read_at ? "bg-brand/5" : ""} ${item.data?.ticket_id || item.type === "unmatched_cc" ? "cursor-pointer hover:bg-surface-2" : ""}`}
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0 flex-1">

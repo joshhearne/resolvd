@@ -329,7 +329,7 @@ export default function Layout() {
               <SearchBar />
             </div>
             <div className="flex items-center gap-1">
-              {["Admin", "Manager"].includes(user?.role) && <NotificationTray />}
+              {user && <NotificationTray />}
               <ThemeToggle />
               <UserMenu user={user} logout={logout} />
               <button
