@@ -38,6 +38,7 @@ export default function ProjectDetail() {
     name: "",
     description: "",
     has_external_vendor: true,
+    default_assignee_id: "",
   });
   const [savingSettings, setSavingSettings] = useState(false);
 
@@ -58,6 +59,9 @@ export default function ProjectDetail() {
           name: proj.name,
           description: proj.description || "",
           has_external_vendor: proj.has_external_vendor !== false,
+          default_assignee_id: proj.default_assignee_id
+            ? String(proj.default_assignee_id)
+            : "",
         });
         setAllUsers(users);
       })
@@ -77,6 +81,9 @@ export default function ProjectDetail() {
         name: editForm.name.trim(),
         description: editForm.description.trim() || null,
         has_external_vendor: editForm.has_external_vendor,
+        default_assignee_id: editForm.default_assignee_id
+          ? Number(editForm.default_assignee_id)
+          : null,
       });
       setProject((p) => ({ ...p, ...updated }));
       setEditing(false);
@@ -274,6 +281,38 @@ export default function ProjectDetail() {
               <label htmlFor="edit_has_vendor" className="text-sm text-fg">
                 This project has an external vendor
               </label>
+            </div>
+            <div>
+              <label className="block text-xs text-fg-muted mb-1">
+                Default assignee for new tickets
+              </label>
+              <select
+                value={editForm.default_assignee_id}
+                onChange={(e) =>
+                  setEditForm((f) => ({
+                    ...f,
+                    default_assignee_id: e.target.value,
+                  }))
+                }
+                className="w-full border border-border-strong rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40"
+              >
+                <option value="">— No default —</option>
+                {allUsers
+                  .filter(
+                    (u) =>
+                      u.status === "active" &&
+                      ["Admin", "Manager", "Submitter"].includes(u.role),
+                  )
+                  .map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.display_name || u.email} ({u.role})
+                    </option>
+                  ))}
+              </select>
+              <p className="text-[11px] text-fg-muted mt-1">
+                New tickets in this project auto-assign to this user when the
+                creator doesn't pick one. Eligible: Submitter, Manager, Admin.
+              </p>
             </div>
             <div className="flex gap-2">
               <button

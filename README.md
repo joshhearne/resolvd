@@ -130,6 +130,65 @@ Fresh install with local auth enabled shows a **Create Admin Account** form. Fir
 - Tickets are scoped to projects
 - Projects can be marked with or without an external vendor — when off, the External Vendor section, vendor outbound, and Team-Input blocker are hidden
 - Each project has a prefix used for ticket references (e.g. `WEB-0042`). The same prefix powers email-to-ticket auto-create.
+- **Default assignee**: Admin/Manager can pick a default assignee per project. New tickets in that project auto-assign to the chosen user when the creator doesn't pick one. Eligible: Admin / Manager / Submitter.
+- **Move tickets**: any role can move a ticket between projects they have access to. Admin/Manager can move to any project; Submitters need membership of both source and target. The ticket gets a fresh `internal_ref` from the new project's counter; vendor contacts detach (vendor scope is project-bound).
+
+---
+
+## Ticket workflow
+
+### Statuses and the chain
+
+Internal statuses ship with semantic tags that drive workflow logic (admin can rename the names without breaking behavior):
+
+| Tag | Default name | Role |
+|---|---|---|
+| _none_ | Open | Initial |
+| `in_progress` | In Progress | Active work |
+| `awaiting_input` | Awaiting Input | External block (waiting on vendor / customer) |
+| `on_hold` | On Hold | Internal block (team can't proceed) |
+| `pending_review` | Pending Review | Awaiting verification |
+| `resolved_pending_close` | Resolved | Verified, in grace period before auto-close |
+| _none_ (terminal) | Closed | Done |
+| `reopened` | Reopened | Resumed after closure / auto-reopen |
+
+**Advance button** on the ticket status card walks the chain `Open → In Progress → Pending Review → Resolved → Closed`. Side states (`awaiting_input`, `on_hold`, `reopened`) are skipped from the next step; from any of them the button resumes to `in_progress`.
+
+### Resolved auto-close
+
+Any internal status with `semantic_tag='resolved_pending_close'` carries an `auto_close_after_days` value (default 3 on the seeded `Resolved` row, edited per status under **Admin → Statuses**). Tickets sitting in such a status past the grace period get promoted to the kind's terminal status by an hourly cron, with an audit row.
+
+Inbound replies during the grace window auto-reopen the ticket unless the body matches the editable gratitude phrase list (also under **Admin → Statuses**). "Thanks" → leave alone. Anything else → flip to `Reopened`.
+
+### Pending Review follow-ups
+
+Any internal status with `semantic_tag='pending_review'` accepts a follow-up reminder (1–90 days, default 3). Click "Schedule follow-up" on the ticket; an in-app notification + email fire when the timer elapses. Status advancement is blocked while a reminder is pending — cancel it or wait for it to fire (then ack via the bell tray) before moving on. Another reminder can be scheduled afterwards.
+
+### Other ticket admin tools
+
+- **Submit on behalf**: Admin/Manager can pick a different submitter at creation time, or change the submitter on an existing ticket.
+- **Manage followers**: Admin/Manager can add / remove followers via a popover next to the Follow button (audited).
+- **Inline title edit**: anyone with edit access (Admin / Manager / Submitter) can rename a ticket from its header.
+- **@mentions**: write `@first.last`, `@local-part`, or `@user@example.com` in a comment. Matched users auto-follow the ticket and get an in-app notification + email.
+- **Ctrl+Enter posts a comment** (per-user pref).
+
+---
+
+## User preferences
+
+`Account settings → Preferences` exposes per-user toggles. Store: `users.preferences` JSONB with merged defaults from `/api/users/me/prefs`.
+
+| Pref | Default | Effect |
+|---|---|---|
+| `scope_follows_filter` | on | "+ New Ticket" from a filtered list preselects that project |
+| `ctrl_enter_to_post` | on | Ctrl+Enter posts a comment |
+| `auto_follow_on_comment` | on | Posting a comment auto-follows the ticket |
+| `confirm_before_close` | off | Post & Close prompts before firing |
+| `default_ticket_sort` | Recently updated | Initial sort on the ticket list |
+| `email_on_comment` | on | Email on followed-ticket comments |
+| `email_on_status_change` | on | Email on followed-ticket status changes |
+| `email_on_assignment` | on | Email when a ticket is assigned to you |
+| `compact_mode` | off | Tighter padding + smaller font |
 
 ---
 
@@ -152,7 +211,7 @@ Comments marked **Share with vendor** by an Admin/Manager fire an outbound email
 
 so vendor helpdesks don't auto-reply and reflective loops are dropped on ingest.
 
-Images attached to the ticket are included as file attachments in the outbound email (Graph, SMTP, and Gmail backends all supported).
+Images attached to the ticket are included as file attachments only on the `new_ticket` and `new_comment` events. Status-change and resolved emails send body text only — keeps the inbox light when a ticket churns through several states (Graph, SMTP, and Gmail backends all supported).
 
 The `new_ticket` event is **not** fired automatically on ticket creation. An Admin/Manager must click the **Notify Vendor** button on the ticket detail page to send the initial vendor notification. This gives staff a chance to review the ticket before contacting the vendor.
 
@@ -280,6 +339,7 @@ The backfill encrypts plaintext into `*_enc` shadow columns, NULLs the plaintext
 - **Custom accent color** — Admin → Branding has a "Use custom accent color" toggle.
 - **Logo orientation** — admins pick whether the logo "works best with Light Mode" or "Dark Mode"; the app smart-flips when displayed in the opposite mode.
 - **Print export** — always renders in light mode regardless of UI theme.
+- **Localization** — Admin → Branding sets org-wide date style (ISO / US / EU), time style (24-hour / 12-hour), and IANA timezone. UI uses hybrid rendering (relative if <7 days, absolute after); reports / CSV exports always render absolute timestamps.
 
 ---
 

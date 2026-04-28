@@ -115,7 +115,7 @@ router.get('/:id', requireAuth, async (req, res) => {
 // PATCH /api/projects/:id — Admin only
 router.patch('/:id', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
-    const { name, description, status, has_external_vendor } = req.body;
+    const { name, description, status, has_external_vendor, default_assignee_id } = req.body;
     const updates = {};
     if (name !== undefined) updates.name = name.trim();
     if (description !== undefined) updates.description = description?.trim() || null;
@@ -124,6 +124,25 @@ router.patch('/:id', requireAuth, requireRole('Admin', 'Manager'), async (req, r
       updates.status = status;
     }
     if (has_external_vendor !== undefined) updates.has_external_vendor = has_external_vendor !== false && has_external_vendor !== 'false';
+    if (default_assignee_id !== undefined) {
+      if (default_assignee_id === null || default_assignee_id === '') {
+        updates.default_assignee_id = null;
+      } else {
+        const id = Number(default_assignee_id);
+        if (!Number.isInteger(id) || id <= 0) {
+          return res.status(400).json({ error: 'default_assignee_id must be a user id or null' });
+        }
+        const u = await pool.query(
+          `SELECT id, role FROM users WHERE id = $1 AND status = 'active'`,
+          [id]
+        );
+        if (!u.rows[0]) return res.status(400).json({ error: 'default_assignee_id user not found or inactive' });
+        if (!['Admin', 'Manager', 'Submitter'].includes(u.rows[0].role)) {
+          return res.status(400).json({ error: 'Default assignee must have role Submitter, Manager, or Admin' });
+        }
+        updates.default_assignee_id = id;
+      }
+    }
     if (Object.keys(updates).length === 0) {
       const r = await pool.query('SELECT * FROM projects WHERE id = $1', [req.params.id]);
       return res.json(r.rows[0]);

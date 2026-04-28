@@ -230,6 +230,10 @@ async function initSchema() {
     await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS time_style TEXT NOT NULL DEFAULT 'iso' CHECK (time_style IN ('iso','12h'))`);
     await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS timezone TEXT NOT NULL DEFAULT 'UTC'`);
     await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS has_external_vendor BOOLEAN NOT NULL DEFAULT TRUE`);
+    // Optional default assignee for new tickets in this project. Cleared
+    // (SET NULL) when the user is deleted; eligibility (submitter+ role)
+    // is enforced at write time, not by the FK.
+    await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS default_assignee_id INTEGER REFERENCES users(id) ON DELETE SET NULL`);
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS default_project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL`);
     // Per-user QoL preferences stored as JSONB. Free-form so we can add
     // new toggles without schema migrations. Frontend reads via /auth/me.

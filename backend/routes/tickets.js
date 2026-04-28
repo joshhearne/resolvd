@@ -240,8 +240,16 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Submitter'), asyn
     if (!title) return res.status(400).json({ error: 'Title required' });
 
     // Verify project exists and is active
-    const proj = await pool.query("SELECT id FROM projects WHERE id = $1 AND status = 'active'", [project_id]);
+    const proj = await pool.query(
+      "SELECT id, default_assignee_id FROM projects WHERE id = $1 AND status = 'active'",
+      [project_id]
+    );
     if (!proj.rows[0]) return res.status(404).json({ error: 'Project not found or archived' });
+    // If creator didn't pick an assignee, fall back to project default.
+    let effectiveAssignee = assigned_to ? Number(assigned_to) : null;
+    if (!effectiveAssignee && proj.rows[0].default_assignee_id) {
+      effectiveAssignee = proj.rows[0].default_assignee_id;
+    }
 
     // Non-admins must be project members
     if (user.role !== 'Admin') {
@@ -281,7 +289,7 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Submitter'), asyn
         'title_blind_idx'];
       const baseValues = [
         Number(project_id), internalRef, effectiveSubmitterId,
-        assigned_to ? Number(assigned_to) : null,
+        effectiveAssignee || null,
         imp, urg, computed, computed,
         external_ticket_ref || null,
         mode === 'standard' ? blindIndex.buildIndex(title) : null,
@@ -332,6 +340,18 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Submitter'), asyn
 
     await decryptRow('tickets', ticket);
     res.status(201).json(ticket);
+
+    // Fire assignment email if the new ticket has an assignee that isn't
+    // the creator. Covers both manual assignment and project-default
+    // fall-through.
+    if (ticket.assigned_to && ticket.assigned_to !== user.id) {
+      notifyAssignment(pool, {
+        ticket,
+        assigneeId: ticket.assigned_to,
+        actorId: user.id,
+        actorName: user.displayName,
+      }).catch(err => console.error('notifyAssignment (create) failed:', err.message));
+    }
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Database error' });
