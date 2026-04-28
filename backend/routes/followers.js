@@ -5,7 +5,7 @@ const { requireAuth, requireRole } = require('../middleware/auth');
 const router = express.Router({ mergeParams: true });
 
 // GET /api/tickets/:ticketId/followers
-router.get('/', requireAuth, async (req, res) => {
+router.get('/followers', requireAuth, async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT u.id, u.display_name, u.email
@@ -51,7 +51,7 @@ router.delete('/follow', requireAuth, async (req, res) => {
 
 // POST /api/tickets/:ticketId/followers — Admin/Manager add another user
 // Body: { user_id }
-router.post('/', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+router.post('/followers', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
     const userId = Number(req.body?.user_id);
     if (!Number.isInteger(userId) || userId <= 0) {
@@ -76,7 +76,7 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager'), async (req, res) 
 });
 
 // DELETE /api/tickets/:ticketId/followers/:userId — Admin/Manager remove
-router.delete('/:userId', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+router.delete('/followers/:userId', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
     const userId = Number(req.params.userId);
     await pool.query(

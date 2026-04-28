@@ -18,6 +18,7 @@ function extractTokens(body) {
   if (!body) return [];
   const out = new Set();
   let m;
+  MENTION_RE.lastIndex = 0;
   while ((m = MENTION_RE.exec(String(body))) !== null) {
     out.add(m[2]);
   }
