@@ -190,6 +190,47 @@ router.patch('/me/profile', requireAuth, async (req, res) => {
   }
 });
 
+// GET /api/users/search?q=&project_id= — mention autocomplete (any authenticated user)
+router.get('/search', requireAuth, async (req, res) => {
+  try {
+    const q = ((req.query.q || '').trim().toLowerCase()) + '%';
+    const projectId = req.query.project_id ? Number(req.query.project_id) : null;
+    let r;
+    if (projectId) {
+      r = await pool.query(`
+        SELECT u.id, u.display_name, u.email
+          FROM users u
+          JOIN project_members pm ON pm.user_id = u.id AND pm.project_id = $2
+         WHERE u.status = 'active'
+           AND (
+             LOWER(u.display_name) LIKE $1
+             OR LOWER(u.email) LIKE $1
+             OR LOWER(SPLIT_PART(u.email, '@', 1)) LIKE $1
+           )
+         ORDER BY u.display_name
+         LIMIT 8
+      `, [q, projectId]);
+    } else {
+      r = await pool.query(`
+        SELECT id, display_name, email
+          FROM users
+         WHERE status = 'active'
+           AND (
+             LOWER(display_name) LIKE $1
+             OR LOWER(email) LIKE $1
+             OR LOWER(SPLIT_PART(email, '@', 1)) LIKE $1
+           )
+         ORDER BY display_name
+         LIMIT 8
+      `, [q]);
+    }
+    res.json(r.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
 // GET /api/users/:id/avatar — serve avatar (auth required)
 router.get('/:id/avatar', requireAuth, async (req, res) => {
   try {

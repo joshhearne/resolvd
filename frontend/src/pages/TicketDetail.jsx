@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useCallback } from "react";
-import { useParams, useNavigate } from "react-router-dom";
+import { useParams, useNavigate, useLocation } from "react-router-dom";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
 import { useAuth } from "../context/AuthContext";
@@ -20,6 +20,7 @@ import {
 } from "../context/StatusesContext";
 import PriorityBadge from "../components/PriorityBadge";
 import StatusBadge from "../components/StatusBadge";
+import MentionTextarea from "../components/MentionTextarea";
 import ConfirmDialog from "../components/ConfirmDialog";
 
 // Pick the "primary advance" target for the next-step button. Skips
@@ -218,7 +219,11 @@ function Field({ label, children }) {
 export default function TicketDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
+  const location = useLocation();
   const { user } = useAuth();
+  const [highlightedComment, setHighlightedComment] = useState(
+    location.state?.highlightComment ?? null
+  );
   const statusCfg = useStatuses();
   const isAdmin = ["Admin", "Manager"].includes(user?.role);
   const isSubmitter = user?.role === "Submitter";
@@ -289,6 +294,20 @@ export default function TicketDetail() {
       })
       .catch(() => setLoading(false));
   }, [id, loadTicket]);
+
+  // Scroll to and flash a highlighted comment (e.g. from a mention notification).
+  useEffect(() => {
+    if (!highlightedComment || comments.length === 0) return;
+    const el = document.getElementById(`comment-${highlightedComment}`);
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.add("ring-2", "ring-brand", "!bg-brand/15");
+    const t = setTimeout(() => {
+      el.classList.remove("ring-2", "ring-brand", "!bg-brand/15");
+      setHighlightedComment(null);
+    }, 2500);
+    return () => clearTimeout(t);
+  }, [highlightedComment, comments]);
 
   // Lazy-load every active contact for the project (only when admin/manager
   // is on the page) so the "Add contact to ticket" picker has options.
@@ -1066,7 +1085,8 @@ export default function TicketDetail() {
                   const renderComment = (c) => (
                     <div
                       key={c.id}
-                      className={`rounded-lg p-3 ${c.is_system ? "bg-brand/10 border border-brand/30" : c.is_muted ? "bg-surface-2 border border-dashed border-border opacity-90" : "bg-surface-2"}`}
+                      id={`comment-${c.id}`}
+                      className={`rounded-lg p-3 transition-all duration-500 ${c.is_system ? "bg-brand/10 border border-brand/30" : c.is_muted ? "bg-surface-2 border border-dashed border-border opacity-90" : "bg-surface-2"}`}
                     >
                       <div className="flex items-center justify-between mb-1 gap-2">
                         <span className="text-xs font-semibold text-fg-muted flex items-center gap-1.5">
@@ -1139,8 +1159,9 @@ export default function TicketDetail() {
                     onSubmit={submitComment}
                     className="space-y-2 pt-2 border-t border-border"
                   >
-                    <textarea
+                    <MentionTextarea
                       value={commentBody}
+                      projectId={ticket?.project_id}
                       onChange={(e) => setCommentBody(e.target.value)}
                       onKeyDown={(e) => {
                         if (
