@@ -158,7 +158,11 @@ Internal statuses ship with semantic tags that drive workflow logic (admin can r
 
 Any internal status with `semantic_tag='resolved_pending_close'` carries an `auto_close_after_days` value (default 3 on the seeded `Resolved` row, edited per status under **Admin → Statuses**). Tickets sitting in such a status past the grace period get promoted to the kind's terminal status by an hourly cron, with an audit row.
 
-Inbound replies during the grace window auto-reopen the ticket unless the body matches the editable gratitude phrase list (also under **Admin → Statuses**). "Thanks" → leave alone. Anything else → flip to `Reopened`.
+Inbound email replies during the grace window, and web UI comments on any terminal ticket, auto-reopen the ticket unless the body matches the editable gratitude phrase list (also under **Admin → Statuses**). "Thanks" → leave alone. Anything substantive → flip to `Reopened`. This covers the case where a ticket is closed in someone else's name and the actual reporter follows up with a still-open issue.
+
+### In-app notifications
+
+All authenticated users (Admin, Manager, Submitter, Viewer, Support) see the notification bell. Clicking a notification navigates to the relevant ticket. Mention notifications scroll to and flash the specific comment so the user lands on the exact context, not just the page.
 
 ### Pending Review follow-ups
 
@@ -169,7 +173,7 @@ Any internal status with `semantic_tag='pending_review'` accepts a follow-up rem
 - **Submit on behalf**: Admin/Manager can pick a different submitter at creation time, or change the submitter on an existing ticket.
 - **Manage followers**: Admin/Manager can add / remove followers via a popover next to the Follow button (audited).
 - **Inline title edit**: anyone with edit access (Admin / Manager / Submitter) can rename a ticket from its header.
-- **@mentions**: write `@first.last`, `@local-part`, or `@user@example.com` in a comment. Matched users auto-follow the ticket and get an in-app notification + email.
+- **@mentions**: type `@` in the comment box to open a dropdown of project members. Up/Down to navigate, Right arrow or Enter to inject the token, Escape to dismiss. Accepted formats: `@first.last`, `@local-part`, or `@user@example.com`. Matched users auto-follow the ticket and receive an in-app notification + email.
 - **Ctrl+Enter posts a comment** (per-user pref).
 
 ---
@@ -214,6 +218,8 @@ so vendor helpdesks don't auto-reply and reflective loops are dropped on ingest.
 Images attached to the ticket are included as file attachments only on the `new_ticket` and `new_comment` events. Status-change and resolved emails send body text only — keeps the inbox light when a ticket churns through several states (Graph, SMTP, and Gmail backends all supported).
 
 The `new_ticket` event is **not** fired automatically on ticket creation. An Admin/Manager must click the **Notify Vendor** button on the ticket detail page to send the initial vendor notification. This gives staff a chance to review the ticket before contacting the vendor.
+
+Status-change and resolved notifications are only sent if the vendor has already been contacted (i.e. a `new_ticket` or vendor-visible comment outbound succeeded at least once). Attaching contacts to a ticket does not automatically enroll them in status updates.
 
 ### Mute vendor + daily digest
 
