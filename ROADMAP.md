@@ -14,6 +14,32 @@ Living doc. Edit as priorities shift. Recent commits are authoritative for "what
 - **Localization** — Branding admin → date/time style + IANA timezone. UI uses hybrid (relative <7d, absolute after). Reports always absolute. Helpers picked up via `setActiveLocale` from BrandingProvider.
 - **Vendor outbound** — image attachments only on `new_ticket` and `new_comment`; `status_change` and `ticket_resolved` send body only.
 - **Naming cleanup** — `mot_*` → `internal_*`, `coastal_*` → `external_*`, `punchlist` → `resolvd` (DB columns + code).
+- **@mentions** — comment body parser (`@email`, `@local-part`, `@first.last`). Resolves to active users; mentioned users auto-follow, get an in-app notification + email (gated by `email_on_comment`). Unmatched tokens ignored silently. No autocomplete UI yet.
+- **CSV import stub removed** — dangling `uploadCsv` in `frontend/src/utils/api.js` deleted (zero callers, backend route never built).
+
+## Gaps vs marketing site (resolvd.dev)
+
+The marketing repo (`~/dev/resolvd-dev`) advertises features that aren't fully built. Triaged into "real gaps" (claimed as current) and "aspirational" (hosted-tier, explicitly future):
+
+### Real gaps — advertised as current, not built
+- **CSV import** — needs a real path eventually. Stub yanked for now; build the importer (parse, validate, dedupe, project assignment, mapping UI) when the use case lands.
+- **Per-project role overrides** — "Per-project overrides for vendors and external collaborators" implies role-per-project. Only flat `project_members` exists today; investigate scope before building.
+- **@mentions autocomplete UI** — text-only mentions ship today; comment textarea could add a `@` typeahead pulling active users.
+
+### Aspirational — Hosted/Pro plan, intentionally future
+Site explicitly tags these as "launching soon" or part of paid hosted tiers. Build only when hosting goes live.
+- **API tokens & outbound webhooks** (Team plan)
+- **SAML / OIDC SSO** (Pro add-on; Entra/Google OAuth already cover most cases but not generic SAML)
+- **SCIM user provisioning** (Pro)
+- **IP allowlists** (Pro)
+- **Daily Postgres + uploads snapshot, S3 destination, point-in-time retention** (hosted backups)
+- **One-click export bundle (SQL + tarball)** — partial: pg_dump documented for self-hosted
+- **Migration assistance / onboarding session / quarterly restore drill** — services, not features
+
+### Marketing-side TODOs noted in resolvd-dev
+- Live demo instance that resets every 4 hours
+- Screenshots / product gallery
+- "First release coming soon" (changelog has no entries)
 
 ## Open / candidate work
 

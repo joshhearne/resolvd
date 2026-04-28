@@ -32,15 +32,3 @@ export const api = {
   delete: (path) => request(path, { method: 'DELETE' }),
 };
 
-export async function uploadCsv(file) {
-  const formData = new FormData();
-  formData.append('file', file);
-  const res = await fetch('/api/admin/import/csv', {
-    method: 'POST',
-    credentials: 'include',
-    body: formData,
-  });
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
-  return data;
-}
