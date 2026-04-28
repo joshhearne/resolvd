@@ -15,18 +15,18 @@ router.get('/options', requireAuth, requireRole('Admin', 'Manager'), async (req,
     const projectIds = (req.query.project_ids || '').split(',').map(s => parseInt(s, 10)).filter(n => !isNaN(n));
     const params = projectIds.length ? [projectIds] : [];
     const extWhere = projectIds.length
-      ? `WHERE project_id = ANY($1::int[]) AND coastal_status IS NOT NULL`
-      : `WHERE coastal_status IS NOT NULL`;
+      ? `WHERE project_id = ANY($1::int[]) AND external_status IS NOT NULL`
+      : `WHERE external_status IS NOT NULL`;
     const coWhere = projectIds.length
       ? `WHERE co.project_id = ANY($1::int[]) AND co.is_archived = FALSE`
       : `WHERE co.is_archived = FALSE`;
 
     const [extRows, coRows] = await Promise.all([
-      pool.query(`SELECT DISTINCT coastal_status FROM tickets ${extWhere} ORDER BY coastal_status`, params),
+      pool.query(`SELECT DISTINCT external_status FROM tickets ${extWhere} ORDER BY external_status`, params),
       pool.query(`SELECT co.id, co.name, co.name_enc, p.name AS project_name FROM companies co JOIN projects p ON p.id = co.project_id ${coWhere} ORDER BY co.name`, params),
     ]);
     await decryptRows('companies', coRows.rows);
-    res.json({ external_statuses: extRows.rows.map(r => r.coastal_status), companies: coRows.rows });
+    res.json({ external_statuses: extRows.rows.map(r => r.external_status), companies: coRows.rows });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Database error' });
@@ -36,7 +36,7 @@ router.get('/options', requireAuth, requireRole('Admin', 'Manager'), async (req,
 // GET /api/export/tickets
 // Query params:
 //   statuses          — comma-sep internal statuses
-//   external_statuses — comma-sep coastal_status values
+//   external_statuses — comma-sep external_status values
 //   status_logic      — AND | OR (default OR)
 //   project_ids       — comma-sep project IDs
 //   company_ids       — comma-sep company IDs (only tickets with a contact from these companies)
@@ -62,11 +62,11 @@ router.get('/tickets', requireAuth, requireRole('Admin', 'Manager'), async (req,
     if (internalStatuses.length && externalStatuses.length) {
       params.push(internalStatuses); const ip = p++;
       params.push(externalStatuses); const ep = p++;
-      statusClause = `(t.internal_status = ANY($${ip}::text[]) ${statusLogic} t.coastal_status = ANY($${ep}::text[]))`;
+      statusClause = `(t.internal_status = ANY($${ip}::text[]) ${statusLogic} t.external_status = ANY($${ep}::text[]))`;
     } else if (internalStatuses.length) {
       params.push(internalStatuses); statusClause = `t.internal_status = ANY($${p++}::text[])`;
     } else {
-      params.push(externalStatuses); statusClause = `t.coastal_status = ANY($${p++}::text[])`;
+      params.push(externalStatuses); statusClause = `t.external_status = ANY($${p++}::text[])`;
     }
 
     const clauses = [];
@@ -91,14 +91,14 @@ router.get('/tickets', requireAuth, requireRole('Admin', 'Manager'), async (req,
 
     const result = await pool.query(`
       SELECT
-        t.id, t.mot_ref,
+        t.id, t.internal_ref,
         t.title, t.title_enc,
         t.description, t.description_enc,
-        t.internal_status, t.coastal_status, t.external_ticket_ref,
+        t.internal_status, t.external_status, t.external_ticket_ref,
         t.effective_priority, t.priority_override, t.computed_priority,
         t.impact, t.urgency,
         t.blocker_type,
-        t.mot_blocker_note, t.mot_blocker_note_enc,
+        t.internal_blocker_note, t.internal_blocker_note_enc,
         t.blocked_by_ticket,
         t.flagged_for_review,
         t.review_note, t.review_note_enc,
@@ -129,7 +129,7 @@ router.get('/tickets', requireAuth, requireRole('Admin', 'Manager'), async (req,
       GROUP BY
         t.id, u_sub.display_name, u_asgn.display_name,
         proj.name, proj.prefix
-      ORDER BY t.effective_priority ASC, t.mot_ref ASC
+      ORDER BY t.effective_priority ASC, t.internal_ref ASC
     `, params);
 
     await decryptRows('tickets', result.rows);
@@ -164,7 +164,7 @@ router.get('/tickets', requireAuth, requireRole('Admin', 'Manager'), async (req,
           ? `"${s.replace(/"/g, '""')}"` : s;
       };
       const rows = result.rows.map(r => [
-        r.mot_ref, r.title, r.internal_status, r.coastal_status, r.external_ticket_ref,
+        r.internal_ref, r.title, r.internal_status, r.external_status, r.external_ticket_ref,
         r.effective_priority, r.impact, r.urgency, r.blocker_type,
         r.assignee_name, r.submitter_name, r.project_name,
         r.created_at ? new Date(r.created_at).toISOString().slice(0,10) : '',

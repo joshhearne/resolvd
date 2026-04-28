@@ -108,8 +108,11 @@ initSchema()
     // Inbox monitor renewal: walks active subscriptions hourly and
     // renews any within 12h of expiring.
     require('./services/inboxMonitorScheduler').startScheduler();
+    // Auto-close tickets sitting in a resolved_pending_close status
+    // past their configured grace period. Hourly tick.
+    require('./services/autoClose').startScheduler();
     app.listen(PORT, () => {
-      console.log(`Punchlist backend running on port ${PORT}`);
+      console.log(`Resolvd backend running on port ${PORT}`);
     });
   })
   .catch(err => {

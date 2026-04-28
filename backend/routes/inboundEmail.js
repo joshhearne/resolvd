@@ -139,7 +139,7 @@ router.post('/generic', async (req, res) => {
       // tags the row so an admin browsing the queue knows the email
       // attached to an existing thread instead of opening a new one.
       const noteParts = [];
-      if (autoResult.kind === 'reused') noteParts.push(`reused:${autoResult.ticket.mot_ref}`);
+      if (autoResult.kind === 'reused') noteParts.push(`reused:${autoResult.ticket.internal_ref}`);
       if (autoResult.unknownCcs?.length) noteParts.push(`unknown_cc:${autoResult.unknownCcs.join(',')}`);
       const note = noteParts.length ? noteParts.join(' ') : null;
       await pool.query(
@@ -162,7 +162,7 @@ router.post('/generic', async (req, res) => {
         ok: true, id: queueRowId,
         kind: autoResult.kind,
         ticket_id: autoResult.ticket.id,
-        ticket_ref: autoResult.ticket.mot_ref,
+        ticket_ref: autoResult.ticket.internal_ref,
         attached_contacts: autoResult.attachedContactIds,
         unknown_ccs: autoResult.unknownCcs,
       });
@@ -178,10 +178,50 @@ router.post('/generic', async (req, res) => {
       );
     }
 
+    // Auto-reply path: subject like "[PREFIX-N]" plus a known contact on
+    // that ticket. Appends a comment and applies resolved-state reopen
+    // logic when applicable. Skips entirely if ref or sender doesn't
+    // match — falls through to the unmatched queue.
+    let autoReply = null;
+    if (result.rows[0].candidate_ticket_ref) {
+      try {
+        autoReply = await inboundProcessor.tryAutoReply({
+          candidateRef: result.rows[0].candidate_ticket_ref,
+          body,
+          fromAddress: String(from).toLowerCase().trim(),
+          queueRowId,
+        });
+      } catch (e) {
+        console.error('auto-reply attempt failed:', e);
+      }
+    }
+    if (autoReply?.ok) {
+      const tags = [];
+      if (autoReply.reopen?.reopened) tags.push(`auto_reopened:${autoReply.reopen.toStatus}`);
+      else if (autoReply.reopen?.gratitude) tags.push('gratitude_detected');
+      await pool.query(
+        `UPDATE inbound_email_queue
+            SET status = 'matched',
+                matched_ticket_id = $1,
+                matched_at = NOW(),
+                reject_reason = $2
+          WHERE id = $3`,
+        [autoReply.ticket.id, tags.length ? tags.join(' ') : null, queueRowId]
+      );
+      return res.status(201).json({
+        ok: true, id: queueRowId,
+        kind: 'replied',
+        ticket_id: autoReply.ticket.id,
+        ticket_ref: autoReply.ticket.internal_ref,
+        reopen: autoReply.reopen,
+      });
+    }
+
     res.status(201).json({
       ok: true, id: queueRowId,
       candidate_ref: result.rows[0].candidate_ticket_ref,
       auto_create: autoResult?.reason || 'no_prefix',
+      auto_reply: autoReply?.reason || null,
     });
   } catch (err) {
     console.error('inbound webhook error:', err);
@@ -199,7 +239,7 @@ router.get('/', requireAuth, requireRole('Admin', 'Manager'), async (req, res) =
              q.matched_ticket_id, q.matched_at, q.reject_reason,
              c.id AS contact_id, c.name AS contact_name, c.name_enc AS contact_name_enc,
              c.company_id, co.name AS company_name, co.name_enc AS company_name_enc,
-             t.mot_ref AS matched_ticket_ref, t.title AS matched_ticket_title,
+             t.internal_ref AS matched_ticket_ref, t.title AS matched_ticket_title,
              t.title_enc AS matched_ticket_title_enc
         FROM inbound_email_queue q
         LEFT JOIN contacts c ON q.from_addr_blind_idx = c.email_blind_idx AND c.is_active = TRUE
@@ -266,7 +306,7 @@ router.post('/:id/match', requireAuth, requireRole('Admin', 'Manager'), async (r
     }
 
     const ticket = await pool.query(
-      `SELECT id, mot_ref, title, title_enc, auto_mute_vendor_replies FROM tickets WHERE id = $1`,
+      `SELECT id, internal_ref, title, title_enc, auto_mute_vendor_replies FROM tickets WHERE id = $1`,
       [Number(ticket_id)]
     );
     if (!ticket.rows[0]) return res.status(404).json({ error: 'Ticket not found' });

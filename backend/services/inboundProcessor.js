@@ -22,12 +22,13 @@ const path = require('path');
 const fsp = require('fs').promises;
 const { randomUUID } = require('crypto');
 const { pool } = require('../db/pool');
-const { nextMotRef, computePriority } = require('../db/schema');
+const { nextInternalRef, computePriority } = require('../db/schema');
 const { buildWritePatch, decryptRow, getMode } = require('./fields');
 const { encrypt } = require('./crypto');
 const blindIndex = require('./blindIndex');
 const { hashWhole } = blindIndex;
 const { sendVendorEmail } = require('./vendorOutbound');
+const { applyReplyToResolvedTicket } = require('./autoResolve');
 const tpl = require('./emailTemplate');
 const { sendMail } = require('./email');
 const { getBranding } = require('./branding');
@@ -173,7 +174,7 @@ async function findDuplicateOrSimilar({ projectId, submitterId, title }) {
   if (mode === 'standard') {
     const idx = blindIndex.buildIndex(title);
     exact = await pool.query(`
-      SELECT id, mot_ref FROM tickets
+      SELECT id, internal_ref FROM tickets
        WHERE project_id = $1 AND submitted_by = $2
          AND internal_status NOT IN ('Closed')
          AND created_at >= NOW() - INTERVAL '7 days'
@@ -182,7 +183,7 @@ async function findDuplicateOrSimilar({ projectId, submitterId, title }) {
     `, [projectId, submitterId, idx]);
   } else {
     exact = await pool.query(`
-      SELECT id, mot_ref FROM tickets
+      SELECT id, internal_ref FROM tickets
        WHERE project_id = $1 AND submitted_by = $2
          AND internal_status NOT IN ('Closed')
          AND created_at >= NOW() - INTERVAL '7 days'
@@ -191,7 +192,7 @@ async function findDuplicateOrSimilar({ projectId, submitterId, title }) {
     `, [projectId, submitterId, normalized]);
   }
   if (exact.rows[0]) {
-    return { kind: 'exact', ticketId: exact.rows[0].id, ticketRef: exact.rows[0].mot_ref };
+    return { kind: 'exact', ticketId: exact.rows[0].id, ticketRef: exact.rows[0].internal_ref };
   }
 
   // Case 2: meaningful overlap with any open ticket in the project from
@@ -203,7 +204,7 @@ async function findDuplicateOrSimilar({ projectId, submitterId, title }) {
     const hashes = blindIndex.hashQuery(title);
     if (hashes.length < 2) return null;
     candidates = await pool.query(`
-      SELECT id, mot_ref, title_blind_idx,
+      SELECT id, internal_ref, title_blind_idx,
              cardinality(title_blind_idx) AS token_count
         FROM tickets
        WHERE project_id = $1
@@ -213,7 +214,7 @@ async function findDuplicateOrSimilar({ projectId, submitterId, title }) {
     `, [projectId, hashes]);
   } else {
     candidates = await pool.query(`
-      SELECT id, mot_ref, title FROM tickets
+      SELECT id, internal_ref, title FROM tickets
        WHERE project_id = $1
          AND internal_status NOT IN ('Closed')
          AND created_at >= NOW() - INTERVAL '24 hours'
@@ -241,7 +242,7 @@ async function findDuplicateOrSimilar({ projectId, submitterId, title }) {
     }
     if (score >= SIMILARITY_THRESHOLD && score > bestScore) {
       bestScore = score;
-      bestMatch = { ticketId: c.id, ticketRef: c.mot_ref };
+      bestMatch = { ticketId: c.id, ticketRef: c.internal_ref };
     }
   }
   return bestMatch ? { kind: 'similar', ...bestMatch, score: bestScore } : null;
@@ -334,7 +335,7 @@ async function tryAutoCreate({ subject, body, fromAddress, ccAddresses, attachme
     }
     return {
       ok: true, kind: 'reused',
-      ticket: { id: dup.ticketId, mot_ref: dup.ticketRef },
+      ticket: { id: dup.ticketId, internal_ref: dup.ticketRef },
       submitter, project,
       attachedContactIds: [], unknownCcs: [],
     };
@@ -348,18 +349,18 @@ async function tryAutoCreate({ subject, body, fromAddress, ccAddresses, attachme
     const c = await pool.connect();
     try {
       await c.query('BEGIN');
-      const motRef = await nextMotRef(c, project.id);
+      const internalRef = await nextInternalRef(c, project.id);
       const computed = computePriority(2, 2);
       const sensitivePatch = await buildWritePatch(c, 'tickets', {
         title: parsed.title,
         description: cleanedDescription,
       });
       const mode = await getMode(c);
-      const baseCols = ['project_id', 'mot_ref', 'submitted_by',
+      const baseCols = ['project_id', 'internal_ref', 'submitted_by',
         'impact', 'urgency', 'computed_priority', 'effective_priority',
         'title_blind_idx', 'source_inbound_email_id'];
       const baseValues = [
-        project.id, motRef, submitter.id,
+        project.id, internalRef, submitter.id,
         2, 2, computed, computed,
         mode === 'standard' ? blindIndex.buildIndex(parsed.title) : null,
         queueRowId || null,
@@ -375,7 +376,7 @@ async function tryAutoCreate({ subject, body, fromAddress, ccAddresses, attachme
       await c.query(
         `INSERT INTO audit_log (ticket_id, user_id, action, new_value, note)
          VALUES ($1, $2, 'ticket_created', $3, $4)`,
-        [r.rows[0].id, submitter.id, motRef, 'Created via inbound email']
+        [r.rows[0].id, submitter.id, internalRef, 'Created via inbound email']
       );
       await c.query(
         `INSERT INTO ticket_followers (ticket_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
@@ -446,11 +447,11 @@ async function tryAutoCreate({ subject, body, fromAddress, ccAddresses, attachme
       try {
         await notifyManagersAndAdmins(null, {
           type: 'unmatched_cc',
-          title: `Unmatched CC on ${ticket.mot_ref}`,
+          title: `Unmatched CC on ${ticket.internal_ref}`,
           body: `${lc} was CC'd on a new ticket but is not a known contact.${company ? ` Possible match: ${company.name}.` : ''}`,
           data: {
             ticket_id: ticket.id,
-            ticket_ref: ticket.mot_ref,
+            ticket_ref: ticket.internal_ref,
             email: lc,
             domain,
             suggested_company_id: company?.id || null,
@@ -499,11 +500,86 @@ async function sendCreationConfirmation({ submitter, ticket, project }) {
     subject: rendered.subject,
     html: tplRow.is_html ? rendered.body : `<pre style="font-family:system-ui,-apple-system,sans-serif;white-space:pre-wrap;font-size:14px;color:#111827">${rendered.body.replace(/[&<>]/g, c => c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;')}</pre>`,
     headers: {
-      'X-Resolvd-Ticket': ticket.mot_ref,
+      'X-Resolvd-Ticket': ticket.internal_ref,
       'X-Resolvd-No-Reply': '0', // this one IS reply-able; vendor outbound flips it back to 1
-      'In-Reply-To': `<${ticket.mot_ref}@resolvd>`,
+      'In-Reply-To': `<${ticket.internal_ref}@resolvd>`,
     },
   });
+}
+
+// Auto-reply handler. Runs when inbound has a [PREFIX-N] candidate ref
+// and the sender is a known active contact on that ticket. Appends the
+// reply as an external-visible comment, then — if the ticket is sitting
+// in a resolved_pending_close status — runs gratitude detection. A real
+// reply auto-reopens; "thanks" leaves the auto-close timer running.
+async function tryAutoReply({ candidateRef, body, fromAddress, queueRowId }) {
+  if (!candidateRef) return { ok: false, reason: 'no_ref' };
+
+  const t = await pool.query(
+    `SELECT id, internal_ref, project_id, internal_status, submitted_by
+       FROM tickets WHERE internal_ref = $1`,
+    [candidateRef]
+  );
+  if (!t.rows[0]) return { ok: false, reason: `ticket_not_found:${candidateRef}` };
+  const ticket = t.rows[0];
+
+  // Sender must be an active contact attached to this ticket.
+  const blind = hashWhole(fromAddress);
+  let contactRow;
+  if (blind) {
+    contactRow = await pool.query(`
+      SELECT c.id, c.name, c.email, u.id AS submitter_id
+        FROM ticket_contacts tc
+        JOIN contacts c ON c.id = tc.contact_id
+   LEFT JOIN users u ON u.id = $2
+       WHERE tc.ticket_id = $1
+         AND c.is_active = TRUE
+         AND c.email_blind_idx = $3
+       LIMIT 1
+    `, [ticket.id, ticket.submitted_by, blind]);
+  } else {
+    contactRow = await pool.query(`
+      SELECT c.id, c.name, c.email, u.id AS submitter_id
+        FROM ticket_contacts tc
+        JOIN contacts c ON c.id = tc.contact_id
+   LEFT JOIN users u ON u.id = $2
+       WHERE tc.ticket_id = $1
+         AND c.is_active = TRUE
+         AND LOWER(c.email) = LOWER($3)
+       LIMIT 1
+    `, [ticket.id, ticket.submitted_by, fromAddress]);
+  }
+  if (!contactRow.rows[0]) return { ok: false, reason: 'sender_not_on_ticket' };
+
+  const cleanedBody = stripSignature(body) || '(no body)';
+
+  // Append as an external-visible, non-system comment on behalf of the
+  // submitter (we don't author comments as contact records).
+  const patch = await buildWritePatch(pool, 'comments', { body: cleanedBody });
+  const cols = ['ticket_id', 'user_id', 'is_external_visible', 'is_internal',
+    'source_inbound_email_id', ...patch.cols];
+  const values = [ticket.id, ticket.submitted_by, true, false, queueRowId || null, ...patch.values];
+  const placeholders = cols.map((_, i) => `$${i + 1}`).join(', ');
+  await pool.query(
+    `INSERT INTO comments (${cols.join(', ')}) VALUES (${placeholders})`,
+    values
+  );
+  await pool.query(`UPDATE tickets SET updated_at = NOW() WHERE id = $1`, [ticket.id]);
+  await pool.query(
+    `INSERT INTO audit_log (ticket_id, user_id, action, note)
+     VALUES ($1, $2, 'comment_appended_via_email', $3)`,
+    [ticket.id, ticket.submitted_by, `Vendor reply from ${fromAddress}`]
+  );
+
+  const reopen = await applyReplyToResolvedTicket({
+    ticketId: ticket.id, replyBody: cleanedBody, actorUserId: ticket.submitted_by,
+  });
+
+  return {
+    ok: true,
+    ticket: { id: ticket.id, internal_ref: ticket.internal_ref },
+    reopen,
+  };
 }
 
 module.exports = {
@@ -512,5 +588,6 @@ module.exports = {
   findProjectByPrefix,
   findInternalSubmitter,
   tryAutoCreate,
+  tryAutoReply,
   sendCreationConfirmation,
 };

@@ -5,6 +5,9 @@ const SEMANTIC_TAGS = [
   { value: "", label: "— none —" },
   { value: "in_progress", label: "in_progress" },
   { value: "reopened", label: "reopened" },
+  { value: "resolved_pending_close", label: "resolved_pending_close" },
+  { value: "pending_review", label: "pending_review" },
+  { value: "on_hold", label: "on_hold" },
 ];
 
 const MAP_KIND_LABELS = {
@@ -228,7 +231,133 @@ export default function AdminStatuses() {
         onCreate={createMapping}
         onDelete={deleteMapping}
       />
+
+      <GratitudePhrasesBlock />
     </div>
+  );
+}
+
+function GratitudePhrasesBlock() {
+  const [phrases, setPhrases] = useState([]);
+  const [draft, setDraft] = useState("");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  async function load() {
+    try {
+      const res = await fetch("/api/statuses/auto-resolve/phrases", {
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const d = await res.json();
+      setPhrases(d.phrases || []);
+    } catch {
+      toast.error("Failed to load gratitude phrases");
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => {
+    load();
+  }, []);
+
+  async function save(next) {
+    setSaving(true);
+    try {
+      const res = await fetch("/api/statuses/auto-resolve/phrases", {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ phrases: next }),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(body.error || "Failed");
+        return;
+      }
+      setPhrases(body.phrases || []);
+      toast.success("Saved");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function addPhrase(e) {
+    e.preventDefault();
+    const v = draft.trim().toLowerCase();
+    if (!v) return;
+    if (phrases.includes(v)) {
+      setDraft("");
+      return;
+    }
+    save([...phrases, v]);
+    setDraft("");
+  }
+
+  function remove(p) {
+    save(phrases.filter((x) => x !== p));
+  }
+
+  return (
+    <section>
+      <h2 className="text-lg font-semibold text-fg mb-1">
+        Auto-resolve gratitude phrases
+      </h2>
+      <p className="text-sm text-fg-muted mb-3">
+        When a contact replies to a ticket sitting in a status tagged{" "}
+        <code>resolved_pending_close</code>, the reply is matched against this
+        list. Matches are treated as a closeout (ticket stays in resolved).
+        Anything else auto-reopens the ticket. Comparison is case-insensitive,
+        ignores trailing punctuation, and tolerates short trailing filler like
+        "thanks!" or "thanks guys" — but a phrase followed by words like
+        "but", "still", "issue", "fix" falls through and reopens.
+      </p>
+      {loading ? (
+        <div className="text-fg-muted text-sm">Loading…</div>
+      ) : (
+        <div className="border border-border rounded-lg p-3 bg-surface">
+          <div className="flex flex-wrap gap-2 mb-3">
+            {phrases.length === 0 && (
+              <span className="text-sm text-fg-muted italic">
+                No phrases — every reply will auto-reopen.
+              </span>
+            )}
+            {phrases.map((p) => (
+              <span
+                key={p}
+                className="inline-flex items-center gap-1 bg-surface-2 border border-border rounded-full pl-3 pr-1 py-0.5 text-sm"
+              >
+                {p}
+                <button
+                  onClick={() => remove(p)}
+                  disabled={saving}
+                  className="text-fg-muted hover:text-red-600 px-1"
+                  title="Remove"
+                >
+                  ×
+                </button>
+              </span>
+            ))}
+          </div>
+          <form onSubmit={addPhrase} className="flex items-center gap-2">
+            <input
+              type="text"
+              value={draft}
+              onChange={(e) => setDraft(e.target.value)}
+              placeholder="e.g. thanks, much appreciated"
+              className="flex-1 border border-border-strong rounded-md px-3 py-1.5 text-sm"
+            />
+            <button
+              type="submit"
+              disabled={saving || !draft.trim()}
+              className="px-3 py-1.5 bg-brand hover:bg-brand-bright disabled:opacity-60 text-brand-fg text-sm rounded-md"
+            >
+              Add phrase
+            </button>
+          </form>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -373,6 +502,31 @@ function StatusRow({
             Blocker
           </label>
         </div>
+        {draft.semantic_tag === "resolved_pending_close" && (
+          <label className="col-span-12 flex items-center gap-2 text-xs">
+            Auto-close after
+            <input
+              type="number"
+              min="0"
+              value={
+                draft.auto_close_after_days === null ||
+                draft.auto_close_after_days === undefined
+                  ? ""
+                  : draft.auto_close_after_days
+              }
+              onChange={(e) =>
+                setDraft((d) => ({
+                  ...d,
+                  auto_close_after_days:
+                    e.target.value === "" ? null : Number(e.target.value),
+                }))
+              }
+              className="w-20 border border-border-strong rounded-md px-2 py-1 text-sm"
+              placeholder="days"
+            />
+            days (blank disables auto-close)
+          </label>
+        )}
         <div className="col-span-2 flex gap-2 justify-end">
           <button
             onClick={onCancelEdit}
@@ -418,6 +572,14 @@ function StatusRow({
         {status.semantic_tag && (
           <FlagBadge active label={`tag: ${status.semantic_tag}`} tone="gray" />
         )}
+        {status.semantic_tag === "resolved_pending_close" &&
+          status.auto_close_after_days != null && (
+            <FlagBadge
+              active
+              label={`auto-close: ${status.auto_close_after_days}d`}
+              tone="emerald"
+            />
+          )}
       </div>
       <div className="ml-auto flex items-center gap-2 text-xs">
         <span className="text-fg-muted">

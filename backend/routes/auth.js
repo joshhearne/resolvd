@@ -378,14 +378,31 @@ router.get('/logout', (req, res) => {
 });
 
 // ─── Current session ─────────────────────────────────────────────────────────
-router.get('/me', (req, res) => {
+const PREF_DEFAULTS = Object.freeze({
+  scope_follows_filter: true,
+  ctrl_enter_to_post: true,
+  auto_follow_on_comment: true,
+  email_on_comment: true,
+  email_on_status_change: true,
+  confirm_before_close: false,
+  compact_mode: false,
+  default_ticket_sort: 'updated_at_desc',
+});
+
+router.get('/me', async (req, res) => {
   if (!req.session?.user) {
     if (req.session?.pendingMfaUserId) {
       return res.status(401).json({ error: 'MFA challenge pending', pendingMfa: true });
     }
     return res.status(401).json({ error: 'Unauthenticated' });
   }
-  res.json(req.session.user);
+  try {
+    const r = await pool.query('SELECT preferences FROM users WHERE id = $1', [req.session.user.id]);
+    const stored = r.rows[0]?.preferences || {};
+    res.json({ ...req.session.user, preferences: { ...PREF_DEFAULTS, ...stored } });
+  } catch {
+    res.json({ ...req.session.user, preferences: { ...PREF_DEFAULTS } });
+  }
 });
 
 module.exports = router;

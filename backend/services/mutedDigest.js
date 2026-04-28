@@ -48,7 +48,7 @@ async function fetchPendingDigestRows(client) {
       co.name           AS company_name,
       co.name_enc       AS company_name_enc,
       t.id              AS ticket_id,
-      t.mot_ref         AS ticket_ref,
+      t.internal_ref         AS ticket_ref,
       t.title           AS ticket_title,
       t.title_enc       AS ticket_title_enc,
       f.user_id         AS follower_id,

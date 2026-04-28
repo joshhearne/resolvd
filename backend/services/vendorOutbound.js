@@ -110,7 +110,10 @@ async function sendVendorEmail({ eventType, ticketId, actorId }) {
   const contacts = await fetchTicketContacts(ticketId);
   if (!contacts.length) return { sent: 0, skipped: 0 };
 
-  const imageAttachments = await fetchTicketImages(ticketId);
+  const attachOnEvents = new Set(['new_ticket', 'new_comment']);
+  const imageAttachments = attachOnEvents.has(eventType)
+    ? await fetchTicketImages(ticketId)
+    : [];
 
   let sent = 0;
   let failed = 0;
@@ -145,7 +148,7 @@ async function sendVendorEmail({ eventType, ticketId, actorId }) {
           'X-Auto-Response-Suppress': 'All',
           'Precedence': 'bulk',
           'X-Resolvd-No-Reply': '1',
-          'X-Resolvd-Ticket': String(ctx.ticket.mot_ref || ticketId),
+          'X-Resolvd-Ticket': String(ctx.ticket.internal_ref || ticketId),
         },
       });
       sent++;

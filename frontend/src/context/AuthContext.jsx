@@ -106,6 +106,19 @@ export function AuthProvider({ children }) {
     setUser((u) => ({ ...u, defaultProjectId: projectId || null }));
   }
 
+  async function updatePrefs(patch) {
+    const res = await fetch("/api/users/me/prefs", {
+      method: "PATCH",
+      credentials: "include",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(patch),
+    });
+    if (!res.ok) throw new Error("Failed to save preference");
+    const merged = await res.json();
+    setUser((u) => (u ? { ...u, preferences: merged } : u));
+    return merged;
+  }
+
   return (
     <AuthContext.Provider
       value={{
@@ -121,6 +134,7 @@ export function AuthProvider({ children }) {
         logout,
         setUser,
         setDefaultProject,
+        updatePrefs,
       }}
     >
       {children}

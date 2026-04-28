@@ -181,7 +181,7 @@ export default function Dashboard() {
                       to={`/tickets/${t.id}`}
                       className="text-sm font-medium text-brand hover:underline"
                     >
-                      {t.mot_ref}
+                      {t.internal_ref}
                     </Link>
                     <span className="ml-2 text-sm text-fg">{t.title}</span>
                   </div>
@@ -211,12 +211,12 @@ export default function Dashboard() {
                 <li key={a.id} className="px-4 py-3">
                   <div className="flex items-start justify-between gap-2">
                     <div className="text-sm">
-                      {a.mot_ref && (
+                      {a.internal_ref && (
                         <Link
                           to={`/tickets/${a.ticket_id}`}
                           className="font-medium text-brand hover:underline mr-1"
                         >
-                          {a.mot_ref}
+                          {a.internal_ref}
                         </Link>
                       )}
                       <span className="text-fg-muted">

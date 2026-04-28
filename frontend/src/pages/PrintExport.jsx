@@ -28,7 +28,7 @@ function groupSort(tickets) {
     if (gd !== 0) return gd;
     const pd = (a.effective_priority || 3) - (b.effective_priority || 3);
     if (pd !== 0) return pd;
-    return (a.mot_ref || "").localeCompare(b.mot_ref || "");
+    return (a.internal_ref || "").localeCompare(b.internal_ref || "");
   });
 }
 
@@ -129,7 +129,7 @@ function TicketCard({ ticket, showImages }) {
             flexShrink: 0,
           }}
         >
-          {ticket.mot_ref}
+          {ticket.internal_ref}
         </span>
         {ticket.external_ticket_ref && (
           <span
@@ -165,8 +165,8 @@ function TicketCard({ ticket, showImages }) {
           }}
         >
           {ticket.internal_status}
-          {ticket.coastal_status && ticket.coastal_status !== "Unacknowledged"
-            ? ` · Ext: ${ticket.coastal_status}`
+          {ticket.external_status && ticket.external_status !== "Unacknowledged"
+            ? ` · Ext: ${ticket.external_status}`
             : ""}
         </span>
       </div>
@@ -218,7 +218,7 @@ function TicketCard({ ticket, showImages }) {
           }}
         >
           <strong>Blocked:</strong> {ticket.blocker_type}
-          {ticket.mot_blocker_note ? ` — ${ticket.mot_blocker_note}` : ""}
+          {ticket.internal_blocker_note ? ` — ${ticket.internal_blocker_note}` : ""}
         </div>
       )}
 

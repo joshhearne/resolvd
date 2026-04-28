@@ -29,6 +29,7 @@ import Login from "./pages/Login";
 import MfaChallenge from "./pages/MfaChallenge";
 import MfaSetup from "./pages/MfaSetup";
 import AccountSettings from "./pages/AccountSettings";
+import AccountPreferences from "./pages/AccountPreferences";
 import AccountProfile from "./pages/account/AccountProfile";
 import AccountPassword from "./pages/account/AccountPassword";
 import ForgotPassword from "./pages/ForgotPassword";
@@ -110,6 +111,7 @@ function AppRoutes() {
           <Route path="profile" element={<AccountProfile />} />
           <Route path="password" element={<AccountPassword />} />
           <Route path="mfa" element={<MfaSetup />} />
+          <Route path="preferences" element={<AccountPreferences />} />
         </Route>
         <Route
           path="projects"

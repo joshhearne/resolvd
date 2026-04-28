@@ -32,7 +32,7 @@ const TARGETS = [
       { plain: 'title',            enc: 'title_enc',            ctx: 'tickets.title' },
       { plain: 'description',      enc: 'description_enc',      ctx: 'tickets.description' },
       { plain: 'review_note',      enc: 'review_note_enc',      ctx: 'tickets.review_note' },
-      { plain: 'mot_blocker_note', enc: 'mot_blocker_note_enc', ctx: 'tickets.mot_blocker_note' },
+      { plain: 'internal_blocker_note', enc: 'internal_blocker_note_enc', ctx: 'tickets.internal_blocker_note' },
     ],
   },
   {

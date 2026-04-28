@@ -8,7 +8,7 @@ import {
   computePriority,
   priorityClass,
   INTERNAL_STATUSES,
-  COASTAL_STATUSES,
+  EXTERNAL_STATUSES,
   IMPACT_LABELS,
   URGENCY_LABELS,
 } from "../utils/helpers";
@@ -21,6 +21,99 @@ import {
 import PriorityBadge from "../components/PriorityBadge";
 import StatusBadge from "../components/StatusBadge";
 import ConfirmDialog from "../components/ConfirmDialog";
+
+// Pick the "primary advance" target for the next-step button. Skips
+// blocker statuses (Awaiting Input, On Hold) and the reopened tag.
+// From a blocker/reopened state, resume to the in_progress-tagged
+// status. Returns null when current is terminal or unknown.
+function nextInternalStatus(current, list) {
+  if (!current) return null;
+  if (current.is_terminal) return null;
+  if (
+    current.is_blocker ||
+    current.semantic_tag === "reopened" ||
+    current.semantic_tag === "on_hold"
+  ) {
+    return list.find((s) => s.semantic_tag === "in_progress") || null;
+  }
+  const sorted = [...list].sort((a, b) => a.sort_order - b.sort_order);
+  const idx = sorted.findIndex((s) => s.id === current.id);
+  if (idx < 0) return null;
+  for (let i = idx + 1; i < sorted.length; i++) {
+    const s = sorted[i];
+    if (s.is_blocker) continue;
+    if (s.semantic_tag === "reopened" || s.semantic_tag === "on_hold") continue;
+    return s;
+  }
+  return null;
+}
+
+function FollowupControl({ ticketId, followupAt, onChange }) {
+  const [days, setDays] = React.useState(3);
+  const [busy, setBusy] = React.useState(false);
+
+  async function schedule() {
+    setBusy(true);
+    try {
+      await api.post(`/api/tickets/${ticketId}/followup`, { days });
+      toast.success(`Follow-up set for ${days} day${days === 1 ? "" : "s"}`);
+      onChange?.();
+    } catch (e) {
+      toast.error(e.message || "Failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+  async function cancel() {
+    setBusy(true);
+    try {
+      await api.delete(`/api/tickets/${ticketId}/followup`);
+      toast.success("Follow-up cancelled");
+      onChange?.();
+    } catch (e) {
+      toast.error(e.message || "Failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  if (followupAt) {
+    return (
+      <div className="flex items-center justify-between gap-2 text-xs bg-surface-2 border border-border rounded px-2 py-1.5">
+        <span className="text-fg">
+          Follow-up: {formatDateTime(followupAt)}
+        </span>
+        <button
+          onClick={cancel}
+          disabled={busy}
+          className="text-red-600 dark:text-red-400 hover:underline"
+        >
+          Cancel
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center gap-2">
+      <input
+        type="number"
+        min="1"
+        max="90"
+        value={days}
+        onChange={(e) => setDays(Math.max(1, Math.floor(Number(e.target.value) || 1)))}
+        className="w-16 border border-border-strong rounded-md px-2 py-1 text-sm"
+      />
+      <span className="text-xs text-fg-muted">day{days === 1 ? "" : "s"}</span>
+      <button
+        onClick={schedule}
+        disabled={busy}
+        className="btn-secondary btn btn-sm flex-1"
+      >
+        Schedule follow-up
+      </button>
+    </div>
+  );
+}
 
 function formatBytes(bytes) {
   if (!bytes) return "0 B";
@@ -149,6 +242,16 @@ export default function TicketDetail() {
   const [dragOver, setDragOver] = useState(false);
   const [followers, setFollowers] = useState([]);
   const [followLoading, setFollowLoading] = useState(false);
+  const [allUsers, setAllUsers] = useState([]);
+  const [editingSubmitter, setEditingSubmitter] = useState(false);
+  const [submitterDraft, setSubmitterDraft] = useState("");
+  const [showFollowerMgr, setShowFollowerMgr] = useState(false);
+  const [addFollowerId, setAddFollowerId] = useState("");
+
+  useEffect(() => {
+    if (!isAdmin) return;
+    api.get("/api/users").then(setAllUsers).catch(() => setAllUsers([]));
+  }, [isAdmin]);
 
   // Inline edit state
   const [editing, setEditing] = useState({});
@@ -375,12 +478,12 @@ export default function TicketDetail() {
       return;
     }
     const data = await api.get(
-      `/api/tickets?sort_by=mot_ref&sort_dir=asc&limit=10`,
+      `/api/tickets?sort_by=internal_ref&sort_dir=asc&limit=10`,
     );
     const filtered = data.tickets.filter(
       (t) =>
         t.id !== ticket.id &&
-        (t.mot_ref.includes(q.toUpperCase()) ||
+        (t.internal_ref.includes(q.toUpperCase()) ||
           t.title.toLowerCase().includes(q.toLowerCase())),
     );
     setBlockingResults(filtered);
@@ -399,6 +502,33 @@ export default function TicketDetail() {
   );
 
   const isFollowing = followers.some((f) => f.id === user?.id);
+
+  async function addFollower(userId) {
+    try {
+      await api.post(`/api/tickets/${id}/followers`, { user_id: userId });
+      const u = allUsers.find((x) => x.id === userId);
+      if (u) {
+        setFollowers((prev) =>
+          prev.some((f) => f.id === u.id)
+            ? prev
+            : [...prev, { id: u.id, display_name: u.display_name, email: u.email }],
+        );
+      }
+      setAddFollowerId("");
+      toast.success("Follower added");
+    } catch (e) {
+      toast.error(e.message || "Failed");
+    }
+  }
+  async function removeFollower(userId) {
+    try {
+      await api.delete(`/api/tickets/${id}/followers/${userId}`);
+      setFollowers((prev) => prev.filter((f) => f.id !== userId));
+      toast.success("Follower removed");
+    } catch (e) {
+      toast.error(e.message || "Failed");
+    }
+  }
 
   async function toggleFollow() {
     setFollowLoading(true);
@@ -435,7 +565,7 @@ export default function TicketDetail() {
         <div>
           <div className="flex items-center gap-3 flex-wrap">
             <span className="font-mono text-sm font-semibold text-fg-muted">
-              {ticket.mot_ref}
+              {ticket.internal_ref}
             </span>
             <PriorityBadge
               priority={ticket.effective_priority}
@@ -449,10 +579,108 @@ export default function TicketDetail() {
               </span>
             ) : null}
           </div>
-          <h1 className="text-xl font-semibold text-fg mt-2">{ticket.title}</h1>
+          {editing.title ? (
+            <div className="mt-2 flex items-center gap-2">
+              <input
+                type="text"
+                autoFocus
+                value={editValues.title ?? ""}
+                onChange={(e) =>
+                  setEditValues((v) => ({ ...v, title: e.target.value }))
+                }
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && editValues.title?.trim()) {
+                    patch({ title: editValues.title.trim() });
+                  } else if (e.key === "Escape") {
+                    setEditing({});
+                  }
+                }}
+                className="flex-1 text-xl font-semibold border border-border-strong rounded-md px-2 py-1 focus:outline-none focus:ring-2 focus:ring-brand/40"
+              />
+              <button
+                onClick={() =>
+                  editValues.title?.trim() &&
+                  patch({ title: editValues.title.trim() })
+                }
+                disabled={saving || !editValues.title?.trim()}
+                className="btn-primary btn btn-sm"
+              >
+                Save
+              </button>
+              <button
+                onClick={() => setEditing({})}
+                className="btn-secondary btn btn-sm"
+              >
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <h1 className="group text-xl font-semibold text-fg mt-2 flex items-center gap-2">
+              {ticket.title}
+              {canEdit && (
+                <button
+                  onClick={() => {
+                    setEditing({ title: true });
+                    setEditValues({ title: ticket.title });
+                  }}
+                  className="text-xs text-brand hover:underline opacity-0 group-hover:opacity-100 transition-opacity"
+                  title="Edit title"
+                >
+                  Edit
+                </button>
+              )}
+            </h1>
+          )}
           <p className="text-xs text-fg-dim mt-1">
-            Submitted by {ticket.submitted_by_name} ·{" "}
-            {formatDateTime(ticket.created_at)}
+            Submitted by{" "}
+            {editingSubmitter ? (
+              <span className="inline-flex items-center gap-1 align-middle">
+                <select
+                  value={submitterDraft}
+                  onChange={(e) => setSubmitterDraft(e.target.value)}
+                  className="border border-border-strong rounded px-1 py-0.5 text-xs"
+                >
+                  {allUsers
+                    .filter((u) => u.status === "active")
+                    .map((u) => (
+                      <option key={u.id} value={u.id}>
+                        {u.display_name || u.email}
+                      </option>
+                    ))}
+                </select>
+                <button
+                  onClick={() => {
+                    patch({ submitted_by: Number(submitterDraft) });
+                    setEditingSubmitter(false);
+                  }}
+                  className="text-brand hover:underline"
+                >
+                  Save
+                </button>
+                <button
+                  onClick={() => setEditingSubmitter(false)}
+                  className="text-fg-muted hover:underline"
+                >
+                  Cancel
+                </button>
+              </span>
+            ) : (
+              <>
+                {ticket.submitted_by_name}
+                {isAdmin && (
+                  <button
+                    onClick={() => {
+                      setSubmitterDraft(String(ticket.submitted_by || ""));
+                      setEditingSubmitter(true);
+                    }}
+                    className="ml-1 text-brand hover:underline"
+                  >
+                    (change)
+                  </button>
+                )}
+              </>
+            )}{" "}
+            · {formatDateTime(ticket.created_at)}
             {ticket.assigned_to_name &&
               ` · Assigned: ${ticket.assigned_to_name}`}
           </p>
@@ -488,6 +716,74 @@ export default function TicketDetail() {
               </span>
             )}
           </button>
+          {isAdmin && (
+            <div className="relative">
+              <button
+                onClick={() => setShowFollowerMgr((v) => !v)}
+                className="btn-secondary btn btn-sm"
+                title="Manage followers"
+              >
+                +
+              </button>
+              {showFollowerMgr && (
+                <div className="absolute right-0 top-full mt-1 w-72 bg-surface rounded-md shadow-lg border border-border z-30 p-3 space-y-2">
+                  <div className="text-xs font-semibold text-fg uppercase tracking-wide">
+                    Followers ({followers.length})
+                  </div>
+                  <div className="max-h-40 overflow-y-auto space-y-1">
+                    {followers.length === 0 && (
+                      <div className="text-xs text-fg-muted italic">None</div>
+                    )}
+                    {followers.map((f) => (
+                      <div
+                        key={f.id}
+                        className="flex items-center justify-between text-sm"
+                      >
+                        <span className="truncate">
+                          {f.display_name || f.email}
+                        </span>
+                        <button
+                          onClick={() => removeFollower(f.id)}
+                          className="text-red-600 dark:text-red-400 hover:underline text-xs"
+                        >
+                          Remove
+                        </button>
+                      </div>
+                    ))}
+                  </div>
+                  <div className="flex items-center gap-1 pt-2 border-t border-border">
+                    <select
+                      value={addFollowerId}
+                      onChange={(e) => setAddFollowerId(e.target.value)}
+                      className="flex-1 border border-border-strong rounded px-2 py-1 text-sm"
+                    >
+                      <option value="">Add user…</option>
+                      {allUsers
+                        .filter(
+                          (u) =>
+                            u.status === "active" &&
+                            !followers.some((f) => f.id === u.id),
+                        )
+                        .map((u) => (
+                          <option key={u.id} value={u.id}>
+                            {u.display_name || u.email}
+                          </option>
+                        ))}
+                    </select>
+                    <button
+                      onClick={() =>
+                        addFollowerId && addFollower(Number(addFollowerId))
+                      }
+                      disabled={!addFollowerId}
+                      className="btn-primary btn btn-sm disabled:opacity-50"
+                    >
+                      Add
+                    </button>
+                  </div>
+                </div>
+              )}
+            </div>
+          )}
           {["Admin", "Manager"].includes(user?.role) && vendorContacts.length > 0 && (
             <button
               onClick={notifyVendor}
@@ -497,6 +793,13 @@ export default function TicketDetail() {
               Notify Vendor
             </button>
           )}
+          <button
+            onClick={() => setConfirm("move")}
+            className="btn-secondary btn btn-sm whitespace-nowrap"
+            title="Move this ticket to a different project (re-issues ref, detaches vendor contacts)"
+          >
+            Move…
+          </button>
           {isAdmin && (
             <button
               onClick={() => setConfirm("merge")}
@@ -569,7 +872,7 @@ export default function TicketDetail() {
               Awaiting Team Input
             </div>
             <div className="text-sm text-amber-700 dark:text-amber-300 mt-0.5">
-              {ticket.mot_blocker_note ||
+              {ticket.internal_blocker_note ||
                 "Action required before the external partner can proceed."}
             </div>
           </div>
@@ -787,9 +1090,21 @@ export default function TicketDetail() {
                     <textarea
                       value={commentBody}
                       onChange={(e) => setCommentBody(e.target.value)}
+                      onKeyDown={(e) => {
+                        if (
+                          user?.preferences?.ctrl_enter_to_post !== false &&
+                          (e.ctrlKey || e.metaKey) &&
+                          e.key === "Enter" &&
+                          !submittingComment &&
+                          (commentBody.trim() || commentFiles.length > 0)
+                        ) {
+                          e.preventDefault();
+                          submitComment(e);
+                        }
+                      }}
                       rows={3}
                       className="w-full border border-border-strong rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40"
-                      placeholder="Add a comment..."
+                      placeholder="Add a comment... (Ctrl+Enter to post)"
                     />
                     {isAdmin && vendorContacts.length > 0 && (
                       <label className="flex items-center gap-2 text-xs text-fg-muted">
@@ -870,7 +1185,17 @@ export default function TicketDetail() {
                             submittingComment ||
                             (!commentBody.trim() && commentFiles.length === 0)
                           }
-                          onPostAndClose={() => submitComment(null, "Closed")}
+                          onPostAndClose={() => {
+                            if (
+                              user?.preferences?.confirm_before_close &&
+                              !window.confirm(
+                                `Post this comment and close ${ticket.internal_ref}?`,
+                              )
+                            ) {
+                              return;
+                            }
+                            submitComment(null, "Closed");
+                          }}
                           onPostAndReopen={() =>
                             submitComment(null, "Reopened")
                           }
@@ -1249,21 +1574,68 @@ export default function TicketDetail() {
                     </button>
                   </div>
                 ) : (
-                  <div className="flex items-center justify-between">
-                    <StatusBadge status={ticket.internal_status} />
-                    {isAdmin && (
-                      <button
-                        onClick={() => {
-                          setEditing({ internal_status: true });
-                          setEditValues({
-                            internal_status: ticket.internal_status,
-                          });
-                        }}
-                        className="text-xs text-brand hover:underline"
-                      >
-                        Edit
-                      </button>
-                    )}
+                  <div className="space-y-2">
+                    <div className="flex items-center justify-between">
+                      <StatusBadge status={ticket.internal_status} />
+                      {isAdmin && (
+                        <button
+                          onClick={() => {
+                            setEditing({ internal_status: true });
+                            setEditValues({
+                              internal_status: ticket.internal_status,
+                            });
+                          }}
+                          className="text-xs text-brand hover:underline"
+                        >
+                          Edit
+                        </button>
+                      )}
+                    </div>
+                    {isAdmin &&
+                      (() => {
+                        const cur = statusByName(
+                          statusCfg.internal,
+                          ticket.internal_status,
+                        );
+                        const next = nextInternalStatus(
+                          cur,
+                          statusCfg.internal,
+                        );
+                        if (!next) return null;
+                        const blocked = !!ticket.followup_at;
+                        return (
+                          <button
+                            onClick={() =>
+                              patch({ internal_status: next.name })
+                            }
+                            disabled={saving || blocked}
+                            title={
+                              blocked
+                                ? "Follow-up reminder pending — cancel it or wait for it to fire before advancing."
+                                : undefined
+                            }
+                            className="btn-primary btn btn-sm w-full disabled:opacity-50"
+                          >
+                            Advance to {next.name}
+                          </button>
+                        );
+                      })()}
+                    {isAdmin &&
+                      (() => {
+                        const cur = statusByName(
+                          statusCfg.internal,
+                          ticket.internal_status,
+                        );
+                        if (cur?.semantic_tag !== "pending_review")
+                          return null;
+                        return (
+                          <FollowupControl
+                            ticketId={ticket.id}
+                            followupAt={ticket.followup_at}
+                            onChange={loadTicket}
+                          />
+                        );
+                      })()}
                   </div>
                 )}
               </Field>
@@ -1276,15 +1648,15 @@ export default function TicketDetail() {
               <h2 className="text-sm font-semibold text-fg">External Vendor</h2>
               <dl className="space-y-3">
                 <Field label="External Status">
-                  {isAdmin && editing.coastal_status ? (
+                  {isAdmin && editing.external_status ? (
                     <div className="space-y-2">
                       {(() => {
                         const opts = statusCfg.external.length
                           ? statusCfg.external.map((s) => s.name)
-                          : COASTAL_STATUSES;
+                          : EXTERNAL_STATUSES;
                         const cur = statusByName(
                           statusCfg.external,
-                          ticket.coastal_status,
+                          ticket.external_status,
                         );
                         const allowedIds = cur
                           ? new Set(
@@ -1304,11 +1676,11 @@ export default function TicketDetail() {
                         };
                         return (
                           <select
-                            value={editValues.coastal_status}
+                            value={editValues.external_status}
                             onChange={(e) =>
                               setEditValues((v) => ({
                                 ...v,
-                                coastal_status: e.target.value,
+                                external_status: e.target.value,
                               }))
                             }
                             className="border border-border-strong rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-brand/40 w-full"
@@ -1351,7 +1723,7 @@ export default function TicketDetail() {
                       <div className="flex gap-2">
                         <button
                           onClick={() =>
-                            patch({ coastal_status: editValues.coastal_status })
+                            patch({ external_status: editValues.external_status })
                           }
                           disabled={saving}
                           className="btn-primary btn btn-sm"
@@ -1369,14 +1741,14 @@ export default function TicketDetail() {
                   ) : (
                     <div className="flex items-center justify-between">
                       <span className="text-sm text-fg">
-                        {ticket.coastal_status}
+                        {ticket.external_status}
                       </span>
                       {isAdmin && (
                         <button
                           onClick={() => {
-                            setEditing({ coastal_status: true });
+                            setEditing({ external_status: true });
                             setEditValues({
-                              coastal_status: ticket.coastal_status,
+                              external_status: ticket.external_status,
                             });
                           }}
                           className="text-xs text-brand hover:underline"
@@ -1443,10 +1815,10 @@ export default function TicketDetail() {
                     </div>
                   )}
                 </Field>
-                {ticket.coastal_updated_at && (
+                {ticket.external_updated_at && (
                   <Field label="External Updated">
                     <span className="text-xs text-fg-muted">
-                      {formatDateTime(ticket.coastal_updated_at)}
+                      {formatDateTime(ticket.external_updated_at)}
                     </span>
                   </Field>
                 )}
@@ -1483,7 +1855,7 @@ export default function TicketDetail() {
                     <button
                       onClick={() => {
                         setEditing({ blocker: "mot_input" });
-                        setEditValues({ mot_blocker_note: "" });
+                        setEditValues({ internal_blocker_note: "" });
                       }}
                       className="btn-secondary btn btn-sm"
                     >
@@ -1508,7 +1880,7 @@ export default function TicketDetail() {
               )}
               {ticket.blocker_type === "mot_input" && !editing.blocker && (
                 <div className="text-sm text-amber-700 dark:text-amber-300">
-                  {ticket.mot_blocker_note}
+                  {ticket.internal_blocker_note}
                 </div>
               )}
               {editing.blocker === "internal" && (
@@ -1533,13 +1905,13 @@ export default function TicketDetail() {
                                 ...v,
                                 blocked_by_ticket: r.id,
                               }));
-                              setBlockingSearch(`${r.mot_ref} — ${r.title}`);
+                              setBlockingSearch(`${r.internal_ref} — ${r.title}`);
                               setBlockingResults([]);
                             }}
                             className="w-full text-left px-3 py-2 text-sm hover:bg-surface-2"
                           >
                             <span className="font-mono font-medium">
-                              {r.mot_ref}
+                              {r.internal_ref}
                             </span>{" "}
                             — {r.title}
                           </button>
@@ -1572,11 +1944,11 @@ export default function TicketDetail() {
               {editing.blocker === "mot_input" && (
                 <div className="space-y-2">
                   <textarea
-                    value={editValues.mot_blocker_note || ""}
+                    value={editValues.internal_blocker_note || ""}
                     onChange={(e) =>
                       setEditValues((v) => ({
                         ...v,
-                        mot_blocker_note: e.target.value,
+                        internal_blocker_note: e.target.value,
                       }))
                     }
                     rows={3}
@@ -1588,7 +1960,7 @@ export default function TicketDetail() {
                       onClick={() =>
                         patch({
                           blocker_type: "mot_input",
-                          mot_blocker_note: editValues.mot_blocker_note,
+                          internal_blocker_note: editValues.internal_blocker_note,
                         })
                       }
                       disabled={saving}
@@ -1613,7 +1985,7 @@ export default function TicketDetail() {
       <ConfirmDialog
         open={confirm === "delete"}
         title="Delete Ticket"
-        message={`Permanently delete ${ticket.mot_ref}? This cannot be undone.`}
+        message={`Permanently delete ${ticket.internal_ref}? This cannot be undone.`}
         confirmLabel="Delete"
         danger
         onConfirm={deleteTicket}
@@ -1621,7 +1993,7 @@ export default function TicketDetail() {
       />
       <MergeDialog
         open={confirm === "merge"}
-        loserRef={ticket.mot_ref}
+        loserRef={ticket.internal_ref}
         onCancel={() => setConfirm(null)}
         onConfirm={async (winnerId) => {
           try {
@@ -1632,6 +2004,81 @@ export default function TicketDetail() {
           finally { setConfirm(null); }
         }}
       />
+      <MoveDialog
+        open={confirm === "move"}
+        currentRef={ticket.internal_ref}
+        currentProjectId={ticket.project_id}
+        userRole={user?.role}
+        onCancel={() => setConfirm(null)}
+        onConfirm={async (projectId) => {
+          try {
+            const r = await api.post(`/api/tickets/${ticket.id}/move`, { project_id: projectId });
+            toast.success(`Moved: ${r.old_ref} → ${r.new_ref}`);
+            await loadTicket();
+          } catch (e) { toast.error(e.message); }
+          finally { setConfirm(null); }
+        }}
+      />
+    </div>
+  );
+}
+
+function MoveDialog({ open, currentRef, currentProjectId, userRole, onCancel, onConfirm }) {
+  const [projects, setProjects] = React.useState([]);
+  const [targetId, setTargetId] = React.useState("");
+  const isPriv = ["Admin", "Manager"].includes(userRole);
+
+  React.useEffect(() => {
+    if (!open) { setTargetId(""); return; }
+    api.get("/api/projects")
+      .then((all) => setProjects(all.filter((p) => p.status === "active")))
+      .catch(() => setProjects([]));
+  }, [open]);
+
+  if (!open) return null;
+  const choices = projects.filter((p) => p.id !== currentProjectId);
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+      <div className="bg-surface border border-border rounded-lg shadow-xl max-w-md w-full p-5">
+        <h3 className="text-lg font-semibold text-fg mb-2">Move ticket</h3>
+        <p className="text-sm text-fg-muted mb-3">
+          Move <strong>{currentRef}</strong> to a different project. The ticket
+          will be re-issued a new reference from the target project's counter.
+          Vendor contacts will be detached (vendor scope is project-bound) —
+          re-attach as needed after the move. Comments, attachments, audit
+          history, and followers carry over.
+        </p>
+        {!isPriv && (
+          <p className="text-xs text-amber-600 dark:text-amber-400 mb-2">
+            You can only move to projects you're a member of.
+          </p>
+        )}
+        <select
+          autoFocus
+          value={targetId}
+          onChange={(e) => setTargetId(e.target.value)}
+          className="w-full border border-border-strong rounded-md px-3 py-2 text-sm mb-4"
+        >
+          <option value="">Select target project…</option>
+          {choices.map((p) => (
+            <option key={p.id} value={p.id}>
+              {p.name} ({p.prefix})
+            </option>
+          ))}
+        </select>
+        <div className="flex justify-end gap-2">
+          <button onClick={onCancel} className="btn-secondary btn btn-sm">
+            Cancel
+          </button>
+          <button
+            onClick={() => targetId && onConfirm(Number(targetId))}
+            disabled={!targetId}
+            className="btn-primary btn btn-sm disabled:opacity-50"
+          >
+            Move
+          </button>
+        </div>
+      </div>
     </div>
   );
 }

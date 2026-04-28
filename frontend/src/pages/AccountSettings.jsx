@@ -17,7 +17,7 @@ export default function AccountSettings() {
     <div className="max-w-3xl">
       <h1 className="text-2xl font-bold text-fg mb-1">Account settings</h1>
       <p className="text-sm text-fg-muted mb-4">
-        Manage your profile, sign-in, and security.
+        Manage your profile, sign-in, security, and personal preferences.
       </p>
       <div className="border-b border-border mb-6 flex gap-1 overflow-x-auto">
         <NavLink to="/account/settings/profile" className={tabClass}>
@@ -30,6 +30,9 @@ export default function AccountSettings() {
         )}
         <NavLink to="/account/settings/mfa" className={tabClass}>
           Two-factor
+        </NavLink>
+        <NavLink to="/account/settings/preferences" className={tabClass}>
+          Preferences
         </NavLink>
       </div>
       <Outlet />

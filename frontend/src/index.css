@@ -139,3 +139,19 @@
     @apply block text-xs font-medium text-fg-muted mb-1;
   }
 }
+
+/* Compact mode — toggled via <html class="compact"> from user prefs. */
+html.compact {
+  font-size: 13px;
+}
+html.compact .btn { padding-top: 0.25rem; padding-bottom: 0.25rem; }
+html.compact .btn-sm { padding-top: 0.125rem; padding-bottom: 0.125rem; }
+html.compact table td,
+html.compact table th { padding-top: 0.25rem; padding-bottom: 0.25rem; }
+html.compact .py-3 { padding-top: 0.5rem; padding-bottom: 0.5rem; }
+html.compact .py-4 { padding-top: 0.625rem; padding-bottom: 0.625rem; }
+html.compact .p-4 { padding: 0.75rem; }
+html.compact .p-5 { padding: 0.875rem; }
+html.compact .p-6 { padding: 1rem; }
+html.compact .space-y-6 > * + * { margin-top: 1rem; }
+html.compact .space-y-5 > * + * { margin-top: 0.75rem; }

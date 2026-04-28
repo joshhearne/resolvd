@@ -57,7 +57,7 @@ export function computePriority(impact, urgency) {
   return Math.min(Math.max(Number(impact) + Number(urgency) - 1, 1), 5);
 }
 
-export const INTERNAL_STATUSES = ['Open', 'In Progress', 'Awaiting Input', 'Pending Review', 'Closed', 'Reopened'];
-export const COASTAL_STATUSES = ['Unacknowledged', 'Acknowledged', 'In Progress', 'Resolved', "Won't Fix"];
+export const INTERNAL_STATUSES = ['Open', 'In Progress', 'On Hold', 'Awaiting Input', 'Pending Review', 'Resolved', 'Closed', 'Reopened'];
+export const EXTERNAL_STATUSES = ['Unacknowledged', 'Acknowledged', 'In Progress', 'Resolved', "Won't Fix"];
 export const IMPACT_LABELS = { 1: 'High (1)', 2: 'Medium (2)', 3: 'Low (3)' };
 export const URGENCY_LABELS = { 1: 'High (1)', 2: 'Medium (2)', 3: 'Low (3)' };

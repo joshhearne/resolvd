@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
 import {
@@ -13,6 +13,11 @@ import DuplicateWarningModal from "../components/DuplicateWarningModal";
 
 export default function NewTicket() {
   const navigate = useNavigate();
+  const [searchParams] = useSearchParams();
+  const queryProjectId = searchParams.get("project_id")
+    ? Number(searchParams.get("project_id"))
+    : null;
+  const fromFilter = searchParams.get("from_filter") === "1";
   const { user } = useAuth();
   const [projects, setProjects] = useState([]);
   const [form, setForm] = useState({
@@ -28,6 +33,14 @@ export default function NewTicket() {
   const [pendingFiles, setPendingFiles] = useState([]);
   const [projectContacts, setProjectContacts] = useState([]);
   const [selectedContactIds, setSelectedContactIds] = useState([]);
+  const [users, setUsers] = useState([]);
+  const [onBehalfOfId, setOnBehalfOfId] = useState("");
+  const canFileOnBehalf = ["Admin", "Manager"].includes(user?.role);
+
+  useEffect(() => {
+    if (!canFileOnBehalf) return;
+    api.get("/api/users").then(setUsers).catch(() => setUsers([]));
+  }, [canFileOnBehalf]);
 
   useEffect(() => {
     api
@@ -35,8 +48,23 @@ export default function NewTicket() {
       .then((all) => {
         const active = all.filter((p) => p.status === "active");
         setProjects(active);
+        // Precedence: ?project_id query (filter scope) > user default > only-one fallback.
         const defaultId = user?.defaultProjectId;
-        if (defaultId && active.find((p) => p.id === defaultId)) {
+        if (queryProjectId && active.find((p) => p.id === queryProjectId)) {
+          setForm((f) => ({ ...f, project_id: queryProjectId }));
+          if (
+            fromFilter &&
+            defaultId &&
+            queryProjectId !== defaultId
+          ) {
+            const proj = active.find((p) => p.id === queryProjectId);
+            const def = active.find((p) => p.id === defaultId);
+            toast(
+              `Scope set to ${proj?.name || "filtered project"} (your default is ${def?.name || "another project"}).`,
+              { icon: "ℹ️", duration: 5000 },
+            );
+          }
+        } else if (defaultId && active.find((p) => p.id === defaultId)) {
           setForm((f) => ({ ...f, project_id: defaultId }));
         } else if (active.length === 1) {
           setForm((f) => ({ ...f, project_id: active[0].id }));
@@ -126,6 +154,7 @@ export default function NewTicket() {
         urgency: Number(form.urgency),
         external_ticket_ref: form.external_ticket_ref.trim() || null,
         contact_ids: selectedContactIds,
+        submitted_by: onBehalfOfId ? Number(onBehalfOfId) : undefined,
       });
 
       if (pendingFiles.length > 0) {
@@ -145,7 +174,7 @@ export default function NewTicket() {
         }
       }
 
-      toast.success(`Ticket ${ticket.mot_ref} created`);
+      toast.success(`Ticket ${ticket.internal_ref} created`);
       navigate(`/tickets/${ticket.id}`);
     } catch (err) {
       toast.error(err.message);
@@ -197,6 +226,30 @@ export default function NewTicket() {
               </option>
             ))}
           </select>
+          {canFileOnBehalf && (
+            <div className="mt-3">
+              <label className="block text-sm font-medium text-fg mb-1">
+                Submit on behalf of{" "}
+                <span className="text-fg-muted font-normal">
+                  (optional — defaults to you)
+                </span>
+              </label>
+              <select
+                value={onBehalfOfId}
+                onChange={(e) => setOnBehalfOfId(e.target.value)}
+                className="w-full border border-border-strong rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40"
+              >
+                <option value="">Yourself ({user?.displayName || user?.email})</option>
+                {users
+                  .filter((u) => u.id !== user?.id && u.status === "active")
+                  .map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.display_name || u.email} ({u.role})
+                    </option>
+                  ))}
+              </select>
+            </div>
+          )}
         </div>
 
         <div>

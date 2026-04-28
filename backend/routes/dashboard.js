@@ -47,7 +47,7 @@ router.get('/activity', requireAuth, async (req, res) => {
   try {
     const { decryptRows } = require('../services/fields');
     const result = await pool.query(`
-      SELECT a.*, u.display_name as user_name, t.mot_ref,
+      SELECT a.*, u.display_name as user_name, t.internal_ref,
         t.title as ticket_title, t.title_enc as ticket_title_enc
       FROM audit_log a
       LEFT JOIN users u ON a.user_id = u.id

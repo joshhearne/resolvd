@@ -322,17 +322,19 @@ async function baseHtml(title, body) {
 }
 
 async function notifyStatusChange(pool, { ticket, oldStatus, newStatus, actorId }) {
-  const emails = await getFollowerEmails(pool, ticket.id, actorId);
+  const emails = await getFollowerEmails(pool, ticket.id, actorId, {
+    prefKey: 'email_on_status_change', defaultIncluded: true,
+  });
   if (!emails.length) return;
   const isClosed = newStatus === 'Closed';
   const subject = isClosed
-    ? `[${ticket.mot_ref}] Ticket closed`
-    : `[${ticket.mot_ref}] Status updated: ${oldStatus} → ${newStatus}`;
+    ? `[${ticket.internal_ref}] Ticket closed`
+    : `[${ticket.internal_ref}] Status updated: ${oldStatus} → ${newStatus}`;
   const body = `
     <p style="color:#374151;font-size:14px;margin:0 0 12px">
       ${isClosed
-        ? `Ticket <strong>${ticket.mot_ref}</strong> has been closed.`
-        : `Status for <strong>${ticket.mot_ref}</strong> has been updated from <strong>${oldStatus}</strong> to <strong>${newStatus}</strong>.`}
+        ? `Ticket <strong>${ticket.internal_ref}</strong> has been closed.`
+        : `Status for <strong>${ticket.internal_ref}</strong> has been updated from <strong>${oldStatus}</strong> to <strong>${newStatus}</strong>.`}
     </p>
     <p style="color:#374151;font-size:14px;margin:0 0 16px"><strong>${ticket.title}</strong></p>
     <a href="${ticketUrl(ticket.id)}" style="display:inline-block;background:#1e40af;color:#fff;text-decoration:none;padding:8px 16px;border-radius:6px;font-size:14px;font-weight:600">View Ticket</a>`;
@@ -346,10 +348,10 @@ async function notifyPendingReview(pool, { ticket, actorId }) {
   );
   const emails = admins.rows.map(r => r.email).filter(Boolean);
   if (!emails.length) return;
-  const subject = `[${ticket.mot_ref}] Needs review — action required`;
+  const subject = `[${ticket.internal_ref}] Needs review — action required`;
   const body = `
     <p style="color:#374151;font-size:14px;margin:0 0 12px">
-      Ticket <strong>${ticket.mot_ref}</strong> has been flagged for review and requires your attention.
+      Ticket <strong>${ticket.internal_ref}</strong> has been flagged for review and requires your attention.
     </p>
     <p style="color:#374151;font-size:14px;margin:0 0 16px"><strong>${ticket.title}</strong></p>
     <a href="${ticketUrl(ticket.id)}" style="display:inline-block;background:#7c3aed;color:#fff;text-decoration:none;padding:8px 16px;border-radius:6px;font-size:14px;font-weight:600">Review Ticket</a>`;
@@ -357,13 +359,15 @@ async function notifyPendingReview(pool, { ticket, actorId }) {
 }
 
 async function notifyNewComment(pool, { ticket, comment, actorId, actorName }) {
-  const emails = await getFollowerEmails(pool, ticket.id, actorId);
+  const emails = await getFollowerEmails(pool, ticket.id, actorId, {
+    prefKey: 'email_on_comment', defaultIncluded: true,
+  });
   if (!emails.length) return;
-  const subject = `[${ticket.mot_ref}] New comment added`;
+  const subject = `[${ticket.internal_ref}] New comment added`;
   const preview = comment.length > 300 ? comment.slice(0, 300) + '…' : comment;
   const body = `
     <p style="color:#374151;font-size:14px;margin:0 0 12px">
-      <strong>${actorName || 'Someone'}</strong> added a comment on <strong>${ticket.mot_ref}</strong>:
+      <strong>${actorName || 'Someone'}</strong> added a comment on <strong>${ticket.internal_ref}</strong>:
     </p>
     <blockquote style="border-left:3px solid #e5e7eb;margin:0 0 16px;padding:8px 16px;color:#6b7280;font-size:14px;white-space:pre-wrap">${preview}</blockquote>
     <a href="${ticketUrl(ticket.id)}" style="display:inline-block;background:#1e40af;color:#fff;text-decoration:none;padding:8px 16px;border-radius:6px;font-size:14px;font-weight:600">View Ticket</a>`;
@@ -395,9 +399,9 @@ async function sendPasswordResetEmail({ to, resetUrl }) {
   await sendMail({ to, subject, html: await baseHtml(subject, body) });
 }
 
-async function getFollowerEmails(pool, ticketId, excludeUserId) {
+async function getFollowerEmails(pool, ticketId, excludeUserId, opts = {}) {
   const result = await pool.query(`
-    SELECT DISTINCT u.email
+    SELECT DISTINCT u.email, u.preferences
     FROM users u
     WHERE u.email IS NOT NULL AND u.email != ''
       AND u.id != $2
@@ -406,7 +410,16 @@ async function getFollowerEmails(pool, ticketId, excludeUserId) {
         OR u.id IN (SELECT submitted_by FROM tickets WHERE id = $1 AND submitted_by IS NOT NULL)
       )
   `, [ticketId, excludeUserId || 0]);
-  return result.rows.map(r => r.email);
+  // Per-user pref gating. opts.prefKey + opts.defaultIncluded lets each
+  // event type opt recipients in/out individually. Missing pref → default.
+  const { prefKey = null, defaultIncluded = true } = opts;
+  return result.rows
+    .filter(r => {
+      if (!prefKey) return true;
+      const pref = r.preferences && r.preferences[prefKey];
+      return pref === undefined ? defaultIncluded : pref !== false;
+    })
+    .map(r => r.email);
 }
 
 module.exports = {

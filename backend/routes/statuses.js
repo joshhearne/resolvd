@@ -1,6 +1,7 @@
 const express = require('express');
 const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
+const { getGratitudePhrases, setGratitudePhrases } = require('../services/autoResolve');
 
 const router = express.Router();
 const VALID_KINDS = ['internal', 'external'];
@@ -30,7 +31,7 @@ router.get('/', requireAuth, async (req, res) => {
 // POST /api/statuses — create (Admin)
 router.post('/', requireAuth, requireRole('Admin'), async (req, res) => {
   try {
-    const { kind, name, color, sort_order, is_initial, is_terminal, is_blocker, semantic_tag } = req.body || {};
+    const { kind, name, color, sort_order, is_initial, is_terminal, is_blocker, semantic_tag, auto_close_after_days } = req.body || {};
     if (!VALID_KINDS.includes(kind)) return res.status(400).json({ error: 'Invalid kind' });
     if (!name || !name.trim()) return res.status(400).json({ error: 'Name required' });
     const finalColor = /^#[0-9a-fA-F]{6}$/.test(color || '') ? color : '#6b7280';
@@ -39,9 +40,12 @@ router.post('/', requireAuth, requireRole('Admin'), async (req, res) => {
       await pool.query('UPDATE statuses SET is_initial = FALSE WHERE kind = $1', [kind]);
     }
 
+    const acDays = (auto_close_after_days === null || auto_close_after_days === undefined || auto_close_after_days === '')
+      ? null
+      : Math.max(0, Math.floor(Number(auto_close_after_days)));
     const r = await pool.query(
-      `INSERT INTO statuses (kind, name, color, sort_order, is_initial, is_terminal, is_blocker, semantic_tag)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+      `INSERT INTO statuses (kind, name, color, sort_order, is_initial, is_terminal, is_blocker, semantic_tag, auto_close_after_days)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
       [
         kind,
         name.trim(),
@@ -51,6 +55,7 @@ router.post('/', requireAuth, requireRole('Admin'), async (req, res) => {
         !!is_terminal,
         !!is_blocker,
         semantic_tag || null,
+        Number.isFinite(acDays) ? acDays : null,
       ]
     );
     res.status(201).json(r.rows[0]);
@@ -64,7 +69,7 @@ router.post('/', requireAuth, requireRole('Admin'), async (req, res) => {
 // PATCH /api/statuses/:id — update (Admin)
 router.patch('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
   try {
-    const { name, color, sort_order, is_initial, is_terminal, is_blocker, semantic_tag } = req.body || {};
+    const { name, color, sort_order, is_initial, is_terminal, is_blocker, semantic_tag, auto_close_after_days } = req.body || {};
     const cur = await pool.query('SELECT * FROM statuses WHERE id = $1', [req.params.id]);
     if (!cur.rows[0]) return res.status(404).json({ error: 'Not found' });
     const row = cur.rows[0];
@@ -81,6 +86,14 @@ router.patch('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
     if (is_terminal !== undefined) updates.is_terminal = !!is_terminal;
     if (is_blocker !== undefined) updates.is_blocker = !!is_blocker;
     if (semantic_tag !== undefined) updates.semantic_tag = semantic_tag || null;
+    if (auto_close_after_days !== undefined) {
+      if (auto_close_after_days === null || auto_close_after_days === '') {
+        updates.auto_close_after_days = null;
+      } else {
+        const n = Math.floor(Number(auto_close_after_days));
+        updates.auto_close_after_days = Number.isFinite(n) && n >= 0 ? n : null;
+      }
+    }
 
     if (Object.keys(updates).length === 0) return res.json(row);
 
@@ -106,7 +119,7 @@ router.delete('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
     const row = cur.rows[0];
     if (!row) return res.status(404).json({ error: 'Not found' });
 
-    const col = row.kind === 'internal' ? 'internal_status' : 'coastal_status';
+    const col = row.kind === 'internal' ? 'internal_status' : 'external_status';
     const usage = await pool.query(`SELECT COUNT(*) AS cnt FROM tickets WHERE ${col} = $1`, [row.name]);
     if (parseInt(usage.rows[0].cnt, 10) > 0) {
       return res.status(409).json({ error: 'Status is in use by existing tickets' });
@@ -201,6 +214,30 @@ router.delete('/mappings/:id', requireAuth, requireRole('Admin'), async (req, re
     res.json({ ok: true });
   } catch (err) {
     console.error('mapping delete error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// GET /api/statuses/auto-resolve/phrases — read gratitude phrases (any auth).
+router.get('/auto-resolve/phrases', requireAuth, async (req, res) => {
+  try {
+    const phrases = await getGratitudePhrases();
+    res.json({ phrases });
+  } catch (err) {
+    console.error('phrases get error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// PUT /api/statuses/auto-resolve/phrases — replace list (Admin).
+router.put('/auto-resolve/phrases', requireAuth, requireRole('Admin'), async (req, res) => {
+  try {
+    const { phrases } = req.body || {};
+    if (!Array.isArray(phrases)) return res.status(400).json({ error: 'phrases must be an array' });
+    const cleaned = await setGratitudePhrases(phrases);
+    res.json({ phrases: cleaned });
+  } catch (err) {
+    console.error('phrases put error:', err);
     res.status(500).json({ error: 'Database error' });
   }
 });

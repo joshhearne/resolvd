@@ -40,7 +40,7 @@ const FIELD_MAP = {
     title: 'title_enc',
     description: 'description_enc',
     review_note: 'review_note_enc',
-    mot_blocker_note: 'mot_blocker_note_enc',
+    internal_blocker_note: 'internal_blocker_note_enc',
   },
   comments: {
     body: 'body_enc',

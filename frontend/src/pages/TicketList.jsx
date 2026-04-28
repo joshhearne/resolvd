@@ -32,7 +32,7 @@ function DateTimeStack({ value }) {
 
 const BLANK_FILTERS = {
   internal_status: "",
-  coastal_status: "",
+  external_status: "",
   effective_priority: "",
   blocker_type: "",
   flagged_for_review: "",
@@ -126,21 +126,21 @@ const PREDEFINED = [
     group: "External",
     items: [
       {
-        key: "coastal_unacked",
+        key: "external_unacked",
         label: "Unacknowledged",
-        countKey: "coastal_unacked",
-        filters: { ...BLANK_FILTERS, coastal_status: "Unacknowledged" },
+        countKey: "external_unacked",
+        filters: { ...BLANK_FILTERS, external_status: "Unacknowledged" },
       },
       {
-        key: "coastal_resolved",
+        key: "external_resolved",
         label: "Marked Resolved",
-        countKey: "coastal_resolved",
-        filters: { ...BLANK_FILTERS, coastal_status: "Resolved" },
+        countKey: "external_resolved",
+        filters: { ...BLANK_FILTERS, external_status: "Resolved" },
       },
       {
-        key: "mot_blocker",
+        key: "internal_blocker",
         label: "Team Owes Input",
-        countKey: "mot_blocker",
+        countKey: "internal_blocker",
         filters: { ...BLANK_FILTERS, blocker_type: "mot_input" },
       },
     ],
@@ -152,7 +152,7 @@ const URGENT_KEYS = new Set([
   "pending_review",
   "flagged",
   "p1",
-  "mot_blocker",
+  "internal_blocker",
 ]);
 
 function CountBadge({ count, urgent }) {
@@ -198,8 +198,16 @@ export default function TicketList() {
   const [filters, setFilters] = useState(
     presetItem ? { ...presetItem.filters } : (saved?.filters ?? { ...BLANK_FILTERS }),
   );
-  const [sortBy, setSortBy] = useState(saved?.sortBy ?? "updated_at");
-  const [sortDir, setSortDir] = useState(saved?.sortDir ?? "desc");
+  // Default sort honors user preference when nothing is persisted yet.
+  const prefSort = (() => {
+    const raw = user?.preferences?.default_ticket_sort || "updated_at_desc";
+    const idx = raw.lastIndexOf("_");
+    return idx > 0
+      ? { by: raw.slice(0, idx), dir: raw.slice(idx + 1) }
+      : { by: "updated_at", dir: "desc" };
+  })();
+  const [sortBy, setSortBy] = useState(saved?.sortBy ?? prefSort.by);
+  const [sortDir, setSortDir] = useState(saved?.sortDir ?? prefSort.dir);
   const [page, setPage] = useState(1);
 
   // Persist filter state to sessionStorage whenever it changes
@@ -324,7 +332,7 @@ export default function TicketList() {
     const f = view.filters;
     setFilters({
       internal_status: f.internal_status || "",
-      coastal_status: f.coastal_status || "",
+      external_status: f.external_status || "",
       effective_priority: f.effective_priority || "",
       blocker_type: f.blocker_type || "",
       flagged_for_review: f.flagged_for_review || "",
@@ -684,7 +692,13 @@ export default function TicketList() {
               )}
             </div>
             <Link
-              to="/tickets/new"
+              to={
+                user?.preferences?.scope_follows_filter !== false &&
+                selectedProjectId &&
+                selectedProjectId !== user?.defaultProjectId
+                  ? `/tickets/new?project_id=${selectedProjectId}&from_filter=1`
+                  : "/tickets/new"
+              }
               className="btn-primary btn btn-sm whitespace-nowrap"
             >
               + New Ticket
@@ -706,7 +720,7 @@ export default function TicketList() {
                 <thead className="bg-surface-2">
                   <tr>
                     <th className="px-4 py-2.5">
-                      <SortHeader col="mot_ref" label="Ref" />
+                      <SortHeader col="internal_ref" label="Ref" />
                     </th>
                     <th className="px-4 py-2.5 text-left">
                       <SortHeader col="title" label="Title" />
@@ -744,7 +758,7 @@ export default function TicketList() {
                           to={`/tickets/${t.id}`}
                           className="text-brand hover:underline"
                         >
-                          {t.mot_ref}
+                          {t.internal_ref}
                         </Link>
                       </td>
                       <td className="px-4 py-3 text-sm text-fg w-48">
@@ -768,7 +782,7 @@ export default function TicketList() {
                       </td>
                       {showVendorCols && (
                         <td className="px-4 py-3 text-sm text-fg-muted whitespace-nowrap">
-                          {t.coastal_status}
+                          {t.external_status}
                         </td>
                       )}
                       <td className="px-4 py-3 text-sm">

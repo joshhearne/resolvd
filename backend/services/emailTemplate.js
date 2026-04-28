@@ -78,7 +78,7 @@ function makeResolver(ctx, replies, escape) {
       case 'vendor.contact_role':   return enc(ctx.contact?.role_title);
       case 'company.name':          return enc(ctx.company?.name);
       case 'ticket.id':             return enc(ctx.ticket?.id);
-      case 'ticket.ref':            return enc(ctx.ticket?.mot_ref);
+      case 'ticket.ref':            return enc(ctx.ticket?.internal_ref);
       case 'ticket.external_ref':   return enc(ctx.ticket?.external_ticket_ref);
       case 'ticket.title':          return enc(ctx.ticket?.title);
       case 'ticket.description':    return enc(ctx.ticket?.description);
@@ -148,7 +148,7 @@ function sampleContext() {
     actor: { display_name: 'Alex Admin', email: 'alex@example.com' },
     ticket: {
       id: 1234,
-      mot_ref: 'PROJ-1234',
+      internal_ref: 'PROJ-1234',
       title: 'Sample ticket title',
       description: 'Detailed description of the issue, sample text used by the preview only.',
       internal_status: 'In Progress',

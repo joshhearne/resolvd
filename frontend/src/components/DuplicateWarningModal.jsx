@@ -33,7 +33,7 @@ export default function DuplicateWarningModal({
         body: JSON.stringify({ body: commentText.trim(), is_internal: false }),
       });
       if (!res.ok) throw new Error();
-      toast.success(`Comment added to ${ticket.mot_ref}`);
+      toast.success(`Comment added to ${ticket.internal_ref}`);
       navigate(`/tickets/${ticket.id}`);
     } catch {
       toast.error("Failed to add comment");
@@ -80,7 +80,7 @@ export default function DuplicateWarningModal({
                 <div className="flex-1 min-w-0">
                   <div className="flex items-center gap-2 flex-wrap">
                     <span className="font-mono text-xs font-semibold text-fg-muted">
-                      {ticket.mot_ref}
+                      {ticket.internal_ref}
                     </span>
                     {ticket.project_name && (
                       <span className="text-xs text-fg-dim">
@@ -129,7 +129,7 @@ export default function DuplicateWarningModal({
               {commenting === ticket.id && (
                 <div className="border-t border-brand/30 bg-brand/10 p-3 space-y-2">
                   <p className="text-xs font-medium text-brand">
-                    Add your note to <strong>{ticket.mot_ref}</strong> instead
+                    Add your note to <strong>{ticket.internal_ref}</strong> instead
                     of creating a new ticket:
                   </p>
                   <textarea

@@ -127,7 +127,7 @@ async function initSchema() {
       CREATE TABLE IF NOT EXISTS tickets (
         id SERIAL PRIMARY KEY,
         project_id INTEGER REFERENCES projects(id),
-        mot_ref TEXT UNIQUE NOT NULL,
+        internal_ref TEXT UNIQUE NOT NULL,
         title TEXT NOT NULL,
         description TEXT,
         submitted_by INTEGER REFERENCES users(id),
@@ -140,12 +140,12 @@ async function initSchema() {
         priority_override INTEGER,
         effective_priority INTEGER NOT NULL DEFAULT 3,
         internal_status TEXT NOT NULL DEFAULT 'Open',
-        coastal_status TEXT NOT NULL DEFAULT 'Unacknowledged',
+        external_status TEXT NOT NULL DEFAULT 'Unacknowledged',
         external_ticket_ref TEXT,
-        coastal_updated_at TIMESTAMPTZ,
+        external_updated_at TIMESTAMPTZ,
         blocker_type TEXT,
         blocked_by_ticket INTEGER REFERENCES tickets(id),
-        mot_blocker_note TEXT,
+        internal_blocker_note TEXT,
         flagged_for_review BOOLEAN NOT NULL DEFAULT FALSE,
         review_note TEXT
       )
@@ -226,6 +226,9 @@ async function initSchema() {
     await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS logo_designed_for TEXT NOT NULL DEFAULT 'light' CHECK (logo_designed_for IN ('light','dark'))`);
     await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS has_external_vendor BOOLEAN NOT NULL DEFAULT TRUE`);
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS default_project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL`);
+    // Per-user QoL preferences stored as JSONB. Free-form so we can add
+    // new toggles without schema migrations. Frontend reads via /auth/me.
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS preferences JSONB NOT NULL DEFAULT '{}'::jsonb`);
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS ticket_followers (
@@ -323,6 +326,52 @@ async function initSchema() {
       WHERE kind = 'internal' AND name = 'Awaiting MOT Input'
     `);
 
+    // Auto-close timer column on statuses (null = never auto-close).
+    // Used together with semantic_tag='resolved_pending_close' to
+    // auto-promote tickets to Closed after N days in that state.
+    await client.query(`ALTER TABLE statuses ADD COLUMN IF NOT EXISTS auto_close_after_days INTEGER`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ`);
+    // Optional follow-up reminder set by an admin while a ticket sits in
+    // a resolved_pending_close state. Cleared on status change away from
+    // that state and when the reminder has fired.
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS followup_at TIMESTAMPTZ`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS followup_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL`);
+
+    // Seed Resolved (semantic_tag=resolved_pending_close, default 3 days)
+    // and On Hold (internal blocker distinct from Awaiting Input which
+    // tracks external/vendor blocks).
+    await client.query(`
+      INSERT INTO statuses (kind, name, color, sort_order, is_initial, is_terminal, is_blocker, semantic_tag, auto_close_after_days)
+      VALUES ('internal', 'Resolved', '#10b981', 45, FALSE, FALSE, FALSE, 'resolved_pending_close', 3)
+      ON CONFLICT (kind, name) DO NOTHING
+    `);
+    // Tag the seeded "Pending Review" status so follow-up reminders show
+    // up only on review states. Idempotent — only sets the tag if it
+    // hasn't already been assigned by an admin.
+    await client.query(`
+      UPDATE statuses SET semantic_tag = 'pending_review'
+       WHERE kind = 'internal' AND name = 'Pending Review' AND semantic_tag IS NULL
+    `);
+    await client.query(`
+      INSERT INTO statuses (kind, name, color, sort_order, is_initial, is_terminal, is_blocker, semantic_tag)
+      VALUES ('internal', 'On Hold', '#f59e0b', 33, FALSE, FALSE, TRUE, 'on_hold')
+      ON CONFLICT (kind, name) DO NOTHING
+    `);
+
+    // Settings store for inbound auto-reopen gratitude phrases.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS auto_resolve_settings (
+        id INTEGER PRIMARY KEY DEFAULT 1,
+        gratitude_phrases TEXT[] NOT NULL DEFAULT ARRAY[
+          'thanks', 'thank you', 'thx', 'ty', 'cheers',
+          'appreciate it', 'appreciated', 'much appreciated', 'great, thanks'
+        ]::TEXT[],
+        updated_at TIMESTAMPTZ DEFAULT NOW(),
+        CONSTRAINT auto_resolve_single CHECK (id = 1)
+      )
+    `);
+    await client.query(`INSERT INTO auto_resolve_settings (id) VALUES (1) ON CONFLICT DO NOTHING`);
+
     // Encryption foundation (Phase 1). Default mode 'off' — no read/write
     // paths consult these columns yet. Backfill script populates *_enc
     // shadow columns once a key is configured; Phase 2 flips reads/writes.
@@ -354,11 +403,38 @@ async function initSchema() {
       ON CONFLICT DO NOTHING
     `);
 
+    // Generic-name rename pass (must run BEFORE the encrypted-shadow
+    // ADD COLUMNs below, otherwise both old and new columns collide).
+    // Legacy: mot_ref / coastal_status / coastal_updated_at /
+    // mot_blocker_note(_enc) → internal_ref / external_status /
+    // external_updated_at / internal_blocker_note(_enc).
+    {
+      const renames = [
+        ['mot_ref', 'internal_ref'],
+        ['coastal_status', 'external_status'],
+        ['coastal_updated_at', 'external_updated_at'],
+        ['mot_blocker_note', 'internal_blocker_note'],
+        ['mot_blocker_note_enc', 'internal_blocker_note_enc'],
+      ];
+      for (const [oldName, newName] of renames) {
+        const has = await client.query(`
+          SELECT 1 FROM information_schema.columns
+           WHERE table_name = 'tickets' AND column_name = $1
+        `, [oldName]);
+        if (has.rows[0]) {
+          await client.query(`ALTER TABLE tickets RENAME COLUMN ${oldName} TO ${newName}`);
+        }
+      }
+      await client.query(
+        `UPDATE tickets SET blocker_type = 'internal_input' WHERE blocker_type = 'mot_input'`
+      );
+    }
+
     // Shadow ciphertext columns. Plaintext stays until Phase 2 cutover.
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS title_enc BYTEA`);
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS description_enc BYTEA`);
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS review_note_enc BYTEA`);
-    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS mot_blocker_note_enc BYTEA`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS internal_blocker_note_enc BYTEA`);
     await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS body_enc BYTEA`);
     await client.query(`ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS old_value_enc BYTEA`);
     await client.query(`ALTER TABLE audit_log ADD COLUMN IF NOT EXISTS new_value_enc BYTEA`);
@@ -716,6 +792,7 @@ async function initSchema() {
       await client.query(`ALTER TABLE tickets RENAME COLUMN coastal_ticket_ref TO external_ticket_ref`);
     }
 
+
     // Send-as-submitter toggle. When TRUE on a graph_user or gmail_user
     // backend, outbound vendor emails set From to the submitting user and
     // Reply-To to the monitored mailbox (if inbox monitoring is on).
@@ -751,7 +828,7 @@ async function initSchema() {
 }
 
 // Atomic per-project ticket counter — returns "PREFIX-NNNN"
-async function nextMotRef(client, projectId) {
+async function nextInternalRef(client, projectId) {
   const result = await client.query(
     'UPDATE projects SET ticket_counter = ticket_counter + 1 WHERE id = $1 RETURNING ticket_counter, prefix',
     [projectId]
@@ -766,4 +843,4 @@ function computePriority(impact, urgency) {
   return Math.min(Math.max(raw, 1), 5);
 }
 
-module.exports = { initSchema, nextMotRef, computePriority };
+module.exports = { initSchema, nextInternalRef, computePriority };

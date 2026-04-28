@@ -123,6 +123,52 @@ router.patch('/me/preferences', requireAuth, async (req, res) => {
   }
 });
 
+// Defaults for the QoL preferences blob. Anything missing on read falls
+// back to these — keeps the frontend simple and avoids null checks.
+const PREF_DEFAULTS = Object.freeze({
+  scope_follows_filter: true,
+  ctrl_enter_to_post: true,
+  auto_follow_on_comment: true,
+  email_on_comment: true,
+  email_on_status_change: true,
+  confirm_before_close: false,
+  compact_mode: false,
+  default_ticket_sort: 'updated_at_desc',
+});
+
+// GET /api/users/me/prefs — return merged defaults + stored values
+router.get('/me/prefs', requireAuth, async (req, res) => {
+  try {
+    const r = await pool.query('SELECT preferences FROM users WHERE id = $1', [req.session.user.id]);
+    const stored = r.rows[0]?.preferences || {};
+    res.json({ ...PREF_DEFAULTS, ...stored });
+  } catch (err) {
+    console.error('prefs get error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// PATCH /api/users/me/prefs — shallow-merge a partial object into the
+// stored preferences blob. Unknown keys are accepted and persisted as-is
+// (settings inventory is intentionally additive — invalid values just
+// get ignored by the consumer).
+router.patch('/me/prefs', requireAuth, async (req, res) => {
+  try {
+    const patch = req.body && typeof req.body === 'object' ? req.body : {};
+    if (Array.isArray(patch)) return res.status(400).json({ error: 'Body must be an object' });
+    const r = await pool.query(
+      `UPDATE users SET preferences = preferences || $1::jsonb
+        WHERE id = $2 RETURNING preferences`,
+      [JSON.stringify(patch), req.session.user.id]
+    );
+    const stored = r.rows[0]?.preferences || {};
+    res.json({ ...PREF_DEFAULTS, ...stored });
+  } catch (err) {
+    console.error('prefs patch error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
 // PATCH /api/users/me/profile — update own display name
 router.patch('/me/profile', requireAuth, async (req, res) => {
   try {

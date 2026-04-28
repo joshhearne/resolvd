@@ -266,6 +266,16 @@ export default function Layout() {
         : "text-fg-muted hover:bg-surface-2 hover:text-fg"
     }`;
 
+  // Compact mode applies a body-level class so any ad-hoc CSS can opt in.
+  // Cheap effect (runs whenever the pref flips) — no need for memoization.
+  useEffect(() => {
+    if (user?.preferences?.compact_mode) {
+      document.documentElement.classList.add("compact");
+    } else {
+      document.documentElement.classList.remove("compact");
+    }
+  }, [user?.preferences?.compact_mode]);
+
   return (
     <div className="min-h-screen flex flex-col">
       <nav className="bg-surface/80 backdrop-blur-md border-b border-border sticky top-0 z-20">

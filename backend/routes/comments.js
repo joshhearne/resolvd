@@ -32,7 +32,7 @@ router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Submi
     if (!body || !body.trim()) return res.status(400).json({ error: 'Comment body required' });
 
     const ticket = await pool.query(
-      'SELECT id, mot_ref, title, title_enc, submitted_by FROM tickets WHERE id = $1',
+      'SELECT id, internal_ref, title, title_enc, submitted_by FROM tickets WHERE id = $1',
       [req.params.id]
     );
     if (!ticket.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
@@ -57,6 +57,21 @@ router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Submi
 
     // Update ticket updated_at
     await pool.query('UPDATE tickets SET updated_at = NOW() WHERE id = $1', [req.params.id]);
+
+    // Auto-follow when the commenter has the preference enabled (default
+    // ON). System comments don't trigger this.
+    const prefRow = await pool.query(
+      'SELECT preferences FROM users WHERE id = $1',
+      [req.session.user.id]
+    );
+    const autoFollow = prefRow.rows[0]?.preferences?.auto_follow_on_comment;
+    if (autoFollow !== false) {
+      await pool.query(
+        `INSERT INTO ticket_followers (ticket_id, user_id) VALUES ($1, $2)
+         ON CONFLICT DO NOTHING`,
+        [req.params.id, req.session.user.id]
+      );
+    }
 
     const comment = await pool.query(`
       SELECT c.*, u.display_name as user_name, u.email as user_email

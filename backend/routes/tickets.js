@@ -1,6 +1,6 @@
 const express = require('express');
 const { pool, transaction } = require('../db/pool');
-const { nextMotRef, computePriority } = require('../db/schema');
+const { nextInternalRef, computePriority } = require('../db/schema');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { notifyStatusChange, notifyPendingReview, notifyNewComment } = require('../services/email');
 const { getMode, buildWritePatch, decryptRow, decryptRows } = require('../services/fields');
@@ -72,7 +72,7 @@ router.get('/counts', requireAuth, async (req, res) => {
         if (accessibleIds.length === 0) {
           return res.json({ total:0, active:0, open:0, in_progress:0, awaiting_mot:0,
             pending_review:0, reopened:0, closed:0, flagged:0, p1:0, p2:0,
-            coastal_unacked:0, coastal_resolved:0, mot_blocker:0 });
+            external_unacked:0, external_resolved:0, internal_blocker:0 });
         }
         where.push(`project_id = ANY($${p++})`);
         params.push(accessibleIds);
@@ -94,9 +94,9 @@ router.get('/counts', requireAuth, async (req, res) => {
         SUM(CASE WHEN flagged_for_review = TRUE AND internal_status != 'Closed' THEN 1 ELSE 0 END)::int as flagged,
         SUM(CASE WHEN effective_priority = 1 AND internal_status != 'Closed' THEN 1 ELSE 0 END)::int as p1,
         SUM(CASE WHEN effective_priority = 2 AND internal_status != 'Closed' THEN 1 ELSE 0 END)::int as p2,
-        SUM(CASE WHEN coastal_status = 'Unacknowledged' AND internal_status != 'Closed' THEN 1 ELSE 0 END)::int as coastal_unacked,
-        SUM(CASE WHEN coastal_status = 'Resolved' AND internal_status != 'Closed' THEN 1 ELSE 0 END)::int as coastal_resolved,
-        SUM(CASE WHEN blocker_type = 'mot_input' AND internal_status != 'Closed' THEN 1 ELSE 0 END)::int as mot_blocker
+        SUM(CASE WHEN external_status = 'Unacknowledged' AND internal_status != 'Closed' THEN 1 ELSE 0 END)::int as external_unacked,
+        SUM(CASE WHEN external_status = 'Resolved' AND internal_status != 'Closed' THEN 1 ELSE 0 END)::int as external_resolved,
+        SUM(CASE WHEN blocker_type = 'internal_input' AND internal_status != 'Closed' THEN 1 ELSE 0 END)::int as internal_blocker
       FROM tickets
       ${whereClause}
     `, params);
@@ -116,7 +116,7 @@ router.get('/', requireAuth, async (req, res) => {
   try {
     const user = req.session.user;
     const {
-      project_id, internal_status, coastal_status, effective_priority,
+      project_id, internal_status, external_status, effective_priority,
       blocker_type, assigned_to, flagged_for_review, q, exclude_closed,
       sort_by = 'updated_at', sort_dir = 'desc',
       page = 1, limit = 50
@@ -149,7 +149,7 @@ router.get('/', requireAuth, async (req, res) => {
       const term = `%${q.trim()}%`;
       const mode = await getMode(pool);
       if (mode === 'off') {
-        where.push(`(t.title ILIKE $${p} OR t.mot_ref ILIKE $${p+1} OR t.description ILIKE $${p+2} OR t.external_ticket_ref ILIKE $${p+3})`);
+        where.push(`(t.title ILIKE $${p} OR t.internal_ref ILIKE $${p+1} OR t.description ILIKE $${p+2} OR t.external_ticket_ref ILIKE $${p+3})`);
         params.push(term, term, term, term);
         p += 4;
       } else {
@@ -158,7 +158,7 @@ router.get('/', requireAuth, async (req, res) => {
           ? `t.title_blind_idx && $${p++}::text[]`
           : null;
         if (tokenHashes.length) params.push(tokenHashes);
-        const refClauses = [`t.mot_ref ILIKE $${p++}`, `t.external_ticket_ref ILIKE $${p++}`];
+        const refClauses = [`t.internal_ref ILIKE $${p++}`, `t.external_ticket_ref ILIKE $${p++}`];
         params.push(term, term);
         const clauses = titleClause ? [titleClause, ...refClauses] : refClauses;
         where.push(`(${clauses.join(' OR ')})`);
@@ -166,7 +166,7 @@ router.get('/', requireAuth, async (req, res) => {
       }
     }
     if (internal_status) { where.push(`t.internal_status = $${p++}`); params.push(internal_status); }
-    if (coastal_status) { where.push(`t.coastal_status = $${p++}`); params.push(coastal_status); }
+    if (external_status) { where.push(`t.external_status = $${p++}`); params.push(external_status); }
     if (effective_priority) { where.push(`t.effective_priority = $${p++}`); params.push(Number(effective_priority)); }
     if (blocker_type) { where.push(`t.blocker_type = $${p++}`); params.push(blocker_type); }
     if (assigned_to) { where.push(`t.assigned_to = $${p++}`); params.push(Number(assigned_to)); }
@@ -176,7 +176,7 @@ router.get('/', requireAuth, async (req, res) => {
     }
     if (exclude_closed === '1') { where.push(`t.internal_status != 'Closed'`); }
 
-    const allowed_sorts = ['created_at', 'updated_at', 'effective_priority', 'mot_ref'];
+    const allowed_sorts = ['created_at', 'updated_at', 'effective_priority', 'internal_ref'];
     const col = allowed_sorts.includes(sort_by) ? sort_by : 'updated_at';
     const dir = sort_dir === 'asc' ? 'ASC' : 'DESC';
     const offset = (Number(page) - 1) * Number(limit);
@@ -187,7 +187,7 @@ router.get('/', requireAuth, async (req, res) => {
         proj.name as project_name, proj.prefix as project_prefix,
         sub.display_name as submitted_by_name,
         asgn.display_name as assigned_to_name,
-        bt.mot_ref as blocking_ticket_ref,
+        bt.internal_ref as blocking_ticket_ref,
         bt.title as blocking_ticket_title,
         bt.title_enc as blocking_ticket_title_enc
       FROM tickets t
@@ -210,7 +210,7 @@ router.get('/', requireAuth, async (req, res) => {
       outRows = outRows.filter(r =>
         (r.title && r.title.toLowerCase().includes(postFilterTerm)) ||
         (r.description && r.description.toLowerCase().includes(postFilterTerm)) ||
-        (r.mot_ref && r.mot_ref.toLowerCase().includes(postFilterTerm)) ||
+        (r.internal_ref && r.internal_ref.toLowerCase().includes(postFilterTerm)) ||
         (r.external_ticket_ref && r.external_ticket_ref.toLowerCase().includes(postFilterTerm))
       );
       // Total in encrypted mode is approximate — the filter is partly
@@ -231,10 +231,10 @@ router.get('/', requireAuth, async (req, res) => {
 });
 
 // POST /api/tickets
-router.post('/', requireAuth, requireRole('Admin', 'Submitter'), async (req, res) => {
+router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Submitter'), async (req, res) => {
   try {
     const user = req.session.user;
-    const { project_id, title, description, impact = 2, urgency = 2, external_ticket_ref, assigned_to, contact_ids } = req.body;
+    const { project_id, title, description, impact = 2, urgency = 2, external_ticket_ref, assigned_to, contact_ids, submitted_by } = req.body;
 
     if (!project_id) return res.status(400).json({ error: 'project_id required' });
     if (!title) return res.status(400).json({ error: 'Title required' });
@@ -256,19 +256,31 @@ router.post('/', requireAuth, requireRole('Admin', 'Submitter'), async (req, res
     const urg = Number(urgency);
     const computed = computePriority(imp, urg);
 
+    // Submit-on-behalf: Admin/Manager may set submitted_by to any active
+    // user. Submitters always file under themselves.
+    let effectiveSubmitterId = user.id;
+    if (submitted_by && ['Admin', 'Manager'].includes(user.role)) {
+      const targetUser = await pool.query(
+        `SELECT id FROM users WHERE id = $1 AND status = 'active'`,
+        [Number(submitted_by)]
+      );
+      if (!targetUser.rows[0]) return res.status(400).json({ error: 'submitted_by user not found or inactive' });
+      effectiveSubmitterId = targetUser.rows[0].id;
+    }
+
     const ticket = await transaction(async (client) => {
-      const mot_ref = await nextMotRef(client, Number(project_id));
+      const internalRef = await nextInternalRef(client, Number(project_id));
 
       const sensitivePatch = await buildWritePatch(client, 'tickets', {
         title,
         description: description || null,
       });
       const mode = await getMode(client);
-      const baseCols = ['project_id', 'mot_ref', 'submitted_by', 'assigned_to',
+      const baseCols = ['project_id', 'internal_ref', 'submitted_by', 'assigned_to',
         'impact', 'urgency', 'computed_priority', 'effective_priority', 'external_ticket_ref',
         'title_blind_idx'];
       const baseValues = [
-        Number(project_id), mot_ref, user.id,
+        Number(project_id), internalRef, effectiveSubmitterId,
         assigned_to ? Number(assigned_to) : null,
         imp, urg, computed, computed,
         external_ticket_ref || null,
@@ -284,12 +296,27 @@ router.post('/', requireAuth, requireRole('Admin', 'Submitter'), async (req, res
       );
 
       const t = result.rows[0];
-      await auditLog(client, { ticketId: t.id, userId: user.id, action: 'ticket_created', newValue: mot_ref });
-      // Auto-follow: submitter watches their own ticket
+      await auditLog(client, { ticketId: t.id, userId: user.id, action: 'ticket_created', newValue: internalRef });
+      if (effectiveSubmitterId !== user.id) {
+        await auditLog(client, {
+          ticketId: t.id, userId: user.id,
+          action: 'submitted_on_behalf',
+          newValue: String(effectiveSubmitterId),
+          note: `Created on behalf of user ${effectiveSubmitterId}`,
+        });
+      }
+      // Auto-follow: submitter watches their own ticket. Also follow the
+      // creator when filing on behalf, so they see comments roll in.
       await client.query(
         'INSERT INTO ticket_followers (ticket_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
-        [t.id, user.id]
+        [t.id, effectiveSubmitterId]
       );
+      if (effectiveSubmitterId !== user.id) {
+        await client.query(
+          'INSERT INTO ticket_followers (ticket_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+          [t.id, user.id]
+        );
+      }
       // Attach any contacts selected at creation time.
       if (Array.isArray(contact_ids) && contact_ids.length) {
         for (const cid of contact_ids) {
@@ -346,7 +373,7 @@ router.get('/similar', requireAuth, async (req, res) => {
     if (mode === 'off') {
       result = await pool.query(`
         SELECT DISTINCT ON (t.id)
-          t.id, t.mot_ref, t.title, t.internal_status, t.effective_priority,
+          t.id, t.internal_ref, t.title, t.internal_status, t.effective_priority,
           t.description, t.external_ticket_ref,
           proj.name AS project_name,
           ts_rank(
@@ -368,7 +395,7 @@ router.get('/similar', requireAuth, async (req, res) => {
       // External-ref exact match only.
       if (!extRef) return res.json([]);
       result = await pool.query(`
-        SELECT t.id, t.mot_ref, t.title, t.title_enc, t.internal_status, t.effective_priority,
+        SELECT t.id, t.internal_ref, t.title, t.title_enc, t.internal_status, t.effective_priority,
           t.description, t.description_enc, t.external_ticket_ref,
           proj.name AS project_name, 0 AS rank
         FROM tickets t
@@ -395,7 +422,7 @@ router.get('/:id', requireAuth, async (req, res) => {
         proj.name as project_name, proj.prefix as project_prefix, proj.has_external_vendor as project_has_external_vendor,
         sub.display_name as submitted_by_name, sub.email as submitted_by_email,
         asgn.display_name as assigned_to_name,
-        bt.mot_ref as blocking_ticket_ref, bt.title as blocking_ticket_title, bt.title_enc as blocking_ticket_title_enc, bt.internal_status as blocking_ticket_status
+        bt.internal_ref as blocking_ticket_ref, bt.title as blocking_ticket_title, bt.title_enc as blocking_ticket_title_enc, bt.internal_status as blocking_ticket_status
       FROM tickets t
       LEFT JOIN projects proj ON t.project_id = proj.id
       LEFT JOIN users sub ON t.submitted_by = sub.id
@@ -433,6 +460,34 @@ router.patch('/:id', requireAuth, async (req, res) => {
       if ((isAdmin || isSubmitter) && body.assigned_to !== undefined) {
         updates.assigned_to = body.assigned_to ? Number(body.assigned_to) : null;
       }
+      // Admin/Manager can reassign the submitter (e.g. correcting an
+      // import or filing-on-behalf metadata). Submitters cannot.
+      if (isAdmin && body.submitted_by !== undefined && body.submitted_by !== null) {
+        const targetId = Number(body.submitted_by);
+        if (!Number.isInteger(targetId) || targetId <= 0) {
+          return res.status(400).json({ error: 'submitted_by must be a user id' });
+        }
+        const targetUser = await client.query(
+          `SELECT id FROM users WHERE id = $1 AND status = 'active'`,
+          [targetId]
+        );
+        if (!targetUser.rows[0]) return res.status(400).json({ error: 'submitted_by user not found or inactive' });
+        if (targetId !== ticket.submitted_by) {
+          updates.submitted_by = targetId;
+          await auditLog(client, {
+            ticketId: ticket.id, userId: user.id,
+            action: 'submitter_change',
+            oldValue: String(ticket.submitted_by ?? ''),
+            newValue: String(targetId),
+          });
+          // New submitter auto-follows; old submitter stays a follower
+          // (we don't unfollow on change — they may still want updates).
+          await client.query(
+            'INSERT INTO ticket_followers (ticket_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+            [ticket.id, targetId]
+          );
+        }
+      }
 
       let imp = ticket.impact, urg = ticket.urgency;
       if ((isAdmin || isSubmitter) && body.impact !== undefined) { imp = Number(body.impact); updates.impact = imp; }
@@ -451,20 +506,49 @@ router.patch('/:id', requireAuth, async (req, res) => {
       }
 
       if (isAdmin && body.internal_status !== undefined) {
+        if (ticket.followup_at && body.internal_status !== ticket.internal_status) {
+          throw Object.assign(
+            new Error('Cannot change status while a follow-up reminder is pending. Cancel it or wait for it to fire.'),
+            { httpStatus: 409 }
+          );
+        }
         const old = ticket.internal_status;
         updates.internal_status = body.internal_status;
         await auditLog(client, { ticketId: ticket.id, userId: user.id, action: 'status_change', oldValue: old, newValue: body.internal_status });
         if (body.internal_status === 'Reopened') {
           await auditLog(client, { ticketId: ticket.id, userId: user.id, action: 'reopened', note: 'Ticket reopened' });
         }
+        // Track resolved_at for auto-close grace window. Set when entering
+        // a resolved_pending_close-tagged status; clear on any other move.
+        const tagRow = await client.query(
+          `SELECT semantic_tag FROM statuses WHERE kind='internal' AND name=$1`,
+          [body.internal_status]
+        );
+        const tag = tagRow.rows[0]?.semantic_tag || null;
+        if (tag === 'resolved_pending_close') {
+          updates.resolved_at = new Date().toISOString();
+        } else {
+          updates.resolved_at = null;
+        }
+        // Follow-up timer lives on pending_review states. Defensive
+        // clear on any move out of pending_review (the in-flight guard
+        // above already blocks transitions while followup_at is set).
+        const oldTag = await client.query(
+          `SELECT semantic_tag FROM statuses WHERE kind='internal' AND name=$1`,
+          [ticket.internal_status]
+        );
+        if (oldTag.rows[0]?.semantic_tag === 'pending_review' && tag !== 'pending_review') {
+          updates.followup_at = null;
+          updates.followup_user_id = null;
+        }
       }
 
-      if (isAdmin && body.coastal_status !== undefined) {
-        const old = ticket.coastal_status;
-        updates.coastal_status = body.coastal_status;
-        updates.coastal_updated_at = new Date().toISOString();
-        await auditLog(client, { ticketId: ticket.id, userId: user.id, action: 'coastal_status_update', oldValue: old, newValue: body.coastal_status });
-        if (body.coastal_status === 'Resolved') {
+      if (isAdmin && body.external_status !== undefined) {
+        const old = ticket.external_status;
+        updates.external_status = body.external_status;
+        updates.external_updated_at = new Date().toISOString();
+        await auditLog(client, { ticketId: ticket.id, userId: user.id, action: 'external_status_update', oldValue: old, newValue: body.external_status });
+        if (body.external_status === 'Resolved') {
           updates.internal_status = 'Pending Review';
           updates.flagged_for_review = true;
           await auditLog(client, { ticketId: ticket.id, userId: user.id, action: 'status_change', oldValue: ticket.internal_status, newValue: 'Pending Review', note: 'External partner marked resolved — flagged for review' });
@@ -494,9 +578,9 @@ router.patch('/:id', requireAuth, async (req, res) => {
         updates.blocker_type = body.blocker_type || null;
         if (body.blocker_type === 'internal') {
           updates.blocked_by_ticket = body.blocked_by_ticket ? Number(body.blocked_by_ticket) : null;
-          updates.mot_blocker_note = null;
-        } else if (body.blocker_type === 'mot_input') {
-          updates.mot_blocker_note = body.mot_blocker_note || null;
+          updates.internal_blocker_note = null;
+        } else if (body.blocker_type === 'internal_input') {
+          updates.internal_blocker_note = body.internal_blocker_note || null;
           updates.blocked_by_ticket = null;
           if (ticket.internal_status !== 'Awaiting Input') {
             updates.internal_status = 'Awaiting Input';
@@ -504,7 +588,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
           }
         } else if (!body.blocker_type) {
           updates.blocked_by_ticket = null;
-          updates.mot_blocker_note = null;
+          updates.internal_blocker_note = null;
           if (ticket.internal_status === 'Awaiting Input') {
             updates.internal_status = 'In Progress';
             await auditLog(client, { ticketId: ticket.id, userId: user.id, action: 'status_change', oldValue: 'Awaiting Input', newValue: 'In Progress', note: 'Blocker cleared' });
@@ -518,7 +602,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
 
       // Split sensitive vs pass-through fields, then encrypt the sensitive
       // ones via buildWritePatch so writes go to *_enc when mode='standard'.
-      const SENSITIVE = new Set(['title', 'description', 'review_note', 'mot_blocker_note']);
+      const SENSITIVE = new Set(['title', 'description', 'review_note', 'internal_blocker_note']);
       const plainObj = {};
       const passthrough = {};
       for (const [k, v] of Object.entries(updates)) {
@@ -547,7 +631,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
           proj.has_external_vendor as project_has_external_vendor,
           sub.display_name as submitted_by_name,
           asgn.display_name as assigned_to_name,
-          bt.mot_ref as blocking_ticket_ref, bt.title as blocking_ticket_title,
+          bt.internal_ref as blocking_ticket_ref, bt.title as blocking_ticket_title,
           bt.title_enc as blocking_ticket_title_enc, bt.internal_status as blocking_ticket_status
         FROM tickets t
         LEFT JOIN projects proj ON t.project_id = proj.id
@@ -583,12 +667,142 @@ router.patch('/:id', requireAuth, async (req, res) => {
       sendVendorEmail({ eventType: event, ticketId: ticket.id, actorId: user.id })
         .catch(err => console.error('vendor outbound failed:', err.message));
     }
-    // coastal_status → Resolved sets internal_status to Pending Review
-    if (body.coastal_status === 'Resolved' && ticket.internal_status !== 'Pending Review') {
+    // external_status → Resolved sets internal_status to Pending Review
+    if (body.external_status === 'Resolved' && ticket.internal_status !== 'Pending Review') {
       notifyPendingReview(pool, { ticket: updated, actorId: user.id }).catch(() => {});
     }
   } catch (err) {
+    if (err.httpStatus) return res.status(err.httpStatus).json({ error: err.message });
     console.error(err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// POST /api/tickets/:id/followup — schedule (or update) a follow-up
+// reminder N days from now. Admin/Manager only. Only meaningful while
+// ticket sits in a resolved_pending_close state; cleared automatically
+// on status change. DELETE clears it.
+router.post('/:id/followup', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+  try {
+    const days = Math.max(1, Math.floor(Number(req.body?.days || 0)));
+    if (!days || !Number.isFinite(days)) return res.status(400).json({ error: 'days must be a positive integer' });
+    const r = await pool.query(`
+      UPDATE tickets SET followup_at = NOW() + ($1 || ' days')::interval,
+                         followup_user_id = $2,
+                         updated_at = NOW()
+       WHERE id = $3
+       RETURNING followup_at, followup_user_id
+    `, [days, req.session.user.id, req.params.id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
+    await pool.query(
+      `INSERT INTO audit_log (ticket_id, user_id, action, note)
+       VALUES ($1, $2, 'followup_scheduled', $3)`,
+      [req.params.id, req.session.user.id, `Follow-up reminder in ${days} day(s)`]
+    );
+    res.json(r.rows[0]);
+  } catch (err) {
+    console.error('followup schedule error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+router.delete('/:id/followup', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+  try {
+    await pool.query(
+      `UPDATE tickets SET followup_at = NULL, followup_user_id = NULL, updated_at = NOW() WHERE id = $1`,
+      [req.params.id]
+    );
+    await pool.query(
+      `INSERT INTO audit_log (ticket_id, user_id, action, note)
+       VALUES ($1, $2, 'followup_cancelled', 'Follow-up reminder cancelled')`,
+      [req.params.id, req.session.user.id]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('followup cancel error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// POST /api/tickets/:id/move — relocate a ticket to a different project.
+// Re-issues internal_ref from the target project's counter (old ref kept
+// in audit log). Detaches vendor contacts (vendor scope = project).
+// Auth: Admin/Manager any project; Submitter must be a member of BOTH
+// the source and target projects.
+router.post('/:id/move', requireAuth, async (req, res) => {
+  try {
+    const user = req.session.user;
+    const targetProjectId = Number(req.body?.project_id);
+    if (!Number.isInteger(targetProjectId) || targetProjectId <= 0) {
+      return res.status(400).json({ error: 'project_id required' });
+    }
+
+    const t = await pool.query(
+      `SELECT id, project_id, internal_ref FROM tickets WHERE id = $1`,
+      [req.params.id]
+    );
+    if (!t.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
+    const ticket = t.rows[0];
+    if (ticket.project_id === targetProjectId) {
+      return res.status(400).json({ error: 'Ticket is already in that project' });
+    }
+
+    const targetProj = await pool.query(
+      `SELECT id, name, prefix, status FROM projects WHERE id = $1`,
+      [targetProjectId]
+    );
+    if (!targetProj.rows[0]) return res.status(404).json({ error: 'Target project not found' });
+    if (targetProj.rows[0].status !== 'active') return res.status(400).json({ error: 'Target project is archived' });
+
+    // Permission gate.
+    const isPriv = ['Admin', 'Manager'].includes(user.role);
+    if (!isPriv) {
+      // Submitter (or other role) must belong to BOTH projects.
+      const memberships = await pool.query(
+        `SELECT project_id FROM project_members
+          WHERE user_id = $1 AND project_id = ANY($2::int[])`,
+        [user.id, [ticket.project_id, targetProjectId]]
+      );
+      const ids = new Set(memberships.rows.map(r => r.project_id));
+      if (!ids.has(ticket.project_id) || !ids.has(targetProjectId)) {
+        return res.status(403).json({ error: 'You must be a member of both the source and target projects' });
+      }
+    }
+
+    const result = await transaction(async (client) => {
+      const newRef = await nextInternalRef(client, targetProjectId);
+      await client.query(
+        `UPDATE tickets SET project_id = $1, internal_ref = $2, updated_at = NOW() WHERE id = $3`,
+        [targetProjectId, newRef, ticket.id]
+      );
+      // Vendor contacts are project-scoped — drop them on move.
+      const detached = await client.query(
+        `DELETE FROM ticket_contacts WHERE ticket_id = $1 RETURNING contact_id`,
+        [ticket.id]
+      );
+      await auditLog(client, {
+        ticketId: ticket.id, userId: user.id,
+        action: 'ticket_moved',
+        oldValue: `${ticket.internal_ref} (project ${ticket.project_id})`,
+        newValue: `${newRef} (project ${targetProjectId})`,
+        note: `Moved to ${targetProj.rows[0].name}; ${detached.rowCount} contact(s) detached`,
+      });
+      await systemComment(
+        client, ticket.id,
+        `Ticket moved from project ID ${ticket.project_id} (was ${ticket.internal_ref}) to ${targetProj.rows[0].name} as ${newRef}.`
+      );
+      return { newRef, detachedCount: detached.rowCount };
+    });
+
+    res.json({
+      ok: true,
+      ticket_id: ticket.id,
+      old_ref: ticket.internal_ref,
+      new_ref: result.newRef,
+      detached_contacts: result.detachedCount,
+    });
+  } catch (err) {
+    console.error('move ticket error:', err);
     res.status(500).json({ error: 'Database error' });
   }
 });
@@ -610,7 +824,7 @@ router.post('/:id/notify-vendor', requireAuth, requireRole('Admin', 'Manager'), 
 // the winner ticket (request body: { winner_id }). All comments,
 // attachments, audit entries, vendor contacts, and followers are
 // reassigned to the winner. Loser is closed with an audit row pointing
-// at the winner; winner gets a "Merged in MOT-XX" audit row. Both
+// at the winner; winner gets a "Merged in PROJECT-XX" audit row. Both
 // tickets must exist in the same project.
 router.post('/:id/merge', requireAuth, requireRole('Admin'), async (req, res) => {
   try {
@@ -621,7 +835,7 @@ router.post('/:id/merge', requireAuth, requireRole('Admin'), async (req, res) =>
     }
     const merged = await transaction(async (client) => {
       const both = await client.query(
-        `SELECT id, mot_ref, project_id, internal_status FROM tickets WHERE id = ANY($1::int[])`,
+        `SELECT id, internal_ref, project_id, internal_status FROM tickets WHERE id = ANY($1::int[])`,
         [[loserId, winnerId]]
       );
       const loser  = both.rows.find(r => r.id === loserId);
@@ -655,17 +869,17 @@ router.post('/:id/merge', requireAuth, requireRole('Admin'), async (req, res) =>
       await client.query(
         `INSERT INTO audit_log (ticket_id, user_id, action, new_value, note)
          VALUES ($1, $2, 'merged_in', $3, $4)`,
-        [winnerId, req.session.user.id, loser.mot_ref, `Merged in ${loser.mot_ref}`]
+        [winnerId, req.session.user.id, loser.internal_ref, `Merged in ${loser.internal_ref}`]
       );
       await client.query(
         `INSERT INTO audit_log (ticket_id, user_id, action, new_value, note)
          VALUES ($1, $2, 'merged_into', $3, $4)`,
-        [loserId, req.session.user.id, winner.mot_ref, `Merged into ${winner.mot_ref}`]
+        [loserId, req.session.user.id, winner.internal_ref, `Merged into ${winner.internal_ref}`]
       );
 
       // Close the loser. Plaintext title intentionally untouched so the
       // operation is reversible by manual SQL if absolutely necessary —
-      // a "Merged into MOT-XX" annotation lives in audit only.
+      // a "Merged into PROJECT-XX" annotation lives in audit only.
       await client.query(
         `UPDATE tickets SET internal_status = 'Closed', updated_at = NOW() WHERE id = $1`,
         [loserId]
@@ -673,7 +887,7 @@ router.post('/:id/merge', requireAuth, requireRole('Admin'), async (req, res) =>
       // Bump winner's updated_at so it sorts to the top.
       await client.query(`UPDATE tickets SET updated_at = NOW() WHERE id = $1`, [winnerId]);
 
-      return { winner_ref: winner.mot_ref, loser_ref: loser.mot_ref };
+      return { winner_ref: winner.internal_ref, loser_ref: loser.internal_ref };
     });
     res.json({ ok: true, ...merged });
   } catch (err) {
