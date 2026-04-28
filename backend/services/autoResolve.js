@@ -116,10 +116,43 @@ async function applyReplyToResolvedTicket({ ticketId, replyBody, actorUserId }) 
   return { reopened: true, gratitude: false, fromStatus: row.internal_status, toStatus: target };
 }
 
+// Called when a web UI comment is posted on any terminal ticket.
+// Applies the same gratitude filter — a substantive comment reopens the
+// ticket; a thank-you leaves it closed. Returns null if ticket isn't terminal.
+async function applyCommentToTerminalTicket({ ticketId, commentBody, actorUserId }) {
+  const t = await pool.query(`
+    SELECT t.id, t.internal_status, s.semantic_tag, s.is_terminal
+      FROM tickets t
+ LEFT JOIN statuses s ON s.kind = 'internal' AND s.name = t.internal_status
+     WHERE t.id = $1
+  `, [ticketId]);
+  const row = t.rows[0];
+  if (!row || !row.is_terminal) return null;
+
+  const phrases = await getGratitudePhrases();
+  const gratitude = isGratitudeOnly(commentBody, phrases);
+  if (gratitude) {
+    return { reopened: false, gratitude: true, fromStatus: row.internal_status };
+  }
+
+  const target = await findReopenStatusName();
+  await pool.query(
+    `UPDATE tickets SET internal_status = $1, resolved_at = NULL, updated_at = NOW() WHERE id = $2`,
+    [target, ticketId]
+  );
+  await pool.query(
+    `INSERT INTO audit_log (ticket_id, user_id, action, old_value, new_value, note)
+     VALUES ($1, $2, 'status_change_auto', $3, $4, $5)`,
+    [ticketId, actorUserId || null, row.internal_status, target, 'Auto-reopened: substantive comment posted on resolved ticket']
+  );
+  return { reopened: true, gratitude: false, fromStatus: row.internal_status, toStatus: target };
+}
+
 module.exports = {
   getGratitudePhrases,
   setGratitudePhrases,
   invalidatePhraseCache,
   isGratitudeOnly,
   applyReplyToResolvedTicket,
+  applyCommentToTerminalTicket,
 };
