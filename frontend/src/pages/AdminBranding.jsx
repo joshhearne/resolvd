@@ -290,6 +290,7 @@ export default function AdminBranding() {
               <span className="block text-xs text-fg-muted mb-1">Time zone</span>
               <input
                 type="text"
+                list="branding-timezone-list"
                 value={form.timezone}
                 onChange={(e) =>
                   setForm((f) => ({ ...f, timezone: e.target.value }))
@@ -297,8 +298,58 @@ export default function AdminBranding() {
                 placeholder="UTC"
                 className="w-full border border-border-strong rounded-md px-2 py-1.5 text-sm"
               />
+              <datalist id="branding-timezone-list">
+                {(typeof Intl?.supportedValuesOf === "function"
+                  ? Intl.supportedValuesOf("timeZone")
+                  : [
+                      "UTC",
+                      "America/New_York",
+                      "America/Chicago",
+                      "America/Denver",
+                      "America/Los_Angeles",
+                      "America/Anchorage",
+                      "America/Phoenix",
+                      "America/Toronto",
+                      "America/Vancouver",
+                      "America/Mexico_City",
+                      "America/Sao_Paulo",
+                      "Europe/London",
+                      "Europe/Dublin",
+                      "Europe/Paris",
+                      "Europe/Berlin",
+                      "Europe/Amsterdam",
+                      "Europe/Madrid",
+                      "Europe/Rome",
+                      "Europe/Stockholm",
+                      "Europe/Moscow",
+                      "Asia/Dubai",
+                      "Asia/Karachi",
+                      "Asia/Kolkata",
+                      "Asia/Shanghai",
+                      "Asia/Hong_Kong",
+                      "Asia/Singapore",
+                      "Asia/Tokyo",
+                      "Asia/Seoul",
+                      "Australia/Sydney",
+                      "Australia/Melbourne",
+                      "Pacific/Auckland",
+                      "Pacific/Honolulu",
+                    ]
+                ).map((tz) => (
+                  <option key={tz} value={tz} />
+                ))}
+              </datalist>
               <span className="block text-[11px] text-fg-muted mt-1">
-                IANA name (e.g. America/Chicago, Europe/London).
+                Start typing a city or region — e.g. <code>America/Chicago</code>, <code>Europe/London</code>.{" "}
+                <a
+                  href="https://en.wikipedia.org/wiki/List_of_tz_database_time_zones"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-brand hover:underline"
+                >
+                  Full IANA list
+                </a>
+                .
               </span>
             </label>
           </div>
