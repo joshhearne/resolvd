@@ -248,6 +248,7 @@ export default function TicketDetail() {
   const [submitterDraft, setSubmitterDraft] = useState("");
   const [showFollowerMgr, setShowFollowerMgr] = useState(false);
   const [addFollowerId, setAddFollowerId] = useState("");
+  const [showMobileActions, setShowMobileActions] = useState(false);
 
   useEffect(() => {
     if (!isAdmin) return;
@@ -562,8 +563,8 @@ export default function TicketDetail() {
   return (
     <div className="space-y-6">
       {/* Header */}
-      <div className="flex items-start justify-between gap-4">
-        <div>
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+        <div className="flex-1 min-w-0">
           <div className="flex items-center gap-3 flex-wrap">
             <span className="font-mono text-sm font-semibold text-fg-muted">
               {ticket.internal_ref}
@@ -785,39 +786,89 @@ export default function TicketDetail() {
               )}
             </div>
           )}
-          {["Admin", "Manager"].includes(user?.role) && vendorContacts.length > 0 && (
+          {/* Desktop inline actions */}
+          <div className="hidden sm:flex items-center gap-2">
+            {["Admin", "Manager"].includes(user?.role) && vendorContacts.length > 0 && (
+              <button
+                onClick={notifyVendor}
+                className="btn-secondary btn btn-sm whitespace-nowrap"
+                title="Send new_ticket vendor email now (includes any uploaded attachments)"
+              >
+                Notify Vendor
+              </button>
+            )}
             <button
-              onClick={notifyVendor}
+              onClick={() => setConfirm("move")}
               className="btn-secondary btn btn-sm whitespace-nowrap"
-              title="Send new_ticket vendor email now (includes any uploaded attachments)"
+              title="Move this ticket to a different project (re-issues ref, detaches vendor contacts)"
             >
-              Notify Vendor
+              Move…
             </button>
-          )}
-          <button
-            onClick={() => setConfirm("move")}
-            className="btn-secondary btn btn-sm whitespace-nowrap"
-            title="Move this ticket to a different project (re-issues ref, detaches vendor contacts)"
-          >
-            Move…
-          </button>
-          {isAdmin && (
+            {isAdmin && (
+              <button
+                onClick={() => setConfirm("merge")}
+                className="btn-secondary btn btn-sm whitespace-nowrap"
+                title="Merge this ticket into another (closes this one, reassigns comments/attachments/etc.)"
+              >
+                Merge…
+              </button>
+            )}
+            {isAdmin && (
+              <button
+                onClick={() => setConfirm("delete")}
+                className="btn-danger btn btn-sm whitespace-nowrap"
+              >
+                Delete
+              </button>
+            )}
+          </div>
+          {/* Mobile kebab menu */}
+          <div className="relative sm:hidden">
             <button
-              onClick={() => setConfirm("merge")}
-              className="btn-secondary btn btn-sm whitespace-nowrap"
-              title="Merge this ticket into another (closes this one, reassigns comments/attachments/etc.)"
+              onClick={() => setShowMobileActions((v) => !v)}
+              className="btn-secondary btn btn-sm"
+              title="More actions"
+              aria-label="More actions"
             >
-              Merge…
+              <svg className="w-4 h-4" fill="currentColor" viewBox="0 0 20 20">
+                <path d="M10 4a1.5 1.5 0 110 3 1.5 1.5 0 010-3zm0 4.5a1.5 1.5 0 110 3 1.5 1.5 0 010-3zm0 4.5a1.5 1.5 0 110 3 1.5 1.5 0 010-3z" />
+              </svg>
             </button>
-          )}
-          {isAdmin && (
-            <button
-              onClick={() => setConfirm("delete")}
-              className="btn-danger btn btn-sm whitespace-nowrap"
-            >
-              Delete
-            </button>
-          )}
+            {showMobileActions && (
+              <div className="absolute right-0 top-full mt-1 w-48 bg-surface rounded-md shadow-lg border border-border z-30 py-1">
+                {["Admin", "Manager"].includes(user?.role) && vendorContacts.length > 0 && (
+                  <button
+                    onClick={() => { setShowMobileActions(false); notifyVendor(); }}
+                    className="w-full text-left px-3 py-2 text-sm hover:bg-surface-2"
+                  >
+                    Notify Vendor
+                  </button>
+                )}
+                <button
+                  onClick={() => { setShowMobileActions(false); setConfirm("move"); }}
+                  className="w-full text-left px-3 py-2 text-sm hover:bg-surface-2"
+                >
+                  Move…
+                </button>
+                {isAdmin && (
+                  <button
+                    onClick={() => { setShowMobileActions(false); setConfirm("merge"); }}
+                    className="w-full text-left px-3 py-2 text-sm hover:bg-surface-2"
+                  >
+                    Merge…
+                  </button>
+                )}
+                {isAdmin && (
+                  <button
+                    onClick={() => { setShowMobileActions(false); setConfirm("delete"); }}
+                    className="w-full text-left px-3 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40"
+                  >
+                    Delete
+                  </button>
+                )}
+              </div>
+            )}
+          </div>
         </div>
       </div>
 
