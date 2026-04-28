@@ -100,6 +100,16 @@ function htmlify(body) {
 }
 
 async function sendVendorEmail({ eventType, ticketId, actorId }) {
+  // Status/resolved notifications only go out if the vendor was already
+  // contacted about this ticket (new_ticket or vendor-visible comment sent).
+  if (eventType === 'status_change' || eventType === 'ticket_resolved') {
+    const r = await pool.query(
+      `SELECT vendor_notified_at FROM tickets WHERE id = $1`,
+      [ticketId]
+    );
+    if (!r.rows[0]?.vendor_notified_at) return { sent: 0, skipped: 1 };
+  }
+
   const tplRow = await loadTemplate(eventType, 'vendor');
   if (!tplRow) {
     console.warn(`vendorOutbound: no template for event=${eventType} audience=vendor`);
@@ -157,6 +167,15 @@ async function sendVendorEmail({ eventType, ticketId, actorId }) {
       failed++;
     }
   }
+  // Stamp first-contact timestamp so future status/resolved events know
+  // the vendor has been in the loop.
+  if (sent > 0 && (eventType === 'new_ticket' || eventType === 'new_comment')) {
+    await pool.query(
+      `UPDATE tickets SET vendor_notified_at = NOW() WHERE id = $1 AND vendor_notified_at IS NULL`,
+      [ticketId]
+    );
+  }
+
   return { sent, failed, audience: contacts.length };
 }
 

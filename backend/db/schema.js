@@ -759,6 +759,7 @@ async function initSchema() {
     // origin queue row id so the audit trail back to the email is one
     // hop, not a join chain through comments.
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS source_inbound_email_id INTEGER REFERENCES inbound_email_queue(id) ON DELETE SET NULL`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS vendor_notified_at TIMESTAMPTZ`);
 
     // Comments authored by an external contact (matched in from the
     // inbound queue). Preserves attribution without forcing a fake user
