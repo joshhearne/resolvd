@@ -128,6 +128,13 @@ export default function AccountPreferences() {
             onChange={(v) => set("email_on_status_change", v)}
             disabled={busy}
           />
+          <Toggle
+            label="Email me when a ticket is assigned to me"
+            hint="Receive an email when someone assigns a ticket to you. Self-assignments don't trigger this."
+            value={!!prefs.email_on_assignment}
+            onChange={(v) => set("email_on_assignment", v)}
+            disabled={busy}
+          />
         </div>
       </div>
 

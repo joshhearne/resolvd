@@ -8,6 +8,7 @@ const SEMANTIC_TAGS = [
   { value: "resolved_pending_close", label: "resolved_pending_close" },
   { value: "pending_review", label: "pending_review" },
   { value: "on_hold", label: "on_hold" },
+  { value: "awaiting_input", label: "awaiting_input" },
 ];
 
 const MAP_KIND_LABELS = {

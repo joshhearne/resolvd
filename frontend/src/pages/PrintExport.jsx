@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useBranding } from "../context/BrandingContext";
+import { formatAbsoluteDate, formatAbsolute } from "../utils/helpers";
 
 const PRIORITY_LABELS = {
   1: "P1 – Critical",
@@ -33,12 +34,9 @@ function groupSort(tickets) {
 }
 
 function fmt(dateStr) {
-  if (!dateStr) return "—";
-  return new Date(dateStr).toLocaleDateString("en-US", {
-    year: "numeric",
-    month: "short",
-    day: "numeric",
-  });
+  // Reports always use absolute, ISO-style by default; admin-configured
+  // locale (in branding) overrides via setActiveLocale.
+  return formatAbsoluteDate(dateStr);
 }
 
 function GroupHeading({ label }) {
@@ -461,7 +459,7 @@ export default function PrintExport() {
           <div
             style={{ textAlign: "right", fontSize: "11px", color: "#6b7280" }}
           >
-            <div>Generated: {new Date().toLocaleString()}</div>
+            <div>Generated: {formatAbsolute(new Date().toISOString())}</div>
             <div>Statuses: {exportedStatuses}</div>
             <div>Total tickets: {tickets.length}</div>
           </div>

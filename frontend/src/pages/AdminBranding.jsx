@@ -12,6 +12,9 @@ export default function AdminBranding() {
     logo_on_dark: branding.logo_on_dark ?? false,
     accent_override_enabled: branding.accent_override_enabled ?? false,
     logo_designed_for: branding.logo_designed_for || "light",
+    date_style: branding.date_style || "iso",
+    time_style: branding.time_style || "iso",
+    timezone: branding.timezone || "UTC",
   });
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -247,6 +250,58 @@ export default function AdminBranding() {
           <label htmlFor="show_powered_by" className="text-sm text-fg">
             Show "Powered by Hearne Technologies" footer
           </label>
+        </div>
+
+        <div className="border-t border-border pt-4">
+          <h2 className="text-sm font-semibold text-fg mb-1">Localization</h2>
+          <p className="text-xs text-fg-muted mb-3">
+            How dates and times render across the app. Reports always render
+            absolute timestamps using these styles regardless of recency.
+          </p>
+          <div className="grid grid-cols-1 md:grid-cols-3 gap-3">
+            <label className="block">
+              <span className="block text-xs text-fg-muted mb-1">Date style</span>
+              <select
+                value={form.date_style}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, date_style: e.target.value }))
+                }
+                className="w-full border border-border-strong rounded-md px-2 py-1.5 text-sm"
+              >
+                <option value="iso">ISO (2026-04-28)</option>
+                <option value="us">US (Apr 28, 2026)</option>
+                <option value="eu">EU (28 Apr 2026)</option>
+              </select>
+            </label>
+            <label className="block">
+              <span className="block text-xs text-fg-muted mb-1">Time style</span>
+              <select
+                value={form.time_style}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, time_style: e.target.value }))
+                }
+                className="w-full border border-border-strong rounded-md px-2 py-1.5 text-sm"
+              >
+                <option value="iso">24-hour (14:32)</option>
+                <option value="12h">12-hour (2:32 PM)</option>
+              </select>
+            </label>
+            <label className="block">
+              <span className="block text-xs text-fg-muted mb-1">Time zone</span>
+              <input
+                type="text"
+                value={form.timezone}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, timezone: e.target.value }))
+                }
+                placeholder="UTC"
+                className="w-full border border-border-strong rounded-md px-2 py-1.5 text-sm"
+              />
+              <span className="block text-[11px] text-fg-muted mt-1">
+                IANA name (e.g. America/Chicago, Europe/London).
+              </span>
+            </label>
+          </div>
         </div>
 
         <div className="pt-2">

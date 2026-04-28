@@ -224,6 +224,11 @@ async function initSchema() {
     await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS logo_on_dark BOOLEAN NOT NULL DEFAULT FALSE`);
     await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS accent_override_enabled BOOLEAN NOT NULL DEFAULT FALSE`);
     await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS logo_designed_for TEXT NOT NULL DEFAULT 'light' CHECK (logo_designed_for IN ('light','dark'))`);
+    // Localization controls (admin-set, applies org-wide). UI uses these
+    // to render dates/times; reports always use ISO regardless of style.
+    await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS date_style TEXT NOT NULL DEFAULT 'iso' CHECK (date_style IN ('iso','us','eu'))`);
+    await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS time_style TEXT NOT NULL DEFAULT 'iso' CHECK (time_style IN ('iso','12h'))`);
+    await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS timezone TEXT NOT NULL DEFAULT 'UTC'`);
     await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS has_external_vendor BOOLEAN NOT NULL DEFAULT TRUE`);
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS default_project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL`);
     // Per-user QoL preferences stored as JSONB. Free-form so we can add
@@ -351,6 +356,13 @@ async function initSchema() {
     await client.query(`
       UPDATE statuses SET semantic_tag = 'pending_review'
        WHERE kind = 'internal' AND name = 'Pending Review' AND semantic_tag IS NULL
+    `);
+    // Tag "Awaiting Input" as the external-block companion to On Hold's
+    // internal-block tag. Lets future logic differentiate vendor/customer
+    // waits from internal team waits without name-matching.
+    await client.query(`
+      UPDATE statuses SET semantic_tag = 'awaiting_input'
+       WHERE kind = 'internal' AND name = 'Awaiting Input' AND semantic_tag IS NULL
     `);
     await client.query(`
       INSERT INTO statuses (kind, name, color, sort_order, is_initial, is_terminal, is_blocker, semantic_tag)

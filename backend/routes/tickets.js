@@ -2,7 +2,7 @@ const express = require('express');
 const { pool, transaction } = require('../db/pool');
 const { nextInternalRef, computePriority } = require('../db/schema');
 const { requireAuth, requireRole } = require('../middleware/auth');
-const { notifyStatusChange, notifyPendingReview, notifyNewComment } = require('../services/email');
+const { notifyStatusChange, notifyPendingReview, notifyNewComment, notifyAssignment } = require('../services/email');
 const { getMode, buildWritePatch, decryptRow, decryptRows } = require('../services/fields');
 const blindIndex = require('../services/blindIndex');
 const { logSupportRead } = require('../middleware/supportAccess');
@@ -670,6 +670,19 @@ router.patch('/:id', requireAuth, async (req, res) => {
     // external_status → Resolved sets internal_status to Pending Review
     if (body.external_status === 'Resolved' && ticket.internal_status !== 'Pending Review') {
       notifyPendingReview(pool, { ticket: updated, actorId: user.id }).catch(() => {});
+    }
+    // Email the assignee when assigned_to changes to a new non-null user.
+    if (
+      body.assigned_to !== undefined &&
+      updated.assigned_to &&
+      updated.assigned_to !== ticket.assigned_to
+    ) {
+      notifyAssignment(pool, {
+        ticket: updated,
+        assigneeId: updated.assigned_to,
+        actorId: user.id,
+        actorName: user.displayName,
+      }).catch(err => console.error('notifyAssignment failed:', err.message));
     }
   } catch (err) {
     if (err.httpStatus) return res.status(err.httpStatus).json({ error: err.message });

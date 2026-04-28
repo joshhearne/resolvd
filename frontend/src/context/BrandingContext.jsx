@@ -1,4 +1,5 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
+import { setActiveLocale } from "../utils/helpers";
 
 const BrandingContext = createContext({});
 
@@ -52,6 +53,16 @@ export function BrandingProvider({ children }) {
       );
     }
   }, [branding.accent_override_enabled, branding.primary_color]);
+
+  // Push the configured locale into the helpers module so existing
+  // formatDateTime callers automatically honor admin-set styles.
+  useEffect(() => {
+    setActiveLocale({
+      date_style: branding.date_style,
+      time_style: branding.time_style,
+      timezone: branding.timezone,
+    });
+  }, [branding.date_style, branding.time_style, branding.timezone]);
 
   return (
     <BrandingContext.Provider value={{ branding, setBranding }}>

@@ -167,8 +167,8 @@ router.get('/tickets', requireAuth, requireRole('Admin', 'Manager'), async (req,
         r.internal_ref, r.title, r.internal_status, r.external_status, r.external_ticket_ref,
         r.effective_priority, r.impact, r.urgency, r.blocker_type,
         r.assignee_name, r.submitter_name, r.project_name,
-        r.created_at ? new Date(r.created_at).toISOString().slice(0,10) : '',
-        r.updated_at ? new Date(r.updated_at).toISOString().slice(0,10) : '',
+        r.created_at ? new Date(r.created_at).toISOString() : '',
+        r.updated_at ? new Date(r.updated_at).toISOString() : '',
       ].map(escape).join(','));
       const csv = [cols.map(escape).join(','), ...rows].join('\r\n');
       const filename = `export-${new Date().toISOString().slice(0,10)}.csv`;

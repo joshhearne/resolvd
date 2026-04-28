@@ -29,11 +29,12 @@ import ConfirmDialog from "../components/ConfirmDialog";
 function nextInternalStatus(current, list) {
   if (!current) return null;
   if (current.is_terminal) return null;
-  if (
-    current.is_blocker ||
-    current.semantic_tag === "reopened" ||
-    current.semantic_tag === "on_hold"
-  ) {
+  const SIDE_TAGS = new Set([
+    "reopened",
+    "on_hold",
+    "awaiting_input",
+  ]);
+  if (current.is_blocker || SIDE_TAGS.has(current.semantic_tag)) {
     return list.find((s) => s.semantic_tag === "in_progress") || null;
   }
   const sorted = [...list].sort((a, b) => a.sort_order - b.sort_order);
@@ -42,7 +43,7 @@ function nextInternalStatus(current, list) {
   for (let i = idx + 1; i < sorted.length; i++) {
     const s = sorted[i];
     if (s.is_blocker) continue;
-    if (s.semantic_tag === "reopened" || s.semantic_tag === "on_hold") continue;
+    if (SIDE_TAGS.has(s.semantic_tag)) continue;
     return s;
   }
   return null;

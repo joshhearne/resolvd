@@ -341,6 +341,27 @@ async function notifyStatusChange(pool, { ticket, oldStatus, newStatus, actorId 
   await sendMail({ to: emails, subject, html: await baseHtml(subject, body) });
 }
 
+async function notifyAssignment(pool, { ticket, assigneeId, actorId, actorName }) {
+  if (!assigneeId || assigneeId === actorId) return;
+  const r = await pool.query(
+    `SELECT email, preferences FROM users
+      WHERE id = $1 AND status = 'active' AND email IS NOT NULL AND email != ''`,
+    [assigneeId]
+  );
+  const row = r.rows[0];
+  if (!row) return;
+  const pref = row.preferences && row.preferences.email_on_assignment;
+  if (pref === false) return;
+  const subject = `[${ticket.internal_ref}] Assigned to you`;
+  const body = `
+    <p style="color:#374151;font-size:14px;margin:0 0 12px">
+      <strong>${actorName || 'Someone'}</strong> assigned <strong>${ticket.internal_ref}</strong> to you.
+    </p>
+    <p style="color:#374151;font-size:14px;margin:0 0 16px"><strong>${ticket.title || ''}</strong></p>
+    <a href="${ticketUrl(ticket.id)}" style="display:inline-block;background:#1e40af;color:#fff;text-decoration:none;padding:8px 16px;border-radius:6px;font-size:14px;font-weight:600">View Ticket</a>`;
+  await sendMail({ to: row.email, subject, html: await baseHtml(subject, body) });
+}
+
 async function notifyPendingReview(pool, { ticket, actorId }) {
   const admins = await pool.query(
     `SELECT email FROM users WHERE role = 'Admin' AND id != $1 AND email IS NOT NULL AND email != ''`,
@@ -429,6 +450,7 @@ module.exports = {
   notifyStatusChange,
   notifyPendingReview,
   notifyNewComment,
+  notifyAssignment,
   sendInviteEmail,
   sendPasswordResetEmail,
 };
