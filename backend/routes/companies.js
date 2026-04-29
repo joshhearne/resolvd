@@ -116,6 +116,9 @@ router.patch('/:id', requireAuth, requireRole('Admin', 'Manager'), async (req, r
     if (body.notes !== undefined) sensitiveObj.notes = body.notes || null;
     if (body.domain !== undefined) passthrough.domain = normalizeDomain(body.domain);
     if (body.is_archived !== undefined) passthrough.is_archived = !!body.is_archived;
+    if (body.notification_prefs !== undefined && typeof body.notification_prefs === 'object' && !Array.isArray(body.notification_prefs)) {
+      passthrough.notification_prefs = JSON.stringify(body.notification_prefs);
+    }
 
     const patch = await buildWritePatch(pool, 'companies', sensitiveObj);
     const cols = [...Object.keys(passthrough), ...patch.cols];

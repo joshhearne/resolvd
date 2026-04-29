@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
+import CompanyNotificationPrefs from "../components/CompanyNotificationPrefs";
 
 function ContactsPanel({ company, onChange }) {
   const [contacts, setContacts] = useState([]);
@@ -200,7 +201,12 @@ export default function AdminCompanies() {
                     Delete
                   </button>
                 </div>
-                {openId === c.id && <ContactsPanel company={c} onChange={reload} />}
+                {openId === c.id && (
+                  <>
+                    <ContactsPanel company={c} onChange={reload} />
+                    <CompanyNotificationPrefs company={c} />
+                  </>
+                )}
               </div>
             ))}
           </div>

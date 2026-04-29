@@ -32,7 +32,7 @@ router.get('/:id/comments', requireAuth, async (req, res) => {
 // POST /api/tickets/:id/comments
 router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Submitter'), async (req, res) => {
   try {
-    const { body, is_external_visible } = req.body;
+    const { body, is_external_visible, send_as } = req.body;
     if (!body || !body.trim()) return res.status(400).json({ error: 'Comment body required' });
 
     const ticket = await pool.query(
@@ -110,10 +110,13 @@ router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Submi
     // Vendor-bound outbound fires only when the comment is flagged for
     // external visibility AND there are contacts attached to the ticket.
     if (wantsExternal && !result.is_system) {
+      const vendorActorId = (send_as === 'submitter' && ticket.rows[0].submitted_by)
+        ? ticket.rows[0].submitted_by
+        : req.session.user.id;
       sendVendorEmail({
         eventType: 'new_comment',
         ticketId: ticket.rows[0].id,
-        actorId: req.session.user.id,
+        actorId: vendorActorId,
       }).catch(err => console.error('vendor outbound failed:', err.message));
     }
 

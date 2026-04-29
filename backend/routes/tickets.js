@@ -843,9 +843,13 @@ router.post('/:id/move', requireAuth, async (req, res) => {
 // POST /api/tickets/:id/notify-vendor — manually fire new_ticket vendor email
 router.post('/:id/notify-vendor', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
-    const ticket = await pool.query('SELECT id FROM tickets WHERE id = $1', [req.params.id]);
+    const ticket = await pool.query('SELECT id, submitted_by FROM tickets WHERE id = $1', [req.params.id]);
     if (!ticket.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
-    const result = await sendVendorEmail({ eventType: 'new_ticket', ticketId: Number(req.params.id), actorId: req.session.user.id });
+    const sendAs = req.body?.send_as;
+    const actorId = (sendAs === 'submitter' && ticket.rows[0].submitted_by)
+      ? ticket.rows[0].submitted_by
+      : req.session.user.id;
+    const result = await sendVendorEmail({ eventType: 'new_ticket', ticketId: Number(req.params.id), actorId });
     res.json(result);
   } catch (err) {
     console.error(err);

@@ -20,7 +20,8 @@ import {
 } from "../context/StatusesContext";
 import PriorityBadge from "../components/PriorityBadge";
 import StatusBadge from "../components/StatusBadge";
-import MentionTextarea from "../components/MentionTextarea";
+import MarkdownEditor from "../components/MarkdownEditor";
+import MarkdownContent from "../components/MarkdownContent";
 import ConfirmDialog from "../components/ConfirmDialog";
 
 // Pick the "primary advance" target for the next-step button. Skips
@@ -238,6 +239,7 @@ export default function TicketDetail() {
   const [commentFiles, setCommentFiles] = useState([]);
   const [submittingComment, setSubmittingComment] = useState(false);
   const [shareWithVendor, setShareWithVendor] = useState(false);
+  const [sendAsModal, setSendAsModal] = useState(null); // { action: 'comment'|'notify', andStatus, resolve }
   const [showMuted, setShowMuted] = useState(false);
   const [activeTab, setActiveTab] = useState("comments");
   const [vendorContacts, setVendorContacts] = useState([]);
@@ -353,9 +355,14 @@ export default function TicketDetail() {
       setTicket(updated);
     } catch (e) { toast.error(e.message); }
   }
-  async function notifyVendor() {
+  async function notifyVendor(send_as = null) {
+    // Intercept: non-submitter needs send-as choice
+    if (send_as === null && isAdmin && ticket?.submitted_by && user?.id !== ticket.submitted_by) {
+      setSendAsModal({ action: 'notify' });
+      return;
+    }
     try {
-      const r = await api.post(`/api/tickets/${id}/notify-vendor`, {});
+      const r = await api.post(`/api/tickets/${id}/notify-vendor`, send_as ? { send_as } : {});
       toast.success(r.sent > 0 ? `Vendor notified (${r.sent} recipient${r.sent !== 1 ? "s" : ""})` : "No active contacts to notify");
     } catch (err) {
       toast.error(err.message);
@@ -434,9 +441,18 @@ export default function TicketDetail() {
     }
   }
 
-  async function submitComment(e, andStatus = null) {
+  function needsSendAsPrompt() {
+    return isAdmin && shareWithVendor && ticket?.submitted_by && user?.id !== ticket.submitted_by;
+  }
+
+  async function submitComment(e, andStatus = null, send_as = null) {
     if (e) e.preventDefault();
     if (!commentBody.trim() && commentFiles.length === 0) return;
+    // Intercept: non-submitter sending vendor-visible comment needs send-as choice
+    if (send_as === null && needsSendAsPrompt()) {
+      setSendAsModal({ action: 'comment', andStatus });
+      return;
+    }
     setSubmittingComment(true);
     try {
       let c = null;
@@ -444,6 +460,7 @@ export default function TicketDetail() {
         c = await api.post(`/api/tickets/${id}/comments`, {
           body: commentBody.trim(),
           is_external_visible: shareWithVendor,
+          ...(shareWithVendor && send_as ? { send_as } : {}),
         });
         setComments((prev) => [...prev, c]);
       }
@@ -1010,7 +1027,7 @@ export default function TicketDetail() {
             </div>
             {editing.description ? (
               <div className="space-y-2">
-                <textarea
+                <MarkdownEditor
                   value={editValues.description}
                   onChange={(e) =>
                     setEditValues((v) => ({
@@ -1019,7 +1036,6 @@ export default function TicketDetail() {
                     }))
                   }
                   rows={5}
-                  className="w-full border border-border-strong rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40"
                 />
                 <div className="flex gap-2">
                   <button
@@ -1040,11 +1056,11 @@ export default function TicketDetail() {
                 </div>
               </div>
             ) : (
-              <p className="text-sm text-fg whitespace-pre-wrap">
-                {ticket.description || (
-                  <span className="text-fg-dim">No description</span>
-                )}
-              </p>
+              ticket.description ? (
+                <MarkdownContent>{ticket.description}</MarkdownContent>
+              ) : (
+                <span className="text-fg-dim text-sm">No description</span>
+              )
             )}
           </div>
 
@@ -1117,7 +1133,7 @@ export default function TicketDetail() {
                           <span className="text-xs text-fg-dim">{formatDateTime(c.created_at)}</span>
                         </span>
                       </div>
-                      <p className="text-sm text-fg whitespace-pre-wrap">{c.body}</p>
+                      <MarkdownContent>{c.body}</MarkdownContent>
                       {attachments.filter((a) => a.comment_id === c.id).length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-1.5">
                           {attachments.filter((a) => a.comment_id === c.id).map((a) => (
@@ -1159,9 +1175,8 @@ export default function TicketDetail() {
                     onSubmit={submitComment}
                     className="space-y-2 pt-2 border-t border-border"
                   >
-                    <MentionTextarea
+                    <MarkdownEditor
                       value={commentBody}
-                      projectId={ticket?.project_id}
                       onChange={(e) => setCommentBody(e.target.value)}
                       onKeyDown={(e) => {
                         if (
@@ -1176,8 +1191,8 @@ export default function TicketDetail() {
                         }
                       }}
                       rows={3}
-                      className="w-full border border-border-strong rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40"
                       placeholder="Add a comment... (Ctrl+Enter to post)"
+                      mentionProjectId={ticket?.project_id}
                     />
                     {isAdmin && vendorContacts.length > 0 && (
                       <label className="flex items-center gap-2 text-xs text-fg-muted">
@@ -2092,6 +2107,48 @@ export default function TicketDetail() {
           finally { setConfirm(null); }
         }}
       />
+
+      {/* Send As modal — shown when admin/manager sends vendor email on behalf */}
+      {sendAsModal && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-bg border border-border rounded-xl shadow-xl p-6 w-full max-w-sm mx-4">
+            <h3 className="text-sm font-semibold text-fg mb-1">Send as whom?</h3>
+            <p className="text-xs text-fg-muted mb-4">
+              You are not the ticket submitter. Choose which name appears on the vendor email.
+            </p>
+            <div className="flex flex-col gap-2">
+              <button
+                className="btn btn-primary btn-sm text-left"
+                onClick={() => {
+                  const ctx = sendAsModal;
+                  setSendAsModal(null);
+                  if (ctx.action === 'notify') notifyVendor('self');
+                  else submitComment(null, ctx.andStatus, 'self');
+                }}
+              >
+                Send as me — {user?.displayName || user?.email}
+              </button>
+              <button
+                className="btn btn-ghost btn-sm text-left"
+                onClick={() => {
+                  const ctx = sendAsModal;
+                  setSendAsModal(null);
+                  if (ctx.action === 'notify') notifyVendor('submitter');
+                  else submitComment(null, ctx.andStatus, 'submitter');
+                }}
+              >
+                Send as submitter — {ticket?.submitted_by_name}
+              </button>
+              <button
+                className="btn btn-ghost btn-sm text-fg-muted"
+                onClick={() => setSendAsModal(null)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

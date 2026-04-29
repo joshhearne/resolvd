@@ -1,4 +1,4 @@
-import { useState, useRef, useEffect } from 'react';
+import { useState, useRef, useEffect, forwardRef } from 'react';
 import { api } from '../utils/api';
 
 // Matches @token at end of text-before-cursor, capturing the token chars.
@@ -17,9 +17,10 @@ function tokenForUser(u) {
   return '@' + name;
 }
 
-export default function MentionTextarea({ value, onChange, onKeyDown, projectId, ...props }) {
+const MentionTextarea = forwardRef(function MentionTextarea({ value, onChange, onKeyDown, projectId, ...props }, forwardedRef) {
   const [drop, setDrop] = useState(null); // { query, tokenStart, results, idx }
-  const ref = useRef(null);
+  const internalRef = useRef(null);
+  const ref = forwardedRef || internalRef;
   const timer = useRef(null);
 
   function fetchUsers(query) {
@@ -96,7 +97,7 @@ export default function MentionTextarea({ value, onChange, onKeyDown, projectId,
     }
     document.addEventListener('mousedown', onDown);
     return () => document.removeEventListener('mousedown', onDown);
-  }, []);
+  }, [ref]);
 
   return (
     <div className="relative">
@@ -127,4 +128,6 @@ export default function MentionTextarea({ value, onChange, onKeyDown, projectId,
       )}
     </div>
   );
-}
+});
+
+export default MentionTextarea;

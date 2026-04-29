@@ -6,6 +6,7 @@
 // messages leave the auto-close timer running.
 
 const { pool } = require('../db/pool');
+const { sendVendorEmail } = require('./vendorOutbound');
 
 let _cache = null;
 let _cachedAt = 0;
@@ -113,6 +114,7 @@ async function applyReplyToResolvedTicket({ ticketId, replyBody, actorUserId }) 
      VALUES ($1, $2, 'status_change_auto', $3, $4, $5)`,
     [ticketId, actorUserId || null, row.internal_status, target, 'Auto-reopened: non-gratitude reply received during resolved grace window']
   );
+  sendVendorEmail({ eventType: 'ticket_reopened', ticketId, actorId: actorUserId }).catch(() => {});
   return { reopened: true, gratitude: false, fromStatus: row.internal_status, toStatus: target };
 }
 
@@ -145,6 +147,7 @@ async function applyCommentToTerminalTicket({ ticketId, commentBody, actorUserId
      VALUES ($1, $2, 'status_change_auto', $3, $4, $5)`,
     [ticketId, actorUserId || null, row.internal_status, target, 'Auto-reopened: substantive comment posted on resolved ticket']
   );
+  sendVendorEmail({ eventType: 'ticket_reopened', ticketId, actorId: actorUserId }).catch(() => {});
   return { reopened: true, gratitude: false, fromStatus: row.internal_status, toStatus: target };
 }
 

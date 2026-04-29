@@ -81,7 +81,7 @@ async function fetchTicketContext(ticketId, actorId) {
 async function fetchTicketContacts(ticketId) {
   const r = await pool.query(`
     SELECT c.*, co.id AS company_id, co.name AS company_name, co.name_enc AS company_name_enc,
-           co.domain AS company_domain
+           co.domain AS company_domain, co.notification_prefs AS company_notification_prefs
       FROM ticket_contacts tc
       JOIN contacts c ON c.id = tc.contact_id
       JOIN companies co ON co.id = c.company_id
@@ -90,6 +90,27 @@ async function fetchTicketContacts(ticketId) {
   `, [ticketId]);
   await decryptRows('contacts', r.rows, { aliases: { company_name: 'companies.name' } });
   return r.rows;
+}
+
+const NOTIF_DEFAULTS = {
+  on_status_change: true,
+  status_change_statuses: [],   // [] = all internal statuses
+  on_ticket_resolved: true,
+  on_ticket_reopened: false,
+};
+
+function companyAllows(contact, eventType, ticketStatusName) {
+  const prefs = { ...NOTIF_DEFAULTS, ...(contact.company_notification_prefs || {}) };
+  if (eventType === 'status_change') {
+    if (!prefs.on_status_change) return false;
+    if (prefs.status_change_statuses?.length > 0) {
+      return prefs.status_change_statuses.includes(ticketStatusName);
+    }
+    return true;
+  }
+  if (eventType === 'ticket_resolved') return prefs.on_ticket_resolved;
+  if (eventType === 'ticket_reopened') return prefs.on_ticket_reopened;
+  return true; // new_ticket, new_comment always allowed
 }
 
 function htmlify(body) {
@@ -125,10 +146,13 @@ async function sendVendorEmail({ eventType, ticketId, actorId }) {
     ? await fetchTicketImages(ticketId)
     : [];
 
+  const ticketStatusName = ctx.ticket.internal_status || '';
+
   let sent = 0;
   let failed = 0;
   for (const contact of contacts) {
     if (!contact.email) { failed++; continue; }
+    if (!companyAllows(contact, eventType, ticketStatusName)) continue;
     const personalCtx = {
       ...ctx,
       contact: {

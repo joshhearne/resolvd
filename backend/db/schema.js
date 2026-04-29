@@ -766,6 +766,7 @@ async function initSchema() {
     // row in the users table.
     await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS vendor_contact_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL`);
     await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS source_inbound_email_id INTEGER REFERENCES inbound_email_queue(id) ON DELETE SET NULL`);
+    await client.query(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS notification_prefs JSONB NOT NULL DEFAULT '{}'`);
 
     // Seed default templates the first time the table is created.
     const tplExisting = await client.query('SELECT COUNT(*)::int AS cnt FROM email_templates');
@@ -783,6 +784,9 @@ async function initSchema() {
         ['ticket_resolved', 'vendor',
           'Resolved: {ticket.ref} {ticket.title}',
           'Hi {vendor.contact},\n\n{ticket.ref} has been marked Resolved.\n\nLast update:\n{ticket.reply}\n\nIf this is incorrect please reply via {ticket.url}.\n\n— {actor.name}'],
+        ['ticket_reopened', 'vendor',
+          'Reopened: {ticket.ref} {ticket.title}',
+          'Hi {vendor.contact},\n\n{ticket.ref} has been reopened and requires further attention.\n\n{ticket.url}\n\n— {actor.name}'],
         ['inbound_matched', 'submitter',
           'Vendor reply on {ticket.ref}',
           'A reply from the vendor was matched to ticket {ticket.ref} ("{ticket.title}"):\n\n{ticket.reply}\n\n{ticket.url}'],
