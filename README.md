@@ -158,11 +158,21 @@ Internal statuses ship with semantic tags that drive workflow logic (admin can r
 
 Any internal status with `semantic_tag='resolved_pending_close'` carries an `auto_close_after_days` value (default 3 on the seeded `Resolved` row, edited per status under **Admin → Statuses**). Tickets sitting in such a status past the grace period get promoted to the kind's terminal status by an hourly cron, with an audit row.
 
-Inbound email replies during the grace window, and web UI comments on any terminal ticket, auto-reopen the ticket unless the body matches the editable gratitude phrase list (also under **Admin → Statuses**). "Thanks" → leave alone. Anything substantive → flip to `Reopened`. This covers the case where a ticket is closed in someone else's name and the actual reporter follows up with a still-open issue.
+Inbound email replies during the grace window, and web UI comments on any terminal ticket, auto-reopen the ticket unless the body matches the editable gratitude phrase list (also under **Admin → Statuses**). "Thanks" → leave alone. Anything substantive → flip to `Reopened`. This covers the case where a ticket is closed in someone else's name and the actual reporter follows up with a still-open issue. Auto-reopens also fire a `ticket_reopened` vendor outbound email if the ticket has attached contacts and they have been previously contacted.
 
 ### In-app notifications
 
 All authenticated users (Admin, Manager, Submitter, Viewer, Support) see the notification bell. Clicking a notification navigates to the relevant ticket. Mention notifications scroll to and flash the specific comment so the user lands on the exact context, not just the page.
+
+Notification types:
+
+| Event | Who receives |
+|---|---|
+| `mention` | The @mentioned user (in-app + email) |
+| Followed-ticket comment | All followers (email) |
+| Followed-ticket status change | All followers (email) |
+| Assignment | Assigned user (email) |
+| Follow-up reminder | Followers of the ticket (in-app + email) |
 
 ### Pending Review follow-ups
 
@@ -173,7 +183,7 @@ Any internal status with `semantic_tag='pending_review'` accepts a follow-up rem
 - **Submit on behalf**: Admin/Manager can pick a different submitter at creation time, or change the submitter on an existing ticket.
 - **Manage followers**: Admin/Manager can add / remove followers via a popover next to the Follow button (audited).
 - **Inline title edit**: anyone with edit access (Admin / Manager / Submitter) can rename a ticket from its header.
-- **@mentions**: type `@` in the comment box to open a dropdown of project members. Up/Down to navigate, Right arrow or Enter to inject the token, Escape to dismiss. Accepted formats: `@first.last`, `@local-part`, or `@user@example.com`. Matched users auto-follow the ticket and receive an in-app notification + email.
+- **@mentions**: type `@` in the comment box to open a dropdown scoped to members of the ticket's project. Up/Down to navigate, Right arrow or Enter to inject the token, Escape to dismiss. Token format: `@first.last` derived from the user's display name. Matched users auto-follow the ticket and receive an in-app notification + best-effort email (gated by recipient's `email_on_comment` preference).
 - **Ctrl+Enter posts a comment** (per-user pref).
 
 ---
@@ -219,7 +229,29 @@ Images attached to the ticket are included as file attachments only on the `new_
 
 The `new_ticket` event is **not** fired automatically on ticket creation. An Admin/Manager must click the **Notify Vendor** button on the ticket detail page to send the initial vendor notification. This gives staff a chance to review the ticket before contacting the vendor.
 
-Status-change and resolved notifications are only sent if the vendor has already been contacted (i.e. a `new_ticket` or vendor-visible comment outbound succeeded at least once). Attaching contacts to a ticket does not automatically enroll them in status updates.
+Status-change and resolved notifications are only sent if the vendor has already been contacted (i.e. a `new_ticket` or vendor-visible comment outbound succeeded at least once — stamped on `tickets.vendor_notified_at`). Attaching contacts to a ticket does not automatically enroll them in status updates.
+
+### Per-company notification preferences
+
+Each company in **Admin → Companies** has a notification preferences panel controlling which automated emails that company's contacts receive:
+
+| Toggle | Default | Behaviour |
+|---|---|---|
+| Status change notifications | on | Fires on `status_change` events |
+| Filter to specific statuses | (all) | Uncheck "All statuses" to select individual status names |
+| Ticket resolved | on | Fires on `ticket_resolved` |
+| Ticket reopened | off | Fires on `ticket_reopened` (auto-reopen or manual reopen) |
+
+`new_ticket` and `new_comment` always send regardless of company preferences — those are explicitly triggered by staff.
+
+### Send As
+
+When an Admin or Manager sends a vendor-visible comment or clicks **Notify Vendor** on a ticket that was submitted on behalf of someone else, the system prompts a **Send As** choice:
+
+- **Send as me** — outbound uses the acting Admin's name/email
+- **Send as submitter** — outbound uses the ticket's original submitter as the sender identity
+
+This keeps vendor correspondence consistent with who the vendor knows.
 
 ### Mute vendor + daily digest
 
@@ -294,6 +326,32 @@ The active account is enforced single-row by a partial unique index. Token refre
 Internal-only comments never leak through `{ticket.replies.N}` — the renderer filters on `is_external_visible=true`.
 
 Seeded events: `new_ticket`, `new_comment`, `status_change`, `ticket_resolved`, `inbound_matched`, `ticket_created_via_email`.
+
+---
+
+## Markdown formatting
+
+Comment bodies and ticket descriptions support **GitHub Flavored Markdown** (GFM). The editor has Write and Preview tabs with a formatting toolbar.
+
+**Toolbar actions**: Bold, Italic, Inline code, Code block, Heading, Bullet list, Numbered list, Blockquote, Link.
+
+**Keyboard shortcuts**: `Ctrl+B` bold · `Ctrl+I` italic · `Ctrl+`` ` inline code · `Ctrl+Enter` post comment.
+
+On mobile, the toolbar collapses to the most-used tools (Bold, Italic, Code, Code block, Bullet list); the full toolbar is available at `sm:` breakpoint and wider.
+
+The comment box uses the same mention-aware textarea as before — @mention autocomplete works inside the markdown editor.
+
+---
+
+## Help & Documentation
+
+A built-in **Help** page (`/help`, linked in the nav) provides role-aware documentation for every section of the app:
+
+- Content is filtered to the logged-in user's global role — irrelevant sections show access-denied banners rather than being hidden entirely, so users understand what exists and who to ask
+- Each feature row lists which roles can use it, or shows **All roles** when universal
+- Warns Submitter/Viewer/Support where features are restricted, and notes project-level role overrides where applicable
+- Includes a **Support Access** section explaining the JIT grant workflow for Support-role users
+- Screenshot placeholder slots in every section, ready to be replaced with real images
 
 ---
 

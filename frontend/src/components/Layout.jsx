@@ -323,6 +323,9 @@ export default function Layout() {
                     </NavLink>
                   </>
                 )}
+                <NavLink to="/help" className={navLinkClass}>
+                  Help
+                </NavLink>
               </div>
             </div>
             <div className="hidden md:block">
@@ -398,6 +401,13 @@ export default function Layout() {
                 </NavLink>
               </>
             )}
+            <NavLink
+              to="/help"
+              className={navLinkClass}
+              onClick={() => setMobileOpen(false)}
+            >
+              Help
+            </NavLink>
           </div>
         )}
       </nav>

@@ -35,6 +35,7 @@ import AccountPassword from "./pages/account/AccountPassword";
 import ForgotPassword from "./pages/ForgotPassword";
 import ResetPassword from "./pages/ResetPassword";
 import AcceptInvite from "./pages/AcceptInvite";
+import Help from "./pages/Help";
 
 function ProtectedRoute({ children, adminOnly = false }) {
   const { user, loading } = useAuth();
@@ -102,6 +103,7 @@ function AppRoutes() {
           }
         />
         <Route path="tickets/:id" element={<TicketDetail />} />
+        <Route path="help" element={<Help />} />
         <Route
           path="account/mfa"
           element={<Navigate to="/account/settings/mfa" replace />}

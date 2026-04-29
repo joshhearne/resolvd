@@ -20,8 +20,8 @@ const avatarUpload = multer({
 
 const VALID_ROLES = ['Admin', 'Manager', 'Submitter', 'Viewer', 'Support'];
 
-// GET /api/users (Admin only)
-router.get('/', requireAuth, requireRole('Admin'), async (req, res) => {
+// GET /api/users (Admin + Manager)
+router.get('/', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT id, display_name, email, upn, role, created_at, last_login,
