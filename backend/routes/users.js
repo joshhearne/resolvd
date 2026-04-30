@@ -132,6 +132,8 @@ const PREF_DEFAULTS = Object.freeze({
   email_on_comment: true,
   email_on_status_change: true,
   email_on_assignment: true,
+  push_on_assignment: false,
+  push_on_mention: false,
   confirm_before_close: false,
   compact_mode: false,
   default_ticket_sort: 'updated_at_desc',

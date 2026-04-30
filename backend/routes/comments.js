@@ -8,6 +8,7 @@ const { resolveMentions } = require('../services/mentions');
 const { applyCommentToTerminalTicket } = require('../services/autoResolve');
 const { createNotification } = require('../services/notifications');
 const { sendMail, baseHtml } = require('../services/email');
+const { sendPushToUser } = require('../services/pushNotifications');
 
 const router = express.Router();
 
@@ -146,13 +147,22 @@ router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Submi
               body: `${req.session.user.displayName || 'Someone'} mentioned you in a comment.`,
               data: { ticket_id: ticket.rows[0].id, ticket_ref: ticketRef, comment_id: insertResult.rows[0].id },
             }).catch(() => {});
-            // Best-effort email; gated by recipient pref.
+            // Best-effort push; gated by recipient pref (default off).
             try {
               const prefRow = await pool.query(
                 'SELECT preferences FROM users WHERE id = $1', [u.id]
               );
-              const pref = prefRow.rows[0]?.preferences;
-              if (pref && pref.email_on_comment === false) continue;
+              const pref = prefRow.rows[0]?.preferences || {};
+              if (pref.push_on_mention === true) {
+                sendPushToUser(u.id, {
+                  title: `Mentioned on ${ticketRef}`,
+                  body: `${req.session.user.displayName || 'Someone'} mentioned you in a comment.`,
+                  url: `/tickets/${ticket.rows[0].id}`,
+                  tag: `mention-${ticket.rows[0].id}`,
+                }).catch(err => console.error('push (mention) failed:', err.message));
+              }
+              // Best-effort email; gated by recipient pref.
+              if (pref.email_on_comment === false) continue;
               if (!u.email) continue;
               const subject = `[${ticketRef}] You were mentioned`;
               const html = await baseHtml(subject, `

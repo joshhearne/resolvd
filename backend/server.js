@@ -30,6 +30,7 @@ const inboundEmailRoutes = require('./routes/inboundEmail');
 const inboundProviderRoutes = require('./routes/inboundProviders');
 const emailBackendRoutes = require('./routes/emailBackends');
 const notificationRoutes = require('./routes/notifications');
+const pushRoutes = require('./routes/push');
 const { requireSupportAccessIfSupport } = require('./middleware/supportAccess');
 
 const app = express();
@@ -96,6 +97,7 @@ app.use('/api/inbound', inboundEmailRoutes);
 app.use('/api/inbound', inboundProviderRoutes);
 app.use('/api/email-backends', emailBackendRoutes);
 app.use('/api/notifications', notificationRoutes);
+app.use('/api/push', pushRoutes);
 
 // Health check
 app.get('/health', (req, res) => res.json({ ok: true }));

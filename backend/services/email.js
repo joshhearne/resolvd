@@ -346,13 +346,31 @@ async function notifyAssignment(pool, { ticket, assigneeId, actorId, actorName }
   if (!assigneeId || assigneeId === actorId) return;
   const r = await pool.query(
     `SELECT email, preferences FROM users
-      WHERE id = $1 AND status = 'active' AND email IS NOT NULL AND email != ''`,
+      WHERE id = $1 AND status = 'active'`,
     [assigneeId]
   );
   const row = r.rows[0];
   if (!row) return;
-  const pref = row.preferences && row.preferences.email_on_assignment;
-  if (pref === false) return;
+  const pref = row.preferences || {};
+
+  // Best-effort browser push; gated by recipient pref (default off).
+  if (pref.push_on_assignment === true) {
+    try {
+      const { sendPushToUser } = require('./pushNotifications');
+      sendPushToUser(assigneeId, {
+        title: `Assigned: ${ticket.internal_ref}`,
+        body: `${actorName || 'Someone'} assigned this to you${ticket.title ? ` — ${ticket.title}` : ''}.`,
+        url: `/tickets/${ticket.id}`,
+        tag: `assign-${ticket.id}`,
+      }).catch(err => console.error('push (assignment) failed:', err.message));
+    } catch (err) {
+      console.error('push (assignment) require failed:', err.message);
+    }
+  }
+
+  // Email; gated by recipient pref.
+  if (pref.email_on_assignment === false) return;
+  if (!row.email) return;
   const subject = `[${ticket.internal_ref}] Assigned to you`;
   const body = `
     <p style="color:#374151;font-size:14px;margin:0 0 12px">

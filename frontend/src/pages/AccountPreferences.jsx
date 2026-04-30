@@ -1,6 +1,13 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import { useAuth } from "../context/AuthContext";
+import {
+  isPushSupported,
+  getNotificationPermission,
+  getCurrentSubscription,
+  subscribePush,
+  unsubscribePush,
+} from "../utils/pushNotifications";
 
 function Toggle({ label, hint, value, onChange, disabled }) {
   return (
@@ -33,6 +40,39 @@ export default function AccountPreferences() {
   const { user, updatePrefs } = useAuth();
   const [busy, setBusy] = useState(false);
   const prefs = user?.preferences || {};
+
+  const pushSupported = isPushSupported();
+  const [pushPerm, setPushPerm] = useState(() => getNotificationPermission());
+  const [pushSubscribed, setPushSubscribed] = useState(false);
+  const [pushBusy, setPushBusy] = useState(false);
+
+  useEffect(() => {
+    if (!pushSupported) return;
+    getCurrentSubscription()
+      .then((s) => setPushSubscribed(!!s))
+      .catch(() => {});
+  }, [pushSupported]);
+
+  async function togglePushSubscription(enable) {
+    setPushBusy(true);
+    try {
+      if (enable) {
+        await subscribePush();
+        setPushSubscribed(true);
+        setPushPerm(getNotificationPermission());
+        toast.success("Browser notifications enabled");
+      } else {
+        await unsubscribePush();
+        setPushSubscribed(false);
+        toast.success("Browser notifications disabled");
+      }
+    } catch (e) {
+      toast.error(e.message || "Failed");
+      setPushPerm(getNotificationPermission());
+    } finally {
+      setPushBusy(false);
+    }
+  }
 
   async function set(key, value) {
     setBusy(true);
@@ -134,6 +174,48 @@ export default function AccountPreferences() {
             value={!!prefs.email_on_assignment}
             onChange={(v) => set("email_on_assignment", v)}
             disabled={busy}
+          />
+        </div>
+      </div>
+
+      <div className="bg-surface rounded-lg border border-border shadow-sm p-5">
+        <h2 className="text-lg font-semibold text-fg mb-1">Browser notifications</h2>
+        <p className="text-sm text-fg-muted mb-2">
+          Get a desktop notification even when Resolvd isn't focused. Enable
+          per browser; choose which events fire below.
+        </p>
+        {!pushSupported && (
+          <div className="mt-2 text-xs text-fg-muted">
+            This browser doesn't support push notifications.
+          </div>
+        )}
+        {pushSupported && pushPerm === "denied" && (
+          <div className="mt-2 text-xs text-amber-600">
+            Notifications blocked at the browser level. Re-enable in your
+            browser's site settings, then come back.
+          </div>
+        )}
+        <div className="mt-3">
+          <Toggle
+            label="Enable browser notifications on this device"
+            hint="First enable prompts your browser for permission. Disable removes this device's subscription."
+            value={pushSubscribed}
+            onChange={(v) => togglePushSubscription(v)}
+            disabled={!pushSupported || pushBusy || pushPerm === "denied"}
+          />
+          <Toggle
+            label="Notify me when a ticket is assigned to me"
+            hint="Browser notification when someone assigns a ticket to you."
+            value={!!prefs.push_on_assignment}
+            onChange={(v) => set("push_on_assignment", v)}
+            disabled={busy || !pushSubscribed}
+          />
+          <Toggle
+            label="Notify me when I'm @mentioned"
+            hint="Browser notification when someone mentions you in a comment."
+            value={!!prefs.push_on_mention}
+            onChange={(v) => set("push_on_mention", v)}
+            disabled={busy || !pushSubscribed}
           />
         </div>
       </div>

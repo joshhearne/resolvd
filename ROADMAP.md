@@ -4,13 +4,14 @@ Living doc. Edit as priorities shift. Recent commits are authoritative for "what
 
 ## Recently shipped
 
+- **Browser push notifications (assignment + mention)** — Web Push fan-out via VAPID + service worker (`frontend/public/sw.js`). Per-user prefs `push_on_assignment` / `push_on_mention` (default off). Subscriptions in `push_subscriptions` table, multi-device, stale endpoints (404/410) auto-pruned. Requires `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` env. First-pass UI in Account Preferences → Browser notifications. Email-or-digest cadence + in-app toggle matrix is the next chunk.
 - **Mobile ticket header** — title block stacks above toolbar on `<sm`, gets full row width. Secondary actions (Notify Vendor / Move / Merge / Delete) collapse into a kebab popover; Follow + admin Manage Followers stay inline.
 - **Resolved-state workflow** — `resolved_pending_close` semantic tag, configurable auto-close grace (default 3 days, edited per status), inbound auto-reopen unless body matches editable gratitude phrase list.
 - **Pending Review follow-ups** — admin-set reminder (1–90 days, default 3) on `pending_review` status. Fires in-app notification + email. Blocks status advancement until cancelled or fired.
 - **Status admin** — new On Hold (`on_hold`, internal block) and Awaiting Input now tagged `awaiting_input` (external block). Single "Advance to {next}" button walks the chain.
 - **Ticket admin** — submit-on-behalf, change submitter, manage followers (admin/manager popover), move ticket between projects (re-issues `internal_ref`, detaches vendor contacts), inline title edit.
 - **Comments** — Ctrl+Enter posts (per-user pref), auto-follow on comment (per-user pref), Post & Close optional confirm.
-- **User preferences** — `users.preferences` JSONB + `/api/users/me/prefs`. Toggle page at Account Settings → Preferences. Eight switches: scope_follows_filter, ctrl_enter_to_post, auto_follow_on_comment, confirm_before_close, default_ticket_sort, email_on_comment, email_on_status_change, email_on_assignment, compact_mode.
+- **User preferences** — `users.preferences` JSONB + `/api/users/me/prefs`. Toggle page at Account Settings → Preferences. Switches: scope_follows_filter, ctrl_enter_to_post, auto_follow_on_comment, confirm_before_close, default_ticket_sort, email_on_comment, email_on_status_change, email_on_assignment, push_on_assignment, push_on_mention, compact_mode. Slated for restructure into a channel × event matrix (see Notifications open work).
 - **Email-on-assignment** — fires on PATCH when assigned_to changes; gated by recipient pref.
 - **Localization** — Branding admin → date/time style + IANA timezone. UI uses hybrid (relative <7d, absolute after). Reports always absolute. Helpers picked up via `setActiveLocale` from BrandingProvider.
 - **Vendor outbound** — image attachments only on `new_ticket` and `new_comment`; `status_change` and `ticket_resolved` send body only.
@@ -53,8 +54,9 @@ Site explicitly tags these as "launching soon" or part of paid hosted tiers. Bui
 - "Time blocked by vendor vs internal" breakdown using `awaiting_input` / `on_hold`.
 
 ### Notifications
-- Daily digest as an alternative to instant emails (per-user pref, would slot into the existing PREF_DEFAULTS keys).
-- Browser push notifications for assignment / mention.
+- **Channel × event matrix** — replace flat `email_on_*` / `push_on_*` keys with a structured `notification_prefs` blob: per event-type (`assignment`, `mention`, `comment`, `status_change`, `pending_review`, `follow_up_due`) toggles for `push` / `in_app` / `email`. Silently fold legacy keys on read.
+- **Email digest cadence** — per-user `email_digest`: `instant | hourly | 12h | daily | off`. Outbox table buffers events; cron flushes per-user batches at cadence boundary, groups by ticket, skips empty buckets.
+- **In-app fan-out for all event types** — `createNotification` already covers mention + a few system events; extend to assignment, comment, status_change so the bell tray reflects the same channel toggles.
 
 ### UX small wins
 - Tooltip on hybrid timestamps showing the absolute ISO value on hover (currently relative-only with no tooltip — quick win).
