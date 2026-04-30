@@ -10,6 +10,7 @@
 // Internal-only comments (is_internal=TRUE) are excluded from
 // {ticket.reply} / {ticket.replies.N} so leaks can't happen via templates.
 
+const { marked } = require('marked');
 const { pool } = require('../db/pool');
 const { decryptRow, decryptRows } = require('./fields');
 
@@ -50,15 +51,27 @@ async function fetchVendorVisibleReplies(ticketId, count) {
   return r.rows.reverse();
 }
 
-function formatReply(comment) {
+function formatReplyText(comment) {
   if (!comment) return '';
   const when = new Date(comment.created_at).toISOString().slice(0, 16).replace('T', ' ');
   const who = comment.user_name || 'system';
   return `[${when} UTC] ${who}: ${comment.body || ''}`;
 }
 
-function formatReplies(comments) {
-  return comments.map(formatReply).join('\n');
+function formatRepliesText(comments) {
+  return comments.map(formatReplyText).join('\n');
+}
+
+function formatReplyHtml(comment) {
+  if (!comment) return '';
+  const when = new Date(comment.created_at).toISOString().slice(0, 16).replace('T', ' ');
+  const who = htmlEscape(comment.user_name || 'system');
+  const bodyHtml = marked(comment.body || '');
+  return `<div style="margin-bottom:12px"><span style="font-size:12px;color:#6b7280">${when} UTC — ${who}</span>${bodyHtml}</div>`;
+}
+
+function formatRepliesHtml(comments) {
+  return comments.map(formatReplyHtml).join('');
 }
 
 // Build a value resolver bound to ctx + replies.
@@ -67,7 +80,9 @@ function makeResolver(ctx, replies, escape) {
   return (ns, field, count) => {
     if (ns === 'ticket' && field === 'replies' && count) {
       const n = Math.max(1, Math.min(parseInt(count, 10), REPLIES_HARD_CAP));
-      return enc(formatReplies(replies.slice(-n)));
+      return escape
+        ? formatRepliesHtml(replies.slice(-n))
+        : formatRepliesText(replies.slice(-n));
     }
     const key = `${ns}.${field}`;
     switch (key) {
@@ -81,13 +96,16 @@ function makeResolver(ctx, replies, escape) {
       case 'ticket.ref':            return enc(ctx.ticket?.internal_ref);
       case 'ticket.external_ref':   return enc(ctx.ticket?.external_ticket_ref);
       case 'ticket.title':          return enc(ctx.ticket?.title);
-      case 'ticket.description':    return enc(ctx.ticket?.description);
+      case 'ticket.description':    return ctx.ticket?.description == null ? ''
+        : (escape ? marked(ctx.ticket.description) : String(ctx.ticket.description));
       case 'ticket.status':         return enc(ctx.ticket?.internal_status);
       case 'ticket.priority':       return enc(ctx.ticket?.effective_priority);
       case 'ticket.url':            return enc(ctx.ticket?.url || `${ctx.site?.url || ''}/tickets/${ctx.ticket?.id}`);
       case 'ticket.created_at':     return enc(ctx.ticket?.created_at);
       case 'ticket.updated_at':     return enc(ctx.ticket?.updated_at);
-      case 'ticket.reply':          return enc(formatReply(replies[replies.length - 1]));
+      case 'ticket.reply':          return escape
+        ? formatReplyHtml(replies[replies.length - 1])
+        : formatReplyText(replies[replies.length - 1]);
       case 'actor.name':            return enc(ctx.actor?.display_name || ctx.actor?.name);
       case 'actor.email':           return enc(ctx.actor?.email);
       case 'site.name':             return enc(ctx.site?.name);

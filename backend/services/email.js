@@ -2,6 +2,7 @@ const msal = require('@azure/msal-node');
 const fetch = require('node-fetch');
 const nodemailer = require('nodemailer');
 const { google } = require('googleapis');
+const { marked } = require('marked');
 const { getAuthSettings } = require('./authSettings');
 const { getBranding } = require('./branding');
 
@@ -386,11 +387,12 @@ async function notifyNewComment(pool, { ticket, comment, actorId, actorName }) {
   if (!emails.length) return;
   const subject = `[${ticket.internal_ref}] New comment added`;
   const preview = comment.length > 300 ? comment.slice(0, 300) + '…' : comment;
+  const previewHtml = marked(preview);
   const body = `
     <p style="color:#374151;font-size:14px;margin:0 0 12px">
       <strong>${actorName || 'Someone'}</strong> added a comment on <strong>${ticket.internal_ref}</strong>:
     </p>
-    <blockquote style="border-left:3px solid #e5e7eb;margin:0 0 16px;padding:8px 16px;color:#6b7280;font-size:14px;white-space:pre-wrap">${preview}</blockquote>
+    <blockquote style="border-left:3px solid #e5e7eb;margin:0 0 16px;padding:8px 16px;color:#6b7280;font-size:14px">${previewHtml}</blockquote>
     <a href="${ticketUrl(ticket.id)}" style="display:inline-block;background:#1e40af;color:#fff;text-decoration:none;padding:8px 16px;border-radius:6px;font-size:14px;font-weight:600">View Ticket</a>`;
   await sendMail({ to: emails, subject, html: await baseHtml(subject, body) });
 }
