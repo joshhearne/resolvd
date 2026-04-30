@@ -160,16 +160,16 @@ function AppRoutes() {
 export default function App() {
   return (
     <ThemeProvider>
-      <BrandingProvider>
-        <AuthProvider>
+      <AuthProvider>
+        <BrandingProvider>
           <StatusesProvider>
             <BrowserRouter>
               <Toaster position="top-right" toastOptions={{ duration: 4000 }} />
               <AppRoutes />
             </BrowserRouter>
           </StatusesProvider>
-        </AuthProvider>
-      </BrandingProvider>
+        </BrandingProvider>
+      </AuthProvider>
     </ThemeProvider>
   );
 }

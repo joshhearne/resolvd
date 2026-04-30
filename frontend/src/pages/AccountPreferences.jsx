@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import { useAuth } from "../context/AuthContext";
+import { useBranding } from "../context/BrandingContext";
 import {
   isPushSupported,
   getNotificationPermission,
@@ -8,6 +9,48 @@ import {
   subscribePush,
   unsubscribePush,
 } from "../utils/pushNotifications";
+
+const DATE_STYLE_LABELS = {
+  iso: "ISO (2026-04-28)",
+  us: "US (Apr 28, 2026)",
+  eu: "EU (28 Apr 2026)",
+};
+const TIME_STYLE_LABELS = {
+  iso: "24-hour (14:32)",
+  "12h": "12-hour (2:32 PM)",
+};
+const TZ_FALLBACKS = [
+  "UTC",
+  "America/New_York",
+  "America/Chicago",
+  "America/Denver",
+  "America/Los_Angeles",
+  "America/Anchorage",
+  "America/Phoenix",
+  "America/Toronto",
+  "America/Vancouver",
+  "America/Mexico_City",
+  "America/Sao_Paulo",
+  "Europe/London",
+  "Europe/Dublin",
+  "Europe/Paris",
+  "Europe/Berlin",
+  "Europe/Amsterdam",
+  "Europe/Madrid",
+  "Europe/Rome",
+  "Europe/Stockholm",
+  "Europe/Moscow",
+  "Asia/Dubai",
+  "Asia/Karachi",
+  "Asia/Kolkata",
+  "Asia/Shanghai",
+  "Asia/Hong_Kong",
+];
+function tzList() {
+  return typeof Intl?.supportedValuesOf === "function"
+    ? Intl.supportedValuesOf("timeZone")
+    : TZ_FALLBACKS;
+}
 
 function Toggle({ label, hint, value, onChange, disabled }) {
   return (
@@ -38,6 +81,7 @@ function Toggle({ label, hint, value, onChange, disabled }) {
 
 export default function AccountPreferences() {
   const { user, updatePrefs } = useAuth();
+  const { branding } = useBranding();
   const [busy, setBusy] = useState(false);
   const prefs = user?.preferences || {};
 
@@ -217,6 +261,66 @@ export default function AccountPreferences() {
             onChange={(v) => set("push_on_mention", v)}
             disabled={busy || !pushSubscribed}
           />
+        </div>
+      </div>
+
+      <div className="bg-surface rounded-lg border border-border shadow-sm p-5">
+        <h2 className="text-lg font-semibold text-fg mb-1">Localization</h2>
+        <p className="text-sm text-fg-muted mb-2">
+          Override the org default for date, time, and timezone formatting.
+          Leave any field on "Inherit org default" to follow the admin
+          setting. Reports always render absolute timestamps in your chosen
+          style.
+        </p>
+        <div className="mt-3 grid grid-cols-1 md:grid-cols-3 gap-3">
+          <label className="block">
+            <span className="block text-xs text-fg-muted mb-1">Date style</span>
+            <select
+              value={prefs.date_style_override || ""}
+              onChange={(e) => set("date_style_override", e.target.value)}
+              disabled={busy}
+              className="w-full border border-border-strong rounded-md px-2 py-1.5 text-sm"
+            >
+              <option value="">
+                Inherit org default ({DATE_STYLE_LABELS[branding.date_style] || branding.date_style || "ISO"})
+              </option>
+              <option value="iso">ISO (2026-04-28)</option>
+              <option value="us">US (Apr 28, 2026)</option>
+              <option value="eu">EU (28 Apr 2026)</option>
+            </select>
+          </label>
+          <label className="block">
+            <span className="block text-xs text-fg-muted mb-1">Time style</span>
+            <select
+              value={prefs.time_style_override || ""}
+              onChange={(e) => set("time_style_override", e.target.value)}
+              disabled={busy}
+              className="w-full border border-border-strong rounded-md px-2 py-1.5 text-sm"
+            >
+              <option value="">
+                Inherit org default ({TIME_STYLE_LABELS[branding.time_style] || branding.time_style || "24-hour"})
+              </option>
+              <option value="iso">24-hour (14:32)</option>
+              <option value="12h">12-hour (2:32 PM)</option>
+            </select>
+          </label>
+          <label className="block">
+            <span className="block text-xs text-fg-muted mb-1">Time zone</span>
+            <input
+              type="text"
+              list="account-timezone-list"
+              value={prefs.timezone_override || ""}
+              onChange={(e) => set("timezone_override", e.target.value)}
+              disabled={busy}
+              placeholder={`Inherit (${branding.timezone || "UTC"})`}
+              className="w-full border border-border-strong rounded-md px-2 py-1.5 text-sm"
+            />
+            <datalist id="account-timezone-list">
+              {tzList().map((tz) => (
+                <option key={tz} value={tz} />
+              ))}
+            </datalist>
+          </label>
         </div>
       </div>
 

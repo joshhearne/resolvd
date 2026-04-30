@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
 import { useAuth } from "../context/AuthContext";
-import { formatDateTime } from "../utils/helpers";
+import HybridTime from "../components/HybridTime";
 
 const ALL_ROLES = ["Admin", "Manager", "Submitter", "Viewer"];
 const MANAGER_ROLES = ["Manager", "Submitter", "Viewer"];
@@ -219,7 +219,7 @@ export default function AdminUsers() {
                     {i.intended_provider}
                   </td>
                   <td className="px-4 py-2 text-xs text-fg-muted">
-                    {formatDateTime(i.expires_at)}
+                    <HybridTime dt={i.expires_at} />
                   </td>
                   <td className="px-4 py-2 text-right">
                     <button
@@ -331,7 +331,7 @@ export default function AdminUsers() {
                     )}
                   </td>
                   <td className="px-4 py-3 text-xs text-fg-dim">
-                    {formatDateTime(u.last_login)}
+                    <HybridTime dt={u.last_login} />
                   </td>
                   <td className="px-4 py-3 text-right text-xs space-x-2">
                     {!isSelf && u.status === "active" && (

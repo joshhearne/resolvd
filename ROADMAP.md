@@ -4,6 +4,8 @@ Living doc. Edit as priorities shift. Recent commits are authoritative for "what
 
 ## Recently shipped
 
+- **Hybrid timestamp tooltips** — `<HybridTime>` component wraps `formatHybrid` with a `title=` carrying the absolute value in the user's chosen style. Migrated all `formatDateTime` call sites (TicketDetail, TicketList, Dashboard, AdminUsers).
+- **Per-user locale overrides** — new prefs `date_style_override` / `time_style_override` / `timezone_override`. Empty string inherits the org branding default; non-empty overrides it via `BrandingProvider`. UI in Account Preferences → Localization. BrandingProvider now nested inside AuthProvider so it can read user prefs.
 - **Browser push notifications (assignment + mention)** — Web Push fan-out via VAPID + service worker (`frontend/public/sw.js`). Per-user prefs `push_on_assignment` / `push_on_mention` (default off). Subscriptions in `push_subscriptions` table, multi-device, stale endpoints (404/410) auto-pruned. Requires `VAPID_PUBLIC_KEY` / `VAPID_PRIVATE_KEY` / `VAPID_SUBJECT` env. First-pass UI in Account Preferences → Browser notifications. Email-or-digest cadence + in-app toggle matrix is the next chunk.
 - **Mobile ticket header** — title block stacks above toolbar on `<sm`, gets full row width. Secondary actions (Notify Vendor / Move / Merge / Delete) collapse into a kebab popover; Follow + admin Manage Followers stay inline.
 - **Resolved-state workflow** — `resolved_pending_close` semantic tag, configurable auto-close grace (default 3 days, edited per status), inbound auto-reopen unless body matches editable gratitude phrase list.
@@ -59,8 +61,6 @@ Site explicitly tags these as "launching soon" or part of paid hosted tiers. Bui
 - **In-app fan-out for all event types** — `createNotification` already covers mention + a few system events; extend to assignment, comment, status_change so the bell tray reflects the same channel toggles.
 
 ### UX small wins
-- Tooltip on hybrid timestamps showing the absolute ISO value on hover (currently relative-only with no tooltip — quick win).
-- Date format tweaks per-user (org admin sets default, user can override; today only org-wide).
 - Bulk actions on ticket list (status, assignee, project move).
 
 ### Plumbing / debt

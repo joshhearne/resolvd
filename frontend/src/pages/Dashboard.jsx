@@ -1,8 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../utils/api";
-import { formatDateTime } from "../utils/helpers";
 import PriorityBadge from "../components/PriorityBadge";
+import HybridTime from "../components/HybridTime";
 
 const STAT_TONES = {
   blue: "text-sky-500 dark:text-sky-400",
@@ -226,9 +226,7 @@ export default function Dashboard() {
                         <span className="text-fg-dim"> → {a.new_value}</span>
                       )}
                     </div>
-                    <span className="text-xs text-fg-dim whitespace-nowrap">
-                      {formatDateTime(a.created_at)}
-                    </span>
+                    <HybridTime dt={a.created_at} className="text-xs text-fg-dim whitespace-nowrap" />
                   </div>
                   {a.user_name && (
                     <div className="text-xs text-fg-dim mt-0.5">

@@ -4,7 +4,6 @@ import toast from "react-hot-toast";
 import { api } from "../utils/api";
 import { useAuth } from "../context/AuthContext";
 import {
-  formatDateTime,
   computePriority,
   priorityClass,
   INTERNAL_STATUSES,
@@ -12,6 +11,7 @@ import {
   IMPACT_LABELS,
   URGENCY_LABELS,
 } from "../utils/helpers";
+import HybridTime from "../components/HybridTime";
 import {
   useStatuses,
   nextAllowedStatusIds,
@@ -84,7 +84,7 @@ function FollowupControl({ ticketId, followupAt, onChange }) {
     return (
       <div className="flex items-center justify-between gap-2 text-xs bg-surface-2 border border-border rounded px-2 py-1.5">
         <span className="text-fg">
-          Follow-up: {formatDateTime(followupAt)}
+          Follow-up: <HybridTime dt={followupAt} />
         </span>
         <button
           onClick={cancel}
@@ -718,7 +718,7 @@ export default function TicketDetail() {
                 )}
               </>
             )}{" "}
-            · {formatDateTime(ticket.created_at)}
+            · <HybridTime dt={ticket.created_at} />
             {ticket.assigned_to_name &&
               ` · Assigned: ${ticket.assigned_to_name}`}
           </p>
@@ -1130,7 +1130,7 @@ export default function TicketDetail() {
                               </button>
                             </>
                           )}
-                          <span className="text-xs text-fg-dim">{formatDateTime(c.created_at)}</span>
+                          <HybridTime dt={c.created_at} className="text-xs text-fg-dim" />
                         </span>
                       </div>
                       <MarkdownContent>{c.body}</MarkdownContent>
@@ -1362,7 +1362,7 @@ export default function TicketDetail() {
                           <span className="text-xs text-fg-dim">
                             {formatBytes(a.size)} ·{" "}
                             {a.uploaded_by_name || "Unknown"} ·{" "}
-                            {formatDateTime(a.created_at)}
+                            <HybridTime dt={a.created_at} />
                           </span>
                         </div>
                         {(["Admin", "Manager"].includes(user?.role) ||
@@ -1408,9 +1408,7 @@ export default function TicketDetail() {
                           <span className="text-fg-dim ml-1">({a.note})</span>
                         )}
                       </div>
-                      <span className="text-xs text-fg-dim whitespace-nowrap">
-                        {formatDateTime(a.created_at)}
-                      </span>
+                      <HybridTime dt={a.created_at} className="text-xs text-fg-dim whitespace-nowrap" />
                     </div>
                     <div className="text-xs text-fg-dim mt-0.5">
                       {a.user_name || "System"}
@@ -1905,9 +1903,7 @@ export default function TicketDetail() {
                 </Field>
                 {ticket.external_updated_at && (
                   <Field label="External Updated">
-                    <span className="text-xs text-fg-muted">
-                      {formatDateTime(ticket.external_updated_at)}
-                    </span>
+                    <HybridTime dt={ticket.external_updated_at} className="text-xs text-fg-muted" />
                   </Field>
                 )}
               </dl>

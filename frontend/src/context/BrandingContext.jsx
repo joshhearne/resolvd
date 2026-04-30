@@ -1,5 +1,6 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { setActiveLocale } from "../utils/helpers";
+import { useAuth } from "./AuthContext";
 
 const BrandingContext = createContext({});
 
@@ -55,14 +56,24 @@ export function BrandingProvider({ children }) {
   }, [branding.accent_override_enabled, branding.primary_color]);
 
   // Push the configured locale into the helpers module so existing
-  // formatDateTime callers automatically honor admin-set styles.
+  // formatDateTime callers automatically honor admin-set styles. Per-user
+  // overrides (set in Account Preferences) take precedence over the org
+  // branding values when present (non-empty).
+  const { user } = useAuth();
+  const prefs = user?.preferences || {};
+  const dateOverride = prefs.date_style_override;
+  const timeOverride = prefs.time_style_override;
+  const tzOverride = prefs.timezone_override;
   useEffect(() => {
     setActiveLocale({
-      date_style: branding.date_style,
-      time_style: branding.time_style,
-      timezone: branding.timezone,
+      date_style: dateOverride || branding.date_style,
+      time_style: timeOverride || branding.time_style,
+      timezone: tzOverride || branding.timezone,
     });
-  }, [branding.date_style, branding.time_style, branding.timezone]);
+  }, [
+    branding.date_style, branding.time_style, branding.timezone,
+    dateOverride, timeOverride, tzOverride,
+  ]);
 
   return (
     <BrandingContext.Provider value={{ branding, setBranding }}>

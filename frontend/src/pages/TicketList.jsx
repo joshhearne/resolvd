@@ -2,7 +2,7 @@ import React, { useEffect, useState, useCallback } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
-import { formatDateTime, priorityRowClass } from "../utils/helpers";
+import { priorityRowClass } from "../utils/helpers";
 import { useAuth } from "../context/AuthContext";
 import PriorityBadge from "../components/PriorityBadge";
 import StatusBadge from "../components/StatusBadge";

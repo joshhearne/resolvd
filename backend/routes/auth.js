@@ -390,6 +390,10 @@ const PREF_DEFAULTS = Object.freeze({
   confirm_before_close: false,
   compact_mode: false,
   default_ticket_sort: 'updated_at_desc',
+  // Locale overrides — empty string means "inherit org branding".
+  date_style_override: '',
+  time_style_override: '',
+  timezone_override: '',
 });
 
 router.get('/me', async (req, res) => {
