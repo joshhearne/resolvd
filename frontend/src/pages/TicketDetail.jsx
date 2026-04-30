@@ -826,7 +826,7 @@ export default function TicketDetail() {
           <div className="hidden sm:flex items-center gap-2">
             {["Admin", "Manager"].includes(user?.role) && vendorContacts.length > 0 && (
               <button
-                onClick={notifyVendor}
+                onClick={() => notifyVendor()}
                 className="btn-secondary btn btn-sm whitespace-nowrap"
                 title="Send new_ticket vendor email now (includes any uploaded attachments)"
               >
