@@ -74,6 +74,16 @@ Add `https://yourdomain/api/email-backends/oauth/callback` to the OAuth client's
 |---|---|
 | `RESOLVD_MASTER_KEY` | base64 of 32 random bytes. Required when `encryption_settings.mode` is `standard`. Generate with `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`. **Losing this key after enabling encryption permanently destroys access.** |
 
+### Web Push (browser notifications)
+
+| Variable | Required | Description |
+|---|---|---|
+| `VAPID_PUBLIC_KEY` | for push | Public VAPID key. Generate once with `npx web-push generate-vapid-keys`. |
+| `VAPID_PRIVATE_KEY` | for push | Private VAPID key. Treat as a secret — never commit. |
+| `VAPID_SUBJECT` | for push | `mailto:` or `https://` identifying the operator (e.g. `mailto:ops@example.com`). |
+
+When unset, push silently no-ops; in-app and email channels are unaffected. Subscriptions live in `push_subscriptions`. HTTPS is required for browsers to register a service worker — Cloudflare Tunnel or a real cert works.
+
 ### Inbound email pipeline
 
 | Variable | Description |
@@ -168,10 +178,10 @@ Notification types:
 
 | Event | Who receives |
 |---|---|
-| `mention` | The @mentioned user (in-app + email) |
+| `mention` | The @mentioned user (in-app + email + opt-in browser push) |
 | Followed-ticket comment | All followers (email) |
 | Followed-ticket status change | All followers (email) |
-| Assignment | Assigned user (email) |
+| Assignment | Assigned user (email + opt-in browser push) |
 | Follow-up reminder | Followers of the ticket (in-app + email) |
 
 ### Pending Review follow-ups
@@ -185,6 +195,7 @@ Any internal status with `semantic_tag='pending_review'` accepts a follow-up rem
 - **Inline title edit**: anyone with edit access (Admin / Manager / Submitter) can rename a ticket from its header.
 - **@mentions**: type `@` in the comment box to open a dropdown scoped to members of the ticket's project. Up/Down to navigate, Right arrow or Enter to inject the token, Escape to dismiss. Token format: `@first.last` derived from the user's display name. Matched users auto-follow the ticket and receive an in-app notification + best-effort email (gated by recipient's `email_on_comment` preference).
 - **Ctrl+Enter posts a comment** (per-user pref).
+- **Bulk Edit** (Admin only): button next to the "Tickets (##)" header swaps the search bar + New Ticket button for an action bar (Status / Assignee / Project) and adds a checkbox column. Select up to 500 rows, pick the fields to change, hit Apply. Each ticket is updated in its own transaction (one failure doesn't roll back the batch), audited, and assignment / status-change notifications fan out per recipient prefs. Vendor outbound is skipped for bulk to avoid noise — fire per-ticket if needed. Project moves re-issue `internal_ref` and detach vendor contacts (mirrors single-move semantics).
 
 ---
 
@@ -202,7 +213,16 @@ Any internal status with `semantic_tag='pending_review'` accepts a follow-up rem
 | `email_on_comment` | on | Email on followed-ticket comments |
 | `email_on_status_change` | on | Email on followed-ticket status changes |
 | `email_on_assignment` | on | Email when a ticket is assigned to you |
+| `push_on_assignment` | off | Browser push when a ticket is assigned to you (requires enabling browser notifications first) |
+| `push_on_mention` | off | Browser push when you're @mentioned in a comment (requires enabling browser notifications first) |
+| `date_style_override` | inherit | Override org date style (`iso` / `us` / `eu`); empty = follow Branding admin |
+| `time_style_override` | inherit | Override org time style (`iso` / `12h`); empty = follow Branding admin |
+| `timezone_override` | inherit | Override org timezone (any IANA zone); empty = follow Branding admin |
 | `compact_mode` | off | Tighter padding + smaller font |
+
+### Browser push notifications
+
+Per-device opt-in lives in `Account settings → Preferences → Browser notifications`. First enable prompts the browser for notification permission and registers a Web Push subscription against the backend (multi-device — each browser is its own row in `push_subscriptions`). Stale endpoints (HTTP 410 Gone from the push service) are auto-pruned on next send. Requires `VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY`, and `VAPID_SUBJECT` env vars; generate once with `npx web-push generate-vapid-keys`.
 
 ---
 

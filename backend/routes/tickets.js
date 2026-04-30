@@ -757,6 +757,180 @@ router.delete('/:id/followup', requireAuth, requireRole('Admin', 'Manager'), asy
   }
 });
 
+// POST /api/tickets/bulk — apply the same set of updates to many tickets.
+// Admin only. Body: { ids: int[], status?: string, assigned_to?: int|null,
+// project_id?: int }. At least one update field is required. Each ticket
+// is processed in its own transaction so a single failure doesn't roll
+// back the batch. Vendor outbound is intentionally skipped (too noisy
+// for bulk); status-change + assignment in-app/push/email notifications
+// still fire (gated by recipient prefs as usual).
+router.post('/bulk', requireAuth, requireRole('Admin'), async (req, res) => {
+  try {
+    const user = req.session.user;
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isInteger) : [];
+    if (!ids.length) return res.status(400).json({ error: 'ids required' });
+    if (ids.length > 500) return res.status(400).json({ error: 'Bulk capped at 500 tickets per call' });
+
+    const newStatus = typeof req.body?.status === 'string' && req.body.status.trim() ? req.body.status.trim() : null;
+    const hasAssignee = req.body?.assigned_to !== undefined;
+    const newAssignee = hasAssignee
+      ? (req.body.assigned_to === null ? null : Number(req.body.assigned_to))
+      : undefined;
+    const targetProjectId = req.body?.project_id !== undefined && req.body.project_id !== null
+      ? Number(req.body.project_id) : null;
+
+    if (!newStatus && !hasAssignee && !targetProjectId) {
+      return res.status(400).json({ error: 'At least one update field required (status, assigned_to, project_id)' });
+    }
+    if (hasAssignee && newAssignee !== null && (!Number.isInteger(newAssignee) || newAssignee <= 0)) {
+      return res.status(400).json({ error: 'assigned_to must be a user id or null' });
+    }
+    if (targetProjectId !== null && (!Number.isInteger(targetProjectId) || targetProjectId <= 0)) {
+      return res.status(400).json({ error: 'project_id must be a positive integer' });
+    }
+
+    let targetProj = null;
+    if (targetProjectId) {
+      const r = await pool.query(`SELECT id, name, prefix, status FROM projects WHERE id = $1`, [targetProjectId]);
+      if (!r.rows[0]) return res.status(404).json({ error: 'Target project not found' });
+      if (r.rows[0].status !== 'active') return res.status(400).json({ error: 'Target project is archived' });
+      targetProj = r.rows[0];
+    }
+
+    let validatedAssigneeName = null;
+    if (hasAssignee && newAssignee !== null) {
+      const u = await pool.query(`SELECT id, display_name FROM users WHERE id = $1 AND status = 'active'`, [newAssignee]);
+      if (!u.rows[0]) return res.status(400).json({ error: 'Assignee not found or inactive' });
+      validatedAssigneeName = u.rows[0].display_name;
+    }
+
+    const updated = [];
+    const skipped = [];
+    const notifyStatusList = []; // {ticketId, oldStatus, newStatus}
+    const notifyAssignList = []; // {ticketId, assigneeId}
+
+    for (const id of ids) {
+      try {
+        const result = await transaction(async (client) => {
+          const tRes = await client.query(`SELECT * FROM tickets WHERE id = $1 FOR UPDATE`, [id]);
+          const ticket = tRes.rows[0];
+          if (!ticket) return { ok: false, reason: 'not_found' };
+
+          const updates = {};
+          let movedToRef = null;
+
+          // Status change.
+          if (newStatus && newStatus !== ticket.internal_status) {
+            if (ticket.followup_at) {
+              return { ok: false, reason: 'follow_up_pending' };
+            }
+            const old = ticket.internal_status;
+            updates.internal_status = newStatus;
+            await auditLog(client, { ticketId: ticket.id, userId: user.id, action: 'status_change', oldValue: old, newValue: newStatus, note: 'Bulk update' });
+            if (newStatus === 'Reopened') {
+              await auditLog(client, { ticketId: ticket.id, userId: user.id, action: 'reopened', note: 'Bulk reopen' });
+            }
+            const tagRow = await client.query(`SELECT semantic_tag FROM statuses WHERE kind='internal' AND name=$1`, [newStatus]);
+            const tag = tagRow.rows[0]?.semantic_tag || null;
+            updates.resolved_at = tag === 'resolved_pending_close' ? new Date().toISOString() : null;
+            const oldTag = await client.query(`SELECT semantic_tag FROM statuses WHERE kind='internal' AND name=$1`, [ticket.internal_status]);
+            if (oldTag.rows[0]?.semantic_tag === 'pending_review' && tag !== 'pending_review') {
+              updates.followup_at = null;
+              updates.followup_user_id = null;
+            }
+            notifyStatusList.push({ ticketId: ticket.id, oldStatus: old, newStatus });
+          }
+
+          // Assignment.
+          if (hasAssignee && (newAssignee ?? null) !== (ticket.assigned_to ?? null)) {
+            updates.assigned_to = newAssignee;
+            await auditLog(client, {
+              ticketId: ticket.id, userId: user.id, action: 'assignment_change',
+              oldValue: String(ticket.assigned_to ?? ''), newValue: String(newAssignee ?? ''),
+              note: 'Bulk update',
+            });
+            if (newAssignee && newAssignee !== user.id) {
+              notifyAssignList.push({ ticketId: ticket.id, assigneeId: newAssignee });
+            }
+          }
+
+          // Project move (re-issues internal_ref, detaches vendor contacts).
+          if (targetProjectId && ticket.project_id !== targetProjectId) {
+            const newRef = await nextInternalRef(client, targetProjectId);
+            await client.query(
+              `UPDATE tickets SET project_id = $1, internal_ref = $2 WHERE id = $3`,
+              [targetProjectId, newRef, ticket.id]
+            );
+            const detached = await client.query(
+              `DELETE FROM ticket_contacts WHERE ticket_id = $1 RETURNING contact_id`,
+              [ticket.id]
+            );
+            await auditLog(client, {
+              ticketId: ticket.id, userId: user.id, action: 'ticket_moved',
+              oldValue: `${ticket.internal_ref} (project ${ticket.project_id})`,
+              newValue: `${newRef} (project ${targetProjectId})`,
+              note: `Bulk move to ${targetProj.name}; ${detached.rowCount} contact(s) detached`,
+            });
+            await systemComment(client, ticket.id,
+              `Ticket moved (bulk) from project ID ${ticket.project_id} (was ${ticket.internal_ref}) to ${targetProj.name} as ${newRef}.`
+            );
+            movedToRef = newRef;
+          }
+
+          if (Object.keys(updates).length > 0) {
+            updates.updated_at = new Date().toISOString();
+            const cols = Object.keys(updates);
+            const vals = Object.values(updates);
+            const setClauses = cols.map((k, i) => `${k} = $${i + 1}`).join(', ');
+            await client.query(`UPDATE tickets SET ${setClauses} WHERE id = $${cols.length + 1}`, [...vals, ticket.id]);
+          }
+
+          return { ok: true, id: ticket.id, oldRef: ticket.internal_ref, newRef: movedToRef };
+        });
+
+        if (result.ok) {
+          updated.push({ id: result.id, old_ref: result.oldRef, new_ref: result.newRef });
+        } else {
+          skipped.push({ id, reason: result.reason });
+        }
+      } catch (err) {
+        console.error(`bulk update ticket ${id} failed:`, err.message);
+        skipped.push({ id, reason: 'error' });
+      }
+    }
+
+    res.json({ updated, skipped });
+
+    // Best-effort notifications. Hydrate the tickets minimally for fan-out
+    // helpers (they need internal_ref + title to compose messages).
+    if (notifyStatusList.length || notifyAssignList.length) {
+      const allIds = Array.from(new Set([
+        ...notifyStatusList.map(n => n.ticketId),
+        ...notifyAssignList.map(n => n.ticketId),
+      ]));
+      const refRows = await pool.query(
+        `SELECT id, internal_ref, title FROM tickets WHERE id = ANY($1::int[])`,
+        [allIds]
+      );
+      await decryptRows('tickets', refRows.rows);
+      const byId = new Map(refRows.rows.map(r => [r.id, r]));
+      for (const { ticketId, oldStatus, newStatus } of notifyStatusList) {
+        const t = byId.get(ticketId); if (!t) continue;
+        notifyStatusChange(pool, { ticket: t, oldStatus, newStatus, actorId: user.id })
+          .catch(err => console.error('notifyStatusChange (bulk) failed:', err.message));
+      }
+      for (const { ticketId, assigneeId } of notifyAssignList) {
+        const t = byId.get(ticketId); if (!t) continue;
+        notifyAssignment(pool, { ticket: t, assigneeId, actorId: user.id, actorName: user.displayName })
+          .catch(err => console.error('notifyAssignment (bulk) failed:', err.message));
+      }
+    }
+  } catch (err) {
+    console.error('bulk update error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
 // POST /api/tickets/:id/move — relocate a ticket to a different project.
 // Re-issues internal_ref from the target project's counter (old ref kept
 // in audit log). Detaches vendor contacts (vendor scope = project).

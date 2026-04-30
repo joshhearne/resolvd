@@ -4,6 +4,7 @@ import toast from "react-hot-toast";
 import { api } from "../utils/api";
 import { priorityRowClass } from "../utils/helpers";
 import { useAuth } from "../context/AuthContext";
+import { useStatuses } from "../context/StatusesContext";
 import PriorityBadge from "../components/PriorityBadge";
 import StatusBadge from "../components/StatusBadge";
 
@@ -176,7 +177,21 @@ export default function TicketList() {
   const { user, setDefaultProject } = useAuth();
   const canManageViews =
     ["Admin", "Manager"].includes(user?.role) || user?.role === "Submitter";
+  const isAdmin = user?.role === "Admin";
+  const { internal: internalStatuses } = useStatuses();
   const [searchParams, setSearchParams] = useSearchParams();
+
+  // Bulk-edit mode: admin-only. Replaces search bar + New Ticket button
+  // with an action bar; checkbox column becomes visible. Selection is
+  // cleared when the filter set or page changes (stale ids would no
+  // longer match the visible rows).
+  const [bulkMode, setBulkMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [bulkStatus, setBulkStatus] = useState("");
+  const [bulkAssignee, setBulkAssignee] = useState(""); // "" = no change, "0" = unassign, else user id
+  const [bulkProject, setBulkProject] = useState("");
+  const [bulkUsers, setBulkUsers] = useState([]);
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   const [tickets, setTickets] = useState([]);
   const [total, setTotal] = useState(0);
@@ -251,6 +266,32 @@ export default function TicketList() {
       .catch(() => {});
   }, []);
 
+  // Lazy-load assignable users on first entering bulk mode (admin-only).
+  useEffect(() => {
+    if (!bulkMode || !isAdmin || bulkUsers.length) return;
+    api
+      .get("/api/users")
+      .then((rows) => setBulkUsers((rows || []).filter((u) => u.status === "active")))
+      .catch(() => {});
+  }, [bulkMode, isAdmin, bulkUsers.length]);
+
+  function exitBulkMode() {
+    setBulkMode(false);
+    setSelectedIds(new Set());
+    setBulkStatus("");
+    setBulkAssignee("");
+    setBulkProject("");
+  }
+
+  function toggleId(id) {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
+
   const selectedProject = selectedProjectId
     ? projects.find((p) => p.id === selectedProjectId)
     : null;
@@ -274,6 +315,41 @@ export default function TicketList() {
       .then(setCounts)
       .catch(() => {});
   }, [selectedProjectId]);
+
+  async function applyBulk() {
+    if (!selectedIds.size) {
+      toast.error("Select at least one ticket");
+      return;
+    }
+    const updates = {};
+    if (bulkStatus) updates.status = bulkStatus;
+    if (bulkAssignee !== "") {
+      updates.assigned_to = bulkAssignee === "0" ? null : Number(bulkAssignee);
+    }
+    if (bulkProject) updates.project_id = Number(bulkProject);
+    if (Object.keys(updates).length === 0) {
+      toast.error("Pick at least one update field");
+      return;
+    }
+    setBulkBusy(true);
+    try {
+      const res = await api.post("/api/tickets/bulk", {
+        ids: Array.from(selectedIds),
+        ...updates,
+      });
+      const okN = res.updated?.length || 0;
+      const skipN = res.skipped?.length || 0;
+      if (okN) toast.success(`Updated ${okN} ticket${okN === 1 ? "" : "s"}`);
+      if (skipN) toast.error(`Skipped ${skipN} (${(res.skipped[0]?.reason) || "error"})`);
+      exitBulkMode();
+      fetchTickets();
+      refreshCounts();
+    } catch (e) {
+      toast.error(e.message || "Bulk update failed");
+    } finally {
+      setBulkBusy(false);
+    }
+  }
 
   // Sync q from nav search bar
   useEffect(() => {
@@ -302,7 +378,7 @@ export default function TicketList() {
     return p.toString();
   }
 
-  useEffect(() => {
+  const fetchTickets = useCallback(() => {
     setLoading(true);
     api
       .get(`/api/tickets?${buildQuery()}`)
@@ -312,7 +388,10 @@ export default function TicketList() {
         setLoading(false);
       })
       .catch(() => setLoading(false));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [filters, sortBy, sortDir, page, q, activeKey, selectedProjectId]);
+
+  useEffect(() => { fetchTickets(); }, [fetchTickets]);
 
   function selectProject(projId) {
     setSelectedProjectId(projId);
@@ -664,46 +743,113 @@ export default function TicketList() {
                 ({total})
               </span>
             </h1>
+            {isAdmin && !bulkMode && (
+              <button
+                onClick={() => setBulkMode(true)}
+                className="btn-secondary btn btn-sm whitespace-nowrap ml-2"
+                title="Apply status, assignee, or project changes to many tickets at once"
+              >
+                Bulk Edit
+              </button>
+            )}
+            {bulkMode && (
+              <span className="ml-2 text-sm text-fg-muted">
+                {selectedIds.size} selected
+              </span>
+            )}
           </div>
-          <div className="flex items-center gap-2">
-            <div className="relative">
-              <input
-                type="text"
-                value={q}
-                onChange={(e) => {
-                  setQ(e.target.value);
-                  setPage(1);
-                  setActiveKey("");
-                }}
-                placeholder="Search…"
-                className="border border-border-strong rounded-md px-3 py-1.5 pr-7 text-sm w-48 focus:outline-none focus:ring-2 focus:ring-brand/40"
-              />
-              {q && (
-                <button
-                  onClick={() => {
-                    setQ("");
-                    setSearchParams({});
-                    setPage(1);
-                  }}
-                  className="absolute right-2 top-1/2 -translate-y-1/2 text-fg-dim hover:text-fg-muted text-lg leading-none"
-                >
-                  ×
-                </button>
-              )}
+          {bulkMode ? (
+            <div className="flex items-center gap-2 flex-wrap">
+              <select
+                value={bulkStatus}
+                onChange={(e) => setBulkStatus(e.target.value)}
+                disabled={bulkBusy}
+                className="border border-border-strong rounded-md px-2 py-1.5 text-sm"
+              >
+                <option value="">Status — no change</option>
+                {(internalStatuses || []).map((s) => (
+                  <option key={s.id} value={s.name}>{s.name}</option>
+                ))}
+              </select>
+              <select
+                value={bulkAssignee}
+                onChange={(e) => setBulkAssignee(e.target.value)}
+                disabled={bulkBusy}
+                className="border border-border-strong rounded-md px-2 py-1.5 text-sm"
+              >
+                <option value="">Assignee — no change</option>
+                <option value="0">Unassign</option>
+                {bulkUsers.map((u) => (
+                  <option key={u.id} value={u.id}>{u.display_name || u.email}</option>
+                ))}
+              </select>
+              <select
+                value={bulkProject}
+                onChange={(e) => setBulkProject(e.target.value)}
+                disabled={bulkBusy}
+                className="border border-border-strong rounded-md px-2 py-1.5 text-sm"
+              >
+                <option value="">Project — no change</option>
+                {projects.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name}</option>
+                ))}
+              </select>
+              <button
+                onClick={applyBulk}
+                disabled={bulkBusy || !selectedIds.size}
+                className="btn-primary btn btn-sm whitespace-nowrap disabled:opacity-50"
+              >
+                {bulkBusy ? "Applying…" : `Apply${selectedIds.size ? ` (${selectedIds.size})` : ""}`}
+              </button>
+              <button
+                onClick={exitBulkMode}
+                disabled={bulkBusy}
+                className="btn-secondary btn btn-sm whitespace-nowrap"
+              >
+                Cancel
+              </button>
             </div>
-            <Link
-              to={
-                user?.preferences?.scope_follows_filter !== false &&
-                selectedProjectId &&
-                selectedProjectId !== user?.defaultProjectId
-                  ? `/tickets/new?project_id=${selectedProjectId}&from_filter=1`
-                  : "/tickets/new"
-              }
-              className="btn-primary btn btn-sm whitespace-nowrap"
-            >
-              + New Ticket
-            </Link>
-          </div>
+          ) : (
+            <div className="flex items-center gap-2">
+              <div className="relative">
+                <input
+                  type="text"
+                  value={q}
+                  onChange={(e) => {
+                    setQ(e.target.value);
+                    setPage(1);
+                    setActiveKey("");
+                  }}
+                  placeholder="Search…"
+                  className="border border-border-strong rounded-md px-3 py-1.5 pr-7 text-sm w-48 focus:outline-none focus:ring-2 focus:ring-brand/40"
+                />
+                {q && (
+                  <button
+                    onClick={() => {
+                      setQ("");
+                      setSearchParams({});
+                      setPage(1);
+                    }}
+                    className="absolute right-2 top-1/2 -translate-y-1/2 text-fg-dim hover:text-fg-muted text-lg leading-none"
+                  >
+                    ×
+                  </button>
+                )}
+              </div>
+              <Link
+                to={
+                  user?.preferences?.scope_follows_filter !== false &&
+                  selectedProjectId &&
+                  selectedProjectId !== user?.defaultProjectId
+                    ? `/tickets/new?project_id=${selectedProjectId}&from_filter=1`
+                    : "/tickets/new"
+                }
+                className="btn-primary btn btn-sm whitespace-nowrap"
+              >
+                + New Ticket
+              </Link>
+            </div>
+          )}
         </div>
 
         {/* Table */}
@@ -719,6 +865,23 @@ export default function TicketList() {
               <table className="min-w-full divide-y divide-border">
                 <thead className="bg-surface-2">
                   <tr>
+                    {bulkMode && (
+                      <th className="px-3 py-2.5 w-8">
+                        <input
+                          type="checkbox"
+                          aria-label="Select all on page"
+                          checked={tickets.length > 0 && tickets.every((t) => selectedIds.has(t.id))}
+                          onChange={(e) => {
+                            setSelectedIds((prev) => {
+                              const next = new Set(prev);
+                              if (e.target.checked) tickets.forEach((t) => next.add(t.id));
+                              else tickets.forEach((t) => next.delete(t.id));
+                              return next;
+                            });
+                          }}
+                        />
+                      </th>
+                    )}
                     <th className="px-4 py-2.5">
                       <SortHeader col="internal_ref" label="Ref" />
                     </th>
@@ -753,6 +916,16 @@ export default function TicketList() {
                       key={t.id}
                       className={`${priorityRowClass(t.effective_priority)} transition-colors`}
                     >
+                      {bulkMode && (
+                        <td className="px-3 py-3 w-8">
+                          <input
+                            type="checkbox"
+                            aria-label={`Select ${t.internal_ref}`}
+                            checked={selectedIds.has(t.id)}
+                            onChange={() => toggleId(t.id)}
+                          />
+                        </td>
+                      )}
                       <td className="px-4 py-3 text-sm font-mono font-medium whitespace-nowrap">
                         <Link
                           to={`/tickets/${t.id}`}
