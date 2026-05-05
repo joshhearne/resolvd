@@ -20,6 +20,7 @@ export function BrandingProvider({ children }) {
     logo_url: null,
     logo_on_dark: false,
     accent_override_enabled: false,
+    phonetic_readback_enabled: true,
     logo_designed_for: "light",
   });
 

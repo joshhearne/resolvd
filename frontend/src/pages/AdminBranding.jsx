@@ -11,6 +11,7 @@ export default function AdminBranding() {
     show_powered_by: branding.show_powered_by ?? true,
     logo_on_dark: branding.logo_on_dark ?? false,
     accent_override_enabled: branding.accent_override_enabled ?? false,
+    phonetic_readback_enabled: branding.phonetic_readback_enabled ?? true,
     logo_designed_for: branding.logo_designed_for || "light",
     date_style: branding.date_style || "iso",
     time_style: branding.time_style || "iso",
@@ -249,6 +250,31 @@ export default function AdminBranding() {
           />
           <label htmlFor="show_powered_by" className="text-sm text-fg">
             Show "Powered by Hearne Technologies" footer
+          </label>
+        </div>
+
+        <div className="flex items-start gap-3">
+          <input
+            type="checkbox"
+            id="phonetic_readback_enabled"
+            checked={form.phonetic_readback_enabled}
+            onChange={(e) =>
+              setForm((f) => ({
+                ...f,
+                phonetic_readback_enabled: e.target.checked,
+              }))
+            }
+            className="mt-0.5 h-4 w-4 rounded border-border-strong text-brand focus:ring-brand/40"
+          />
+          <label
+            htmlFor="phonetic_readback_enabled"
+            className="text-sm text-fg"
+          >
+            Phonetic readback on ticket refs
+            <span className="block text-xs text-fg-muted mt-0.5">
+              Hover a ticket ref (e.g. WEB-0079) to see "Whiskey Echo Bravo - 0
+              0 7 9" for verbal readback. Users can opt out individually.
+            </span>
           </label>
         </div>
 

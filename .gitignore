@@ -30,3 +30,6 @@ Thumbs.db
 icon-preview.svg
 docker-compose.override.yml
 backups/
+
+# Internal-only roadmap (private)
+.ROADMAP.md

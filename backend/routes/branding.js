@@ -42,6 +42,7 @@ router.get('/', async (req, res) => {
       show_powered_by: row.show_powered_by,
       logo_on_dark: row.logo_on_dark,
       accent_override_enabled: row.accent_override_enabled,
+      phonetic_readback_enabled: row.phonetic_readback_enabled,
       logo_designed_for: row.logo_designed_for,
       date_style: row.date_style,
       time_style: row.time_style,
@@ -64,6 +65,7 @@ router.patch('/', requireAuth, requireRole('Admin'), async (req, res) => {
       show_powered_by,
       logo_on_dark,
       accent_override_enabled,
+      phonetic_readback_enabled,
       logo_designed_for,
       date_style,
       time_style,
@@ -78,6 +80,7 @@ router.patch('/', requireAuth, requireRole('Admin'), async (req, res) => {
     if (show_powered_by !== undefined) updates.show_powered_by = !!show_powered_by;
     if (logo_on_dark !== undefined) updates.logo_on_dark = !!logo_on_dark;
     if (accent_override_enabled !== undefined) updates.accent_override_enabled = !!accent_override_enabled;
+    if (phonetic_readback_enabled !== undefined) updates.phonetic_readback_enabled = !!phonetic_readback_enabled;
     if (logo_designed_for !== undefined && ['light', 'dark'].includes(logo_designed_for)) {
       updates.logo_designed_for = logo_designed_for;
     }
@@ -114,6 +117,7 @@ router.patch('/', requireAuth, requireRole('Admin'), async (req, res) => {
       show_powered_by: row.show_powered_by,
       logo_on_dark: row.logo_on_dark,
       accent_override_enabled: row.accent_override_enabled,
+      phonetic_readback_enabled: row.phonetic_readback_enabled,
       logo_designed_for: row.logo_designed_for,
       date_style: row.date_style,
       time_style: row.time_style,

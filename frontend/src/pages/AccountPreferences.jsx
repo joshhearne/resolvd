@@ -334,6 +334,15 @@ export default function AccountPreferences() {
             onChange={(v) => set("compact_mode", v)}
             disabled={busy}
           />
+          {branding.phonetic_readback_enabled !== false && (
+            <Toggle
+              label="Phonetic readback on ticket refs"
+              hint="Hover a ticket ref (e.g. WEB-0079) to see &quot;Whiskey Echo Bravo - 0 0 7 9&quot; for reading aloud on phone calls."
+              value={prefs.phonetic_readback !== false}
+              onChange={(v) => set("phonetic_readback", v)}
+              disabled={busy}
+            />
+          )}
         </div>
       </div>
     </div>

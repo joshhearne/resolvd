@@ -7,6 +7,7 @@ import { useAuth } from "../context/AuthContext";
 import { useStatuses } from "../context/StatusesContext";
 import PriorityBadge from "../components/PriorityBadge";
 import StatusBadge from "../components/StatusBadge";
+import PhoneticPopover from "../components/PhoneticPopover";
 
 function DateTimeStack({ value }) {
   if (!value) return <span className="text-fg-dim">—</span>;
@@ -927,12 +928,14 @@ export default function TicketList() {
                         </td>
                       )}
                       <td className="px-4 py-3 text-sm font-mono font-medium whitespace-nowrap">
-                        <Link
-                          to={`/tickets/${t.id}`}
-                          className="text-brand hover:underline"
-                        >
-                          {t.internal_ref}
-                        </Link>
+                        <PhoneticPopover value={t.internal_ref}>
+                          <Link
+                            to={`/tickets/${t.id}`}
+                            className="text-brand hover:underline"
+                          >
+                            {t.internal_ref}
+                          </Link>
+                        </PhoneticPopover>
                       </td>
                       <td className="px-4 py-3 text-sm text-fg w-48">
                         <Link

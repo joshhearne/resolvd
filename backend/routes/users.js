@@ -136,6 +136,7 @@ const PREF_DEFAULTS = Object.freeze({
   push_on_mention: false,
   confirm_before_close: false,
   compact_mode: false,
+  phonetic_readback: true,
   default_ticket_sort: 'updated_at_desc',
   // Locale overrides — empty string means "inherit org branding".
   date_style_override: '',

@@ -223,6 +223,7 @@ async function initSchema() {
     await client.query(`INSERT INTO branding (id) VALUES (1) ON CONFLICT DO NOTHING`);
     await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS logo_on_dark BOOLEAN NOT NULL DEFAULT FALSE`);
     await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS accent_override_enabled BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS phonetic_readback_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
     await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS logo_designed_for TEXT NOT NULL DEFAULT 'light' CHECK (logo_designed_for IN ('light','dark'))`);
     // Localization controls (admin-set, applies org-wide). UI uses these
     // to render dates/times; reports always use ISO regardless of style.

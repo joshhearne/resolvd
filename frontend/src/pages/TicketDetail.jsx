@@ -23,6 +23,7 @@ import StatusBadge from "../components/StatusBadge";
 import MarkdownEditor from "../components/MarkdownEditor";
 import MarkdownContent from "../components/MarkdownContent";
 import ConfirmDialog from "../components/ConfirmDialog";
+import PhoneticPopover from "../components/PhoneticPopover";
 
 // Pick the "primary advance" target for the next-step button. Skips
 // blocker statuses (Awaiting Input, On Hold) and the reopened tag.
@@ -602,9 +603,12 @@ export default function TicketDetail() {
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
         <div className="flex-1 min-w-0">
           <div className="flex items-center gap-3 flex-wrap">
-            <span className="font-mono text-sm font-semibold text-fg-muted">
+            <PhoneticPopover
+              value={ticket.internal_ref}
+              className="font-mono text-sm font-semibold text-fg-muted"
+            >
               {ticket.internal_ref}
-            </span>
+            </PhoneticPopover>
             <PriorityBadge
               priority={ticket.effective_priority}
               override={ticket.priority_override}
