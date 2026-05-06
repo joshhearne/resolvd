@@ -1020,9 +1020,19 @@ router.post('/:id/notify-vendor', requireAuth, requireRole('Admin', 'Manager'), 
     const ticket = await pool.query('SELECT id, submitted_by FROM tickets WHERE id = $1', [req.params.id]);
     if (!ticket.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
     const sendAs = req.body?.send_as;
-    const actorId = (sendAs === 'submitter' && ticket.rows[0].submitted_by)
-      ? ticket.rows[0].submitted_by
-      : req.session.user.id;
+    let actorId = req.session.user.id;
+    if (sendAs === 'submitter' && ticket.rows[0].submitted_by) {
+      actorId = ticket.rows[0].submitted_by;
+    } else {
+      const numeric = Number(sendAs);
+      if (Number.isInteger(numeric) && numeric > 0) {
+        const u = await pool.query(
+          `SELECT id FROM users WHERE id = $1 AND status = 'active'`,
+          [numeric]
+        );
+        if (u.rows[0]) actorId = u.rows[0].id;
+      }
+    }
     const result = await sendVendorEmail({ eventType: 'new_ticket', ticketId: Number(req.params.id), actorId });
     res.json(result);
   } catch (err) {

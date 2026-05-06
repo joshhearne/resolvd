@@ -47,6 +47,8 @@ router.get('/', async (req, res) => {
       date_style: row.date_style,
       time_style: row.time_style,
       timezone: row.timezone,
+      default_restrict_followers: row.default_restrict_followers !== false,
+      default_restrict_mentions: row.default_restrict_mentions !== false,
       logo_url: row.logo_filename ? '/api/branding/logo' : null,
     });
   } catch (err) {
@@ -70,6 +72,8 @@ router.patch('/', requireAuth, requireRole('Admin'), async (req, res) => {
       date_style,
       time_style,
       timezone,
+      default_restrict_followers,
+      default_restrict_mentions,
     } = req.body;
     const updates = {};
     if (site_name !== undefined) updates.site_name = site_name.trim() || 'Resolvd';
@@ -92,6 +96,12 @@ router.patch('/', requireAuth, requireRole('Admin'), async (req, res) => {
     }
     if (timezone !== undefined && typeof timezone === 'string' && timezone.trim()) {
       updates.timezone = timezone.trim().slice(0, 64);
+    }
+    if (default_restrict_followers !== undefined) {
+      updates.default_restrict_followers = !!default_restrict_followers;
+    }
+    if (default_restrict_mentions !== undefined) {
+      updates.default_restrict_mentions = !!default_restrict_mentions;
     }
 
     if (Object.keys(updates).length === 0) {
@@ -122,6 +132,8 @@ router.patch('/', requireAuth, requireRole('Admin'), async (req, res) => {
       date_style: row.date_style,
       time_style: row.time_style,
       timezone: row.timezone,
+      default_restrict_followers: row.default_restrict_followers !== false,
+      default_restrict_mentions: row.default_restrict_mentions !== false,
       logo_url: row.logo_filename ? '/api/branding/logo' : null,
     });
   } catch (err) {

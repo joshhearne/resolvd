@@ -258,7 +258,11 @@ export default function TicketDetail() {
   const [commentFiles, setCommentFiles] = useState([]);
   const [submittingComment, setSubmittingComment] = useState(false);
   const [shareWithVendor, setShareWithVendor] = useState(false);
-  const [sendAsModal, setSendAsModal] = useState(null); // { action: 'comment'|'notify', andStatus, resolve }
+  const [sendAsModal, setSendAsModal] = useState(null); // { action: 'comment'|'notify', andStatus, mode: 'has-submitter'|'no-submitter' }
+  const [projectMembers, setProjectMembers] = useState([]);
+  const [restrictFollowers, setRestrictFollowers] = useState(true);
+  const [sendAsPick, setSendAsPick] = useState("");
+  const [submitAsPick, setSubmitAsPick] = useState("");
   const [showMuted, setShowMuted] = useState(false);
   const [activeTab, setActiveTab] = useState("comments");
   const [vendorContacts, setVendorContacts] = useState([]);
@@ -280,6 +284,19 @@ export default function TicketDetail() {
     if (!isAdmin) return;
     api.get("/api/users").then(setAllUsers).catch(() => setAllUsers([]));
   }, [isAdmin]);
+
+  useEffect(() => {
+    if (!isAdmin || !ticket?.project_id) return;
+    api.get(`/api/projects/${ticket.project_id}`)
+      .then((p) => {
+        setProjectMembers(p?.members || []);
+        // Effective flag is computed server-side and combines per-project
+        // override with the org default. Falls back to "restricted" if the
+        // field is absent on older API responses.
+        setRestrictFollowers(p?.effective_restrict_followers !== false);
+      })
+      .catch(() => setProjectMembers([]));
+  }, [isAdmin, ticket?.project_id]);
 
   // Inline edit state
   const [editing, setEditing] = useState({});
@@ -375,10 +392,22 @@ export default function TicketDetail() {
     } catch (e) { toast.error(e.message); }
   }
   async function notifyVendor(send_as = null) {
-    // Intercept: non-submitter needs send-as choice
-    if (send_as === null && isAdmin && ticket?.submitted_by && user?.id !== ticket.submitted_by) {
-      setSendAsModal({ action: 'notify' });
-      return;
+    // Intercept: admin/manager firing vendor email needs to pick a sender
+    // identity. Two prompt variants:
+    //   - has-submitter:  current user differs from submitter → me / submitter
+    //   - no-submitter:   ticket has no submitter (e.g. imported) → pick anyone,
+    //                     optionally backfill ticket.submitted_by
+    if (send_as === null && isAdmin) {
+      if (ticket?.submitted_by && user?.id !== ticket.submitted_by) {
+        setSendAsModal({ action: 'notify', mode: 'has-submitter' });
+        return;
+      }
+      if (!ticket?.submitted_by) {
+        setSendAsPick("");
+        setSubmitAsPick("");
+        setSendAsModal({ action: 'notify', mode: 'no-submitter' });
+        return;
+      }
     }
     try {
       const r = await api.post(`/api/tickets/${id}/notify-vendor`, send_as ? { send_as } : {});
@@ -460,17 +489,27 @@ export default function TicketDetail() {
     }
   }
 
-  function needsSendAsPrompt() {
-    return isAdmin && shareWithVendor && ticket?.submitted_by && user?.id !== ticket.submitted_by;
+  function sendAsPromptMode() {
+    if (!isAdmin || !shareWithVendor) return null;
+    if (ticket?.submitted_by && user?.id !== ticket.submitted_by) return 'has-submitter';
+    if (!ticket?.submitted_by) return 'no-submitter';
+    return null;
   }
 
   async function submitComment(e, andStatus = null, send_as = null) {
     if (e) e.preventDefault();
     if (!commentBody.trim() && commentFiles.length === 0) return;
-    // Intercept: non-submitter sending vendor-visible comment needs send-as choice
-    if (send_as === null && needsSendAsPrompt()) {
-      setSendAsModal({ action: 'comment', andStatus });
-      return;
+    // Intercept: admin/manager sending vendor-visible comment needs sender choice
+    if (send_as === null) {
+      const mode = sendAsPromptMode();
+      if (mode) {
+        if (mode === 'no-submitter') {
+          setSendAsPick("");
+          setSubmitAsPick("");
+        }
+        setSendAsModal({ action: 'comment', andStatus, mode });
+        return;
+      }
     }
     setSubmittingComment(true);
     try {
@@ -818,17 +857,32 @@ export default function TicketDetail() {
                       className="flex-1 border border-border-strong rounded px-2 py-1 text-sm"
                     >
                       <option value="">Add user…</option>
-                      {allUsers
-                        .filter(
-                          (u) =>
-                            u.status === "active" &&
-                            !followers.some((f) => f.id === u.id),
-                        )
-                        .map((u) => (
-                          <option key={u.id} value={u.id}>
-                            {u.display_name || u.email}
-                          </option>
-                        ))}
+                      {(() => {
+                        // Admins ignore the project flag — they can add anyone.
+                        // Otherwise, when restrict_followers_to_members is on,
+                        // limit the list to project members.
+                        const useMembers =
+                          user?.role !== "Admin" && restrictFollowers;
+                        const source = useMembers
+                          ? projectMembers.map((m) => ({
+                              id: m.user_id,
+                              display_name: m.display_name,
+                              email: m.email,
+                              status: m.status || "active",
+                            }))
+                          : allUsers;
+                        return source
+                          .filter(
+                            (u) =>
+                              u.status === "active" &&
+                              !followers.some((f) => f.id === u.id),
+                          )
+                          .map((u) => (
+                            <option key={u.id} value={u.id}>
+                              {u.display_name || u.email}
+                            </option>
+                          ));
+                      })()}
                     </select>
                     <button
                       onClick={() =>
@@ -2129,7 +2183,7 @@ export default function TicketDetail() {
       />
 
       {/* Send As modal — shown when admin/manager sends vendor email on behalf */}
-      {sendAsModal && (
+      {sendAsModal && sendAsModal.mode === 'has-submitter' && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
           <div className="bg-bg border border-border rounded-xl shadow-xl p-6 w-full max-w-sm mx-4">
             <h3 className="text-sm font-semibold text-fg mb-1">Send as whom?</h3>
@@ -2159,6 +2213,104 @@ export default function TicketDetail() {
               >
                 Send as submitter — {ticket?.submitted_by_name}
               </button>
+              <button
+                className="btn btn-ghost btn-sm text-fg-muted"
+                onClick={() => setSendAsModal(null)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* No-submitter variant: pick a project member to either send-as
+          (one-off identity on vendor email) or submit-as (backfill the
+          ticket's submitted_by, useful for imported tickets). */}
+      {sendAsModal && sendAsModal.mode === 'no-submitter' && (
+        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+          <div className="bg-bg border border-border rounded-xl shadow-xl p-6 w-full max-w-md mx-4">
+            <h3 className="text-sm font-semibold text-fg mb-1">No submitter on this ticket</h3>
+            <p className="text-xs text-fg-muted mb-4">
+              Pick someone in the project so the vendor email isn't sent from the system address.
+            </p>
+
+            <div className="flex flex-col gap-4">
+              <div>
+                <label className="block text-xs font-medium text-fg mb-1">Send as</label>
+                <p className="text-xs text-fg-dim mb-2">
+                  Vendor email goes out under this person's name. Doesn't change the ticket.
+                </p>
+                <div className="flex gap-2">
+                  <select
+                    value={sendAsPick}
+                    onChange={(e) => setSendAsPick(e.target.value)}
+                    className="flex-1 border border-border-strong rounded px-2 py-1 text-sm bg-bg text-fg"
+                  >
+                    <option value="">— choose person —</option>
+                    {projectMembers.map((m) => (
+                      <option key={m.user_id} value={m.user_id}>
+                        {m.display_name || m.email}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    className="btn btn-primary btn-sm"
+                    disabled={!sendAsPick}
+                    onClick={() => {
+                      const ctx = sendAsModal;
+                      const pick = sendAsPick;
+                      setSendAsModal(null);
+                      if (ctx.action === 'notify') notifyVendor(pick);
+                      else submitComment(null, ctx.andStatus, pick);
+                    }}
+                  >
+                    Send
+                  </button>
+                </div>
+              </div>
+
+              <div className="border-t border-border pt-4">
+                <label className="block text-xs font-medium text-fg mb-1">Submit as</label>
+                <p className="text-xs text-fg-dim mb-2">
+                  Set this person as the ticket's original submitter, then send. Best for imported tickets.
+                </p>
+                <div className="flex gap-2">
+                  <select
+                    value={submitAsPick}
+                    onChange={(e) => setSubmitAsPick(e.target.value)}
+                    className="flex-1 border border-border-strong rounded px-2 py-1 text-sm bg-bg text-fg"
+                  >
+                    <option value="">— choose person —</option>
+                    {projectMembers.map((m) => (
+                      <option key={m.user_id} value={m.user_id}>
+                        {m.display_name || m.email}
+                      </option>
+                    ))}
+                  </select>
+                  <button
+                    className="btn btn-primary btn-sm"
+                    disabled={!submitAsPick}
+                    onClick={async () => {
+                      const ctx = sendAsModal;
+                      const pickId = Number(submitAsPick);
+                      setSendAsModal(null);
+                      try {
+                        const updated = await api.patch(`/api/tickets/${id}`, { submitted_by: pickId });
+                        setTicket(updated);
+                      } catch (err) {
+                        toast.error(err.message);
+                        return;
+                      }
+                      if (ctx.action === 'notify') notifyVendor('submitter');
+                      else submitComment(null, ctx.andStatus, 'submitter');
+                    }}
+                  >
+                    Submit + send
+                  </button>
+                </div>
+              </div>
+
               <button
                 className="btn btn-ghost btn-sm text-fg-muted"
                 onClick={() => setSendAsModal(null)}

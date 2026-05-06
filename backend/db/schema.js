@@ -235,6 +235,16 @@ async function initSchema() {
     // (SET NULL) when the user is deleted; eligibility (submitter+ role)
     // is enforced at write time, not by the FK.
     await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS default_assignee_id INTEGER REFERENCES users(id) ON DELETE SET NULL`);
+    // Per-project mention/follower scope overrides. NULL means "inherit
+    // the org-wide default from branding". TRUE/FALSE explicitly overrides
+    // it for this project. Admins (global role) bypass the gate either way.
+    await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS restrict_followers_to_members BOOLEAN`);
+    await client.query(`ALTER TABLE projects ALTER COLUMN restrict_followers_to_members DROP NOT NULL`);
+    await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS restrict_mentions_to_members BOOLEAN`);
+    // Global defaults (admin panel). Apply when a project hasn't set its
+    // own value. Defaults TRUE so a fresh install is locked down.
+    await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS default_restrict_followers BOOLEAN NOT NULL DEFAULT TRUE`);
+    await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS default_restrict_mentions BOOLEAN NOT NULL DEFAULT TRUE`);
     await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS default_project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL`);
     // Per-user QoL preferences stored as JSONB. Free-form so we can add
     // new toggles without schema migrations. Frontend reads via /auth/me.

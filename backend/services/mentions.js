@@ -29,19 +29,51 @@ async function resolveMentions(body, opts = {}) {
   const tokens = extractTokens(body);
   if (!tokens.length) return [];
   const lc = tokens.map(t => t.toLowerCase());
-  // Build candidate match clauses. Postgres ILIKE on display_name handles
-  // dot/underscore/space variants by collapsing them to spaces.
-  const r = await pool.query(`
-    SELECT id, email, display_name
-      FROM users
-     WHERE status = 'active'
-       AND (
-         LOWER(email) = ANY($1::text[])
-         OR LOWER(SPLIT_PART(email, '@', 1)) = ANY($1::text[])
-         OR LOWER(REPLACE(REPLACE(display_name, '.', ' '), '_', ' '))
-            = ANY($2::text[])
-       )
-  `, [lc, lc.map(t => t.replace(/[._]/g, ' '))]);
+
+  // Project-scoped resolution: when opts.projectId is given AND the
+  // project's effective restrict_mentions_to_members is on, only users who
+  // belong to that project are returned. Drops unmatched mentions silently.
+  let restrict = false;
+  if (opts.projectId) {
+    const proj = await pool.query(
+      `SELECT restrict_mentions_to_members FROM projects WHERE id = $1`,
+      [opts.projectId]
+    );
+    if (proj.rows[0]) {
+      const { getRestrictionDefaults, effectiveFlag } = require('./restrictions');
+      const def = await getRestrictionDefaults();
+      restrict = effectiveFlag(proj.rows[0].restrict_mentions_to_members, def.mentions);
+    }
+  }
+
+  const sql = restrict
+    ? `
+      SELECT u.id, u.email, u.display_name
+        FROM users u
+        JOIN project_members pm ON pm.user_id = u.id AND pm.project_id = $3
+       WHERE u.status = 'active'
+         AND (
+           LOWER(u.email) = ANY($1::text[])
+           OR LOWER(SPLIT_PART(u.email, '@', 1)) = ANY($1::text[])
+           OR LOWER(REPLACE(REPLACE(u.display_name, '.', ' '), '_', ' '))
+              = ANY($2::text[])
+         )
+    `
+    : `
+      SELECT id, email, display_name
+        FROM users
+       WHERE status = 'active'
+         AND (
+           LOWER(email) = ANY($1::text[])
+           OR LOWER(SPLIT_PART(email, '@', 1)) = ANY($1::text[])
+           OR LOWER(REPLACE(REPLACE(display_name, '.', ' '), '_', ' '))
+              = ANY($2::text[])
+         )
+    `;
+  const params = restrict
+    ? [lc, lc.map(t => t.replace(/[._]/g, ' ')), opts.projectId]
+    : [lc, lc.map(t => t.replace(/[._]/g, ' '))];
+  const r = await pool.query(sql, params);
   const excludeId = opts.excludeUserId || 0;
   return r.rows.filter(u => u.id !== excludeId);
 }

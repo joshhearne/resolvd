@@ -37,7 +37,7 @@ router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Submi
     if (!body || !body.trim()) return res.status(400).json({ error: 'Comment body required' });
 
     const ticket = await pool.query(
-      'SELECT id, internal_ref, title, title_enc, submitted_by FROM tickets WHERE id = $1',
+      'SELECT id, internal_ref, title, title_enc, submitted_by, project_id FROM tickets WHERE id = $1',
       [req.params.id]
     );
     if (!ticket.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
@@ -110,10 +110,22 @@ router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Submi
 
     // Vendor-bound outbound fires only when the comment is flagged for
     // external visibility AND there are contacts attached to the ticket.
+    // send_as: 'submitter' resolves to ticket.submitted_by; a numeric id
+    // resolves to that active user; anything else falls back to the actor.
     if (wantsExternal && !result.is_system) {
-      const vendorActorId = (send_as === 'submitter' && ticket.rows[0].submitted_by)
-        ? ticket.rows[0].submitted_by
-        : req.session.user.id;
+      let vendorActorId = req.session.user.id;
+      if (send_as === 'submitter' && ticket.rows[0].submitted_by) {
+        vendorActorId = ticket.rows[0].submitted_by;
+      } else {
+        const numeric = Number(send_as);
+        if (Number.isInteger(numeric) && numeric > 0) {
+          const u = await pool.query(
+            `SELECT id FROM users WHERE id = $1 AND status = 'active'`,
+            [numeric]
+          );
+          if (u.rows[0]) vendorActorId = u.rows[0].id;
+        }
+      }
       sendVendorEmail({
         eventType: 'new_comment',
         ticketId: ticket.rows[0].id,
@@ -129,6 +141,7 @@ router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Submi
         try {
           const mentioned = await resolveMentions(trimmedBody, {
             excludeUserId: req.session.user.id,
+            projectId: ticket.rows[0].project_id,
           });
           if (!mentioned.length) return;
           const ticketRef = ticket.rows[0].internal_ref;

@@ -209,13 +209,29 @@ router.patch('/me/profile', requireAuth, async (req, res) => {
   }
 });
 
-// GET /api/users/search?q=&project_id= — mention autocomplete (any authenticated user)
+// GET /api/users/search?q=&project_id= — mention autocomplete (any authenticated user).
+// When project_id is provided, results are filtered to project members iff
+// the effective restrict_mentions_to_members for that project is on. Admins
+// (global role) bypass the filter so they can mention anyone.
 router.get('/search', requireAuth, async (req, res) => {
   try {
     const q = ((req.query.q || '').trim().toLowerCase()) + '%';
     const projectId = req.query.project_id ? Number(req.query.project_id) : null;
-    let r;
+    const isAdmin = req.session.user?.role === 'Admin';
+    let restrictToMembers = false;
     if (projectId) {
+      const proj = await pool.query(
+        `SELECT restrict_mentions_to_members FROM projects WHERE id = $1`,
+        [projectId]
+      );
+      if (proj.rows[0]) {
+        const { getRestrictionDefaults, effectiveFlag } = require('../services/restrictions');
+        const def = await getRestrictionDefaults();
+        restrictToMembers = effectiveFlag(proj.rows[0].restrict_mentions_to_members, def.mentions);
+      }
+    }
+    let r;
+    if (projectId && restrictToMembers && !isAdmin) {
       r = await pool.query(`
         SELECT u.id, u.display_name, u.email
           FROM users u

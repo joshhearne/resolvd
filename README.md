@@ -142,6 +142,7 @@ Fresh install with local auth enabled shows a **Create Admin Account** form. Fir
 - Each project has a prefix used for ticket references (e.g. `WEB-0042`). The same prefix powers email-to-ticket auto-create.
 - **Default assignee**: Admin/Manager can pick a default assignee per project. New tickets in that project auto-assign to the chosen user when the creator doesn't pick one. Eligible: Admin / Manager / Submitter.
 - **Move tickets**: any role can move a ticket between projects they have access to. Admin/Manager can move to any project; Submitters need membership of both source and target. The ticket gets a fresh `internal_ref` from the new project's counter; vendor contacts detach (vendor scope is project-bound).
+- **Cross-project visibility**: per-project tri-state controls for `@mentions` autocomplete/resolution and the "add follower" picker — `Inherit` (org default), `Restrict to project members`, or `Open to all users`. Org defaults live in **Admin → Branding → Cross-project visibility** (both default ON / restricted). Admins (global role) bypass these gates.
 
 ---
 
@@ -266,12 +267,17 @@ Each company in **Admin → Companies** has a notification preferences panel con
 
 ### Send As
 
-When an Admin or Manager sends a vendor-visible comment or clicks **Notify Vendor** on a ticket that was submitted on behalf of someone else, the system prompts a **Send As** choice:
+When an Admin or Manager sends a vendor-visible comment or clicks **Notify Vendor**, the system prompts a **Send As** choice so vendor correspondence stays attributed to a real person.
 
+**Ticket has a submitter (and the actor isn't them):**
 - **Send as me** — outbound uses the acting Admin's name/email
 - **Send as submitter** — outbound uses the ticket's original submitter as the sender identity
 
-This keeps vendor correspondence consistent with who the vendor knows.
+**Ticket has no submitter** (e.g. imported tickets, omitted submitter field):
+- **Send as** — pick any project member; outbound uses their identity once. Ticket unchanged.
+- **Submit as** — pick any project member; ticket's `submitted_by` is backfilled and the email goes out under their name. Best for cleaning up imports.
+
+Goal: drop the rate of vendor mail leaking out under the system's `MAIL_FROM` fallback.
 
 ### Mute vendor + daily digest
 

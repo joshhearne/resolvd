@@ -1,6 +1,7 @@
 const express = require('express');
 const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
+const { getRestrictionDefaults, effectiveFlag } = require('../services/restrictions');
 
 const router = express.Router({ mergeParams: true });
 
@@ -57,8 +58,31 @@ router.post('/followers', requireAuth, requireRole('Admin', 'Manager'), async (r
     if (!Number.isInteger(userId) || userId <= 0) {
       return res.status(400).json({ error: 'user_id required' });
     }
-    const u = await pool.query(`SELECT id FROM users WHERE id = $1 AND status = 'active'`, [userId]);
+    const u = await pool.query(`SELECT id, role FROM users WHERE id = $1 AND status = 'active'`, [userId]);
     if (!u.rows[0]) return res.status(400).json({ error: 'User not found or inactive' });
+
+    // Project-level gate: when the effective restrict_followers_to_members
+    // is on, the target must already be a member of the ticket's project.
+    // Admins (global role) are exempt. The flag resolves NULL→branding default.
+    const proj = await pool.query(
+      `SELECT p.id, p.restrict_followers_to_members
+         FROM tickets t JOIN projects p ON p.id = t.project_id
+        WHERE t.id = $1`,
+      [req.params.ticketId]
+    );
+    if (!proj.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
+    const defaults = await getRestrictionDefaults();
+    const restrict = effectiveFlag(proj.rows[0].restrict_followers_to_members, defaults.followers);
+    if (restrict && u.rows[0].role !== 'Admin') {
+      const member = await pool.query(
+        `SELECT 1 FROM project_members WHERE project_id = $1 AND user_id = $2`,
+        [proj.rows[0].id, userId]
+      );
+      if (!member.rows[0]) {
+        return res.status(403).json({ error: 'User is not a member of this project' });
+      }
+    }
+
     await pool.query(
       'INSERT INTO ticket_followers (ticket_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
       [req.params.ticketId, userId]

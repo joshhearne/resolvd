@@ -16,6 +16,8 @@ export default function AdminBranding() {
     date_style: branding.date_style || "iso",
     time_style: branding.time_style || "iso",
     timezone: branding.timezone || "UTC",
+    default_restrict_followers: branding.default_restrict_followers ?? true,
+    default_restrict_mentions: branding.default_restrict_mentions ?? true,
   });
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -276,6 +278,59 @@ export default function AdminBranding() {
               0 7 9" for verbal readback. Users can opt out individually.
             </span>
           </label>
+        </div>
+
+        <div className="border-t border-border pt-4">
+          <h2 className="text-sm font-semibold text-fg mb-1">Cross-project visibility</h2>
+          <p className="text-xs text-fg-muted mb-3">
+            Org-wide defaults for who can be mentioned or added as a follower.
+            Each project may override these for its own tickets. Admins (global
+            role) bypass these gates either way.
+          </p>
+          <div className="space-y-3">
+            <div className="flex items-start gap-3">
+              <input
+                type="checkbox"
+                id="default_restrict_mentions"
+                checked={form.default_restrict_mentions}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    default_restrict_mentions: e.target.checked,
+                  }))
+                }
+                className="mt-0.5 h-4 w-4 rounded border-border-strong text-brand focus:ring-brand/40"
+              />
+              <label htmlFor="default_restrict_mentions" className="text-sm text-fg">
+                Restrict @mentions to project members by default
+                <span className="block text-xs text-fg-muted mt-0.5">
+                  When on, the comment autocomplete and mention notifications
+                  only resolve users who are members of the ticket's project.
+                </span>
+              </label>
+            </div>
+            <div className="flex items-start gap-3">
+              <input
+                type="checkbox"
+                id="default_restrict_followers"
+                checked={form.default_restrict_followers}
+                onChange={(e) =>
+                  setForm((f) => ({
+                    ...f,
+                    default_restrict_followers: e.target.checked,
+                  }))
+                }
+                className="mt-0.5 h-4 w-4 rounded border-border-strong text-brand focus:ring-brand/40"
+              />
+              <label htmlFor="default_restrict_followers" className="text-sm text-fg">
+                Restrict follower picker to project members by default
+                <span className="block text-xs text-fg-muted mt-0.5">
+                  When on, "add follower" on a ticket only lists users who
+                  belong to that project.
+                </span>
+              </label>
+            </div>
+          </div>
         </div>
 
         <div className="border-t border-border pt-4">

@@ -39,6 +39,10 @@ export default function ProjectDetail() {
     description: "",
     has_external_vendor: true,
     default_assignee_id: "",
+    // Tri-state strings for the UI: "" = inherit org default,
+    // "true" = restrict to members, "false" = open to all users.
+    restrict_followers_to_members: "",
+    restrict_mentions_to_members: "",
   });
   const [savingSettings, setSavingSettings] = useState(false);
 
@@ -62,6 +66,20 @@ export default function ProjectDetail() {
           default_assignee_id: proj.default_assignee_id
             ? String(proj.default_assignee_id)
             : "",
+          restrict_followers_to_members:
+            proj.restrict_followers_to_members === null ||
+            proj.restrict_followers_to_members === undefined
+              ? ""
+              : proj.restrict_followers_to_members
+                ? "true"
+                : "false",
+          restrict_mentions_to_members:
+            proj.restrict_mentions_to_members === null ||
+            proj.restrict_mentions_to_members === undefined
+              ? ""
+              : proj.restrict_mentions_to_members
+                ? "true"
+                : "false",
         });
         setAllUsers(users);
       })
@@ -84,6 +102,14 @@ export default function ProjectDetail() {
         default_assignee_id: editForm.default_assignee_id
           ? Number(editForm.default_assignee_id)
           : null,
+        restrict_followers_to_members:
+          editForm.restrict_followers_to_members === ""
+            ? null
+            : editForm.restrict_followers_to_members === "true",
+        restrict_mentions_to_members:
+          editForm.restrict_mentions_to_members === ""
+            ? null
+            : editForm.restrict_mentions_to_members === "true",
       });
       setProject((p) => ({ ...p, ...updated }));
       setEditing(false);
@@ -281,6 +307,50 @@ export default function ProjectDetail() {
               <label htmlFor="edit_has_vendor" className="text-sm text-fg">
                 This project has an external vendor
               </label>
+            </div>
+            <div className="border-t border-border pt-3">
+              <h3 className="text-xs font-semibold text-fg mb-1">Cross-project visibility</h3>
+              <p className="text-[11px] text-fg-muted mb-2">
+                "Inherit" follows the org default set in Branding. Override
+                here for projects that need a tighter or looser policy. Admins
+                bypass these gates.
+              </p>
+              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                <label className="block">
+                  <span className="block text-xs text-fg mb-1">@mentions</span>
+                  <select
+                    value={editForm.restrict_mentions_to_members}
+                    onChange={(e) =>
+                      setEditForm((f) => ({
+                        ...f,
+                        restrict_mentions_to_members: e.target.value,
+                      }))
+                    }
+                    className="w-full border border-border-strong rounded-md px-2 py-1.5 text-sm"
+                  >
+                    <option value="">Inherit org default ({project?.defaults?.mentions ? "restricted" : "open"})</option>
+                    <option value="true">Restrict to project members</option>
+                    <option value="false">Open to all users</option>
+                  </select>
+                </label>
+                <label className="block">
+                  <span className="block text-xs text-fg mb-1">Follower picker</span>
+                  <select
+                    value={editForm.restrict_followers_to_members}
+                    onChange={(e) =>
+                      setEditForm((f) => ({
+                        ...f,
+                        restrict_followers_to_members: e.target.value,
+                      }))
+                    }
+                    className="w-full border border-border-strong rounded-md px-2 py-1.5 text-sm"
+                  >
+                    <option value="">Inherit org default ({project?.defaults?.followers ? "restricted" : "open"})</option>
+                    <option value="true">Restrict to project members</option>
+                    <option value="false">Open to all users</option>
+                  </select>
+                </label>
+              </div>
             </div>
             <div>
               <label className="block text-xs text-fg-muted mb-1">

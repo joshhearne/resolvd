@@ -1,6 +1,7 @@
 const express = require('express');
 const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
+const { getRestrictionDefaults, effectiveFlag } = require('../services/restrictions');
 
 const router = express.Router();
 
@@ -96,7 +97,7 @@ router.get('/:id', requireAuth, async (req, res) => {
 
     const membersResult = await pool.query(`
       SELECT pm.id, pm.user_id, pm.role_override, pm.added_at,
-        u.display_name, u.email, u.role as global_role,
+        u.display_name, u.email, u.role as global_role, u.status,
         adder.display_name as added_by_name
       FROM project_members pm
       JOIN users u ON pm.user_id = u.id
@@ -105,7 +106,14 @@ router.get('/:id', requireAuth, async (req, res) => {
       ORDER BY u.display_name ASC
     `, [req.params.id]);
 
-    res.json({ ...project, members: membersResult.rows });
+    const defaults = await getRestrictionDefaults();
+    res.json({
+      ...project,
+      members: membersResult.rows,
+      effective_restrict_followers: effectiveFlag(project.restrict_followers_to_members, defaults.followers),
+      effective_restrict_mentions: effectiveFlag(project.restrict_mentions_to_members, defaults.mentions),
+      defaults,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Database error' });
@@ -115,7 +123,7 @@ router.get('/:id', requireAuth, async (req, res) => {
 // PATCH /api/projects/:id — Admin only
 router.patch('/:id', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
-    const { name, description, status, has_external_vendor, default_assignee_id } = req.body;
+    const { name, description, status, has_external_vendor, default_assignee_id, restrict_followers_to_members, restrict_mentions_to_members } = req.body;
     const updates = {};
     if (name !== undefined) updates.name = name.trim();
     if (description !== undefined) updates.description = description?.trim() || null;
@@ -124,6 +132,18 @@ router.patch('/:id', requireAuth, requireRole('Admin', 'Manager'), async (req, r
       updates.status = status;
     }
     if (has_external_vendor !== undefined) updates.has_external_vendor = has_external_vendor !== false && has_external_vendor !== 'false';
+    // Tri-state: null clears the per-project override and inherits the
+    // org default; true/false sets an explicit per-project policy.
+    if (restrict_followers_to_members !== undefined) {
+      updates.restrict_followers_to_members = restrict_followers_to_members === null
+        ? null
+        : (restrict_followers_to_members !== false && restrict_followers_to_members !== 'false');
+    }
+    if (restrict_mentions_to_members !== undefined) {
+      updates.restrict_mentions_to_members = restrict_mentions_to_members === null
+        ? null
+        : (restrict_mentions_to_members !== false && restrict_mentions_to_members !== 'false');
+    }
     if (default_assignee_id !== undefined) {
       if (default_assignee_id === null || default_assignee_id === '') {
         updates.default_assignee_id = null;
