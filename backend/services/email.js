@@ -9,11 +9,22 @@ const { getBranding } = require('./branding');
 const FALLBACK_FROM = process.env.MAIL_FROM || 'noreply@localhost';
 const APP_URL = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
 
+// Wraps a display name in RFC 5322-quoted form when needed and returns
+// `"Display Name" <addr>`. Falls back to bare address when no name.
+function formatAddress(address, displayName) {
+  if (!address) return '';
+  if (!displayName) return address;
+  // Always quote — safe regardless of special chars in the name.
+  const escaped = String(displayName).replace(/[\\"]/g, '\\$&');
+  return `"${escaped}" <${address}>`;
+}
+
 // ─── MIME helper (Gmail raw send) ────────────────────────────────────────────
-function buildRawMimeEmail({ from, to, subject, html, headers, replyTo, attachments }) {
+function buildRawMimeEmail({ from, fromName, to, subject, html, headers, replyTo, attachments }) {
   const boundary = `----=_Part_${Date.now()}_${Math.random().toString(36).slice(2)}`;
   const toStr = Array.isArray(to) ? to.join(', ') : to;
-  const lines = [`From: ${from}`, `To: ${toStr}`, `Subject: ${subject}`, 'MIME-Version: 1.0'];
+  const fromHeader = fromName ? formatAddress(from, fromName) : from;
+  const lines = [`From: ${fromHeader}`, `To: ${toStr}`, `Subject: ${subject}`, 'MIME-Version: 1.0'];
   if (replyTo) lines.push(`Reply-To: ${replyTo}`);
   if (headers) {
     for (const [k, v] of Object.entries(headers)) {
@@ -58,13 +69,13 @@ async function getGraphAppToken() {
   return result.accessToken;
 }
 
-async function sendViaGraph({ from, to, subject, html, headers, replyTo, attachments }) {
+async function sendViaGraph({ from, fromName, to, subject, html, headers, replyTo, attachments }) {
   const token = await getGraphAppToken();
   const message = {
     subject,
     body: { contentType: 'HTML', content: html },
     toRecipients: to.map(addr => ({ emailAddress: { address: addr } })),
-    from: { emailAddress: { address: from } },
+    from: { emailAddress: fromName ? { name: fromName, address: from } : { address: from } },
   };
   if (replyTo) message.replyTo = [{ emailAddress: { address: replyTo } }];
   if (headers && Object.keys(headers).length) {
@@ -97,7 +108,7 @@ async function sendViaGraph({ from, to, subject, html, headers, replyTo, attachm
 // Uses the same OAuth client credentials as login; admin must grant gmail.send
 // scope when configuring the Google app, and the from-address mailbox must be
 // authorized for impersonation (or use SMTP fallback for consumer accounts).
-async function sendViaGmail({ from, to, subject, html, headers, replyTo, attachments }) {
+async function sendViaGmail({ from, fromName, to, subject, html, headers, replyTo, attachments }) {
   const settings = await getAuthSettings();
   if (!process.env.GOOGLE_CLIENT_ID || !process.env.GOOGLE_CLIENT_SECRET) {
     throw new Error('Gmail backend requires GOOGLE_CLIENT_ID/GOOGLE_CLIENT_SECRET');
@@ -115,7 +126,7 @@ async function sendViaGmail({ from, to, subject, html, headers, replyTo, attachm
   });
   await jwt.authorize();
   const gmail = google.gmail({ version: 'v1', auth: jwt });
-  const raw = buildRawMimeEmail({ from, to, subject, html, headers, replyTo, attachments });
+  const raw = buildRawMimeEmail({ from, fromName, to, subject, html, headers, replyTo, attachments });
   await gmail.users.messages.send({ userId: 'me', requestBody: { raw } });
 }
 
@@ -138,11 +149,12 @@ function getSmtpTransport(settings) {
   return _smtpTransport;
 }
 
-async function sendViaSmtp({ from, to, subject, html, headers, replyTo, attachments }) {
+async function sendViaSmtp({ from, fromName, to, subject, html, headers, replyTo, attachments }) {
   const settings = await getAuthSettings();
   const transport = getSmtpTransport(settings || {});
   await transport.sendMail({
-    from, to: to.join(', '), subject, html,
+    from: fromName ? formatAddress(from, fromName) : from,
+    to: to.join(', '), subject, html,
     replyTo: replyTo || undefined,
     headers: headers || undefined,
     attachments: attachments?.map(a => ({ filename: a.filename, content: a.data, contentType: a.mimetype })),
@@ -156,7 +168,12 @@ function pickFromAddress(settings, backend) {
   return FALLBACK_FROM; // graph
 }
 
-async function sendMail({ to, subject, html, headers, replyTo, submitterEmail, attachments }) {
+// senderName, when given, becomes the display-name portion of the From
+// header — e.g. `"Josh Hearne (Resolvd)" <resolvd@motorhomesoftexas.com>`.
+// The address itself is always the connected mailbox; we no longer spoof
+// From with the submitter's address. This guarantees vendor replies land
+// in the system inbox instead of a personal mailbox.
+async function sendMail({ to, subject, html, headers, replyTo, senderName, attachments }) {
   const addresses = (Array.isArray(to) ? to : [to]).filter(Boolean);
   if (!addresses.length) return;
 
@@ -167,7 +184,7 @@ async function sendMail({ to, subject, html, headers, replyTo, submitterEmail, a
     const eb = require('./emailBackends');
     const active = await eb.getActiveAccount();
     if (active) {
-      return await sendMailViaAccount(active, { to: addresses, subject, html, headers, replyTo, submitterEmail, attachments });
+      return await sendMailViaAccount(active, { to: addresses, subject, html, headers, replyTo, senderName, attachments });
     }
   } catch (err) {
     console.error('sendMail: active backend lookup failed, falling back to legacy:', err.message);
@@ -176,7 +193,7 @@ async function sendMail({ to, subject, html, headers, replyTo, submitterEmail, a
   const settings = await getAuthSettings();
   const backend = settings?.email_backend || 'graph';
   const from = pickFromAddress(settings, backend);
-  const opts = { from, to: addresses, subject, html, headers, replyTo, attachments };
+  const opts = { from, fromName: senderName || null, to: addresses, subject, html, headers, replyTo, attachments };
   try {
     if (backend === 'smtp') await sendViaSmtp(opts);
     else if (backend === 'gmail') await sendViaGmail(opts);
@@ -190,7 +207,7 @@ async function sendMail({ to, subject, html, headers, replyTo, submitterEmail, a
 // email_backend_accounts row. Refreshes the OAuth access token if it's
 // near expiry. Used by both the active-account fast path above and by
 // the admin "test send" endpoint.
-async function sendMailViaAccount(rawAccount, { to, subject, html, headers, replyTo, submitterEmail, attachments }, req) {
+async function sendMailViaAccount(rawAccount, { to, subject, html, headers, replyTo, senderName, attachments }, req) {
   const eb = require('./emailBackends');
   // Decrypt secrets if not already decrypted (recordTest etc. might have
   // bypassed the helper).
@@ -204,14 +221,24 @@ async function sendMailViaAccount(rawAccount, { to, subject, html, headers, repl
     account = await eb.refreshIfNeeded(account, req);
   }
   const addresses = Array.isArray(to) ? to : [to];
-  // When send_as_submitter is on and a submitter email is available, send
-  // From the submitter and route replies back to the monitored mailbox.
-  // Requires Exchange "Send on Behalf Of" (M365) or Gmail delegation.
-  const useSubmitter = account.send_as_submitter && submitterEmail &&
-    ['graph_user', 'gmail_user'].includes(account.provider);
-  const effectiveFrom = useSubmitter ? submitterEmail : account.from_address;
-  const effectiveReplyTo = useSubmitter ? account.from_address : replyTo;
-  const opts = { from: effectiveFrom, to: addresses, subject, html, headers, replyTo: effectiveReplyTo, attachments };
+  // From is always the connected mailbox. When senderName is given (vendor
+  // outbound from a specific human actor), it rides as the display name —
+  // recipient sees `"Josh Hearne (Resolvd)" <resolvd@…>` and replies still
+  // route back to the monitored inbox. No Exchange Send-As perm required.
+  const effectiveFrom = account.from_address;
+  // Default Reply-To to the connected mailbox so even legacy paths that
+  // didn't pass replyTo still send vendor replies back to us.
+  const effectiveReplyTo = replyTo || account.from_address;
+  const opts = {
+    from: effectiveFrom,
+    fromName: senderName || null,
+    to: addresses,
+    subject,
+    html,
+    headers,
+    replyTo: effectiveReplyTo,
+    attachments,
+  };
   if (account.provider === 'smtp') {
     return await sendViaSmtpAccount(account, opts);
   }
@@ -224,7 +251,7 @@ async function sendMailViaAccount(rawAccount, { to, subject, html, headers, repl
   throw new Error(`Unsupported provider: ${account.provider}`);
 }
 
-async function sendViaSmtpAccount(account, { from, to, subject, html, headers, replyTo, attachments }) {
+async function sendViaSmtpAccount(account, { from, fromName, to, subject, html, headers, replyTo, attachments }) {
   const transport = nodemailer.createTransport({
     host: account.smtp_host,
     port: account.smtp_port || 587,
@@ -232,24 +259,30 @@ async function sendViaSmtpAccount(account, { from, to, subject, html, headers, r
     auth: account.smtp_user ? { user: account.smtp_user, pass: account.smtp_password } : undefined,
   });
   await transport.sendMail({
-    from, to: to.join(', '), subject, html,
+    from: fromName ? formatAddress(from, fromName) : from,
+    to: to.join(', '), subject, html,
     replyTo: replyTo || undefined,
     headers: headers || undefined,
     attachments: attachments?.map(a => ({ filename: a.filename, content: a.data, contentType: a.mimetype })),
   });
 }
 
-async function sendViaGraphUser(account, { from, to, subject, html, headers, replyTo, attachments }) {
+async function sendViaGraphUser(account, { from, fromName, to, subject, html, headers, replyTo, attachments }) {
   // Delegated /me/sendMail uses the user's own access token; no app-level
-  // Mail.Send permission required.
+  // Mail.Send permission required. The address must match the
+  // authenticated user — we always pass account.from_address — so no
+  // Send-As / Send-on-Behalf-Of permission is required. The display name
+  // is the only place the actor's identity appears.
   const message = {
     subject,
     body: { contentType: 'HTML', content: html },
     toRecipients: to.map(addr => ({ emailAddress: { address: addr } })),
   };
-  // from is set when send_as_submitter is on — requires Exchange "Send As"
-  // or "Send on Behalf Of" permission granted to this account by tenant admin.
-  if (from) message.from = { emailAddress: { address: from } };
+  if (from) {
+    message.from = {
+      emailAddress: fromName ? { name: fromName, address: from } : { address: from },
+    };
+  }
   if (replyTo) message.replyTo = [{ emailAddress: { address: replyTo } }];
   if (headers && Object.keys(headers).length) {
     message.internetMessageHeaders = Object.entries(headers)
@@ -277,8 +310,8 @@ async function sendViaGraphUser(account, { from, to, subject, html, headers, rep
   }
 }
 
-async function sendViaGmailUser(account, { from, to, subject, html, headers, replyTo, attachments }) {
-  const raw = buildRawMimeEmail({ from, to, subject, html, headers, replyTo, attachments });
+async function sendViaGmailUser(account, { from, fromName, to, subject, html, headers, replyTo, attachments }) {
+  const raw = buildRawMimeEmail({ from, fromName, to, subject, html, headers, replyTo, attachments });
   const r = await fetch('https://gmail.googleapis.com/gmail/v1/users/me/messages/send', {
     method: 'POST',
     headers: {

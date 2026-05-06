@@ -7,9 +7,10 @@
 //      auto-responders on the vendor side won't auto-reply.
 //   2. Custom X-Resolvd-No-Reply: 1 marker — Phase D's inbound webhook
 //      drops anything carrying it, killing reflective loops cold.
-//   3. Reply-To, when INBOUND_REPLY_TO is configured, points at the
-//      tenant's inbound mailbox so the vendor's reply lands in our
-//      unmatched-email queue, not in someone's personal inbox.
+//   3. From is always the connected mailbox (see services/email.js);
+//      actor identity rides as the display name. Reply-To defaults to the
+//      same mailbox so vendor replies always land in the unmatched-email
+//      queue. INBOUND_REPLY_TO env can override Reply-To if needed.
 //
 // Encryption note: under standard mode the renderer pulls plaintext from
 // services/fields.decryptRow before composing. The outbound message
@@ -170,12 +171,28 @@ async function sendVendorEmail({ eventType, ticketId, actorId }) {
       // Either way, wrap in baseHtml for consistent branded email layout.
       const bodyHtml = tplRow.is_html ? rendered.body : htmlify(rendered.body);
       const html = await baseHtml(rendered.subject, bodyHtml);
+      // Compose `Actor via SiteName` so vendors see the human who sent
+      // the message while the envelope From + Reply-To remain the
+      // monitored mailbox. The `via` pattern is the standard convention
+      // for proxied/automated mail (mailing lists, GitHub notifications,
+      // Gmail "Send mail as") — Outlook and Gmail render it consistently
+      // without overriding from a directory match, and anti-spoof filters
+      // (Inky VIP, Mimecast Impersonation Protect, etc.) recognize it as
+      // legitimate rather than treating `Name <unrelated@addr>` as an
+      // exec impersonation attempt. Falls back to email local-part, then
+      // to the bare site name when no actor is available.
+      const actorLabel = ctx.actor?.display_name
+        || ctx.actor?.email?.split('@')[0]
+        || null;
+      const senderName = actorLabel
+        ? `${actorLabel} via ${ctx.site.name}`
+        : ctx.site.name;
       await sendMail({
         to: contact.email,
         subject: rendered.subject,
         html,
         replyTo: REPLY_TO,
-        submitterEmail: ctx.submitterEmail,
+        senderName,
         attachments: imageAttachments,
         headers: {
           'Auto-Submitted': 'auto-generated',
