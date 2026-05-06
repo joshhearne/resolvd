@@ -96,16 +96,6 @@ export function AuthProvider({ children }) {
     return data.user;
   }
 
-  async function setDefaultProject(projectId) {
-    await fetch("/api/users/me/preferences", {
-      method: "PATCH",
-      credentials: "include",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ default_project_id: projectId }),
-    });
-    setUser((u) => ({ ...u, defaultProjectId: projectId || null }));
-  }
-
   async function updatePrefs(patch) {
     const res = await fetch("/api/users/me/prefs", {
       method: "PATCH",
@@ -115,8 +105,15 @@ export function AuthProvider({ children }) {
     });
     if (!res.ok) throw new Error("Failed to save preference");
     const merged = await res.json();
-    setUser((u) => (u ? { ...u, preferences: merged } : u));
+    const { default_project_id, ...prefs } = merged;
+    setUser((u) =>
+      u ? { ...u, preferences: prefs, defaultProjectId: default_project_id ?? null } : u
+    );
     return merged;
+  }
+
+  async function setDefaultProject(projectId) {
+    return updatePrefs({ default_project_id: projectId || null });
   }
 
   return (

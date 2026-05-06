@@ -100,29 +100,6 @@ router.patch('/:id/role', requireAuth, requireRole('Admin'), async (req, res) =>
   }
 });
 
-// PATCH /api/users/me/preferences — any authenticated user
-router.patch('/me/preferences', requireAuth, async (req, res) => {
-  try {
-    const { default_project_id } = req.body;
-    const userId = req.session.user.id;
-
-    // null clears the preference; otherwise verify project exists and user can access it
-    if (default_project_id !== null && default_project_id !== undefined) {
-      const proj = await pool.query('SELECT id FROM projects WHERE id = $1 AND status = $2', [default_project_id, 'active']);
-      if (!proj.rows[0]) return res.status(404).json({ error: 'Project not found' });
-    }
-
-    const val = default_project_id || null;
-    await pool.query('UPDATE users SET default_project_id = $1 WHERE id = $2', [val, userId]);
-    req.session.user.defaultProjectId = val;
-    req.session.save(() => {});
-    res.json({ default_project_id: val });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Database error' });
-  }
-});
-
 // Defaults for the QoL preferences blob. Anything missing on read falls
 // back to these — keeps the frontend simple and avoids null checks.
 const PREF_DEFAULTS = Object.freeze({
@@ -144,12 +121,21 @@ const PREF_DEFAULTS = Object.freeze({
   timezone_override: '',
 });
 
-// GET /api/users/me/prefs — return merged defaults + stored values
+// GET /api/users/me/prefs — return merged defaults + stored values.
+// `default_project_id` is a real column (not part of the JSON blob) but
+// is surfaced here too so a single endpoint covers all per-user prefs.
 router.get('/me/prefs', requireAuth, async (req, res) => {
   try {
-    const r = await pool.query('SELECT preferences FROM users WHERE id = $1', [req.session.user.id]);
+    const r = await pool.query(
+      'SELECT preferences, default_project_id FROM users WHERE id = $1',
+      [req.session.user.id]
+    );
     const stored = r.rows[0]?.preferences || {};
-    res.json({ ...PREF_DEFAULTS, ...stored });
+    res.json({
+      ...PREF_DEFAULTS,
+      ...stored,
+      default_project_id: r.rows[0]?.default_project_id ?? null,
+    });
   } catch (err) {
     console.error('prefs get error:', err);
     res.status(500).json({ error: 'Database error' });
@@ -160,17 +146,43 @@ router.get('/me/prefs', requireAuth, async (req, res) => {
 // stored preferences blob. Unknown keys are accepted and persisted as-is
 // (settings inventory is intentionally additive — invalid values just
 // get ignored by the consumer).
+//
+// `default_project_id` is peeled off and routed to the dedicated column;
+// it never enters the JSON blob. `null` clears it; a value is validated
+// against active projects.
 router.patch('/me/prefs', requireAuth, async (req, res) => {
   try {
-    const patch = req.body && typeof req.body === 'object' ? req.body : {};
-    if (Array.isArray(patch)) return res.status(400).json({ error: 'Body must be an object' });
+    const body = req.body && typeof req.body === 'object' ? req.body : {};
+    if (Array.isArray(body)) return res.status(400).json({ error: 'Body must be an object' });
+    const userId = req.session.user.id;
+
+    const { default_project_id, ...patch } = body;
+
+    if (Object.prototype.hasOwnProperty.call(body, 'default_project_id')) {
+      if (default_project_id !== null && default_project_id !== undefined) {
+        const proj = await pool.query(
+          'SELECT id FROM projects WHERE id = $1 AND status = $2',
+          [default_project_id, 'active']
+        );
+        if (!proj.rows[0]) return res.status(404).json({ error: 'Project not found' });
+      }
+      const val = default_project_id || null;
+      await pool.query('UPDATE users SET default_project_id = $1 WHERE id = $2', [val, userId]);
+      req.session.user.defaultProjectId = val;
+      req.session.save(() => {});
+    }
+
     const r = await pool.query(
       `UPDATE users SET preferences = preferences || $1::jsonb
-        WHERE id = $2 RETURNING preferences`,
-      [JSON.stringify(patch), req.session.user.id]
+        WHERE id = $2 RETURNING preferences, default_project_id`,
+      [JSON.stringify(patch), userId]
     );
     const stored = r.rows[0]?.preferences || {};
-    res.json({ ...PREF_DEFAULTS, ...stored });
+    res.json({
+      ...PREF_DEFAULTS,
+      ...stored,
+      default_project_id: r.rows[0]?.default_project_id ?? null,
+    });
   } catch (err) {
     console.error('prefs patch error:', err);
     res.status(500).json({ error: 'Database error' });

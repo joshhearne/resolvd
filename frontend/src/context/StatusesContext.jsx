@@ -7,6 +7,28 @@ import React, {
 } from "react";
 import { useAuth } from "./AuthContext";
 
+// Fallback name lists used by editors when /api/statuses hasn't loaded
+// yet (loading state) or the call failed. Kept in sync with the seed
+// rows in backend/db/schema.js. Live admin-renamed lists from the API
+// take precedence whenever non-empty.
+export const DEFAULT_INTERNAL_STATUSES = [
+  'Open',
+  'In Progress',
+  'On Hold',
+  'Awaiting Input',
+  'Pending Review',
+  'Resolved',
+  'Closed',
+  'Reopened',
+];
+export const DEFAULT_EXTERNAL_STATUSES = [
+  'Unacknowledged',
+  'Acknowledged',
+  'In Progress',
+  'Resolved',
+  "Won't Fix",
+];
+
 const StatusesContext = createContext(null);
 
 export function StatusesProvider({ children }) {

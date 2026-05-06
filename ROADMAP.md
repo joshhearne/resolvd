@@ -67,8 +67,6 @@ Site explicitly tags these as "launching soon" or part of paid hosted tiers. Bui
 
 ### Plumbing / debt
 - `ROADMAP.md` (this file) — keep current.
-- `INTERNAL_STATUSES` fallback list in `frontend/src/utils/helpers.js` is hardcoded; consider sourcing from StatusesContext defaults.
-- `/api/users/me/preferences` (legacy default_project_id endpoint) lives alongside `/api/users/me/prefs` — consider folding the former into the latter and dropping the duplicate route.
 
 ## Conventions worth remembering
 

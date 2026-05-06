@@ -6,8 +6,6 @@ import { useAuth } from "../context/AuthContext";
 import {
   computePriority,
   priorityClass,
-  INTERNAL_STATUSES,
-  EXTERNAL_STATUSES,
   IMPACT_LABELS,
   URGENCY_LABELS,
 } from "../utils/helpers";
@@ -17,6 +15,8 @@ import {
   nextAllowedStatusIds,
   statusByName,
   suggestedExternalForInternal,
+  DEFAULT_INTERNAL_STATUSES,
+  DEFAULT_EXTERNAL_STATUSES,
 } from "../context/StatusesContext";
 import PriorityBadge from "../components/PriorityBadge";
 import StatusBadge from "../components/StatusBadge";
@@ -1637,7 +1637,7 @@ export default function TicketDetail() {
                         : null;
                       const opts = statusCfg.internal.length
                         ? statusCfg.internal.map((s) => s.name)
-                        : INTERNAL_STATUSES;
+                        : DEFAULT_INTERNAL_STATUSES;
                       const labelFor = (name) => {
                         if (!cur || !allowedIds) return name;
                         const def = statusByName(statusCfg.internal, name);
@@ -1761,7 +1761,7 @@ export default function TicketDetail() {
                       {(() => {
                         const opts = statusCfg.external.length
                           ? statusCfg.external.map((s) => s.name)
-                          : EXTERNAL_STATUSES;
+                          : DEFAULT_EXTERNAL_STATUSES;
                         const cur = statusByName(
                           statusCfg.external,
                           ticket.external_status,
