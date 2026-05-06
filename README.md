@@ -197,6 +197,7 @@ Any internal status with `semantic_tag='pending_review'` accepts a follow-up rem
 - **@mentions**: type `@` in the comment box to open a dropdown scoped to members of the ticket's project. Up/Down to navigate, Right arrow or Enter to inject the token, Escape to dismiss. Token format: `@first.last` derived from the user's display name. Matched users auto-follow the ticket and receive an in-app notification + best-effort email (gated by recipient's `email_on_comment` preference).
 - **Ctrl+Enter posts a comment** (per-user pref).
 - **Bulk Edit** (Admin only): button next to the "Tickets (##)" header swaps the search bar + New Ticket button for an action bar (Status / Assignee / Project) and adds a checkbox column. Select up to 500 rows, pick the fields to change, hit Apply. Each ticket is updated in its own transaction (one failure doesn't roll back the batch), audited, and assignment / status-change notifications fan out per recipient prefs. Vendor outbound is skipped for bulk to avoid noise — fire per-ticket if needed. Project moves re-issue `internal_ref` and detach vendor contacts (mirrors single-move semantics).
+- **Merge tickets** (Admin only): search-driven picker by ticket reference (e.g. `WEB-0042`), title, or description — no more guessing numeric IDs. Inline from a ticket (the current ticket is pre-filled as one side; pick the partner) or standalone via **Admin → Merge tickets** with both sides empty. Direction is chosen with a "Swap winner ⇄" toggle, not by which ticket you opened first. Comments, attachments, audit history, vendor contacts, and followers reassign to the winner; loser is closed with a pointer.
 
 ---
 
@@ -242,9 +243,13 @@ Comments marked **Share with vendor** by an Admin/Manager fire an outbound email
 
 - `Auto-Submitted: auto-generated`
 - `X-Resolvd-No-Reply: 1`
-- `Reply-To: $INBOUND_REPLY_TO` when configured
+- `Reply-To: $INBOUND_REPLY_TO` when configured (defaults to the connected mailbox's `from_address` so replies always loop back to the system)
 
 so vendor helpdesks don't auto-reply and reflective loops are dropped on ingest.
+
+**From identity.** The `From` address is always the connected mailbox (e.g. `resolvd@motorhomesoftexas.com`). The acting human rides as the display name in the `Actor via SiteName` convention — `"Josh Hearne via Resolvd" <resolvd@…>`. Outlook, Gmail, and anti-spoof gateways (Inky VIP, Mimecast Impersonation Protect, Proofpoint) recognize `via` as legitimate proxied mail and don't override the display name with a directory match. No Exchange "Send As" permission required.
+
+**Reply-above-this-line marker.** Every vendor outbound prepends a visible `--- Type your reply above this line — ticket {ref} ---` divider. The inbound parser cuts at the marker so quoted history, mail-client headers, and signatures drop automatically — the comment ends up as exactly what the vendor typed.
 
 Images attached to the ticket are included as file attachments only on the `new_ticket` and `new_comment` events. Status-change and resolved emails send body text only — keeps the inbox light when a ticket churns through several states (Graph, SMTP, and Gmail backends all supported).
 
@@ -336,6 +341,14 @@ The renewal scheduler runs hourly and re-issues any subscription within 12h of e
 - **SMTP** — legacy form for self-hosters. Use Gmail/Workspace App Passwords (`smtp.gmail.com:587`, STARTTLS, 16-char app password) when SMTP is the only option.
 
 The active account is enforced single-row by a partial unique index. Token refresh runs automatically before expiry.
+
+### Inbound banner stripping (per account)
+
+Mail-security gateways (Inky, Mimecast, Proofpoint, Avanan) inject recipient banners on inbound mail flagging external/first-time/VIP senders. The banner sits **above** the user's reply, so cutting at it would discard real content. Per-account banner-strip patterns let the admin remove banners inline before the body lands in the queue.
+
+**Try the gateway first.** If the connected inbox is a licensed resource mailbox (no human user), most gateways let you suppress recipient banners per-mailbox while keeping malware/phishing scans active. That's cleaner than regex stripping.
+
+When upstream suppression isn't an option, **Admin → Email backends → {account} → Inbound banner stripping** accepts a list of regex patterns (one per line, applied case-insensitive multi-line). Preset buttons drop in the known regex for Inky, Mimecast, Proofpoint, and Avanan.
 
 ### Email templates
 

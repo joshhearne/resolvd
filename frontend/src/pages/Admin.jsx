@@ -15,6 +15,7 @@ const ADMIN_ONLY_TABS = [
   { to: "/admin/branding", label: "Branding" },
   { to: "/admin/email-templates", label: "Email templates" },
   { to: "/admin/email-backends", label: "Email backends" },
+  { to: "/admin/merge", label: "Merge tickets" },
   { to: "/admin/support", label: "Support access" },
   { to: "/admin/encryption", label: "Encryption" },
 ];

@@ -24,6 +24,7 @@ import MarkdownEditor from "../components/MarkdownEditor";
 import MarkdownContent from "../components/MarkdownContent";
 import ConfirmDialog from "../components/ConfirmDialog";
 import PhoneticPopover from "../components/PhoneticPopover";
+import MergePicker from "../components/MergePicker";
 
 // External ticket refs may hold multiple vendor IDs separated by comma
 // or semicolon (e.g. "VND-1234, VND-5678" or "VND-1234;VND-5678").
@@ -2153,13 +2154,13 @@ export default function TicketDetail() {
         onConfirm={deleteTicket}
         onCancel={() => setConfirm(null)}
       />
-      <MergeDialog
+      <MergePicker
         open={confirm === "merge"}
-        loserRef={ticket.internal_ref}
+        anchorTicket={ticket}
         onCancel={() => setConfirm(null)}
-        onConfirm={async (winnerId) => {
+        onConfirm={async ({ loserId, winnerId }) => {
           try {
-            const r = await api.post(`/api/tickets/${ticket.id}/merge`, { winner_id: winnerId });
+            const r = await api.post(`/api/tickets/${loserId}/merge`, { winner_id: winnerId });
             toast.success(`${r.loser_ref} merged into ${r.winner_ref}`);
             navigate(`/tickets/${winnerId}`);
           } catch (e) { toast.error(e.message); }
@@ -2385,38 +2386,3 @@ function MoveDialog({ open, currentRef, currentProjectId, userRole, onCancel, on
   );
 }
 
-function MergeDialog({ open, loserRef, onCancel, onConfirm }) {
-  const [winnerId, setWinnerId] = React.useState("");
-  React.useEffect(() => { if (!open) setWinnerId(""); }, [open]);
-  if (!open) return null;
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
-      <div className="bg-surface border border-border rounded-lg shadow-xl max-w-md w-full p-5">
-        <h3 className="text-lg font-semibold text-fg mb-2">Merge ticket</h3>
-        <p className="text-sm text-fg-muted mb-3">
-          Merging <strong>{loserRef}</strong> into another ticket reassigns its comments,
-          attachments, audit history, vendor contacts, and followers, then closes <strong>{loserRef}</strong>.
-        </p>
-        <p className="text-xs text-fg-muted mb-2">Tickets must be in the same project.</p>
-        <input
-          type="number"
-          autoFocus
-          value={winnerId}
-          onChange={(e) => setWinnerId(e.target.value)}
-          placeholder="Winner ticket id (numeric)"
-          className="w-full bg-surface-2 border border-border rounded px-3 py-2 text-sm"
-        />
-        <div className="flex justify-end gap-2 mt-4">
-          <button onClick={onCancel} className="btn-secondary btn btn-sm">Cancel</button>
-          <button
-            onClick={() => onConfirm(parseInt(winnerId, 10))}
-            disabled={!winnerId}
-            className="btn-primary btn btn-sm disabled:opacity-50"
-          >
-            Merge
-          </button>
-        </div>
-      </div>
-    </div>
-  );
-}
