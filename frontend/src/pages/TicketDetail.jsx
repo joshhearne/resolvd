@@ -25,6 +25,24 @@ import MarkdownContent from "../components/MarkdownContent";
 import ConfirmDialog from "../components/ConfirmDialog";
 import PhoneticPopover from "../components/PhoneticPopover";
 
+// External ticket refs may hold multiple vendor IDs separated by comma
+// or semicolon (e.g. "VND-1234, VND-5678" or "VND-1234;VND-5678").
+// Each token gets its own phonetic-readback popover; original separators
+// are preserved between tokens.
+function ExternalRefList({ value }) {
+  const parts = String(value).split(/([,;])/);
+  return (
+    <>
+      {parts.map((p, i) => {
+        if (p === "," || p === ";") return <span key={i}>{p} </span>;
+        const trimmed = p.trim();
+        if (!trimmed) return null;
+        return <PhoneticPopover key={i} value={trimmed}>{trimmed}</PhoneticPopover>;
+      })}
+    </>
+  );
+}
+
 // Pick the "primary advance" target for the next-step button. Skips
 // blocker statuses (Awaiting Input, On Hold) and the reopened tag.
 // From a blocker/reopened state, resume to the in_progress-tagged
@@ -1884,7 +1902,9 @@ export default function TicketDetail() {
                   ) : (
                     <div className="flex items-center justify-between">
                       <span className="text-sm text-fg">
-                        {ticket.external_ticket_ref || (
+                        {ticket.external_ticket_ref ? (
+                          <ExternalRefList value={ticket.external_ticket_ref} />
+                        ) : (
                           <span className="text-fg-dim">—</span>
                         )}
                       </span>

@@ -1,4 +1,5 @@
-import React, { useState } from "react";
+import React, { useState, useRef, useLayoutEffect, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { parseRef, readbackString } from "../utils/phonetic";
 import { useAuth } from "../context/AuthContext";
 import { useBranding } from "../context/BrandingContext";
@@ -8,6 +9,10 @@ import { useBranding } from "../context/BrandingContext";
 // "Whiskey Echo Bravo - 0 0 7 9". Letters get NATO words; digits and the
 // dash are shown as-is. Theme-aware via Tailwind dark: classes.
 //
+// Popover is portaled to document.body with position:fixed so it is not
+// clipped by ancestor overflow:hidden containers (e.g. the ticket list
+// table wrapper).
+//
 // Gated by:
 //   - admin org toggle (branding.phonetic_readback_enabled, default ON)
 //   - per-user preference (preferences.phonetic_readback, default ON)
@@ -16,10 +21,31 @@ export default function PhoneticPopover({ value, children, className = "" }) {
   const { user } = useAuth();
   const { branding } = useBranding();
   const [open, setOpen] = useState(false);
+  const [coords, setCoords] = useState({ left: 0, top: 0 });
+  const anchorRef = useRef(null);
 
   const orgEnabled = branding?.phonetic_readback_enabled !== false;
   const userEnabled = (user?.preferences?.phonetic_readback ?? true) !== false;
   const enabled = orgEnabled && userEnabled;
+
+  const updateCoords = useCallback(() => {
+    const el = anchorRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    setCoords({ left: r.left, top: r.bottom + 4 });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    updateCoords();
+    const onScroll = () => updateCoords();
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onScroll);
+    return () => {
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onScroll);
+    };
+  }, [open, updateCoords]);
 
   if (!enabled) {
     return <span className={className}>{children ?? value}</span>;
@@ -30,7 +56,8 @@ export default function PhoneticPopover({ value, children, className = "" }) {
 
   return (
     <span
-      className={`relative inline-block ${className}`}
+      ref={anchorRef}
+      className={`inline-block ${className}`}
       onMouseEnter={() => setOpen(true)}
       onMouseLeave={() => setOpen(false)}
       onFocus={() => setOpen(true)}
@@ -38,10 +65,11 @@ export default function PhoneticPopover({ value, children, className = "" }) {
       title={flat}
     >
       {children ?? value}
-      {open && tokens.length > 0 && (
+      {open && tokens.length > 0 && createPortal(
         <span
           role="tooltip"
-          className="absolute left-0 top-full mt-1 z-50 whitespace-nowrap rounded-md border border-border bg-surface text-fg shadow-lg px-3 py-2 text-xs font-sans"
+          style={{ position: "fixed", left: coords.left, top: coords.top }}
+          className="z-[9999] whitespace-nowrap rounded-md border border-border bg-surface text-fg shadow-lg px-3 py-2 text-xs font-sans pointer-events-none"
         >
           <span className="flex items-baseline gap-2">
             {tokens.map((t, i) => (
@@ -72,7 +100,8 @@ export default function PhoneticPopover({ value, children, className = "" }) {
               </span>
             ))}
           </span>
-        </span>
+        </span>,
+        document.body
       )}
     </span>
   );
