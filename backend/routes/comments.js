@@ -15,14 +15,24 @@ const router = express.Router();
 // GET /api/tickets/:id/comments
 router.get('/:id/comments', requireAuth, async (req, res) => {
   try {
+    // vendor_company_id rides along when a comment came from a vendor
+    // contact, so the UI can theme the pill per-vendor (multiple vendors
+    // per project gets unique deterministic colors).
     const result = await pool.query(`
-      SELECT c.*, u.display_name as user_name, u.email as user_email
+      SELECT c.*, u.display_name as user_name, u.email as user_email,
+        vc.company_id as vendor_company_id,
+        vco.name as vendor_company_name,
+        vco.name_enc as vendor_company_name_enc
       FROM comments c
       LEFT JOIN users u ON c.user_id = u.id
+      LEFT JOIN contacts vc ON vc.id = c.vendor_contact_id
+      LEFT JOIN companies vco ON vco.id = vc.company_id
       WHERE c.ticket_id = $1
       ORDER BY c.created_at ASC
     `, [req.params.id]);
-    await decryptRows('comments', result.rows);
+    await decryptRows('comments', result.rows, {
+      aliases: { vendor_company_name: 'companies.name' },
+    });
     res.json(result.rows);
   } catch (err) {
     console.error(err);

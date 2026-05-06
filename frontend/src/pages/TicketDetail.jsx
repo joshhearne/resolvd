@@ -25,6 +25,7 @@ import MarkdownContent from "../components/MarkdownContent";
 import ConfirmDialog from "../components/ConfirmDialog";
 import PhoneticPopover from "../components/PhoneticPopover";
 import MergePicker from "../components/MergePicker";
+import { vendorPillStyle, VENDOR_PILL_CLASSES } from "../utils/vendorColor";
 
 // External ticket refs may hold multiple vendor IDs separated by comma
 // or semicolon (e.g. "VND-1234, VND-5678" or "VND-1234;VND-5678").
@@ -1188,7 +1189,13 @@ export default function TicketDetail() {
                             <span className="text-[10px] px-1 py-0.5 rounded bg-brand/15 text-brand uppercase">to vendor</span>
                           )}
                           {c.vendor_contact_id && (
-                            <span className="text-[10px] px-1 py-0.5 rounded bg-amber-500/15 text-amber-700 uppercase">from vendor</span>
+                            <span
+                              className={`text-[10px] px-1 py-0.5 rounded uppercase ${VENDOR_PILL_CLASSES}`}
+                              style={vendorPillStyle(c.vendor_company_id ?? c.vendor_contact_id)}
+                              title={c.vendor_company_name ? `Reply from ${c.vendor_company_name}` : "Reply from vendor"}
+                            >
+                              from {c.vendor_company_name || "vendor"}
+                            </span>
                           )}
                           {c.is_muted && (
                             <span className="text-[10px] px-1 py-0.5 rounded bg-surface text-fg-dim uppercase">muted</span>
