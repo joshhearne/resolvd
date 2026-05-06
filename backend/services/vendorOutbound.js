@@ -121,6 +121,19 @@ function htmlify(body) {
   return `<div style="font-family:system-ui,-apple-system,sans-serif;white-space:pre-wrap;font-size:14px;color:#111827">${escaped}</div>`;
 }
 
+// Visible marker prepended to every outbound vendor email body. The
+// inbound parser cuts at the first occurrence so anything quoted below
+// (the original message, signatures, mail-client banners) is dropped
+// before the reply lands as a comment. Phrasing is intentionally
+// human-readable; the surrounding `---` triple-dash bookends are the
+// machine token. Triple-dash on its own won't collide with stripSignature
+// (which requires four-or-more dashes for a sig boundary).
+const REPLY_MARKER_TEXT = 'Type your reply above this line';
+function replyMarkerHtml(ticketRef) {
+  const ref = ticketRef ? ` — ticket ${ticketRef}` : '';
+  return `<div style="font-family:system-ui,-apple-system,sans-serif;font-size:11px;color:#9ca3af;border-bottom:1px solid #e5e7eb;padding:0 0 8px;margin:0 0 16px;text-align:center;letter-spacing:0.01em">--- ${REPLY_MARKER_TEXT}${ref} ---</div>`;
+}
+
 async function sendVendorEmail({ eventType, ticketId, actorId }) {
   // Status/resolved notifications only go out if the vendor was already
   // contacted about this ticket (new_ticket or vendor-visible comment sent).
@@ -170,7 +183,8 @@ async function sendVendorEmail({ eventType, ticketId, actorId }) {
       // HTML templates are treated as partial markup — not full documents.
       // Either way, wrap in baseHtml for consistent branded email layout.
       const bodyHtml = tplRow.is_html ? rendered.body : htmlify(rendered.body);
-      const html = await baseHtml(rendered.subject, bodyHtml);
+      const composed = replyMarkerHtml(ctx.ticket.internal_ref) + bodyHtml;
+      const html = await baseHtml(rendered.subject, composed);
       // Compose `Actor via SiteName` so vendors see the human who sent
       // the message while the envelope From + Reply-To remain the
       // monitored mailbox. The `via` pattern is the standard convention

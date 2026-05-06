@@ -119,6 +119,19 @@ async function deleteSubscription(account) {
   );
 }
 
+// Applies admin-configured banner-strip regex patterns to an inbound
+// body. Each pattern compiled with /im flags. Bad patterns are skipped
+// with a warning so a single typo can't break ingestion.
+function applyBannerPatterns(body, patterns) {
+  if (!body || !Array.isArray(patterns) || !patterns.length) return body;
+  let out = body;
+  for (const p of patterns) {
+    try { out = out.replace(new RegExp(p, 'gim'), ''); }
+    catch (err) { console.warn(`graphInbox: skipping invalid banner pattern "${p}": ${err.message}`); }
+  }
+  return out;
+}
+
 // Fetch a message + its attachments and convert to the JSON shape the
 // /api/inbound/generic ingestor expects.
 async function fetchMessageAsPayload(account, messageId) {
@@ -141,6 +154,9 @@ async function fetchMessageAsPayload(account, messageId) {
   for (const h of (m.internetMessageHeaders || [])) {
     if (h?.name) headers[h.name] = h.value;
   }
+  const rawBody = m.body?.contentType === 'html'
+    ? stripHtml(m.body?.content || '')
+    : (m.body?.content || '');
   return {
     source: 'graph',
     external_message_id: m.internetMessageId || m.id,
@@ -149,9 +165,7 @@ async function fetchMessageAsPayload(account, messageId) {
     to: (m.toRecipients || []).map(r => r.emailAddress?.address).filter(Boolean).join(', '),
     cc: (m.ccRecipients || []).map(r => r.emailAddress?.address).filter(Boolean),
     subject: m.subject || '',
-    body: (m.body?.contentType === 'html'
-      ? stripHtml(m.body?.content || '')
-      : (m.body?.content || '')),
+    body: applyBannerPatterns(rawBody, account.inbound_banner_strip_patterns),
     message_id: m.internetMessageId,
     in_reply_to: headers['In-Reply-To'] || null,
     references: headers['References'] || null,
@@ -161,13 +175,15 @@ async function fetchMessageAsPayload(account, messageId) {
 }
 
 // Best-effort HTML → plaintext for ticket descriptions. Doesn't try to
-// preserve formatting — just removes tags and decodes basic entities.
+// preserve formatting — just removes tags, decodes basic entities, and
+// inserts newlines on block-level closers so line-anchored regex in the
+// inbound parser (signature/quote/banner heuristics) actually fires.
 function stripHtml(html) {
   return String(html)
     .replace(/<style[\s\S]*?<\/style>/gi, '')
     .replace(/<script[\s\S]*?<\/script>/gi, '')
     .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n\n')
+    .replace(/<\/(p|div|li|h[1-6]|tr|td|th|blockquote|article|section|header|footer|pre)\s*>/gi, '\n')
     .replace(/<[^>]+>/g, '')
     .replace(/&nbsp;/g, ' ')
     .replace(/&amp;/g, '&')
@@ -175,6 +191,11 @@ function stripHtml(html) {
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
+    // Inky and similar mail-security scanners pad their banners with long
+    // runs of zero-width non-joiners (U+200C). Collapse those to nothing
+    // so the surrounding banner text becomes detectable as one block.
+    .replace(/‌+/g, '')
+    .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }

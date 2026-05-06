@@ -152,6 +152,39 @@ router.post('/:id/send-as-submitter', requireAuth, requireRole('Admin'), async (
   }
 });
 
+// POST /api/email-backends/:id/banner-patterns  body: { patterns: [string] }
+// Replace the per-account banner-strip regex array. Each entry is a
+// POSIX regex applied case-insensitive multi-line. An empty array
+// disables stripping for the account.
+router.post('/:id/banner-patterns', requireAuth, requireRole('Admin'), async (req, res) => {
+  try {
+    const patterns = Array.isArray(req.body?.patterns) ? req.body.patterns : null;
+    if (patterns === null) return res.status(400).json({ error: 'patterns must be an array' });
+    // Validate: every entry compiles as a regex.
+    for (const p of patterns) {
+      if (typeof p !== 'string' || !p.trim()) {
+        return res.status(400).json({ error: 'each pattern must be a non-empty string' });
+      }
+      try { new RegExp(p, 'im'); }
+      catch (err) {
+        return res.status(400).json({ error: `invalid regex: ${p} — ${err.message}` });
+      }
+    }
+    const r = await pool.query(
+      `UPDATE email_backend_accounts
+          SET inbound_banner_strip_patterns = $1, updated_at = NOW()
+        WHERE id = $2
+        RETURNING id, inbound_banner_strip_patterns`,
+      [patterns, req.params.id]
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'Not found' });
+    res.json({ ok: true, inbound_banner_strip_patterns: r.rows[0].inbound_banner_strip_patterns });
+  } catch (e) {
+    console.error('banner-patterns save failed:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 router.delete('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
   try { await eb.deleteAccount(req.params.id); res.json({ ok: true }); }
   catch (e) { res.status(500).json({ error: e.message }); }

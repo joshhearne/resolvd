@@ -832,6 +832,14 @@ async function initSchema() {
     // granted to the backend account by a tenant admin outside the app.
     await client.query(`ALTER TABLE email_backend_accounts ADD COLUMN IF NOT EXISTS send_as_submitter BOOLEAN NOT NULL DEFAULT FALSE`);
 
+    // Per-account regex patterns applied to inbound mail bodies before
+    // ingestion. Lets admins strip recipient banners injected by mail
+    // security gateways (Inky, Mimecast, Proofpoint, Avanan) when they
+    // can't suppress the banner upstream. Patterns are POSIX-style and
+    // applied with case-insensitive multi-line flags. Empty array =
+    // no per-account stripping.
+    await client.query(`ALTER TABLE email_backend_accounts ADD COLUMN IF NOT EXISTS inbound_banner_strip_patterns TEXT[] NOT NULL DEFAULT '{}'`);
+
     // In-app notification tray. Surfaces actionable system events to
     // Managers and Admins — e.g. unmatched CC addresses from email intake
     // that need to be resolved as contacts. data JSONB carries

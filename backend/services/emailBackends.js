@@ -173,6 +173,7 @@ async function listAccounts() {
            smtp_host, smtp_port, smtp_user, smtp_secure,
            inbox_monitor_enabled, inbox_subscription_expires_at,
            inbox_last_renewed_at, send_as_submitter,
+           inbound_banner_strip_patterns,
            created_at, updated_at
       FROM email_backend_accounts
      ORDER BY is_active DESC, updated_at DESC

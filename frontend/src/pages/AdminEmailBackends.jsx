@@ -82,6 +82,14 @@ export default function AdminEmailBackends() {
     } catch (e) { toast.error(e.message); }
   }
 
+  async function saveBannerPatterns(id, patterns) {
+    try {
+      await api.post(`/api/email-backends/${id}/banner-patterns`, { patterns });
+      await reload();
+      toast.success(patterns.length ? `Saved ${patterns.length} pattern(s)` : "Patterns cleared");
+    } catch (e) { toast.error(e.message); }
+  }
+
   async function saveSmtp(e) {
     e.preventDefault();
     try {
@@ -226,6 +234,12 @@ export default function AdminEmailBackends() {
                             </div>
                           )}
                         </div>
+                        {a.inbox_monitor_enabled && (
+                          <BannerStripSection
+                            account={a}
+                            onSave={(patterns) => saveBannerPatterns(a.id, patterns)}
+                          />
+                        )}
                       </div>
                     )}
                   </div>
@@ -253,6 +267,125 @@ export default function AdminEmailBackends() {
         callback URL <code>{window.location.origin}/api/email-backends/oauth/callback</code> registered as a
         redirect URI on the OAuth app.
       </div>
+    </div>
+  );
+}
+
+// Known recipient-banner patterns for common mail-security gateways.
+// Each pattern is applied with /im flags on inbound bodies; matched
+// content is removed before the body lands in the queue.
+const BANNER_PRESETS = [
+  {
+    key: "inky",
+    label: "Inky",
+    pattern: "^\\s*Caution:\\s*External[\\s\\S]*?Protection by INKY[^\\n]*",
+  },
+  {
+    key: "mimecast",
+    label: "Mimecast",
+    pattern: "^\\s*\\[?CAUTION:?\\]?[^\\n]*External[^\\n]{0,300}",
+  },
+  {
+    key: "proofpoint",
+    label: "Proofpoint",
+    pattern: "\\[EXTERNAL\\][\\s\\S]*?This email originated from outside[^\\n]*",
+  },
+  {
+    key: "avanan",
+    label: "Avanan",
+    pattern: "^\\s*\\*\\*\\* External Email \\*\\*\\*[^\\n]*",
+  },
+];
+
+function BannerStripSection({ account, onSave }) {
+  const [open, setOpen] = useState(false);
+  const initial = (account.inbound_banner_strip_patterns || []).join("\n");
+  const [draft, setDraft] = useState(initial);
+  const dirty = draft !== initial;
+
+  function addPreset(p) {
+    const lines = draft.split("\n").map((s) => s.trim()).filter(Boolean);
+    if (lines.includes(p)) return;
+    lines.push(p);
+    setDraft(lines.join("\n"));
+  }
+
+  async function save() {
+    const patterns = draft.split("\n").map((s) => s.trim()).filter(Boolean);
+    await onSave(patterns);
+  }
+
+  const count = (account.inbound_banner_strip_patterns || []).length;
+
+  return (
+    <div className="mt-2 border-t border-border pt-2">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="text-xs text-fg-muted hover:text-fg flex items-center gap-1"
+      >
+        <span>{open ? "▾" : "▸"}</span>
+        Inbound banner stripping
+        {count > 0 && (
+          <span className="ml-1 px-1.5 py-0.5 rounded bg-brand/15 text-brand text-[10px]">
+            {count} active
+          </span>
+        )}
+      </button>
+      {open && (
+        <div className="mt-2 space-y-2 text-[11px]">
+          <div className="rounded bg-blue-50 dark:bg-blue-950/40 border border-blue-300 dark:border-blue-700 px-2.5 py-2 text-blue-900 dark:text-blue-200 leading-snug">
+            <strong>Try the gateway first.</strong> If this is a licensed
+            resource mailbox (no human user), most gateways (Inky, Mimecast,
+            Proofpoint) let you suppress recipient banners per-mailbox while
+            keeping malware/phishing scans active. That delivers cleaner
+            replies than regex stripping ever will. Use the patterns below
+            only when upstream suppression isn't an option.
+          </div>
+          <div>
+            <span className="text-fg-muted">Presets — click to add: </span>
+            {BANNER_PRESETS.map((p) => (
+              <button
+                key={p.key}
+                type="button"
+                onClick={() => addPreset(p.pattern)}
+                className="ml-1 px-2 py-0.5 rounded bg-surface-2 border border-border hover:bg-surface text-fg-muted hover:text-fg"
+              >
+                {p.label}
+              </button>
+            ))}
+          </div>
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            placeholder="One regex per line. Applied with /im flags."
+            rows={Math.max(3, draft.split("\n").length)}
+            className="w-full font-mono text-[11px] bg-surface-2 border border-border rounded px-2 py-1"
+          />
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={save}
+              disabled={!dirty}
+              className="text-xs bg-brand text-white rounded px-3 py-1 disabled:opacity-50"
+            >
+              Save patterns
+            </button>
+            {dirty && (
+              <button
+                type="button"
+                onClick={() => setDraft(initial)}
+                className="text-xs text-fg-muted hover:text-fg"
+              >
+                Reset
+              </button>
+            )}
+            <span className="text-fg-dim">
+              Lines starting with whitespace are stripped.
+            </span>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

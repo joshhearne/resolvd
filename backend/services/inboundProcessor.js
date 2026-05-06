@@ -40,16 +40,31 @@ const AUTHORIZED_SUBMIT_ROLES = new Set(['Admin', 'Manager', 'Submitter']);
 
 const SUBJECT_PREFIX_RE = /^\s*#([A-Za-z][A-Za-z0-9]+)\b\s*[-:]?\s*(.*)$/;
 
-// Pre-compiled in priority order. The earliest match wins.
+// Pre-compiled in priority order. Earliest match in the body wins.
 const SIGNATURE_BOUNDARIES = [
   /^\s*-- ?\s*$/m,                                    // RFC 3676 sig delim
   /^On .+ (wrote|said):\s*$/mi,                       // quoted reply preface
-  /^From:\s*\S+@\S+/m,                                // Outlook quoted header
+  // Outlook's quoted-header block. The flattened single-line form
+  // ("From: Display Name addr@dom Sent: ... To: ... Subject: ...") shows
+  // up after stripHtml collapses Outlook's nested <div>s. Matches a
+  // From: line that *eventually* contains an email address — covers both
+  // "From: addr@dom" and "From: Display <addr@dom>" / "From: Display addr@dom".
+  /^\s*From:\s+.+?\S+@\S+/m,
   /^Sent from my .+$/mi,                              // mobile sigs
   /^Get Outlook for .+$/mi,                           // outlook mobile
   /^_{4,}\s*$/m,                                       // ____ separator
   /^-{4,}\s*$/m,                                       // ---- separator
 ];
+
+// Resolvd's outbound vendor emails carry a visible "Type your reply
+// above this line" marker so vendors know where to write. The inbound
+// parser cuts at the first occurrence to drop quoted history, banners,
+// and signatures in one shot. Marker phrasing must match
+// vendorOutbound.replyMarkerHtml — keep these in sync.
+// Anchored to the start of a line so leading dashes/whitespace get
+// included in the cut. `[-=]{0,5}` lets the optional bookend dashes ride
+// along (e.g. `--- Type your reply above this line --- ticket FOO-1`).
+const REPLY_MARKER_RE = /(?:\r?\n|^)[ \t]*[-=]{0,5}[ \t]*Type your reply above this line\b/i;
 
 function stripSignature(body) {
   if (!body) return '';
@@ -64,6 +79,42 @@ function stripSignature(body) {
   const quotedTail = /(?:^>.*\n){5,}\s*$/m.exec(text);
   if (quotedTail && quotedTail.index < cutAt) cutAt = quotedTail.index;
   return text.slice(0, cutAt).trim();
+}
+
+// Collapses consecutive identical paragraphs (whitespace-normalized,
+// case-insensitive). Catches mail clients / gateways that echo the
+// user's content (e.g. some plain-text/HTML alternative duplications)
+// without changing legitimate replies that happen to repeat themselves
+// across non-adjacent paragraphs.
+function dedupeParagraphs(text) {
+  const blocks = text.split(/\n{2,}/);
+  const kept = [];
+  let lastNorm = null;
+  for (const b of blocks) {
+    const norm = b.trim().replace(/\s+/g, ' ').toLowerCase();
+    if (norm && norm === lastNorm) continue;
+    kept.push(b);
+    lastNorm = norm;
+  }
+  return kept.join('\n\n');
+}
+
+// Top-level reply extractor. Takes the EARLIEST cut among reply-marker,
+// signature boundaries, and quoted-tail heuristics. Final pass collapses
+// duplicate paragraphs from any mail-client/gateway echo.
+function extractFreshReply(body) {
+  if (!body) return '';
+  const text = String(body).replace(/\r\n/g, '\n');
+  let cutAt = text.length;
+  const markerMatch = REPLY_MARKER_RE.exec(text);
+  if (markerMatch && markerMatch.index < cutAt) cutAt = markerMatch.index;
+  for (const re of SIGNATURE_BOUNDARIES) {
+    const m = re.exec(text);
+    if (m && m.index < cutAt) cutAt = m.index;
+  }
+  const quotedTail = /(?:^>.*\n){5,}\s*$/m.exec(text);
+  if (quotedTail && quotedTail.index < cutAt) cutAt = quotedTail.index;
+  return dedupeParagraphs(text.slice(0, cutAt).trim()).trim();
 }
 
 function parseSubjectPrefix(subject) {
@@ -306,7 +357,7 @@ async function tryAutoCreate({ subject, body, fromAddress, ccAddresses, attachme
   const submitter = await findInternalSubmitter(fromAddress);
   if (!submitter) return { ok: false, reason: `sender_not_authorized:${fromAddress}` };
 
-  const cleanedDescription = stripSignature(body) || '(no description)';
+  const cleanedDescription = extractFreshReply(body) || '(no description)';
 
   // Dedup: same-submitter exact-title open ticket in last 7d → append
   // body as comment instead of creating a new ticket. Strong-overlap
@@ -551,7 +602,7 @@ async function tryAutoReply({ candidateRef, body, fromAddress, queueRowId }) {
   }
   if (!contactRow.rows[0]) return { ok: false, reason: 'sender_not_on_ticket' };
 
-  const cleanedBody = stripSignature(body) || '(no body)';
+  const cleanedBody = extractFreshReply(body) || '(no body)';
 
   // Append as an external-visible, non-system comment on behalf of the
   // submitter (we don't author comments as contact records).
@@ -585,6 +636,7 @@ async function tryAutoReply({ candidateRef, body, fromAddress, queueRowId }) {
 module.exports = {
   parseSubjectPrefix,
   stripSignature,
+  extractFreshReply,
   findProjectByPrefix,
   findInternalSubmitter,
   tryAutoCreate,

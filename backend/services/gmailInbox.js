@@ -180,6 +180,7 @@ async function fetchMessageAsPayload(account, messageId) {
   const fromName = m2 ? m2[1].trim().replace(/^"|"$/g, '') : null;
   const fromAddr = m2 ? m2[2].trim() : fromHeader.trim();
 
+  const rawBody = bodyText || (bodyHtml ? stripHtml(bodyHtml) : '');
   return {
     source: 'gmail',
     external_message_id: headers['Message-ID'] || m.id,
@@ -188,7 +189,7 @@ async function fetchMessageAsPayload(account, messageId) {
     to: headers['To'] || null,
     cc: (headers['Cc'] || '').split(',').map(s => s.trim()).filter(Boolean),
     subject: headers['Subject'] || '',
-    body: bodyText || (bodyHtml ? stripHtml(bodyHtml) : ''),
+    body: applyBannerPatterns(rawBody, account.inbound_banner_strip_patterns),
     message_id: headers['Message-ID'] || null,
     in_reply_to: headers['In-Reply-To'] || null,
     references: headers['References'] || null,
@@ -197,12 +198,23 @@ async function fetchMessageAsPayload(account, messageId) {
   };
 }
 
+// Apply admin-configured banner-strip regex patterns. Mirrors graphInbox.
+function applyBannerPatterns(body, patterns) {
+  if (!body || !Array.isArray(patterns) || !patterns.length) return body;
+  let out = body;
+  for (const p of patterns) {
+    try { out = out.replace(new RegExp(p, 'gim'), ''); }
+    catch (err) { console.warn(`gmailInbox: skipping invalid banner pattern "${p}": ${err.message}`); }
+  }
+  return out;
+}
+
 function stripHtml(html) {
   return String(html)
     .replace(/<style[\s\S]*?<\/style>/gi, '')
     .replace(/<script[\s\S]*?<\/script>/gi, '')
     .replace(/<br\s*\/?>/gi, '\n')
-    .replace(/<\/p>/gi, '\n\n')
+    .replace(/<\/(p|div|li|h[1-6]|tr|td|th|blockquote|article|section|header|footer|pre)\s*>/gi, '\n')
     .replace(/<[^>]+>/g, '')
     .replace(/&nbsp;/g, ' ')
     .replace(/&amp;/g, '&')
@@ -210,6 +222,8 @@ function stripHtml(html) {
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
+    .replace(/‌+/g, '')
+    .replace(/[ \t]+\n/g, '\n')
     .replace(/\n{3,}/g, '\n\n')
     .trim();
 }
