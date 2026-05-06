@@ -159,6 +159,7 @@ async function fetchMessageAsPayload(account, messageId) {
     : (m.body?.content || '');
   return {
     source: 'graph',
+    email_backend_account_id: account.id,
     external_message_id: m.internetMessageId || m.id,
     from: m.from?.emailAddress?.address || m.sender?.emailAddress?.address,
     from_name: m.from?.emailAddress?.name || m.sender?.emailAddress?.name,

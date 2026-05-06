@@ -207,6 +207,7 @@ async function sendVendorEmail({ eventType, ticketId, actorId }) {
         html,
         replyTo: REPLY_TO,
         senderName,
+        projectId: ctx.ticket.project_id,
         attachments: imageAttachments,
         headers: {
           'Auto-Submitted': 'auto-generated',

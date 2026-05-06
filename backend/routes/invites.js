@@ -136,6 +136,12 @@ router.post('/:token/accept', async (req, res) => {
       [user.id, invite.id]
     );
 
+    // Auto-add to projects flagged for auto-onboarding (helpdesk-style
+    // queues where every active user should be a member).
+    const { autoAddUserToFlaggedProjects } = require('../services/projectAutoAdd');
+    autoAddUserToFlaggedProjects(user.id).catch(err =>
+      console.error('autoAdd (invite accept) failed:', err.message));
+
     if (invite.intended_provider === 'local') {
       const refreshed = await pool.query('SELECT * FROM users WHERE id = $1', [user.id]);
       await loginUser(req, refreshed.rows[0]);

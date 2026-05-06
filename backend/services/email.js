@@ -173,21 +173,34 @@ function pickFromAddress(settings, backend) {
 // The address itself is always the connected mailbox; we no longer spoof
 // From with the submitter's address. This guarantees vendor replies land
 // in the system inbox instead of a personal mailbox.
-async function sendMail({ to, subject, html, headers, replyTo, senderName, attachments }) {
+async function sendMail({ to, subject, html, headers, replyTo, senderName, attachments, projectId }) {
   const addresses = (Array.isArray(to) ? to : [to]).filter(Boolean);
   if (!addresses.length) return;
 
-  // Prefer a connected email_backend_accounts row when present. Falls back
-  // to the legacy auth_settings.email_backend (graph/gmail/smtp via env)
-  // so existing deployments keep working until they migrate to OAuth.
+  // Prefer a project-scoped account when projectId is given (lets each
+  // project have its own dedicated outbound identity, e.g. helpdesk
+  // tickets go from helpdesk@…). Falls through to the global active
+  // account when no scope match. Then falls through again to the legacy
+  // env-backed dispatch for installs that haven't migrated to OAuth.
   try {
     const eb = require('./emailBackends');
-    const active = await eb.getActiveAccount();
-    if (active) {
-      return await sendMailViaAccount(active, { to: addresses, subject, html, headers, replyTo, senderName, attachments });
+    let chosen = null;
+    if (projectId) {
+      const scopes = require('./emailScopes');
+      const scoped = await scopes.resolveOutboundAccount(projectId);
+      if (scoped) {
+        const { decryptRow } = require('./fields');
+        const acct = { ...scoped };
+        await decryptRow('email_backend_accounts', acct);
+        chosen = acct;
+      }
+    }
+    if (!chosen) chosen = await eb.getActiveAccount();
+    if (chosen) {
+      return await sendMailViaAccount(chosen, { to: addresses, subject, html, headers, replyTo, senderName, attachments });
     }
   } catch (err) {
-    console.error('sendMail: active backend lookup failed, falling back to legacy:', err.message);
+    console.error('sendMail: account lookup failed, falling back to legacy:', err.message);
   }
 
   const settings = await getAuthSettings();
@@ -372,7 +385,7 @@ async function notifyStatusChange(pool, { ticket, oldStatus, newStatus, actorId 
     </p>
     <p style="color:#374151;font-size:14px;margin:0 0 16px"><strong>${ticket.title}</strong></p>
     <a href="${ticketUrl(ticket.id)}" style="display:inline-block;background:#1e40af;color:#fff;text-decoration:none;padding:8px 16px;border-radius:6px;font-size:14px;font-weight:600">View Ticket</a>`;
-  await sendMail({ to: emails, subject, html: await baseHtml(subject, body) });
+  await sendMail({ to: emails, subject, html: await baseHtml(subject, body), projectId: ticket.project_id });
 }
 
 async function notifyAssignment(pool, { ticket, assigneeId, actorId, actorName }) {
@@ -411,7 +424,7 @@ async function notifyAssignment(pool, { ticket, assigneeId, actorId, actorName }
     </p>
     <p style="color:#374151;font-size:14px;margin:0 0 16px"><strong>${ticket.title || ''}</strong></p>
     <a href="${ticketUrl(ticket.id)}" style="display:inline-block;background:#1e40af;color:#fff;text-decoration:none;padding:8px 16px;border-radius:6px;font-size:14px;font-weight:600">View Ticket</a>`;
-  await sendMail({ to: row.email, subject, html: await baseHtml(subject, body) });
+  await sendMail({ to: row.email, subject, html: await baseHtml(subject, body), projectId: ticket.project_id });
 }
 
 async function notifyPendingReview(pool, { ticket, actorId }) {
@@ -428,7 +441,7 @@ async function notifyPendingReview(pool, { ticket, actorId }) {
     </p>
     <p style="color:#374151;font-size:14px;margin:0 0 16px"><strong>${ticket.title}</strong></p>
     <a href="${ticketUrl(ticket.id)}" style="display:inline-block;background:#7c3aed;color:#fff;text-decoration:none;padding:8px 16px;border-radius:6px;font-size:14px;font-weight:600">Review Ticket</a>`;
-  await sendMail({ to: emails, subject, html: await baseHtml(subject, body) });
+  await sendMail({ to: emails, subject, html: await baseHtml(subject, body), projectId: ticket.project_id });
 }
 
 async function notifyNewComment(pool, { ticket, comment, actorId, actorName }) {
@@ -445,7 +458,7 @@ async function notifyNewComment(pool, { ticket, comment, actorId, actorName }) {
     </p>
     <blockquote style="border-left:3px solid #e5e7eb;margin:0 0 16px;padding:8px 16px;color:#6b7280;font-size:14px">${previewHtml}</blockquote>
     <a href="${ticketUrl(ticket.id)}" style="display:inline-block;background:#1e40af;color:#fff;text-decoration:none;padding:8px 16px;border-radius:6px;font-size:14px;font-weight:600">View Ticket</a>`;
-  await sendMail({ to: emails, subject, html: await baseHtml(subject, body) });
+  await sendMail({ to: emails, subject, html: await baseHtml(subject, body), projectId: ticket.project_id });
 }
 
 async function sendInviteEmail({ to, inviteUrl, invitedByName, role }) {

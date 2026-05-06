@@ -25,6 +25,22 @@ async function notifyManagersAndAdmins(client, { type, title, body = null, data 
   }
 }
 
+// Broadcast to Admin role only. Used for approval-gated workflows
+// where Managers can request a state change but Admins must sign off.
+async function notifyAdmins(client, { type, title, body = null, data = null }) {
+  const db = client || pool;
+  const users = await db.query(
+    `SELECT id FROM users WHERE role = 'Admin' AND status = 'active'`
+  );
+  for (const u of users.rows) {
+    await db.query(
+      `INSERT INTO notifications (user_id, type, title, body, data)
+       VALUES ($1, $2, $3, $4, $5)`,
+      [u.id, type, title, body, data ? JSON.stringify(data) : null]
+    );
+  }
+}
+
 async function listForUser(userId) {
   const result = await pool.query(
     `SELECT id, type, title, body, data, read_at, created_at
@@ -59,4 +75,4 @@ async function markAllRead(userId) {
   );
 }
 
-module.exports = { createNotification, notifyManagersAndAdmins, listForUser, unreadCount, markRead, markAllRead };
+module.exports = { createNotification, notifyManagersAndAdmins, notifyAdmins, listForUser, unreadCount, markRead, markAllRead };

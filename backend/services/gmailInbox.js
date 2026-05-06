@@ -183,6 +183,7 @@ async function fetchMessageAsPayload(account, messageId) {
   const rawBody = bodyText || (bodyHtml ? stripHtml(bodyHtml) : '');
   return {
     source: 'gmail',
+    email_backend_account_id: account.id,
     external_message_id: headers['Message-ID'] || m.id,
     from: fromAddr,
     from_name: fromName,

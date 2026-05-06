@@ -123,7 +123,7 @@ router.get('/:id', requireAuth, async (req, res) => {
 // PATCH /api/projects/:id — Admin only
 router.patch('/:id', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
-    const { name, description, status, has_external_vendor, default_assignee_id, restrict_followers_to_members, restrict_mentions_to_members } = req.body;
+    const { name, description, status, has_external_vendor, default_assignee_id, restrict_followers_to_members, restrict_mentions_to_members, auto_add_new_users } = req.body;
     const updates = {};
     if (name !== undefined) updates.name = name.trim();
     if (description !== undefined) updates.description = description?.trim() || null;
@@ -143,6 +143,9 @@ router.patch('/:id', requireAuth, requireRole('Admin', 'Manager'), async (req, r
       updates.restrict_mentions_to_members = restrict_mentions_to_members === null
         ? null
         : (restrict_mentions_to_members !== false && restrict_mentions_to_members !== 'false');
+    }
+    if (auto_add_new_users !== undefined) {
+      updates.auto_add_new_users = auto_add_new_users !== false && auto_add_new_users !== 'false';
     }
     if (default_assignee_id !== undefined) {
       if (default_assignee_id === null || default_assignee_id === '') {
@@ -228,6 +231,52 @@ router.post('/:id/members', requireAuth, requireRole('Admin', 'Manager'), async 
   } catch (err) {
     if (err.code === '23503') return res.status(404).json({ error: 'User or project not found' });
     console.error(err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// POST /api/projects/:id/members/bulk — Admin/Manager bulk-add
+// Body: { user_ids: [int], role_override?: 'Admin'|'Submitter'|'Viewer' }
+// Idempotent (ON CONFLICT updates role_override). Returns the count of
+// rows added or updated and the full member list.
+router.post('/:id/members/bulk', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+  try {
+    const { user_ids, role_override } = req.body || {};
+    if (!Array.isArray(user_ids) || user_ids.length === 0) {
+      return res.status(400).json({ error: 'user_ids array required' });
+    }
+    if (role_override && !VALID_ROLES.includes(role_override)) {
+      return res.status(400).json({ error: 'Invalid role_override' });
+    }
+    // Capped to keep one request from chewing the connection.
+    const ids = user_ids.map((n) => Number(n)).filter((n) => Number.isInteger(n) && n > 0);
+    if (ids.length > 500) return res.status(400).json({ error: 'Bulk add limited to 500 users per call' });
+
+    let added = 0;
+    for (const uid of ids) {
+      const r = await pool.query(`
+        INSERT INTO project_members (project_id, user_id, role_override, added_by)
+        VALUES ($1, $2, $3, $4)
+        ON CONFLICT (project_id, user_id) DO UPDATE SET role_override = EXCLUDED.role_override
+        RETURNING id, (xmax = 0) AS inserted
+      `, [req.params.id, uid, role_override || null, req.session.user.id]);
+      if (r.rows[0]?.inserted) added++;
+    }
+
+    const members = await pool.query(`
+      SELECT pm.id, pm.user_id, pm.role_override, pm.added_at,
+        u.display_name, u.email, u.role as global_role, u.status,
+        adder.display_name as added_by_name
+      FROM project_members pm
+      JOIN users u ON pm.user_id = u.id
+      LEFT JOIN users adder ON pm.added_by = adder.id
+      WHERE pm.project_id = $1
+      ORDER BY u.display_name ASC
+    `, [req.params.id]);
+
+    res.json({ added, total: ids.length, members: members.rows });
+  } catch (err) {
+    console.error('bulk add members failed:', err);
     res.status(500).json({ error: 'Database error' });
   }
 });

@@ -50,6 +50,13 @@ async function upsertProviderUser({ provider, providerKey, providerValue, email,
       `UPDATE users SET ${sets.join(', ')} WHERE id = $${i} RETURNING *`,
       vals
     );
+    // When the upsert flipped this row from 'invited' to 'active' (first
+    // SSO login on an invited account), auto-add to flagged projects.
+    if (existing.status === 'invited') {
+      const { autoAddUserToFlaggedProjects } = require('../services/projectAutoAdd');
+      autoAddUserToFlaggedProjects(r.rows[0].id).catch(err =>
+        console.error('autoAdd (invite→active) failed:', err.message));
+    }
     return r.rows[0];
   }
 
@@ -68,6 +75,10 @@ async function upsertProviderUser({ provider, providerKey, providerValue, email,
     `INSERT INTO users (${cols.join(', ')}) VALUES (${placeholders.join(', ')}) RETURNING *`,
     vals
   );
+  // Fresh SSO user — auto-add to projects flagged for auto-onboarding.
+  const { autoAddUserToFlaggedProjects } = require('../services/projectAutoAdd');
+  autoAddUserToFlaggedProjects(r.rows[0].id).catch(err =>
+    console.error('autoAdd (new SSO user) failed:', err.message));
   return r.rows[0];
 }
 

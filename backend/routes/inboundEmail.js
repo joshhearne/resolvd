@@ -59,6 +59,7 @@ router.post('/generic', async (req, res) => {
   try {
     const {
       source = 'generic',
+      email_backend_account_id,
       external_message_id,
       from,
       from_name,
@@ -127,6 +128,7 @@ router.post('/generic', async (req, res) => {
         ccAddresses: ccList,
         attachments,
         queueRowId,
+        emailBackendAccountId: email_backend_account_id || null,
       });
     } catch (e) {
       console.error('auto-create attempt failed:', e);

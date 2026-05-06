@@ -346,13 +346,30 @@ async function persistAttachment({ ticketId, userId, filename, mimetype, content
 // Attempt to auto-create a ticket from a parsed inbound email. Returns
 // { ok: true, ticket } on success, { ok: false, reason } when the email
 // shouldn't auto-create (caller falls through to the unmatched queue).
-async function tryAutoCreate({ subject, body, fromAddress, ccAddresses, attachments, queueRowId }) {
+async function tryAutoCreate({ subject, body, fromAddress, ccAddresses, attachments, queueRowId, emailBackendAccountId }) {
   const parsed = parseSubjectPrefix(subject);
-  if (!parsed) return { ok: false, reason: 'no_prefix' };
 
-  const project = await findProjectByPrefix(parsed.prefix);
-  if (!project) return { ok: false, reason: `project_prefix_not_found:${parsed.prefix}` };
-  if (project.status !== 'active') return { ok: false, reason: `project_archived:${parsed.prefix}` };
+  // Routing precedence:
+  //   1. Explicit #PREFIX in subject — pick the matching project (current behavior).
+  //   2. No #PREFIX, but the receiving mailbox is scoped to exactly ONE
+  //      approved project — use that project (helpdesk pattern).
+  //   3. Otherwise → no_prefix, falls to manual queue.
+  let project = null;
+  let titleFromSubject = null;
+  if (parsed) {
+    project = await findProjectByPrefix(parsed.prefix);
+    if (!project) return { ok: false, reason: `project_prefix_not_found:${parsed.prefix}` };
+    if (project.status !== 'active') return { ok: false, reason: `project_archived:${parsed.prefix}` };
+    titleFromSubject = parsed.title;
+  } else if (emailBackendAccountId) {
+    const scopes = require('./emailScopes');
+    const scoped = await scopes.resolveInboundProject(emailBackendAccountId);
+    if (!scoped) return { ok: false, reason: 'no_prefix' };
+    project = scoped;
+    titleFromSubject = (subject || '').trim() || '(no subject)';
+  } else {
+    return { ok: false, reason: 'no_prefix' };
+  }
 
   const submitter = await findInternalSubmitter(fromAddress);
   if (!submitter) return { ok: false, reason: `sender_not_authorized:${fromAddress}` };
@@ -363,7 +380,7 @@ async function tryAutoCreate({ subject, body, fromAddress, ccAddresses, attachme
   // body as comment instead of creating a new ticket. Strong-overlap
   // match in the same project last 24h → defer to manual queue.
   const dup = await findDuplicateOrSimilar({
-    projectId: project.id, submitterId: submitter.id, title: parsed.title,
+    projectId: project.id, submitterId: submitter.id, title: titleFromSubject,
   });
   if (dup?.kind === 'exact') {
     await appendCommentToTicket({
@@ -403,7 +420,7 @@ async function tryAutoCreate({ subject, body, fromAddress, ccAddresses, attachme
       const internalRef = await nextInternalRef(c, project.id);
       const computed = computePriority(2, 2);
       const sensitivePatch = await buildWritePatch(c, 'tickets', {
-        title: parsed.title,
+        title: titleFromSubject,
         description: cleanedDescription,
       });
       const mode = await getMode(c);
@@ -413,7 +430,7 @@ async function tryAutoCreate({ subject, body, fromAddress, ccAddresses, attachme
       const baseValues = [
         project.id, internalRef, submitter.id,
         2, 2, computed, computed,
-        mode === 'standard' ? blindIndex.buildIndex(parsed.title) : null,
+        mode === 'standard' ? blindIndex.buildIndex(titleFromSubject) : null,
         queueRowId || null,
       ];
       const cols = [...baseCols, ...sensitivePatch.cols];
@@ -605,11 +622,14 @@ async function tryAutoReply({ candidateRef, body, fromAddress, queueRowId }) {
   const cleanedBody = extractFreshReply(body) || '(no body)';
 
   // Append as an external-visible, non-system comment on behalf of the
-  // submitter (we don't author comments as contact records).
+  // submitter (we don't author comments as contact records). Stamp the
+  // vendor contact id so the UI renders the "from vendor" pill (per-
+  // company themed) instead of mistakenly tagging it "to vendor".
   const patch = await buildWritePatch(pool, 'comments', { body: cleanedBody });
   const cols = ['ticket_id', 'user_id', 'is_external_visible', 'is_internal',
-    'source_inbound_email_id', ...patch.cols];
-  const values = [ticket.id, ticket.submitted_by, true, false, queueRowId || null, ...patch.values];
+    'vendor_contact_id', 'source_inbound_email_id', ...patch.cols];
+  const values = [ticket.id, ticket.submitted_by, true, false,
+    contactRow.rows[0].id, queueRowId || null, ...patch.values];
   const placeholders = cols.map((_, i) => `$${i + 1}`).join(', ');
   await pool.query(
     `INSERT INTO comments (${cols.join(', ')}) VALUES (${placeholders})`,

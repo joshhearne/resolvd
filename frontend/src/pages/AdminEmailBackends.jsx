@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
+import { useAuth } from "../context/AuthContext";
 
 const PROVIDER_LABELS = {
   graph_user: "Microsoft 365 (Graph delegated)",
@@ -10,6 +11,7 @@ const PROVIDER_LABELS = {
 };
 
 export default function AdminEmailBackends() {
+  const { user } = useAuth();
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showSmtp, setShowSmtp] = useState(false);
@@ -87,6 +89,29 @@ export default function AdminEmailBackends() {
       await api.post(`/api/email-backends/${id}/banner-patterns`, { patterns });
       await reload();
       toast.success(patterns.length ? `Saved ${patterns.length} pattern(s)` : "Patterns cleared");
+    } catch (e) { toast.error(e.message); }
+  }
+
+  async function addScope(accountId, projectId, sendEnabled, recvEnabled) {
+    try {
+      await api.post(`/api/email-backends/${accountId}/scopes`, {
+        project_id: projectId,
+        send_enabled: sendEnabled,
+        recv_enabled: recvEnabled,
+      });
+      toast.success("Project scoped");
+    } catch (e) { toast.error(e.message); }
+  }
+  async function removeScope(accountId, projectId) {
+    try {
+      await api.delete(`/api/email-backends/${accountId}/scopes/${projectId}`);
+      toast.success("Scope removed");
+    } catch (e) { toast.error(e.message); }
+  }
+  async function approveScope(accountId, projectId) {
+    try {
+      await api.post(`/api/email-backends/${accountId}/scopes/${projectId}/approve`, {});
+      toast.success("Scope approved");
     } catch (e) { toast.error(e.message); }
   }
 
@@ -240,6 +265,13 @@ export default function AdminEmailBackends() {
                             onSave={(patterns) => saveBannerPatterns(a.id, patterns)}
                           />
                         )}
+                        <ScopeSection
+                          account={a}
+                          currentUser={user}
+                          onAdd={(projectId, send, recv) => addScope(a.id, projectId, send, recv).then(reload)}
+                          onRemove={(projectId) => removeScope(a.id, projectId).then(reload)}
+                          onApprove={(projectId) => approveScope(a.id, projectId).then(reload)}
+                        />
                       </div>
                     )}
                   </div>
@@ -267,6 +299,172 @@ export default function AdminEmailBackends() {
         callback URL <code>{window.location.origin}/api/email-backends/oauth/callback</code> registered as a
         redirect URI on the OAuth app.
       </div>
+    </div>
+  );
+}
+
+// Project-scope manager for an email account. Lists current scopes,
+// lets admins/managers add new ones (project + send/recv toggles), and
+// surfaces an approval action when a single-project scope is pending.
+function ScopeSection({ account, currentUser, onAdd, onRemove, onApprove }) {
+  const [open, setOpen] = useState(false);
+  const [scopes, setScopes] = useState([]);
+  const [projects, setProjects] = useState([]);
+  const [pickProject, setPickProject] = useState("");
+  const [pickSend, setPickSend] = useState(true);
+  const [pickRecv, setPickRecv] = useState(true);
+  const isAdmin = currentUser?.role === "Admin";
+
+  useEffect(() => {
+    if (!open) return;
+    api.get(`/api/email-backends/${account.id}/scopes`).then(setScopes).catch(() => setScopes([]));
+    api.get("/api/projects").then((all) => {
+      const active = (all || []).filter((p) => p.status === "active");
+      setProjects(active);
+    }).catch(() => setProjects([]));
+  }, [open, account.id]);
+
+  async function refreshLocal() {
+    const fresh = await api.get(`/api/email-backends/${account.id}/scopes`).catch(() => []);
+    setScopes(fresh);
+  }
+
+  async function handleAdd(e) {
+    e.preventDefault();
+    if (!pickProject) return;
+    await onAdd(Number(pickProject), pickSend, pickRecv);
+    setPickProject("");
+    setPickSend(true);
+    setPickRecv(true);
+    await refreshLocal();
+  }
+  async function handleRemove(projectId) {
+    await onRemove(projectId);
+    await refreshLocal();
+  }
+  async function handleApprove(projectId) {
+    await onApprove(projectId);
+    await refreshLocal();
+  }
+
+  const pendingApproval = scopes.filter((s) => !s.approved_at);
+  const isSingleScope = scopes.length === 1;
+  const usedIds = new Set(scopes.map((s) => s.project_id));
+  const choices = projects.filter((p) => !usedIds.has(p.id));
+
+  return (
+    <div className="mt-2 border-t border-border pt-2">
+      <button
+        type="button"
+        onClick={() => setOpen((v) => !v)}
+        className="text-xs text-fg-muted hover:text-fg flex items-center gap-1"
+      >
+        <span>{open ? "▾" : "▸"}</span>
+        Project scope
+        {scopes.length > 0 && (
+          <span className="ml-1 px-1.5 py-0.5 rounded bg-brand/15 text-brand text-[10px]">
+            {scopes.length} project{scopes.length !== 1 ? "s" : ""}
+          </span>
+        )}
+        {pendingApproval.length > 0 && (
+          <span className="ml-1 px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-700 dark:text-amber-300 text-[10px]">
+            {pendingApproval.length} pending approval
+          </span>
+        )}
+      </button>
+      {open && (
+        <div className="mt-2 space-y-2 text-[11px]">
+          <p className="text-fg-muted">
+            Scope this mailbox to one or more projects. Send / Recv toggle the
+            direction independently. When a mailbox is scoped to exactly one
+            project, inbound mail auto-routes there without needing a
+            <code> #PREFIX</code> subject — but Admin must approve the
+            single-scope assignment first.
+          </p>
+
+          {scopes.length > 0 && (
+            <ul className="border border-border rounded divide-y divide-border">
+              {scopes.map((s) => (
+                <li key={s.id} className="px-2 py-2 flex items-center gap-2 flex-wrap">
+                  <span className="font-semibold text-fg">{s.project_name}</span>
+                  <span className="text-fg-muted">[{s.project_prefix}]</span>
+                  <span className="text-fg-muted">
+                    {s.send_enabled && "send"}
+                    {s.send_enabled && s.recv_enabled && " · "}
+                    {s.recv_enabled && "recv"}
+                    {!s.send_enabled && !s.recv_enabled && "disabled"}
+                  </span>
+                  {s.approved_at ? (
+                    <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300">
+                      approved
+                    </span>
+                  ) : (
+                    <span className="px-1.5 py-0.5 rounded bg-amber-500/15 text-amber-700 dark:text-amber-300">
+                      pending
+                    </span>
+                  )}
+                  <span className="ml-auto flex items-center gap-2">
+                    {!s.approved_at && isAdmin && isSingleScope && (
+                      <button
+                        type="button"
+                        onClick={() => handleApprove(s.project_id)}
+                        className="text-brand hover:underline"
+                      >
+                        Approve
+                      </button>
+                    )}
+                    <button
+                      type="button"
+                      onClick={() => handleRemove(s.project_id)}
+                      className="text-red-600 hover:underline"
+                    >
+                      Remove
+                    </button>
+                  </span>
+                </li>
+              ))}
+            </ul>
+          )}
+
+          {isSingleScope && pendingApproval.length > 0 && !isAdmin && (
+            <div className="rounded bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 px-2.5 py-2 text-amber-800 dark:text-amber-300">
+              <strong>Awaiting Admin approval.</strong> An Admin needs to approve
+              this single-project scope before inbound mail will auto-route to
+              the project.
+            </div>
+          )}
+
+          {choices.length > 0 && (
+            <form onSubmit={handleAdd} className="flex items-center gap-2 flex-wrap">
+              <select
+                value={pickProject}
+                onChange={(e) => setPickProject(e.target.value)}
+                className="bg-surface-2 border border-border rounded px-2 py-1"
+              >
+                <option value="">Add project…</option>
+                {choices.map((p) => (
+                  <option key={p.id} value={p.id}>{p.name} ({p.prefix})</option>
+                ))}
+              </select>
+              <label className="inline-flex items-center gap-1">
+                <input type="checkbox" checked={pickSend} onChange={(e) => setPickSend(e.target.checked)} />
+                send
+              </label>
+              <label className="inline-flex items-center gap-1">
+                <input type="checkbox" checked={pickRecv} onChange={(e) => setPickRecv(e.target.checked)} />
+                recv
+              </label>
+              <button
+                type="submit"
+                disabled={!pickProject}
+                className="text-xs bg-brand text-white rounded px-3 py-1 disabled:opacity-50"
+              >
+                Add scope
+              </button>
+            </form>
+          )}
+        </div>
+      )}
     </div>
   );
 }

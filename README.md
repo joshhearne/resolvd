@@ -141,6 +141,8 @@ Fresh install with local auth enabled shows a **Create Admin Account** form. Fir
 - Projects can be marked with or without an external vendor — when off, the External Vendor section, vendor outbound, and Team-Input blocker are hidden
 - Each project has a prefix used for ticket references (e.g. `WEB-0042`). The same prefix powers email-to-ticket auto-create.
 - **Default assignee**: Admin/Manager can pick a default assignee per project. New tickets in that project auto-assign to the chosen user when the creator doesn't pick one. Eligible: Admin / Manager / Submitter.
+- **Bulk add members**: project member panel takes a multi-select picker with search and "Select all" — pick a role override once, apply to every chosen user. Capped at 500 per call.
+- **Auto-add new users**: per-project toggle. When on, every newly-activated user (SSO first login or invite acceptance) is added as a member here. Use it for org-wide queues like the helpdesk / incident project where every employee should be able to file or follow.
 - **Move tickets**: any role can move a ticket between projects they have access to. Admin/Manager can move to any project; Submitters need membership of both source and target. The ticket gets a fresh `internal_ref` from the new project's counter; vendor contacts detach (vendor scope is project-bound).
 - **Cross-project visibility**: per-project tri-state controls for `@mentions` autocomplete/resolution and the "add follower" picker — `Inherit` (org default), `Restrict to project members`, or `Open to all users`. Org defaults live in **Admin → Branding → Cross-project visibility** (both default ON / restricted). Admins (global role) bypass these gates.
 
@@ -251,6 +253,8 @@ so vendor helpdesks don't auto-reply and reflective loops are dropped on ingest.
 
 **Reply-above-this-line marker.** Every vendor outbound prepends a visible `--- Type your reply above this line — ticket {ref} ---` divider. The inbound parser cuts at the marker so quoted history, mail-client headers, and signatures drop automatically — the comment ends up as exactly what the vendor typed.
 
+**Comment pills.** Vendor-visible comments show a brand-colored `TO VENDOR` pill. Inbound vendor replies (auto-ingested via email match) show a `FROM {company}` pill in a deterministic per-vendor color hashed from the company id — same vendor, same color across renders, sessions, and users. Hue spread is theme-aware (pastel + dark text on light, muted dark + light text on dark) so multiple vendors on one ticket stay readable.
+
 Images attached to the ticket are included as file attachments only on the `new_ticket` and `new_comment` events. Status-change and resolved emails send body text only — keeps the inbox light when a ticket churns through several states (Graph, SMTP, and Gmail backends all supported).
 
 The `new_ticket` event is **not** fired automatically on ticket creation. An Admin/Manager must click the **Notify Vendor** button on the ticket detail page to send the initial vendor notification. This gives staff a chance to review the ticket before contacting the vendor.
@@ -341,6 +345,16 @@ The renewal scheduler runs hourly and re-issues any subscription within 12h of e
 - **SMTP** — legacy form for self-hosters. Use Gmail/Workspace App Passwords (`smtp.gmail.com:587`, STARTTLS, 16-char app password) when SMTP is the only option.
 
 The active account is enforced single-row by a partial unique index. Token refresh runs automatically before expiry.
+
+### Project scope (helpdesk routing)
+
+Each connected mailbox can be scoped to one or more projects via **Admin → Email backends → {account} → Project scope**. Many-to-many with per-direction toggles (`send`, `recv`).
+
+- **Multiple-project scope**: inbound mail still requires `#PREFIX` in the subject; scope just authorizes the mailbox to dispatch outbound for those projects.
+- **Single-project scope** (helpdesk pattern): inbound mail with no `#PREFIX` auto-creates tickets in that one project. Mailbox = dedicated queue. Because this is high-power config, an Admin must approve before auto-routing activates — Manager-created single-scope assignments fire an Admin notification ("Approve mailbox scope"). Until approved, inbound falls back to the existing `#PREFIX` flow.
+- **Outbound resolution**: `sendMail({ projectId })` prefers a `send_enabled` scoped account for that project, falls through to the global active account otherwise. Vendor outbound, follower notifications, and assignment emails all pass `ticket.project_id` so per-project sender identities work end-to-end.
+
+Sender authorization on the inbound side still applies: the sender must be a Submitter+ user (Admin/Manager/Submitter). External-customer auto-create through a scoped helpdesk inbox is a separate feature (planned).
 
 ### Inbound banner stripping (per account)
 

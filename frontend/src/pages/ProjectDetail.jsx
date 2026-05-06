@@ -43,12 +43,17 @@ export default function ProjectDetail() {
     // "true" = restrict to members, "false" = open to all users.
     restrict_followers_to_members: "",
     restrict_mentions_to_members: "",
+    auto_add_new_users: false,
   });
   const [savingSettings, setSavingSettings] = useState(false);
 
-  // Add member state
+  // Add member state — bulk-capable: multi-select user picker, role
+  // override applies to every selected user, with a search box and
+  // select-all toggle scoped to the filtered list.
   const [addOpen, setAddOpen] = useState(false);
-  const [addForm, setAddForm] = useState({ user_id: "", role_override: "" });
+  const [addRoleOverride, setAddRoleOverride] = useState("");
+  const [addSelected, setAddSelected] = useState(new Set());
+  const [addSearch, setAddSearch] = useState("");
   const [addingSaving, setAddingSaving] = useState(false);
 
   // Inline role edit
@@ -80,6 +85,7 @@ export default function ProjectDetail() {
               : proj.restrict_mentions_to_members
                 ? "true"
                 : "false",
+          auto_add_new_users: proj.auto_add_new_users === true,
         });
         setAllUsers(users);
       })
@@ -110,6 +116,7 @@ export default function ProjectDetail() {
           editForm.restrict_mentions_to_members === ""
             ? null
             : editForm.restrict_mentions_to_members === "true",
+        auto_add_new_users: editForm.auto_add_new_users,
       });
       setProject((p) => ({ ...p, ...updated }));
       setEditing(false);
@@ -136,27 +143,28 @@ export default function ProjectDetail() {
     }
   }
 
-  async function addMember(e) {
+  async function bulkAddMembers(e) {
     e.preventDefault();
-    if (!addForm.user_id) {
-      toast.error("Select a user");
+    if (addSelected.size === 0) {
+      toast.error("Pick at least one user");
       return;
     }
     setAddingSaving(true);
     try {
-      const member = await api.post(`/api/projects/${id}/members`, {
-        user_id: Number(addForm.user_id),
-        role_override: addForm.role_override || null,
+      const r = await api.post(`/api/projects/${id}/members/bulk`, {
+        user_ids: Array.from(addSelected),
+        role_override: addRoleOverride || null,
       });
-      setProject((p) => ({
-        ...p,
-        members: [...(p.members || []), member].sort((a, b) =>
-          a.display_name.localeCompare(b.display_name),
-        ),
-      }));
-      setAddForm({ user_id: "", role_override: "" });
+      setProject((p) => ({ ...p, members: r.members }));
+      setAddSelected(new Set());
+      setAddSearch("");
+      setAddRoleOverride("");
       setAddOpen(false);
-      toast.success("Member added");
+      toast.success(
+        r.added > 0
+          ? `Added ${r.added} member${r.added !== 1 ? "s" : ""}`
+          : "Already members — no new rows added"
+      );
     } catch (err) {
       toast.error(err.message);
     } finally {
@@ -308,6 +316,30 @@ export default function ProjectDetail() {
                 This project has an external vendor
               </label>
             </div>
+            <div className="flex items-start gap-2">
+              <input
+                type="checkbox"
+                id="edit_auto_add_new_users"
+                checked={editForm.auto_add_new_users}
+                onChange={(e) =>
+                  setEditForm((f) => ({
+                    ...f,
+                    auto_add_new_users: e.target.checked,
+                  }))
+                }
+                className="h-4 w-4 mt-0.5 rounded border-border-strong text-brand focus:ring-brand/40"
+              />
+              <div>
+                <label htmlFor="edit_auto_add_new_users" className="text-sm text-fg">
+                  Auto-add every new user to this project
+                </label>
+                <p className="text-[11px] text-fg-muted mt-0.5">
+                  When on, every newly-activated user (SSO first login or
+                  invite acceptance) is added as a member here. Useful for
+                  org-wide queues like the helpdesk / incident project.
+                </p>
+              </div>
+            </div>
             <div className="border-t border-border pt-3">
               <h3 className="text-xs font-semibold text-fg mb-1">Cross-project visibility</h3>
               <p className="text-[11px] text-fg-muted mb-2">
@@ -435,58 +467,123 @@ export default function ProjectDetail() {
           </button>
         </div>
 
-        {addOpen && (
-          <form
-            onSubmit={addMember}
-            className="px-5 py-3 border-b border-border bg-surface-2 flex items-end gap-3 flex-wrap"
-          >
-            <div className="flex-1 min-w-40">
-              <label className="block text-xs font-medium text-fg-muted mb-1">
-                User
-              </label>
-              <select
-                value={addForm.user_id}
-                onChange={(e) =>
-                  setAddForm((f) => ({ ...f, user_id: e.target.value }))
-                }
-                className="w-full border border-border-strong rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40"
-              >
-                <option value="">Select user…</option>
-                {availableUsers.map((u) => (
-                  <option key={u.id} value={u.id}>
-                    {u.display_name} ({u.role})
-                  </option>
-                ))}
-              </select>
-            </div>
-            <div>
-              <label className="block text-xs font-medium text-fg-muted mb-1">
-                Role Override <span className="text-fg-dim">(optional)</span>
-              </label>
-              <select
-                value={addForm.role_override}
-                onChange={(e) =>
-                  setAddForm((f) => ({ ...f, role_override: e.target.value }))
-                }
-                className="border border-border-strong rounded px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40"
-              >
-                <option value="">Use global role</option>
-                {ROLES.map((r) => (
-                  <option key={r} value={r}>
-                    {r}
-                  </option>
-                ))}
-              </select>
-            </div>
-            <button
-              type="submit"
-              disabled={addingSaving}
-              className="btn-primary btn btn-sm disabled:opacity-60"
+        {addOpen && (() => {
+          const q = addSearch.trim().toLowerCase();
+          const filtered = availableUsers.filter((u) => {
+            if (!q) return true;
+            const hay = `${u.display_name || ""} ${u.email || ""} ${u.role || ""}`.toLowerCase();
+            return hay.includes(q);
+          });
+          const filteredIds = filtered.map((u) => u.id);
+          const allFilteredSelected = filteredIds.length > 0 &&
+            filteredIds.every((id) => addSelected.has(id));
+          const toggleOne = (uid) => {
+            setAddSelected((prev) => {
+              const next = new Set(prev);
+              if (next.has(uid)) next.delete(uid); else next.add(uid);
+              return next;
+            });
+          };
+          const toggleAllFiltered = () => {
+            setAddSelected((prev) => {
+              const next = new Set(prev);
+              if (allFilteredSelected) {
+                for (const i of filteredIds) next.delete(i);
+              } else {
+                for (const i of filteredIds) next.add(i);
+              }
+              return next;
+            });
+          };
+          return (
+            <form
+              onSubmit={bulkAddMembers}
+              className="px-5 py-3 border-b border-border bg-surface-2 space-y-3"
             >
-              {addingSaving ? "Adding…" : "Add"}
-            </button>
-          </form>
-        )}
+              <div className="flex items-center gap-3 flex-wrap">
+                <input
+                  type="search"
+                  value={addSearch}
+                  onChange={(e) => setAddSearch(e.target.value)}
+                  placeholder="Search users by name, email, role…"
+                  className="flex-1 min-w-48 border border-border-strong rounded px-2 py-1.5 text-sm"
+                />
+                <select
+                  value={addRoleOverride}
+                  onChange={(e) => setAddRoleOverride(e.target.value)}
+                  className="border border-border-strong rounded px-2 py-1.5 text-sm"
+                >
+                  <option value="">Use global role</option>
+                  {ROLES.map((r) => (
+                    <option key={r} value={r}>Override → {r}</option>
+                  ))}
+                </select>
+              </div>
+              <div className="flex items-center gap-3 text-xs">
+                <label className="inline-flex items-center gap-1 text-fg">
+                  <input
+                    type="checkbox"
+                    checked={allFilteredSelected}
+                    onChange={toggleAllFiltered}
+                    disabled={filteredIds.length === 0}
+                  />
+                  Select all{q ? ` (${filteredIds.length} matching)` : ""}
+                </label>
+                <span className="text-fg-muted">
+                  {addSelected.size} selected
+                </span>
+                {addSelected.size > 0 && (
+                  <button
+                    type="button"
+                    onClick={() => setAddSelected(new Set())}
+                    className="text-fg-muted hover:text-fg"
+                  >
+                    Clear
+                  </button>
+                )}
+              </div>
+              <div className="border border-border rounded max-h-72 overflow-y-auto bg-bg">
+                {filtered.length === 0 ? (
+                  <div className="px-3 py-4 text-xs text-fg-muted">
+                    {q ? "No matches." : "Every active user is already a member."}
+                  </div>
+                ) : (
+                  <ul className="divide-y divide-border">
+                    {filtered.map((u) => (
+                      <li key={u.id}>
+                        <label className="flex items-center gap-2 px-3 py-1.5 text-sm cursor-pointer hover:bg-surface-2">
+                          <input
+                            type="checkbox"
+                            checked={addSelected.has(u.id)}
+                            onChange={() => toggleOne(u.id)}
+                          />
+                          <span className="flex-1 truncate">
+                            {u.display_name || u.email}
+                            <span className="text-fg-muted text-xs ml-2">{u.email}</span>
+                          </span>
+                          <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-surface-2 text-fg-muted">
+                            {u.role}
+                          </span>
+                        </label>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </div>
+              <div className="flex justify-end gap-2">
+                <button
+                  type="submit"
+                  disabled={addingSaving || addSelected.size === 0}
+                  className="btn-primary btn btn-sm disabled:opacity-60"
+                >
+                  {addingSaving
+                    ? "Adding…"
+                    : `Add ${addSelected.size || ""} member${addSelected.size === 1 ? "" : "s"}`}
+                </button>
+              </div>
+            </form>
+          );
+        })()}
 
         {(project.members || []).length === 0 ? (
           <p className="text-sm text-fg-dim px-5 py-4">

@@ -241,6 +241,11 @@ async function initSchema() {
     await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS restrict_followers_to_members BOOLEAN`);
     await client.query(`ALTER TABLE projects ALTER COLUMN restrict_followers_to_members DROP NOT NULL`);
     await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS restrict_mentions_to_members BOOLEAN`);
+    // When TRUE, every newly-activated user (SSO first login or invite
+    // acceptance) is automatically added as a project member. Useful for
+    // org-wide queues like the helpdesk / incident project where every
+    // employee should be able to file or follow.
+    await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS auto_add_new_users BOOLEAN NOT NULL DEFAULT FALSE`);
     // Global defaults (admin panel). Apply when a project hasn't set its
     // own value. Defaults TRUE so a fresh install is locked down.
     await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS default_restrict_followers BOOLEAN NOT NULL DEFAULT TRUE`);
@@ -839,6 +844,32 @@ async function initSchema() {
     // applied with case-insensitive multi-line flags. Empty array =
     // no per-account stripping.
     await client.query(`ALTER TABLE email_backend_accounts ADD COLUMN IF NOT EXISTS inbound_banner_strip_patterns TEXT[] NOT NULL DEFAULT '{}'`);
+
+    // Many-to-many scope between email accounts and projects. An account
+    // can serve N projects; a project can be served by N accounts.
+    // send_enabled / recv_enabled toggle the direction independently.
+    // approved_by/approved_at gate dedicated single-project scopes —
+    // when an account ends up scoped to exactly one project, an Admin
+    // must approve before inbound auto-creates land in that project
+    // (prevents Manager from making a covert "all mail to my project"
+    // mailbox without oversight). Multi-project scopes don't require
+    // approval since they fall through to existing #PREFIX routing.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS email_account_project_scopes (
+        id SERIAL PRIMARY KEY,
+        account_id INTEGER NOT NULL REFERENCES email_backend_accounts(id) ON DELETE CASCADE,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        send_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        recv_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        approved_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        approved_at TIMESTAMPTZ,
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(account_id, project_id)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_email_scopes_project ON email_account_project_scopes(project_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_email_scopes_account ON email_account_project_scopes(account_id)`);
 
     // In-app notification tray. Surfaces actionable system events to
     // Managers and Admins — e.g. unmatched CC addresses from email intake

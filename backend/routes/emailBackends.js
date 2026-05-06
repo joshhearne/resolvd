@@ -190,6 +190,112 @@ router.delete('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// GET /api/email-backends/:id/scopes — list project scopes for an account.
+router.get('/:id/scopes', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+  try {
+    const scopes = require('../services/emailScopes');
+    res.json(await scopes.listScopesForAccount(req.params.id));
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+// POST /api/email-backends/:id/scopes
+// Body: { project_id, send_enabled?, recv_enabled? }
+// Manager + Admin can add scopes. When the new scope leaves the
+// account at exactly one project, fire an Admin-approval notification
+// (unless creator is already an Admin — auto-approve in that case).
+router.post('/:id/scopes', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+  try {
+    const scopes = require('../services/emailScopes');
+    const { notifyAdmins } = require('../services/notifications');
+    const { project_id, send_enabled = true, recv_enabled = true } = req.body || {};
+    const projectId = Number(project_id);
+    if (!Number.isInteger(projectId) || projectId <= 0) {
+      return res.status(400).json({ error: 'project_id required' });
+    }
+    const acct = await pool.query(
+      `SELECT id, from_address, display_name FROM email_backend_accounts WHERE id = $1`,
+      [req.params.id]
+    );
+    if (!acct.rows[0]) return res.status(404).json({ error: 'Account not found' });
+    const proj = await pool.query(`SELECT id, name FROM projects WHERE id = $1`, [projectId]);
+    if (!proj.rows[0]) return res.status(400).json({ error: 'Project not found' });
+
+    const isAdmin = req.session.user.role === 'Admin';
+    const ins = await pool.query(`
+      INSERT INTO email_account_project_scopes
+        (account_id, project_id, send_enabled, recv_enabled, created_by,
+         approved_by, approved_at)
+      VALUES ($1, $2, $3, $4, $5, $6, $7)
+      ON CONFLICT (account_id, project_id) DO UPDATE
+        SET send_enabled = EXCLUDED.send_enabled,
+            recv_enabled = EXCLUDED.recv_enabled
+      RETURNING *
+    `, [
+      req.params.id, projectId, !!send_enabled, !!recv_enabled,
+      req.session.user.id,
+      isAdmin ? req.session.user.id : null,
+      isAdmin ? new Date().toISOString() : null,
+    ]);
+
+    const count = await scopes.projectScopeCount(req.params.id);
+    if (count === 1 && !isAdmin) {
+      // Manager just made this account a dedicated single-project mailbox.
+      // Fire Admin approval notification.
+      await notifyAdmins(null, {
+        type: 'email_scope_approval',
+        title: `Approve mailbox scope: ${acct.rows[0].from_address}`,
+        body: `${req.session.user.displayName || req.session.user.email} scoped this mailbox to a single project (${proj.rows[0].name}). Inbound auto-routes won't activate until you approve.`,
+        data: {
+          account_id: Number(req.params.id),
+          project_id: projectId,
+          from_address: acct.rows[0].from_address,
+          project_name: proj.rows[0].name,
+        },
+      }).catch(err => console.error('admin notify failed:', err.message));
+    }
+    res.status(201).json(ins.rows[0]);
+  } catch (e) {
+    console.error('add scope failed:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// DELETE /api/email-backends/:id/scopes/:projectId
+router.delete('/:id/scopes/:projectId', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+  try {
+    const r = await pool.query(
+      `DELETE FROM email_account_project_scopes
+        WHERE account_id = $1 AND project_id = $2
+       RETURNING id`,
+      [req.params.id, req.params.projectId]
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'Scope not found' });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('delete scope failed:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
+// POST /api/email-backends/:id/scopes/:projectId/approve — Admin only.
+// Stamps approved_by/approved_at on a scope so single-project inbound
+// auto-routing activates.
+router.post('/:id/scopes/:projectId/approve', requireAuth, requireRole('Admin'), async (req, res) => {
+  try {
+    const r = await pool.query(`
+      UPDATE email_account_project_scopes
+         SET approved_by = $1, approved_at = NOW()
+       WHERE account_id = $2 AND project_id = $3
+       RETURNING *
+    `, [req.session.user.id, req.params.id, req.params.projectId]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'Scope not found' });
+    res.json(r.rows[0]);
+  } catch (e) {
+    console.error('approve scope failed:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // POST /api/email-backends/:id/monitor — toggle inbox monitoring
 // Body: { enabled: true|false }. Creates the provider subscription on
 // "true" and tears it down on "false".
