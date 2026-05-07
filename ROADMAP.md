@@ -187,6 +187,30 @@ Direct receiver for monitoring tools. No Zapier middleman. First real "Resolvd a
 
 **Why generic, not Zabbix-only:** same plumbing handles every other monitoring tool. Customers without Zabbix get value day one.
 
+### Phase 6 — Scheduled ticketing (~2 weeks)
+Recurring + deferred tickets. Two related capabilities, shared scheduler infrastructure.
+
+**A. Recurring tickets (templates + cron):**
+- `ticket_template` table — title, description, project_id, default_assignee, default_status, tags, severity, attachments
+- `ticket_schedule` table — template_id, cron_expr (e.g. `0 9 1 * *` = first of month 9am), timezone, next_run_at, last_run_at, active, end_date (optional)
+- Cron worker fires per tenant: when `next_run_at <= now()`, spawn ticket from template, advance `next_run_at` to next slot
+- Common presets in admin UI: Daily, Weekly (pick day), Monthly (pick day-of-month), Quarterly, Annually, Custom cron
+- Use cases: monthly server patching, quarterly access reviews, annual compliance checks, weekly site walks, daily startup checks
+
+**B. Scheduled / snoozed tickets:**
+- New ticket field: `scheduled_for TIMESTAMPTZ NULL`
+- New semantic_tag: `scheduled` — ticket exists but is hidden from default queue + dashboard until `scheduled_for` arrives
+- Cron worker fires per tenant: when `scheduled_for <= now()`, transitions ticket to `in_progress` (or admin-configured status), notifies assignee + followers, removes `scheduled` tag
+- UI: "Schedule for…" action on ticket detail (datepicker + time + timezone). "Snooze" alias for personal scheduling. Bulk action support.
+- Visibility: scheduled tickets surface in their own filter ("Scheduled") + on the assignee's calendar view (future).
+- Use cases: defer non-urgent work, snooze waiting-on-vendor tickets to a follow-up date, create tickets in advance for known future events (project kickoffs, scheduled changes).
+
+**Shared infrastructure:**
+- Generalize the existing follow-up reminder cron (`pending_review`) into a unified `scheduled_jobs` table that all time-based features (recurring spawn, snooze wake, follow-up due, auto-close grace, alert recovery delay) flow through
+- Single tenant-aware worker drains the table — easier to reason about than N separate cron paths
+
+**Module placement:** core scheduler infrastructure in `shared/scheduler/`, recurring template UI + spawning in `modules/tickets/` (ticket-specific). Other modules (assets reorder reminders, alerts dedup windows) reuse the scheduler.
+
 ### Future modules (no timeline)
 - `knowledge-base` — internal docs, customer-facing FAQ
 - `change-management` — ITIL-style change requests with approval chains
