@@ -132,6 +132,32 @@ First real plugin. Fixes Snipe-IT's consumable inventory gap as the headline dra
 - Cross-module integrations: ticket detail shows linked assets/issuances; asset shows ticket history
 - `module.json` becomes the contract for future third-party modules
 
+### Phase 5 — Generic alert webhook ingestion (~2 weeks)
+Direct receiver for monitoring tools. No Zapier middleman. First real "Resolvd as alert hub" capability.
+
+**Endpoint:** `POST /api/webhooks/<preset>/<tenant_token>` — preset routes to payload mapper, token auths the tenant. Optional `X-Resolvd-Signature: sha256=...` HMAC for production.
+
+**Presets shipped at v1:**
+- `zabbix` — official Webhook media type (script template provided in admin UI for one-paste install)
+- `alertmanager` — Prometheus AlertManager v4 payload
+- `generic` — schema-flexible mapper, JSONPath field selectors configurable in admin
+
+**Future presets:** Datadog, Uptime Kuma, Nagios/Opsview, PRTG, Sentry, GitHub webhooks.
+
+**Mapper logic (Zabbix as reference):**
+- `status=problem` → look up open ticket by `external_ref = zabbix:<event_id>`. Create new ticket if none, append severity-update comment if exists. `severity → priority` map admin-configurable.
+- `status=recovery` → find ticket by external_ref, append recovery comment, optionally auto-resolve based on org pref.
+
+**New tables:**
+- `external_alert_source` — tenant_id, preset, token, secret, default_project_id, severity_map JSONB, auto_resolve_on_recovery, last_seen_at, enabled
+- `external_alert_event` — source_id, external_event_id, ticket_id, raw_payload JSONB, received_at (dedup key + audit log)
+
+**Tickets extension:** `external_ref TEXT`, `external_source TEXT`, indexed `(tenant_id, external_ref)` for dedup lookups.
+
+**Admin UI:** Admin → Integrations → Alert sources. Add source, generate token (shown once, rotatable), copy webhook URL, paste-ready config snippets per preset. "Test fire" button sends synthetic event end-to-end. Recent 50 events shown for debugging.
+
+**Why generic, not Zabbix-only:** same plumbing handles every other monitoring tool. Customers without Zabbix get value day one.
+
 ### Future modules (no timeline)
 - `knowledge-base` — internal docs, customer-facing FAQ
 - `change-management` — ITIL-style change requests with approval chains
