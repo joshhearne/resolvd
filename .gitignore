@@ -31,5 +31,9 @@ icon-preview.svg
 docker-compose.override.yml
 backups/
 
+# DB backups / dumps
+backup-*.sql
+*.dump
+
 # Internal-only roadmap (private)
 .ROADMAP.md
