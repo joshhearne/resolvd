@@ -37,3 +37,6 @@ backup-*.sql
 
 # Internal-only roadmap (private)
 .ROADMAP.md
+
+# Claude Code workspace (local only)
+.claude/
