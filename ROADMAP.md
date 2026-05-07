@@ -137,12 +137,41 @@ Direct receiver for monitoring tools. No Zapier middleman. First real "Resolvd a
 
 **Endpoint:** `POST /api/webhooks/<preset>/<tenant_token>` — preset routes to payload mapper, token auths the tenant. Optional `X-Resolvd-Signature: sha256=...` HMAC for production.
 
-**Presets shipped at v1:**
-- `zabbix` — official Webhook media type (script template provided in admin UI for one-paste install)
+**Tier 1 — ship at v1 (covers ~70% of installs):**
+- `zabbix` — official Webhook media type (one-paste script template in admin UI)
 - `alertmanager` — Prometheus AlertManager v4 payload
-- `generic` — schema-flexible mapper, JSONPath field selectors configurable in admin
+- `generic` — schema-flexible mapper, JSONPath field selectors configurable in admin (covers anything with a JSON POST)
 
-**Future presets:** Datadog, Uptime Kuma, Nagios/Opsview, PRTG, Sentry, GitHub webhooks.
+**Tier 2 — fast-follow (cover most remaining IT shops):**
+- `grafana` — Grafana unified alerting (v9+) webhook contact point
+- `uptime-kuma` — popular self-hosted uptime monitor
+- `healthchecks` — healthchecks.io cron heartbeats
+- `sentry` — error tracking webhooks
+- `datadog` — Datadog webhook integration
+- `github` — issue/PR/workflow run events (treat failed builds as alerts)
+- `gitlab` — pipeline/issue events
+
+**Tier 3 — community-contributable (long tail):**
+- **Network monitoring:** `nagios`, `icinga2`, `checkmk`, `prtg`, `librenms`, `solarwinds`
+- **APM / errors:** `newrelic`, `dynatrace`, `appdynamics`, `rollbar`, `bugsnag`, `raygun`, `honeybadger`
+- **Uptime:** `uptimerobot`, `statuscake`, `pingdom`, `better-stack`
+- **Security / SIEM:** `wazuh`, `crowdstrike`, `defender`, `elastic-security`
+- **Cloud-native alerts:** `cloudwatch` (via SNS), `azure-monitor`, `gcp-monitoring`
+- **Forward from on-call:** `pagerduty`, `opsgenie`, `victorops` (less common — usually Resolvd is *upstream* of these, but bidirectional sync requested)
+- **Backup / infra:** `veeam`, `proxmox`, `vmware-vcenter`, `truenas`, `synology`, `unraid`
+- **Network appliance:** `pfsense`, `opnsense`, `mikrotik`, `unifi`
+- **CI/CD:** `jenkins`, `circleci`, `argocd`, `flux`
+
+**Preset SDK:** Each preset = a single file under `modules/alerts-ingest/presets/<name>/index.js` exporting `{ matches(req), parse(payload) → NormalizedAlert, configHelp: string }`. Community PRs add presets without touching core. Each preset ships:
+- Identifier (URL slug + display name)
+- Payload mapper → normalized internal shape (`event_id`, `severity`, `summary`, `host`, `link`, `tags`, `status: firing|resolved`)
+- Admin-UI config snippet (paste-ready into the source tool)
+- Optional signature verifier (HMAC schemes vary per vendor)
+- Test fixtures (sample real payload for round-trip testing)
+
+**Normalized internal shape:** all presets emit the same struct so downstream logic (ticket creation, dedup, severity mapping) is preset-agnostic. Adding a preset = writing a parser, not touching the core ingestion path.
+
+**Marketplace later:** once SDK is stable, third-party presets can ship as npm packages or repo-installed plugins. Same `module.json` contract from the modular plugin work.
 
 **Mapper logic (Zabbix as reference):**
 - `status=problem` → look up open ticket by `external_ref = zabbix:<event_id>`. Create new ticket if none, append severity-update comment if exists. `severity → priority` map admin-configurable.
