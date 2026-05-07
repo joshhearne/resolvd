@@ -65,6 +65,15 @@ const SIGNATURE_BOUNDARIES = [
   /^\s*The\s+information\s+(?:contained\s+)?in\s+this\s+(?:e-?mail|message)\s+is\s+(?:confidential|privileged)\b/im,
 ];
 
+// Closing salutations sit on a line of their own, optionally followed by
+// 1-2 TitleCase name words on the same line ("Thanks, Debbie Lincoln").
+// Matched line is treated as the start of the signature block — the body
+// above it is the meat of the reply, everything from this line down (sig
+// name, title, company, phone, etc.) gets sliced off. Length-bounded
+// (~80 chars) so a mid-paragraph "Thanks for your help with that, I'll
+// circle back next week" doesn't trigger.
+const CLOSING_SALUTATION_RE = /^[ \t]*(?:Thanks(?:\s+(?:a\s+lot|again|so\s+much|kindly))?|Thank\s+you(?:\s+(?:so\s+much|very\s+much|kindly))?|Many\s+thanks|Best(?:\s+(?:regards|wishes))?|Kind(?:est)?\s+regards|Warm(?:est)?\s+regards|Regards|Sincerely(?:\s+yours)?|Yours(?:\s+(?:truly|sincerely|faithfully))?|Cordially|Respectfully|Cheers|Take\s+care|Talk\s+(?:soon|later|to\s+you\s+soon)|Speak\s+soon)[ \t]*[,!.…]?[ \t]*(?:[A-Z][\w'’-]+(?:\s+[A-Z][\w'’-]+){0,2})?[ \t]*[,!.]?[ \t]*$/m;
+
 function escapeRegex(s) {
   return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
@@ -149,6 +158,20 @@ function extractFreshReply(body, contactHints) {
   for (const re of boundaries) {
     const m = re.exec(text);
     if (m && m.index < cutAt) cutAt = m.index;
+  }
+  // Closing salutation cut: only honored when at least one non-blank
+  // line of content sits above it AND the matched line is short enough
+  // to actually be a sign-off (not a sentence that happens to start with
+  // "Thanks for…"). Guards against blanking one-line replies.
+  const closingMatch = CLOSING_SALUTATION_RE.exec(text);
+  if (closingMatch) {
+    const lineEnd = text.indexOf('\n', closingMatch.index);
+    const matchedLine = text.slice(closingMatch.index, lineEnd === -1 ? text.length : lineEnd);
+    const above = text.slice(0, closingMatch.index);
+    const hasContentAbove = /\S/.test(above);
+    if (hasContentAbove && matchedLine.length <= 80 && closingMatch.index < cutAt) {
+      cutAt = closingMatch.index;
+    }
   }
   const quotedTail = /(?:^>.*\n){5,}\s*$/m.exec(text);
   if (quotedTail && quotedTail.index < cutAt) cutAt = quotedTail.index;
