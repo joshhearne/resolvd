@@ -3,52 +3,52 @@
 # Please see the documentation for all configuration options:
 # https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
 
-version: 2
-   2 updates:
-   3   - package-ecosystem: npm
-   4     directory: /backend
-   5     schedule:
-   6       interval: weekly
-   7       day: monday
-   8     open-pull-requests-limit: 5
-   9     groups:
-  10       backend-minor-patch:
-  11         update-types:
-  12           - minor
-  13           - patch
-  14
-  15   - package-ecosystem: npm
-  16     directory: /frontend
-  17     schedule:
-  18       interval: weekly
-  19       day: monday
-  20     open-pull-requests-limit: 5
-  21     groups:
-  22       frontend-minor-patch:
-  23         update-types:
-  24           - minor
-  25           - patch
-  26
-  27   - package-ecosystem: docker
-  28     directory: /backend
-  29     schedule:
-  30       interval: weekly
-  31       day: monday
-  32
-  33   - package-ecosystem: docker
-  34     directory: /frontend
-  35     schedule:
-  36       interval: weekly
-  37       day: monday
-  38
-  39   - package-ecosystem: docker-compose
-  40     directory: /
-  41     schedule:
-  42       interval: weekly
-  43       day: monday
-  44
-  45   - package-ecosystem: github-actions
-  46     directory: /
-  47     schedule:
-  48       interval: weekly
-  49       day: monday
+  version: 2
+  updates:
+    - package-ecosystem: npm
+      directory: /backend
+      schedule:
+        interval: weekly
+        day: monday
+      open-pull-requests-limit: 5
+      groups:
+        backend-minor-patch:
+          update-types:
+            - minor
+            - patch
+
+    - package-ecosystem: npm
+      directory: /frontend
+      schedule:
+        interval: weekly
+        day: monday
+      open-pull-requests-limit: 5
+      groups:
+        frontend-minor-patch:
+          update-types:
+            - minor
+            - patch
+
+    - package-ecosystem: docker
+      directory: /backend
+      schedule:
+        interval: weekly
+        day: monday
+
+    - package-ecosystem: docker
+      directory: /frontend
+      schedule:
+        interval: weekly
+        day: monday
+
+    - package-ecosystem: docker-compose
+      directory: /
+      schedule:
+        interval: weekly
+        day: monday
+
+    - package-ecosystem: github-actions
+      directory: /
+      schedule:
+        interval: weekly
+        day: monday
