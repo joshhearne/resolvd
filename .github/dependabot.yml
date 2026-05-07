@@ -1,0 +1,54 @@
+# To get started with Dependabot version updates, you'll need to specify which
+# package ecosystems to update and where the package manifests are located.
+# Please see the documentation for all configuration options:
+# https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
+
+version: 2
+   2 updates:
+   3   - package-ecosystem: npm
+   4     directory: /backend
+   5     schedule:
+   6       interval: weekly
+   7       day: monday
+   8     open-pull-requests-limit: 5
+   9     groups:
+  10       backend-minor-patch:
+  11         update-types:
+  12           - minor
+  13           - patch
+  14
+  15   - package-ecosystem: npm
+  16     directory: /frontend
+  17     schedule:
+  18       interval: weekly
+  19       day: monday
+  20     open-pull-requests-limit: 5
+  21     groups:
+  22       frontend-minor-patch:
+  23         update-types:
+  24           - minor
+  25           - patch
+  26
+  27   - package-ecosystem: docker
+  28     directory: /backend
+  29     schedule:
+  30       interval: weekly
+  31       day: monday
+  32
+  33   - package-ecosystem: docker
+  34     directory: /frontend
+  35     schedule:
+  36       interval: weekly
+  37       day: monday
+  38
+  39   - package-ecosystem: docker-compose
+  40     directory: /
+  41     schedule:
+  42       interval: weekly
+  43       day: monday
+  44
+  45   - package-ecosystem: github-actions
+  46     directory: /
+  47     schedule:
+  48       interval: weekly
+  49       day: monday
