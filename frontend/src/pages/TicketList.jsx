@@ -420,6 +420,12 @@ export default function TicketList() {
     setQ(f.q || "");
     setSortBy(f.sort_by || "updated_at");
     setSortDir(f.sort_dir || "desc");
+    // Restore project context if the view captured one. Older views
+    // (saved before project_id was tracked) leave the field absent — in
+    // that case keep whatever project the user has currently selected.
+    if (Object.prototype.hasOwnProperty.call(f, "project_id")) {
+      setSelectedProjectId(f.project_id ?? null);
+    }
     setActiveKey(`saved_${view.id}`);
     setPage(1);
     setSidebarOpen(false);
@@ -434,7 +440,13 @@ export default function TicketList() {
     try {
       const v = await api.post("/api/views", {
         name: viewName.trim(),
-        filters: { q, ...filters, sort_by: sortBy, sort_dir: sortDir },
+        filters: {
+          q,
+          ...filters,
+          sort_by: sortBy,
+          sort_dir: sortDir,
+          project_id: selectedProjectId ?? null,
+        },
       });
       setSavedViews((prev) =>
         [...prev, v].sort((a, b) => a.name.localeCompare(b.name)),
