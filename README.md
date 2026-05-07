@@ -455,6 +455,7 @@ The backfill encrypts plaintext into `*_enc` shadow columns, NULLs the plaintext
 - **Light / Dark mode** — Light, Dark, or Auto (matches OS) from the user menu. Persists in `localStorage`.
 - **Custom accent color** — Admin → Branding has a "Use custom accent color" toggle.
 - **Logo orientation** — admins pick whether the logo "works best with Light Mode" or "Dark Mode"; the app smart-flips when displayed in the opposite mode.
+- **Favicon & home-screen icon** — Admin → Branding accepts a custom square PNG (recommended 512×512, minimum 192×192) used for the browser tab favicon, iOS home-screen icon (Safari → Add to Home Screen), and Android PWA install icon. Served at `/api/branding/favicon`; the dynamic web app manifest at `/api/branding/manifest` references it for installs. Removing the upload reverts to the default Resolvd favicon.
 - **Print export** — always renders in light mode regardless of UI theme.
 - **Localization** — Admin → Branding sets org-wide date style (ISO / US / EU), time style (24-hour / 12-hour), and IANA timezone. UI uses hybrid rendering (relative if <7 days, absolute after); reports / CSV exports always render absolute timestamps.
 
@@ -519,7 +520,7 @@ docker run --rm -v issues_uploads-data:/src:ro -v "$(pwd)":/dst alpine \
 | Export | Admin/Mgr | Bulk PDF/print export and CSV download; toggle to include/exclude images |
 | Authentication | Admin | SSO providers, MFA enforcement, email blocklist, digest schedule |
 | Statuses | Admin | Internal/external status workflow |
-| Branding | Admin | Site name, logo, accent color |
+| Branding | Admin | Site name, logo, favicon / home-screen icon, accent color |
 | Email templates | Admin | Tag-substitution editor + preview + test-send |
 | Email backends | Admin | Connect M365/Gmail via OAuth, SMTP fallback, monitor inbox toggle |
 | Support access | Admin | JIT grants — approve, revoke, deny, view access log |

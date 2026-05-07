@@ -9,25 +9,50 @@ const { invalidateBranding } = require('../services/branding');
 
 const UPLOADS_DIR = process.env.UPLOADS_DIR || '/data/uploads';
 
-const storage = multer.diskStorage({
-  destination: UPLOADS_DIR,
-  filename: (req, file, cb) => {
-    const ext = path.extname(file.originalname);
-    cb(null, `logo-${randomUUID()}${ext}`);
-  },
-});
-const upload = multer({
-  storage,
-  limits: { fileSize: 5 * 1024 * 1024 },
-  fileFilter: (req, file, cb) => {
-    if (!file.mimetype.startsWith('image/')) {
-      return cb(new Error('Logo must be an image'));
-    }
-    cb(null, true);
-  },
-});
+function makeImageUpload(prefix) {
+  const storage = multer.diskStorage({
+    destination: UPLOADS_DIR,
+    filename: (req, file, cb) => {
+      const ext = path.extname(file.originalname);
+      cb(null, `${prefix}-${randomUUID()}${ext}`);
+    },
+  });
+  return multer({
+    storage,
+    limits: { fileSize: 5 * 1024 * 1024 },
+    fileFilter: (req, file, cb) => {
+      if (!file.mimetype.startsWith('image/')) {
+        return cb(new Error('File must be an image'));
+      }
+      cb(null, true);
+    },
+  });
+}
+
+const logoUpload = makeImageUpload('logo');
+const faviconUpload = makeImageUpload('favicon');
 
 const router = express.Router();
+
+function brandingPayload(row) {
+  return {
+    site_name: row.site_name,
+    tagline: row.tagline,
+    primary_color: row.primary_color,
+    show_powered_by: row.show_powered_by,
+    logo_on_dark: row.logo_on_dark,
+    accent_override_enabled: row.accent_override_enabled,
+    phonetic_readback_enabled: row.phonetic_readback_enabled,
+    logo_designed_for: row.logo_designed_for,
+    date_style: row.date_style,
+    time_style: row.time_style,
+    timezone: row.timezone,
+    default_restrict_followers: row.default_restrict_followers !== false,
+    default_restrict_mentions: row.default_restrict_mentions !== false,
+    logo_url: row.logo_filename ? '/api/branding/logo' : null,
+    favicon_url: row.favicon_filename ? '/api/branding/favicon' : null,
+  };
+}
 
 // GET /api/branding — public
 router.get('/', async (req, res) => {
@@ -35,22 +60,7 @@ router.get('/', async (req, res) => {
     const result = await pool.query('SELECT * FROM branding WHERE id = 1');
     const row = result.rows[0];
     if (!row) return res.json({});
-    res.json({
-      site_name: row.site_name,
-      tagline: row.tagline,
-      primary_color: row.primary_color,
-      show_powered_by: row.show_powered_by,
-      logo_on_dark: row.logo_on_dark,
-      accent_override_enabled: row.accent_override_enabled,
-      phonetic_readback_enabled: row.phonetic_readback_enabled,
-      logo_designed_for: row.logo_designed_for,
-      date_style: row.date_style,
-      time_style: row.time_style,
-      timezone: row.timezone,
-      default_restrict_followers: row.default_restrict_followers !== false,
-      default_restrict_mentions: row.default_restrict_mentions !== false,
-      logo_url: row.logo_filename ? '/api/branding/logo' : null,
-    });
+    res.json(brandingPayload(row));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Database error' });
@@ -106,7 +116,7 @@ router.patch('/', requireAuth, requireRole('Admin'), async (req, res) => {
 
     if (Object.keys(updates).length === 0) {
       const r = await pool.query('SELECT * FROM branding WHERE id = 1');
-      return res.json(r.rows[0]);
+      return res.json(brandingPayload(r.rows[0]));
     }
 
     updates.updated_at = new Date().toISOString();
@@ -119,23 +129,7 @@ router.patch('/', requireAuth, requireRole('Admin'), async (req, res) => {
       vals
     );
     invalidateBranding();
-    const row = result.rows[0];
-    res.json({
-      site_name: row.site_name,
-      tagline: row.tagline,
-      primary_color: row.primary_color,
-      show_powered_by: row.show_powered_by,
-      logo_on_dark: row.logo_on_dark,
-      accent_override_enabled: row.accent_override_enabled,
-      phonetic_readback_enabled: row.phonetic_readback_enabled,
-      logo_designed_for: row.logo_designed_for,
-      date_style: row.date_style,
-      time_style: row.time_style,
-      timezone: row.timezone,
-      default_restrict_followers: row.default_restrict_followers !== false,
-      default_restrict_mentions: row.default_restrict_mentions !== false,
-      logo_url: row.logo_filename ? '/api/branding/logo' : null,
-    });
+    res.json(brandingPayload(result.rows[0]));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Database error' });
@@ -157,15 +151,13 @@ router.get('/logo', async (req, res) => {
 });
 
 // POST /api/branding/logo — Admin only
-router.post('/logo', requireAuth, requireRole('Admin'), upload.single('logo'), async (req, res) => {
+router.post('/logo', requireAuth, requireRole('Admin'), logoUpload.single('logo'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   try {
-    // Delete old logo if exists
     const old = await pool.query('SELECT logo_filename FROM branding WHERE id = 1');
     if (old.rows[0]?.logo_filename) {
       fs.unlink(path.join(UPLOADS_DIR, old.rows[0].logo_filename), () => {});
     }
-
     await pool.query(
       'UPDATE branding SET logo_filename = $1, updated_at = NOW() WHERE id = 1',
       [req.file.filename]
@@ -191,6 +183,92 @@ router.delete('/logo', requireAuth, requireRole('Admin'), async (req, res) => {
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// GET /api/branding/favicon — public, serve favicon. Falls back to the
+// static /favicon.png so apple-touch-icon / manifest icon links always
+// resolve to a real image even when the admin hasn't uploaded one.
+router.get('/favicon', async (req, res) => {
+  try {
+    const result = await pool.query('SELECT favicon_filename FROM branding WHERE id = 1');
+    const filename = result.rows[0]?.favicon_filename;
+    if (filename) {
+      const filePath = path.join(UPLOADS_DIR, filename);
+      if (fs.existsSync(filePath)) {
+        res.setHeader('Cache-Control', 'public, max-age=300');
+        return res.sendFile(filePath);
+      }
+    }
+    res.redirect(302, '/favicon.png');
+  } catch (err) {
+    res.redirect(302, '/favicon.png');
+  }
+});
+
+// POST /api/branding/favicon — Admin only
+router.post('/favicon', requireAuth, requireRole('Admin'), faviconUpload.single('favicon'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+  try {
+    const old = await pool.query('SELECT favicon_filename FROM branding WHERE id = 1');
+    if (old.rows[0]?.favicon_filename) {
+      fs.unlink(path.join(UPLOADS_DIR, old.rows[0].favicon_filename), () => {});
+    }
+    await pool.query(
+      'UPDATE branding SET favicon_filename = $1, updated_at = NOW() WHERE id = 1',
+      [req.file.filename]
+    );
+    invalidateBranding();
+    res.json({ favicon_url: '/api/branding/favicon' });
+  } catch (err) {
+    fs.unlink(req.file.path, () => {});
+    console.error(err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// DELETE /api/branding/favicon — Admin only
+router.delete('/favicon', requireAuth, requireRole('Admin'), async (req, res) => {
+  try {
+    const result = await pool.query('SELECT favicon_filename FROM branding WHERE id = 1');
+    const filename = result.rows[0]?.favicon_filename;
+    if (filename) {
+      fs.unlink(path.join(UPLOADS_DIR, filename), () => {});
+    }
+    await pool.query('UPDATE branding SET favicon_filename = NULL, updated_at = NOW() WHERE id = 1');
+    invalidateBranding();
+    res.json({ ok: true });
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// GET /api/branding/manifest — dynamic web app manifest. Drives the PWA
+// install prompt on Android and is referenced by index.html. Icons point
+// at /api/branding/favicon (which itself falls back when unset).
+router.get('/manifest', async (req, res) => {
+  try {
+    const r = await pool.query('SELECT site_name, primary_color FROM branding WHERE id = 1');
+    const b = r.rows[0] || {};
+    const iconUrl = '/api/branding/favicon';
+    res.setHeader('Content-Type', 'application/manifest+json');
+    res.setHeader('Cache-Control', 'public, max-age=300');
+    res.json({
+      name: b.site_name || 'Resolvd',
+      short_name: (b.site_name || 'Resolvd').slice(0, 12),
+      start_url: '/',
+      display: 'standalone',
+      background_color: '#ffffff',
+      theme_color: b.primary_color || '#16a34a',
+      icons: [
+        { src: iconUrl, sizes: '192x192', type: 'image/png', purpose: 'any' },
+        { src: iconUrl, sizes: '512x512', type: 'image/png', purpose: 'any' },
+        { src: iconUrl, sizes: '512x512', type: 'image/png', purpose: 'maskable' },
+      ],
+    });
+  } catch (err) {
+    res.status(500).end();
   }
 });
 

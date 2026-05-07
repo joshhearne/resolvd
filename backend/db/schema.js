@@ -225,6 +225,9 @@ async function initSchema() {
     await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS accent_override_enabled BOOLEAN NOT NULL DEFAULT FALSE`);
     await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS phonetic_readback_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
     await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS logo_designed_for TEXT NOT NULL DEFAULT 'light' CHECK (logo_designed_for IN ('light','dark'))`);
+    // Custom favicon doubles as the PWA / iOS home-screen icon. Stored as
+    // a filename in UPLOADS_DIR; served at /api/branding/favicon.
+    await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS favicon_filename TEXT`);
     // Localization controls (admin-set, applies org-wide). UI uses these
     // to render dates/times; reports always use ISO regardless of style.
     await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS date_style TEXT NOT NULL DEFAULT 'iso' CHECK (date_style IN ('iso','us','eu'))`);

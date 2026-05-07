@@ -21,7 +21,9 @@ export default function AdminBranding() {
   });
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
+  const [uploadingFavicon, setUploadingFavicon] = useState(false);
   const fileRef = useRef();
+  const faviconRef = useRef();
 
   async function saveSettings(e) {
     e.preventDefault();
@@ -81,6 +83,46 @@ export default function AdminBranding() {
       toast.success("Logo removed");
     } catch {
       toast.error("Failed to remove logo");
+    }
+  }
+
+  async function uploadFavicon(file) {
+    if (!file) return;
+    setUploadingFavicon(true);
+    const fd = new FormData();
+    fd.append("favicon", file);
+    try {
+      const res = await fetch("/api/branding/favicon", {
+        method: "POST",
+        credentials: "include",
+        body: fd,
+      });
+      if (!res.ok) throw new Error("Upload failed");
+      const data = await res.json();
+      setBranding((prev) => ({
+        ...prev,
+        favicon_url: data.favicon_url + "?t=" + Date.now(),
+      }));
+      toast.success("Favicon uploaded");
+    } catch {
+      toast.error("Favicon upload failed");
+    } finally {
+      setUploadingFavicon(false);
+    }
+  }
+
+  async function deleteFavicon() {
+    if (!window.confirm("Remove favicon?")) return;
+    try {
+      const res = await fetch("/api/branding/favicon", {
+        method: "DELETE",
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error();
+      setBranding((prev) => ({ ...prev, favicon_url: null }));
+      toast.success("Favicon removed");
+    } catch {
+      toast.error("Failed to remove favicon");
     }
   }
 
@@ -155,6 +197,63 @@ export default function AdminBranding() {
           </div>
           <p className="text-xs text-fg-dim">
             Logo will be smart-flipped when viewed in the opposite mode.
+          </p>
+        </div>
+      </div>
+
+      {/* Favicon / home-screen icon */}
+      <div className="bg-surface rounded-lg border border-border p-6 space-y-4">
+        <h2 className="text-base font-semibold text-fg">
+          Favicon & home-screen icon
+        </h2>
+        <div className="flex items-center gap-4">
+          {branding.favicon_url ? (
+            <img
+              src={branding.favicon_url}
+              alt="Favicon"
+              className="h-16 w-16 object-contain rounded border border-border p-1 bg-surface-2"
+            />
+          ) : (
+            <div className="h-16 w-16 rounded border border-dashed border-border-strong flex items-center justify-center text-fg-dim text-xs text-center">
+              Default
+            </div>
+          )}
+          <div className="flex flex-col gap-2">
+            <input
+              ref={faviconRef}
+              type="file"
+              accept="image/png,image/jpeg,image/webp"
+              className="hidden"
+              onChange={(e) => uploadFavicon(e.target.files[0])}
+            />
+            <button
+              onClick={() => faviconRef.current.click()}
+              disabled={uploadingFavicon}
+              className="btn-secondary btn-sm btn"
+            >
+              {uploadingFavicon ? "Uploading…" : "Upload Icon"}
+            </button>
+            {branding.favicon_url && (
+              <button onClick={deleteFavicon} className="btn-danger btn-sm btn">
+                Remove
+              </button>
+            )}
+          </div>
+        </div>
+        <div className="text-xs text-fg-muted space-y-1">
+          <p>
+            <span className="font-medium text-fg">Recommended:</span> square
+            PNG, <span className="font-mono">512 × 512</span> (minimum 192 × 192).
+            Solid background — iOS adds rounded corners automatically.
+          </p>
+          <p>
+            Used for the browser tab favicon, iOS home-screen icon (Safari →
+            Share → Add to Home Screen), and Android PWA install icon. Leave
+            ~10% padding around the artwork so Android's adaptive
+            (maskable) icon shape doesn't crop it.
+          </p>
+          <p className="text-fg-dim">
+            Max 5 MB. Removing reverts to the default Resolvd favicon.
           </p>
         </div>
       </div>
