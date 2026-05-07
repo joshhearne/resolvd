@@ -54,7 +54,37 @@ const SIGNATURE_BOUNDARIES = [
   /^Get Outlook for .+$/mi,                           // outlook mobile
   /^_{4,}\s*$/m,                                       // ____ separator
   /^-{4,}\s*$/m,                                       // ---- separator
+  // Boilerplate confidentiality footers ("CONFIDENTIALITY NOTICE",
+  // "PRIVILEGED AND CONFIDENTIAL", "This email and any attachments…").
+  // Vendor sigs frequently sit just above these so cutting here drops
+  // both the legalese and the trailing signature block.
+  /^\s*CONFIDENTIALITY\s+NOTICE\b/im,
+  /^\s*PRIVILEGED\s+AND\s+CONFIDENTIAL\b/im,
+  /^\s*This\s+(?:e-?mail|message)\s+(?:and\s+any\s+attachments?\s+)?(?:is|are)\s+(?:confidential|intended)\b/im,
+  /^\s*This\s+communication\s+(?:is|may\s+be)\s+confidential\b/im,
+  /^\s*The\s+information\s+(?:contained\s+)?in\s+this\s+(?:e-?mail|message)\s+is\s+(?:confidential|privileged)\b/im,
 ];
+
+function escapeRegex(s) {
+  return String(s).replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+}
+
+// Build per-call boundaries from contact hints. The matched vendor
+// contact's plaintext name on its own line and any line containing the
+// contact's email address are common signature anchors that the static
+// list can't know ahead of time.
+function contactBoundaries({ name, email } = {}) {
+  const out = [];
+  if (name && name.trim()) {
+    const n = escapeRegex(name.trim());
+    out.push(new RegExp(`^\\s*${n}\\s*$`, 'mi'));
+  }
+  if (email && email.trim()) {
+    const e = escapeRegex(email.trim());
+    out.push(new RegExp(`^.*${e}.*$`, 'mi'));
+  }
+  return out;
+}
 
 // Resolvd's outbound vendor emails carry a visible "Type your reply
 // above this line" marker so vendors know where to write. The inbound
@@ -102,13 +132,21 @@ function dedupeParagraphs(text) {
 // Top-level reply extractor. Takes the EARLIEST cut among reply-marker,
 // signature boundaries, and quoted-tail heuristics. Final pass collapses
 // duplicate paragraphs from any mail-client/gateway echo.
-function extractFreshReply(body) {
+//
+// `contactHints` (optional) lets a vendor-reply caller pass the matched
+// contact's plaintext name + email. We then add per-call boundaries so
+// signatures like "Debbie Lincoln\n…\nE: debbie@vendor.com" cut cleanly
+// even without an explicit "-- " delim.
+function extractFreshReply(body, contactHints) {
   if (!body) return '';
   const text = String(body).replace(/\r\n/g, '\n');
   let cutAt = text.length;
   const markerMatch = REPLY_MARKER_RE.exec(text);
   if (markerMatch && markerMatch.index < cutAt) cutAt = markerMatch.index;
-  for (const re of SIGNATURE_BOUNDARIES) {
+  const boundaries = contactHints
+    ? [...SIGNATURE_BOUNDARIES, ...contactBoundaries(contactHints)]
+    : SIGNATURE_BOUNDARIES;
+  for (const re of boundaries) {
     const m = re.exec(text);
     if (m && m.index < cutAt) cutAt = m.index;
   }
@@ -584,21 +622,27 @@ async function tryAutoReply({ candidateRef, body, fromAddress, queueRowId }) {
   if (!candidateRef) return { ok: false, reason: 'no_ref' };
 
   const t = await pool.query(
-    `SELECT id, internal_ref, project_id, internal_status, submitted_by
+    `SELECT id, internal_ref, project_id, internal_status, submitted_by, title, title_enc
        FROM tickets WHERE internal_ref = $1`,
     [candidateRef]
   );
   if (!t.rows[0]) return { ok: false, reason: `ticket_not_found:${candidateRef}` };
   const ticket = t.rows[0];
 
-  // Sender must be an active contact attached to this ticket.
+  // Sender must be an active contact attached to this ticket. Pulls
+  // name + name_enc and company name so we can decrypt under standard
+  // mode and use the vendor's actual name as the comment author label
+  // + a signature-cut anchor.
   const blind = hashWhole(fromAddress);
   let contactRow;
   if (blind) {
     contactRow = await pool.query(`
-      SELECT c.id, c.name, c.email, u.id AS submitter_id
+      SELECT c.id, c.name, c.name_enc, c.email, c.email_enc,
+             co.name AS company_name, co.name_enc AS company_name_enc,
+             u.id AS submitter_id
         FROM ticket_contacts tc
         JOIN contacts c ON c.id = tc.contact_id
+        LEFT JOIN companies co ON co.id = c.company_id
    LEFT JOIN users u ON u.id = $2
        WHERE tc.ticket_id = $1
          AND c.is_active = TRUE
@@ -607,9 +651,12 @@ async function tryAutoReply({ candidateRef, body, fromAddress, queueRowId }) {
     `, [ticket.id, ticket.submitted_by, blind]);
   } else {
     contactRow = await pool.query(`
-      SELECT c.id, c.name, c.email, u.id AS submitter_id
+      SELECT c.id, c.name, c.name_enc, c.email, c.email_enc,
+             co.name AS company_name, co.name_enc AS company_name_enc,
+             u.id AS submitter_id
         FROM ticket_contacts tc
         JOIN contacts c ON c.id = tc.contact_id
+        LEFT JOIN companies co ON co.id = c.company_id
    LEFT JOIN users u ON u.id = $2
        WHERE tc.ticket_id = $1
          AND c.is_active = TRUE
@@ -619,7 +666,17 @@ async function tryAutoReply({ candidateRef, body, fromAddress, queueRowId }) {
   }
   if (!contactRow.rows[0]) return { ok: false, reason: 'sender_not_on_ticket' };
 
-  const cleanedBody = extractFreshReply(body) || '(no body)';
+  const contact = contactRow.rows[0];
+  await decryptRow('contacts', contact, {
+    aliases: { company_name: 'companies.name' },
+  }).catch(() => {});
+  await decryptRow('tickets', ticket).catch(() => {});
+
+  const contactName = (contact.name && contact.name.trim()) || null;
+  const contactEmail = (contact.email && contact.email.trim()) || fromAddress;
+  const cleanedBody = extractFreshReply(body, {
+    name: contactName, email: contactEmail,
+  }) || '(no body)';
 
   // Append as an external-visible, non-system comment on behalf of the
   // submitter (we don't author comments as contact records). Stamp the
@@ -629,7 +686,7 @@ async function tryAutoReply({ candidateRef, body, fromAddress, queueRowId }) {
   const cols = ['ticket_id', 'user_id', 'is_external_visible', 'is_internal',
     'vendor_contact_id', 'source_inbound_email_id', ...patch.cols];
   const values = [ticket.id, ticket.submitted_by, true, false,
-    contactRow.rows[0].id, queueRowId || null, ...patch.values];
+    contact.id, queueRowId || null, ...patch.values];
   const placeholders = cols.map((_, i) => `$${i + 1}`).join(', ');
   await pool.query(
     `INSERT INTO comments (${cols.join(', ')}) VALUES (${placeholders})`,
@@ -646,10 +703,28 @@ async function tryAutoReply({ candidateRef, body, fromAddress, queueRowId }) {
     ticketId: ticket.id, replyBody: cleanedBody, actorUserId: ticket.submitted_by,
   });
 
+  // Display label for follower notifications. Prefer "Name (Company)"
+  // when both are known, fall back to whichever is non-empty, then to
+  // the bare email.
+  let actorLabel = contactName || contactEmail;
+  if (contactName && contact.company_name) {
+    actorLabel = `${contactName} (${contact.company_name})`;
+  } else if (contact.company_name) {
+    actorLabel = contact.company_name;
+  }
+
   return {
     ok: true,
-    ticket: { id: ticket.id, internal_ref: ticket.internal_ref },
+    ticket: {
+      id: ticket.id,
+      internal_ref: ticket.internal_ref,
+      project_id: ticket.project_id,
+      title: ticket.title,
+    },
     reopen,
+    cleanedBody,
+    actorLabel,
+    contactId: contact.id,
   };
 }
 

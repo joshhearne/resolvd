@@ -1184,7 +1184,7 @@ export default function TicketDetail() {
                     >
                       <div className="flex items-center justify-between mb-1 gap-2">
                         <span className="text-xs font-semibold text-fg-muted flex items-center gap-1.5">
-                          {c.is_system ? "🤖 System" : (c.vendor_contact_id ? `↩ ${c.user_name || "Vendor"}` : c.user_name)}
+                          {c.is_system ? "🤖 System" : (c.vendor_contact_id ? `↩ ${c.vendor_contact_name || c.vendor_company_name || "Vendor"}` : c.user_name)}
                           {c.is_external_visible && !c.vendor_contact_id && (
                             <span className="text-[10px] px-1 py-0.5 rounded bg-brand/15 text-brand uppercase">to vendor</span>
                           )}

@@ -21,6 +21,8 @@ router.get('/:id/comments', requireAuth, async (req, res) => {
     const result = await pool.query(`
       SELECT c.*, u.display_name as user_name, u.email as user_email,
         vc.company_id as vendor_company_id,
+        vc.name as vendor_contact_name,
+        vc.name_enc as vendor_contact_name_enc,
         vco.name as vendor_company_name,
         vco.name_enc as vendor_company_name_enc
       FROM comments c
@@ -31,7 +33,10 @@ router.get('/:id/comments', requireAuth, async (req, res) => {
       ORDER BY c.created_at ASC
     `, [req.params.id]);
     await decryptRows('comments', result.rows, {
-      aliases: { vendor_company_name: 'companies.name' },
+      aliases: {
+        vendor_contact_name: 'contacts.name',
+        vendor_company_name: 'companies.name',
+      },
     });
     res.json(result.rows);
   } catch (err) {

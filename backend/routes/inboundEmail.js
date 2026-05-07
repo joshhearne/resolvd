@@ -210,6 +210,18 @@ router.post('/generic', async (req, res) => {
           WHERE id = $3`,
         [autoReply.ticket.id, tags.length ? tags.join(' ') : null, queueRowId]
       );
+
+      // Fan out follower notifications for the vendor reply. No
+      // user-side actor (the comment came from a contact, not a user),
+      // so excludeUserId is null — submitter + every follower with
+      // email_on_comment=true gets the email.
+      notifyNewComment(pool, {
+        ticket: autoReply.ticket,
+        comment: autoReply.cleanedBody || '',
+        actorId: null,
+        actorName: autoReply.actorLabel || 'Vendor',
+      }).catch(err => console.error('vendor-reply notification failed:', err.message));
+
       return res.status(201).json({
         ok: true, id: queueRowId,
         kind: 'replied',
