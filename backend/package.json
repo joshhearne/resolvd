@@ -12,7 +12,7 @@
   "dependencies": {
     "@azure/msal-node": "^2.6.0",
     "argon2": "^0.44.0",
-    "connect-pg-simple": "^9.0.1",
+    "connect-pg-simple": "^10.0.0",
     "cors": "^2.8.5",
     "csv-parse": "^5.5.3",
     "dotenv": "^16.4.5",
