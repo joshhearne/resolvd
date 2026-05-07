@@ -39,7 +39,6 @@ The marketing repo (`~/dev/resolvd-dev`) advertises features that aren't fully b
 ### Real gaps — advertised as current, not built
 - **CSV import** — needs a real path eventually. Stub yanked for now; build the importer (parse, validate, dedupe, project assignment, mapping UI) when the use case lands.
 - **Per-project role overrides** — "Per-project overrides for vendors and external collaborators" implies role-per-project. Only flat `project_members` exists today; investigate scope before building.
-- **@mentions autocomplete UI** — text-only mentions ship today; comment textarea could add a `@` typeahead pulling active users.
 
 ### Aspirational — Hosted/Pro plan, intentionally future
 Site explicitly tags these as "launching soon" or part of paid hosted tiers. Build only when hosting goes live.
