@@ -76,6 +76,87 @@ Site explicitly tags these as "launching soon" or part of paid hosted tiers. Bui
 ### Plumbing / debt
 - `ROADMAP.md` (this file) — keep current.
 
+## Platform direction — multi-tenant + modular
+
+Long-arc goal: Resolvd is a **natively multi-tenant, plugin-extensible platform**, not just a helpdesk. Self-hosters with one team and MSPs serving 20 client orgs run the same code. SaaS infra (billing, provisioning, ops console) lives in a separate private repo on top.
+
+### Phase 1 — Multi-tenant retrofit (~3 weeks)
+Make every table tenant-aware without changing UX for single-tenant users.
+
+- Add `tenant_id` column to every existing table (tickets, comments, projects, users, statuses, branding, email_backend_accounts, etc.)
+- Postgres Row-Level Security (RLS) policies: `USING (tenant_id = current_setting('app.tenant_id')::int)`
+- Backend middleware resolves tenant from subdomain (`acme.resolvd.app`) → sets `SET LOCAL app.tenant_id` per request
+- Default tenant auto-created on `db:init`; existing data backfills to it. Single-tenant installs never see tenant UI
+- Env flag `MULTI_TENANT_UI=true` exposes tenant signup, switcher, admin → tenants page
+- Tenant resolver fallback: header (`X-Tenant`) for API clients, path prefix for dev (`/t/<slug>/...`)
+
+**Risk:** RLS bug = cross-tenant leak. Mitigation: integration test suite running every endpoint as tenant A, asserting zero rows of tenant B's data leak. Run on every PR.
+
+### Phase 2 — Extract `tickets` to a module (~1 week)
+Refactor existing ticket code into `modules/tickets/` to prove plugin pattern with real code.
+
+- New layout:
+  ```
+  core/                   # auth, users, RBAC, tenants, notifications, settings, branding
+  modules/tickets/        # routes, models, migrations, ui — current ticket system
+  shared/tenant-context/  # RLS middleware
+  shared/audit-log/       # generic audit trail used by all modules
+  ```
+- `modules/tickets/module.json`: `{ name, version, requires, permissions, navItem, settings }`
+- Boot loader globs `modules/*/routes/*.js`, registers under namespace
+- Frontend lazy-loads `modules/*/ui` for tenant's enabled modules
+- No behavior change for end users — pure refactor
+
+### Phase 3 — `resolvd-assets` module v0 (~3-4 weeks)
+First real plugin. Fixes Snipe-IT's consumable inventory gap as the headline draw.
+
+**Schema:**
+- `consumable` — sku, name, category, reorder_point, current_qty (computed)
+- `consumable_lot` — purchase batch: cost, vendor, received_date, lot_qty, expiration
+- `issuance_record` — to_user_id, qty, lot_id, ticket_id (FK to tickets module), issued_by, returned_qty, returned_at, notes
+- `adjustment_record` — qty_delta, reason (received|disposed|count_correction|loss), notes, adjusted_by, at
+- `asset` — serialized items (separate from consumables): asset_tag, model, status, assigned_to, location
+
+**Wins over Snipe-IT consumables:**
+- Returnable issuances (partial returns supported)
+- Every quantity change has actor + reason + timestamp (full audit trail)
+- Lot-aware: cost basis, expiration tracking
+- First-class ticket FK: "issued 3 cables to ticket #4521" links cleanly
+- Reorder alerts via existing notification system
+
+**MVP UI:** consumables list + per-item history, asset list + check-in/check-out, issuance flow callable from a ticket detail page.
+
+### Phase 4 — Plugin polish (~2 weeks)
+- Module enable/disable per tenant in admin UI
+- Permission system honors module-declared `permissions[]`
+- Cross-module integrations: ticket detail shows linked assets/issuances; asset shows ticket history
+- `module.json` becomes the contract for future third-party modules
+
+### Future modules (no timeline)
+- `knowledge-base` — internal docs, customer-facing FAQ
+- `change-management` — ITIL-style change requests with approval chains
+- `time-tracking` — billable hours per ticket / asset
+- `customer-portal` — external-facing ticket submission for end users
+
+### Tenant resolution decision (to confirm)
+- **Subdomain** (`acme.resolvd.app`) — preferred. Cleanest for SaaS, requires wildcard cert.
+- Path prefix (`/t/acme/...`) — fallback for dev / cert-less deployments.
+- Header (`X-Tenant`) — API clients only.
+
+### What stays in core, what becomes module
+**Core (always loaded):** auth, users, RBAC, tenants, branding, notifications, audit log, settings, email backend infrastructure.
+**Module (toggleable):** tickets, assets, knowledge-base, change-management, time-tracking, customer-portal.
+
+Notifications are core because every module fans events through it. Email backends are core because tenant-level (one Office 365 hookup serves tickets + asset reorder alerts).
+
+### Out of scope for the public repo
+SaaS-only concerns live in private `resolvd-cloud` repo, layered on top:
+- Stripe billing / subscription model
+- Tenant signup / provisioning automation
+- Operator console (admin-of-admins)
+- Hosted-tier feature gates
+- Per-tenant rate limiting / abuse controls
+
 ## Conventions worth remembering
 
 - **Semantic tags** drive workflow logic, names are admin-renamable. Always branch on `semantic_tag`, not `name`.
