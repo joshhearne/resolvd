@@ -211,6 +211,50 @@ Recurring + deferred tickets. Two related capabilities, shared scheduler infrast
 
 **Module placement:** core scheduler infrastructure in `shared/scheduler/`, recurring template UI + spawning in `modules/tickets/` (ticket-specific). Other modules (assets reorder reminders, alerts dedup windows) reuse the scheduler.
 
+### Phase 7 — Mobile applications (long-arc)
+Three-stage path. Each stage shippable, each builds on the prior.
+
+**Stage 7a — PWA hardening (~1 week, low effort, high leverage)**
+Already shipped: favicon doubles as PWA / iOS home-screen icon, web push via VAPID, service worker.
+Remaining:
+- Offline-first caching strategy (SWR for ticket lists, optimistic updates for comments)
+- "Install app" prompt + onboarding for users who hit `resolvd.app` on mobile
+- Background sync for queued comments when offline → online
+- Push notification UX polish (deep-link from notification → specific ticket)
+- iOS PWA quirks: status-bar styling, safe-area insets, scroll behavior
+
+**Stage 7b — Capacitor wrapper (~2-3 weeks)**
+Wrap existing PWA in a native shell. Ship to App Store + Play Store as `Resolvd` app.
+- Capacitor.js wraps the React frontend, builds native iOS + Android binaries from same codebase
+- **Native push:** APNs (iOS) + FCM (Android) replace web push on mobile (iOS web push is limited even in 2026). Backend gains `mobile_push_subscriptions` table alongside existing `push_subscriptions`.
+- **Biometric unlock:** FaceID / TouchID / Android biometric for app re-entry
+- **Native camera + photo library** access for attachment uploads (already works in browser, faster + better UX native)
+- **Deep linking:** `resolvd://ticket/WEB-0079` schemes + universal/app links so notifications open the right view
+- App Store + Play Store listings, screenshots, marketing copy, $99/yr Apple Dev + $25 once Google Play
+- Auto-update via PWA refresh under the hood — no App Store re-review for non-native changes
+
+**Stage 7c — React Native rewrite (3-6 months, when justified by usage)**
+Only if Capacitor UX hits a ceiling. Indicators: users complain about scroll lag, gesture handling, list virtualization, native feel.
+- Share business logic via an extracted `@resolvd/api-client` package (TypeScript) — used by web React, Capacitor, and React Native
+- Rewrite UI in React Native components — `View`/`Text`/`FlatList` instead of HTML
+- Native navigation (React Navigation) replaces react-router-dom on mobile
+- Same backend API — zero server changes
+- Web app stays React; only mobile gets RN. Two codebases, one shared client lib.
+
+### What stays cross-platform from day one
+Plan API surface assuming mobile clients exist:
+- All endpoints REST + JSON (already true)
+- Token auth path (not just session cookies) — API tokens roadmap item already noted
+- Pagination + cursor support for list endpoints (mobile bandwidth)
+- Compact response shapes — opt-in field selection / sparse fieldsets for mobile views
+
+### Push architecture sketch
+- Web: VAPID web push (already shipped)
+- iOS Capacitor: APNs via Apple Push Notification service
+- Android Capacitor: FCM
+- Future RN: same APNs + FCM
+- Backend `notifyPush(userId, payload)` fans out to whichever channels the user has registered devices for. Per-device record with `platform: 'web' | 'ios' | 'android'`, `endpoint`, `last_seen`. Stale endpoints auto-pruned (already pattern in place for web).
+
 ### Future modules (no timeline)
 - `knowledge-base` — internal docs, customer-facing FAQ
 - `change-management` — ITIL-style change requests with approval chains
