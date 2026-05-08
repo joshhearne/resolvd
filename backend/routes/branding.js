@@ -49,6 +49,9 @@ function brandingPayload(row) {
     timezone: row.timezone,
     default_restrict_followers: row.default_restrict_followers !== false,
     default_restrict_mentions: row.default_restrict_mentions !== false,
+    enable_vendor_companies: row.enable_vendor_companies !== false,
+    enable_customer_companies: row.enable_customer_companies === true,
+    enable_internal_companies: row.enable_internal_companies !== false,
     logo_url: row.logo_filename ? '/api/branding/logo' : null,
     favicon_url: row.favicon_filename ? '/api/branding/favicon' : null,
   };
@@ -84,6 +87,9 @@ router.patch('/', requireAuth, requireRole('Admin'), async (req, res) => {
       timezone,
       default_restrict_followers,
       default_restrict_mentions,
+      enable_vendor_companies,
+      enable_customer_companies,
+      enable_internal_companies,
     } = req.body;
     const updates = {};
     if (site_name !== undefined) updates.site_name = site_name.trim() || 'Resolvd';
@@ -112,6 +118,15 @@ router.patch('/', requireAuth, requireRole('Admin'), async (req, res) => {
     }
     if (default_restrict_mentions !== undefined) {
       updates.default_restrict_mentions = !!default_restrict_mentions;
+    }
+    if (enable_vendor_companies !== undefined) {
+      updates.enable_vendor_companies = !!enable_vendor_companies;
+    }
+    if (enable_customer_companies !== undefined) {
+      updates.enable_customer_companies = !!enable_customer_companies;
+    }
+    if (enable_internal_companies !== undefined) {
+      updates.enable_internal_companies = !!enable_internal_companies;
     }
 
     if (Object.keys(updates).length === 0) {

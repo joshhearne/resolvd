@@ -150,7 +150,7 @@ export default function AdminExport() {
   const canExport = (selected.size > 0 || selectedExternal.size > 0) && selectedProjects.size > 0;
 
   return (
-    <div className="max-w-xl mx-auto space-y-6">
+    <div className="max-w-xl space-y-6">
       <h1 className="text-2xl font-bold text-fg">Export Tickets</h1>
 
       {/* Project filter */}

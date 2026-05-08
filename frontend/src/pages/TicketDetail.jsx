@@ -26,6 +26,8 @@ import ConfirmDialog from "../components/ConfirmDialog";
 import PhoneticPopover from "../components/PhoneticPopover";
 import MergePicker from "../components/MergePicker";
 import { vendorPillStyle, VENDOR_PILL_CLASSES } from "../utils/vendorColor";
+import PageShell from "../components/PageShell";
+import CannedPicker from "../components/CannedPicker";
 
 // External ticket refs may hold multiple vendor IDs separated by comma
 // or semicolon (e.g. "VND-1234, VND-5678" or "VND-1234;VND-5678").
@@ -657,7 +659,7 @@ export default function TicketDetail() {
   }
 
   return (
-    <div className="space-y-6">
+    <PageShell variant="standard" className="space-y-6">
       {/* Header */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
         <div className="flex-1 min-w-0">
@@ -1259,6 +1261,18 @@ export default function TicketDetail() {
                     onSubmit={submitComment}
                     className="space-y-2 pt-2 border-t border-border"
                   >
+                    <div className="flex items-center justify-between">
+                      <span className="text-xs text-fg-muted">New comment</span>
+                      <CannedPicker
+                        ticketId={ticket.id}
+                        projectId={ticket.project_id}
+                        onInsert={(text) =>
+                          setCommentBody((cur) =>
+                            cur && cur.trim() ? `${cur}\n\n${text}` : text
+                          )
+                        }
+                      />
+                    </div>
                     <MarkdownEditor
                       value={commentBody}
                       onChange={(e) => setCommentBody(e.target.value)}
@@ -2329,7 +2343,7 @@ export default function TicketDetail() {
           </div>
         </div>
       )}
-    </div>
+    </PageShell>
   );
 }
 

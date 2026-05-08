@@ -8,6 +8,21 @@ import { useStatuses } from "../context/StatusesContext";
 import PriorityBadge from "../components/PriorityBadge";
 import StatusBadge from "../components/StatusBadge";
 import PhoneticPopover from "../components/PhoneticPopover";
+import PageShell from "../components/PageShell";
+import ColumnPicker, { useColumnPrefs } from "../components/ColumnPicker";
+
+const TICKET_COLUMNS = [
+  { id: "ref", label: "Ref", alwaysOn: true },
+  { id: "title", label: "Title", alwaysOn: true },
+  { id: "priority", label: "Priority" },
+  { id: "internal", label: "Internal status" },
+  { id: "external", label: "External status" },
+  { id: "vendor_ref", label: "Vendor ref" },
+  { id: "alert_ref", label: "Alert ref" },
+  { id: "blocker", label: "Blocker" },
+  { id: "flagged", label: "Flagged" },
+  { id: "updated", label: "Updated" },
+];
 
 function DateTimeStack({ value }) {
   if (!value) return <span className="text-fg-dim">—</span>;
@@ -26,8 +41,8 @@ function DateTimeStack({ value }) {
   });
   return (
     <>
-      <div>{date}</div>
-      <div className="text-fg-dim">{time}</div>
+      <div className="whitespace-nowrap">{date}</div>
+      <div className="text-fg-dim whitespace-nowrap">{time}</div>
     </>
   );
 }
@@ -181,6 +196,7 @@ export default function TicketList() {
   const isAdmin = user?.role === "Admin";
   const { internal: internalStatuses } = useStatuses();
   const [searchParams, setSearchParams] = useSearchParams();
+  const cols = useColumnPrefs("tickets");
 
   // Bulk-edit mode: admin-only. Replaces search bar + New Ticket button
   // with an action bar; checkbox column becomes visible. Selection is
@@ -506,7 +522,7 @@ export default function TicketList() {
   }
 
   return (
-    <div className="flex gap-5 items-start">
+    <PageShell variant="wide" className="flex gap-5 items-start">
       {/* ── Mobile backdrop ── */}
       {sidebarOpen && (
         <div
@@ -861,6 +877,11 @@ export default function TicketList() {
               >
                 + New Ticket
               </Link>
+              <ColumnPicker
+                columns={TICKET_COLUMNS}
+                hiddenIds={cols.hiddenIds}
+                onToggle={cols.toggle}
+              />
             </div>
           )}
         </div>
@@ -895,32 +916,56 @@ export default function TicketList() {
                         />
                       </th>
                     )}
-                    <th className="px-4 py-2.5">
-                      <SortHeader col="internal_ref" label="Ref" />
-                    </th>
-                    <th className="px-4 py-2.5 text-left">
-                      <SortHeader col="title" label="Title" />
-                    </th>
-                    <th className="px-4 py-2.5">
-                      <SortHeader col="effective_priority" label="Pri" />
-                    </th>
-                    <th className="px-4 py-2.5 text-left text-xs font-medium text-fg-muted uppercase tracking-wide">
-                      Internal
-                    </th>
-                    {showVendorCols && (
+                    {cols.isVisible("ref") && (
+                      <th className="px-4 py-2.5">
+                        <SortHeader col="internal_ref" label="Ref" />
+                      </th>
+                    )}
+                    {cols.isVisible("title") && (
+                      <th className="px-4 py-2.5 text-left">
+                        <SortHeader col="title" label="Title" />
+                      </th>
+                    )}
+                    {cols.isVisible("priority") && (
+                      <th className="px-4 py-2.5">
+                        <SortHeader col="effective_priority" label="Pri" />
+                      </th>
+                    )}
+                    {cols.isVisible("internal") && (
+                      <th className="px-4 py-2.5 text-left text-xs font-medium text-fg-muted uppercase tracking-wide">
+                        Internal
+                      </th>
+                    )}
+                    {showVendorCols && cols.isVisible("external") && (
                       <th className="px-4 py-2.5 text-left text-xs font-medium text-fg-muted uppercase tracking-wide">
                         External
                       </th>
                     )}
-                    <th className="px-4 py-2.5 text-left text-xs font-medium text-fg-muted uppercase tracking-wide">
-                      Blocker
-                    </th>
-                    <th className="px-4 py-2.5 text-xs font-medium text-fg-muted uppercase tracking-wide">
-                      ★
-                    </th>
-                    <th className="px-4 py-2.5">
-                      <SortHeader col="updated_at" label="Updated" />
-                    </th>
+                    {cols.isVisible("vendor_ref") && (
+                      <th className="px-4 py-2.5 text-left text-xs font-medium text-fg-muted uppercase tracking-wide">
+                        Vendor ref
+                      </th>
+                    )}
+                    {cols.isVisible("alert_ref") && (
+                      <th className="px-4 py-2.5 text-left text-xs font-medium text-fg-muted uppercase tracking-wide">
+                        Alert ref
+                      </th>
+                    )}
+                    {cols.isVisible("blocker") && (
+                      <th className="px-4 py-2.5 text-left text-xs font-medium text-fg-muted uppercase tracking-wide">
+                        Blocker
+                      </th>
+                    )}
+                    {cols.isVisible("flagged") && (
+                      <th className="px-4 py-2.5 text-xs font-medium text-fg-muted uppercase tracking-wide">
+                        ★
+                      </th>
+                    )}
+                    {cols.isVisible("updated") && (
+                      <th className="px-4 py-2.5">
+                        <SortHeader col="updated_at" label="Updated" />
+                      </th>
+                    )}
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
@@ -939,62 +984,98 @@ export default function TicketList() {
                           />
                         </td>
                       )}
-                      <td className="px-4 py-3 text-sm font-mono font-medium whitespace-nowrap">
-                        <PhoneticPopover value={t.internal_ref}>
+                      {cols.isVisible("ref") && (
+                        <td className="px-4 py-3 text-sm font-mono font-medium whitespace-nowrap">
+                          <PhoneticPopover value={t.internal_ref}>
+                            <Link
+                              to={`/tickets/${t.id}`}
+                              className="text-brand hover:underline"
+                            >
+                              {t.internal_ref}
+                            </Link>
+                          </PhoneticPopover>
+                        </td>
+                      )}
+                      {cols.isVisible("title") && (
+                        <td className="px-4 py-3 text-sm text-fg w-48">
                           <Link
                             to={`/tickets/${t.id}`}
-                            className="text-brand hover:underline"
+                            className="hover:text-brand leading-snug"
                           >
-                            {t.internal_ref}
+                            {t.title}
                           </Link>
-                        </PhoneticPopover>
-                      </td>
-                      <td className="px-4 py-3 text-sm text-fg w-48">
-                        <Link
-                          to={`/tickets/${t.id}`}
-                          className="hover:text-brand leading-snug"
-                        >
-                          {t.title}
-                        </Link>
-                      </td>
-                      <td className="px-4 py-3 text-center">
-                        <PriorityBadge
-                          priority={t.effective_priority}
-                          override={t.priority_override}
-                          computed={t.computed_priority}
-                          showOverrideInfo={false}
-                        />
-                      </td>
-                      <td className="px-4 py-3">
-                        <StatusBadge status={t.internal_status} />
-                      </td>
-                      {showVendorCols && (
+                        </td>
+                      )}
+                      {cols.isVisible("priority") && (
+                        <td className="px-4 py-3 text-center">
+                          <PriorityBadge
+                            priority={t.effective_priority}
+                            override={t.priority_override}
+                            computed={t.computed_priority}
+                            showOverrideInfo={false}
+                          />
+                        </td>
+                      )}
+                      {cols.isVisible("internal") && (
+                        <td className="px-4 py-3">
+                          <StatusBadge status={t.internal_status} />
+                        </td>
+                      )}
+                      {showVendorCols && cols.isVisible("external") && (
                         <td className="px-4 py-3 text-sm text-fg-muted whitespace-nowrap">
                           {t.external_status}
                         </td>
                       )}
-                      <td className="px-4 py-3 text-sm">
-                        {t.blocker_type === "mot_input" && (
-                          <span className="text-amber-600 dark:text-amber-400 font-medium">
-                            Team Input
-                          </span>
-                        )}
-                        {t.blocker_type === "internal" && (
-                          <span className="text-red-600 dark:text-red-400 font-medium">
-                            {t.blocking_ticket_ref || "Internal"}
-                          </span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 text-center">
-                        {t.flagged_for_review ? (
-                          <span className="text-purple-600 dark:text-purple-400 font-bold">
-                            ★
-                          </span>
-                        ) : null}
-                      </td>
-                      <td className="px-4 py-3 text-xs text-fg-muted w-20">
-                        <DateTimeStack value={t.updated_at} />
-                      </td>
+                      {cols.isVisible("vendor_ref") && (
+                        <td className="px-4 py-3 text-xs font-mono text-fg-muted whitespace-nowrap">
+                          {t.external_ticket_ref ? (
+                            <PhoneticPopover value={t.external_ticket_ref}>
+                              <span>{t.external_ticket_ref}</span>
+                            </PhoneticPopover>
+                          ) : (
+                            <span className="text-fg-dim">—</span>
+                          )}
+                        </td>
+                      )}
+                      {cols.isVisible("alert_ref") && (
+                        <td className="px-4 py-3 text-xs font-mono text-fg-muted whitespace-nowrap">
+                          {t.external_ref ? (
+                            <PhoneticPopover value={t.external_ref}>
+                              <span>{t.external_ref}</span>
+                            </PhoneticPopover>
+                          ) : (
+                            <span className="text-fg-dim">—</span>
+                          )}
+                        </td>
+                      )}
+                      {cols.isVisible("blocker") && (
+                        <td className="px-4 py-3 text-sm">
+                          {t.blocker_type === "mot_input" && (
+                            <span className="text-amber-600 dark:text-amber-400 font-medium">
+                              Team Input
+                            </span>
+                          )}
+                          {t.blocker_type === "internal" && (
+                            <span className="text-red-600 dark:text-red-400 font-medium">
+                              {t.blocking_ticket_ref || "Internal"}
+                            </span>
+                          )}
+                        </td>
+                      )}
+                      {cols.isVisible("flagged") && (
+                        <td className="px-4 py-3 text-center">
+                          {t.flagged_for_review ? (
+                            <span className="text-purple-600 dark:text-purple-400 font-bold">
+                              ★
+                            </span>
+                          ) : null}
+                        </td>
+                      )}
+                      {cols.isVisible("updated") && (
+                        <td className="px-4 py-3 text-xs text-fg-muted whitespace-nowrap">
+                          <DateTimeStack value={t.updated_at} />
+                        </td>
+                      )}
                     </tr>
                   ))}
                 </tbody>
@@ -1029,6 +1110,6 @@ export default function TicketList() {
           </div>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }

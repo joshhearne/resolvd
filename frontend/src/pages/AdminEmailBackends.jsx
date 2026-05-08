@@ -14,6 +14,7 @@ export default function AdminEmailBackends() {
   const { user } = useAuth();
   const [accounts, setAccounts] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [selectedId, setSelectedId] = useState(null);
   const [showSmtp, setShowSmtp] = useState(false);
   const [smtpForm, setSmtpForm] = useState({
     display_name: "", from_address: "", smtp_host: "", smtp_port: 587,
@@ -29,7 +30,6 @@ export default function AdminEmailBackends() {
   }
   useEffect(() => { reload(); }, []);
 
-  // Surface OAuth callback outcome from query string
   useEffect(() => {
     const error = params.get("error");
     const connected = params.get("connected");
@@ -64,8 +64,11 @@ export default function AdminEmailBackends() {
 
   async function remove(id) {
     if (!window.confirm("Delete this email backend?")) return;
-    try { await api.delete(`/api/email-backends/${id}`); await reload(); }
-    catch (e) { toast.error(e.message); }
+    try {
+      await api.delete(`/api/email-backends/${id}`);
+      if (selectedId === id) setSelectedId(null);
+      await reload();
+    } catch (e) { toast.error(e.message); }
   }
 
   async function toggleMonitor(id, enabled) {
@@ -126,12 +129,22 @@ export default function AdminEmailBackends() {
     } catch (e) { toast.error(e.message); }
   }
 
+  const selected = accounts.find((a) => a.id === selectedId);
+
   return (
     <div className="space-y-4">
+      <div>
+        <h1 className="text-xl font-semibold text-fg mb-1">Email backends</h1>
+        <p className="text-sm text-fg-muted">
+          Outbound senders + inbound mailboxes. OAuth-backed where possible
+          (no shared client secrets, MFA stays with the provider).
+        </p>
+      </div>
+
+      {/* Connect new mailbox — full-width banner */}
       <div className="bg-surface border border-border rounded-lg p-4">
         <h3 className="text-sm font-semibold text-fg mb-1">Connect a sending mailbox</h3>
         <p className="text-xs text-fg-muted mb-3">
-          OAuth-backed accounts authenticate as a real user (no shared client secrets, MFA handled by the provider).
           Refresh tokens encrypt at rest under the workspace key.
         </p>
         <div className="flex flex-wrap gap-2">
@@ -178,120 +191,85 @@ export default function AdminEmailBackends() {
         )}
       </div>
 
-      {loading ? <div className="text-sm text-fg-dim">Loading…</div> :
-        accounts.length === 0 ?
-          <div className="text-sm text-fg-dim italic">No backends connected. Pick one above.</div> :
-          <div className="space-y-2">
-            {accounts.map(a => (
-              <div key={a.id} className={`bg-surface border rounded-lg p-4 ${a.is_active ? "border-brand" : "border-border"}`}>
-                <div className="flex items-start justify-between gap-3">
-                  <div className="min-w-0">
-                    <div className="flex items-center gap-2">
-                      <span className="text-sm font-semibold text-fg">{a.display_name || a.from_address}</span>
-                      <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded bg-surface-2 text-fg-muted">
-                        {PROVIDER_LABELS[a.provider] || a.provider}
+      {/* Master-detail */}
+      <div className="flex flex-col lg:flex-row gap-4 items-stretch">
+        <aside
+          className={`
+            ${selectedId ? "hidden lg:block" : "block"}
+            lg:w-80 lg:flex-shrink-0 bg-surface border border-border rounded-lg overflow-hidden
+          `}
+        >
+          {loading ? (
+            <div className="text-sm text-fg-dim p-4">Loading…</div>
+          ) : accounts.length === 0 ? (
+            <div className="text-sm text-fg-dim italic p-4">
+              No backends connected. Pick one above.
+            </div>
+          ) : (
+            <div className="divide-y divide-border max-h-[70vh] overflow-y-auto">
+              {accounts.map((a) => (
+                <button
+                  key={a.id}
+                  onClick={() => setSelectedId(a.id)}
+                  className={`w-full text-left px-3 py-2.5 hover:bg-surface-2 transition-colors ${
+                    selectedId === a.id ? "bg-brand/5 border-l-2 border-brand" : ""
+                  }`}
+                >
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <span className="text-sm font-medium text-fg truncate">
+                      {a.display_name || a.from_address}
+                    </span>
+                    {a.is_active && (
+                      <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-brand/15 text-brand">
+                        Active
                       </span>
-                      {a.is_active && <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded bg-brand/15 text-brand">Active</span>}
-                    </div>
-                    <div className="text-xs text-fg-muted mt-1">
-                      {a.from_address}
-                      {a.provider !== "smtp" && a.oauth_expires_at && (
-                        <> · token refreshes {new Date(a.oauth_expires_at).toLocaleString()}</>
-                      )}
-                      {a.provider === "smtp" && a.smtp_host && <> · {a.smtp_host}:{a.smtp_port}</>}
-                    </div>
-                    {a.last_test_at && (
-                      <div className="text-xs mt-1">
-                        Last test: <span className={a.last_test_status === "ok" ? "text-emerald-600" : "text-red-600"}>
-                          {a.last_test_status}
-                        </span>
-                        {" · "}{new Date(a.last_test_at).toLocaleString()}
-                        {a.last_test_error && <div className="text-fg-dim text-[11px] mt-0.5 truncate">{a.last_test_error}</div>}
-                      </div>
-                    )}
-                    {a.provider !== "smtp" && (
-                      <div className="text-xs mt-2 space-y-1.5">
-                        <div className="flex items-center gap-2 flex-wrap">
-                          <label className="inline-flex items-center gap-1 text-fg-muted">
-                            <input type="checkbox" checked={!!a.inbox_monitor_enabled}
-                              onChange={(e) => toggleMonitor(a.id, e.target.checked)} />
-                            Monitor inbox (auto-ingest mail)
-                          </label>
-                          {a.inbox_monitor_enabled && a.inbox_subscription_expires_at && (
-                            <span className="text-fg-dim">
-                              renews before {new Date(a.inbox_subscription_expires_at).toLocaleString()}
-                            </span>
-                          )}
-                        </div>
-                        <div>
-                          <label className="inline-flex items-center gap-1 text-fg-muted">
-                            <input type="checkbox" checked={!!a.send_as_submitter}
-                              onChange={(e) => toggleSendAs(a.id, e.target.checked)} />
-                            Send vendor emails as submitting user
-                          </label>
-                          {a.send_as_submitter && a.provider === "graph_user" && (
-                            <div className="mt-1.5 rounded bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 px-2.5 py-2 text-[11px] text-amber-800 dark:text-amber-300 leading-snug">
-                              <strong>Exchange admin action required.</strong> This mailbox must have{" "}
-                              <em>Send on Behalf Of</em> permission granted for each submitter in Exchange Online.
-                              Open{" "}
-                              <a
-                                href="https://admin.exchange.microsoft.com/#/mailboxes"
-                                target="_blank" rel="noopener noreferrer"
-                                className="underline font-medium"
-                              >
-                                Exchange admin center → Mailboxes
-                              </a>
-                              {" "}→ select this mailbox → Delegation → Send on behalf → add your users.
-                            </div>
-                          )}
-                          {a.send_as_submitter && a.provider === "gmail_user" && (
-                            <div className="mt-1.5 rounded bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 px-2.5 py-2 text-[11px] text-amber-800 dark:text-amber-300 leading-snug">
-                              <strong>Google Workspace admin action required.</strong> Delegation must be enabled
-                              for this mailbox in{" "}
-                              <a
-                                href="https://admin.google.com/ac/apps/gmail/defaultsettings"
-                                target="_blank" rel="noopener noreferrer"
-                                className="underline font-medium"
-                              >
-                                Google Admin → Gmail → Default settings
-                              </a>
-                              {" "}and each submitter added as a delegate.
-                            </div>
-                          )}
-                        </div>
-                        {a.inbox_monitor_enabled && (
-                          <BannerStripSection
-                            account={a}
-                            onSave={(patterns) => saveBannerPatterns(a.id, patterns)}
-                          />
-                        )}
-                        <ScopeSection
-                          account={a}
-                          currentUser={user}
-                          onAdd={(projectId, send, recv) => addScope(a.id, projectId, send, recv).then(reload)}
-                          onRemove={(projectId) => removeScope(a.id, projectId).then(reload)}
-                          onApprove={(projectId) => approveScope(a.id, projectId).then(reload)}
-                        />
-                      </div>
                     )}
                   </div>
-                  <div className="flex flex-col gap-1.5 items-end">
-                    {!a.is_active && (
-                      <button onClick={() => activate(a.id)}
-                        className="text-xs bg-brand text-white rounded px-3 py-1">Activate</button>
-                    )}
-                    <button onClick={() => test(a.id)}
-                      className="text-xs bg-surface-2 border border-border text-fg-muted hover:text-fg rounded px-3 py-1">
-                      Send test
-                    </button>
-                    <button onClick={() => remove(a.id)}
-                      className="text-xs text-red-600 hover:underline">Delete</button>
+                  <div className="text-xs text-fg-muted truncate mt-0.5">
+                    {a.from_address}
                   </div>
-                </div>
-              </div>
-            ))}
-          </div>
-      }
+                  <div className="text-[11px] text-fg-dim mt-1 flex items-center gap-2 flex-wrap">
+                    <span>{PROVIDER_LABELS[a.provider] || a.provider}</span>
+                    {a.inbox_monitor_enabled && (
+                      <span className="text-emerald-700 dark:text-emerald-400">
+                        · monitor
+                      </span>
+                    )}
+                    {a.send_as_submitter && (
+                      <span className="text-amber-700 dark:text-amber-400">
+                        · send-as
+                      </span>
+                    )}
+                  </div>
+                </button>
+              ))}
+            </div>
+          )}
+        </aside>
+
+        <section className={`flex-1 min-w-0 ${selectedId ? "block" : "hidden lg:block"}`}>
+          {!selected ? (
+            <div className="bg-surface border border-border rounded-lg p-8 text-sm text-fg-dim italic text-center">
+              Select an account to view and edit its settings.
+            </div>
+          ) : (
+            <AccountDetail
+              account={selected}
+              currentUser={user}
+              onBack={() => setSelectedId(null)}
+              onActivate={() => activate(selected.id)}
+              onTest={() => test(selected.id)}
+              onRemove={() => remove(selected.id)}
+              onToggleMonitor={(v) => toggleMonitor(selected.id, v)}
+              onToggleSendAs={(v) => toggleSendAs(selected.id, v)}
+              onSaveBannerPatterns={(p) => saveBannerPatterns(selected.id, p)}
+              onAddScope={(pid, s, r) => addScope(selected.id, pid, s, r).then(reload)}
+              onRemoveScope={(pid) => removeScope(selected.id, pid).then(reload)}
+              onApproveScope={(pid) => approveScope(selected.id, pid).then(reload)}
+            />
+          )}
+        </section>
+      </div>
 
       <div className="text-xs text-fg-dim">
         OAuth providers require <code>AZURE_CLIENT_ID</code>/<code>AZURE_CLIENT_SECRET</code> (Microsoft) or
@@ -303,9 +281,140 @@ export default function AdminEmailBackends() {
   );
 }
 
-// Project-scope manager for an email account. Lists current scopes,
-// lets admins/managers add new ones (project + send/recv toggles), and
-// surfaces an approval action when a single-project scope is pending.
+function AccountDetail({
+  account: a,
+  currentUser,
+  onBack,
+  onActivate,
+  onTest,
+  onRemove,
+  onToggleMonitor,
+  onToggleSendAs,
+  onSaveBannerPatterns,
+  onAddScope,
+  onRemoveScope,
+  onApproveScope,
+}) {
+  return (
+    <div className="bg-surface border border-border rounded-lg p-4 space-y-4">
+      <button
+        onClick={onBack}
+        className="lg:hidden text-xs text-fg-muted hover:text-fg"
+      >
+        ← Back to list
+      </button>
+
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <div className="min-w-0">
+          <div className="flex items-center gap-2 flex-wrap">
+            <h2 className="text-base font-semibold text-fg">
+              {a.display_name || a.from_address}
+            </h2>
+            <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded bg-surface-2 text-fg-muted">
+              {PROVIDER_LABELS[a.provider] || a.provider}
+            </span>
+            {a.is_active && (
+              <span className="text-[10px] uppercase tracking-wider px-2 py-0.5 rounded bg-brand/15 text-brand">
+                Active
+              </span>
+            )}
+          </div>
+          <div className="text-xs text-fg-muted mt-1">
+            {a.from_address}
+            {a.provider !== "smtp" && a.oauth_expires_at && (
+              <> · token refreshes {new Date(a.oauth_expires_at).toLocaleString()}</>
+            )}
+            {a.provider === "smtp" && a.smtp_host && <> · {a.smtp_host}:{a.smtp_port}</>}
+          </div>
+          {a.last_test_at && (
+            <div className="text-xs mt-1">
+              Last test:{" "}
+              <span className={a.last_test_status === "ok" ? "text-emerald-600" : "text-red-600"}>
+                {a.last_test_status}
+              </span>
+              {" · "}{new Date(a.last_test_at).toLocaleString()}
+              {a.last_test_error && (
+                <div className="text-fg-dim text-[11px] mt-0.5">{a.last_test_error}</div>
+              )}
+            </div>
+          )}
+        </div>
+        <div className="flex flex-wrap gap-1.5">
+          {!a.is_active && (
+            <button onClick={onActivate} className="text-xs bg-brand text-white rounded px-3 py-1">
+              Activate
+            </button>
+          )}
+          <button onClick={onTest}
+            className="text-xs bg-surface-2 border border-border text-fg-muted hover:text-fg rounded px-3 py-1">
+            Send test
+          </button>
+          <button onClick={onRemove} className="text-xs text-red-600 hover:underline">
+            Delete
+          </button>
+        </div>
+      </div>
+
+      {a.provider !== "smtp" && (
+        <div className="space-y-3 pt-3 border-t border-border">
+          <div className="flex items-center gap-2 flex-wrap">
+            <label className="inline-flex items-center gap-1 text-sm text-fg">
+              <input type="checkbox" checked={!!a.inbox_monitor_enabled}
+                onChange={(e) => onToggleMonitor(e.target.checked)} />
+              Monitor inbox (auto-ingest mail)
+            </label>
+            {a.inbox_monitor_enabled && a.inbox_subscription_expires_at && (
+              <span className="text-xs text-fg-dim">
+                renews before {new Date(a.inbox_subscription_expires_at).toLocaleString()}
+              </span>
+            )}
+          </div>
+
+          <div>
+            <label className="inline-flex items-center gap-1 text-sm text-fg">
+              <input type="checkbox" checked={!!a.send_as_submitter}
+                onChange={(e) => onToggleSendAs(e.target.checked)} />
+              Send vendor emails as submitting user
+            </label>
+            {a.send_as_submitter && a.provider === "graph_user" && (
+              <div className="mt-1.5 rounded bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 px-2.5 py-2 text-[11px] text-amber-800 dark:text-amber-300 leading-snug">
+                <strong>Exchange admin action required.</strong> This mailbox must have{" "}
+                <em>Send on Behalf Of</em> permission granted for each submitter in Exchange Online.
+                Open{" "}
+                <a href="https://admin.exchange.microsoft.com/#/mailboxes" target="_blank" rel="noopener noreferrer" className="underline font-medium">
+                  Exchange admin center → Mailboxes
+                </a>
+                {" "}→ select this mailbox → Delegation → Send on behalf → add your users.
+              </div>
+            )}
+            {a.send_as_submitter && a.provider === "gmail_user" && (
+              <div className="mt-1.5 rounded bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 px-2.5 py-2 text-[11px] text-amber-800 dark:text-amber-300 leading-snug">
+                <strong>Google Workspace admin action required.</strong> Delegation must be enabled
+                for this mailbox in{" "}
+                <a href="https://admin.google.com/ac/apps/gmail/defaultsettings" target="_blank" rel="noopener noreferrer" className="underline font-medium">
+                  Google Admin → Gmail → Default settings
+                </a>
+                {" "}and each submitter added as a delegate.
+              </div>
+            )}
+          </div>
+
+          {a.inbox_monitor_enabled && (
+            <BannerStripSection account={a} onSave={onSaveBannerPatterns} />
+          )}
+          <ScopeSection
+            account={a}
+            currentUser={currentUser}
+            onAdd={onAddScope}
+            onRemove={onRemoveScope}
+            onApprove={onApproveScope}
+          />
+        </div>
+      )}
+    </div>
+  );
+}
+
 function ScopeSection({ account, currentUser, onAdd, onRemove, onApprove }) {
   const [open, setOpen] = useState(false);
   const [scopes, setScopes] = useState([]);
@@ -353,11 +462,11 @@ function ScopeSection({ account, currentUser, onAdd, onRemove, onApprove }) {
   const choices = projects.filter((p) => !usedIds.has(p.id));
 
   return (
-    <div className="mt-2 border-t border-border pt-2">
+    <div className="border-t border-border pt-3">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="text-xs text-fg-muted hover:text-fg flex items-center gap-1"
+        className="text-sm text-fg flex items-center gap-1.5 font-medium"
       >
         <span>{open ? "▾" : "▸"}</span>
         Project scope
@@ -373,7 +482,7 @@ function ScopeSection({ account, currentUser, onAdd, onRemove, onApprove }) {
         )}
       </button>
       {open && (
-        <div className="mt-2 space-y-2 text-[11px]">
+        <div className="mt-2 space-y-2 text-xs">
           <p className="text-fg-muted">
             Scope this mailbox to one or more projects. Send / Recv toggle the
             direction independently. When a mailbox is scoped to exactly one
@@ -405,19 +514,11 @@ function ScopeSection({ account, currentUser, onAdd, onRemove, onApprove }) {
                   )}
                   <span className="ml-auto flex items-center gap-2">
                     {!s.approved_at && isAdmin && isSingleScope && (
-                      <button
-                        type="button"
-                        onClick={() => handleApprove(s.project_id)}
-                        className="text-brand hover:underline"
-                      >
+                      <button type="button" onClick={() => handleApprove(s.project_id)} className="text-brand hover:underline">
                         Approve
                       </button>
                     )}
-                    <button
-                      type="button"
-                      onClick={() => handleRemove(s.project_id)}
-                      className="text-red-600 hover:underline"
-                    >
+                    <button type="button" onClick={() => handleRemove(s.project_id)} className="text-red-600 hover:underline">
                       Remove
                     </button>
                   </span>
@@ -436,11 +537,8 @@ function ScopeSection({ account, currentUser, onAdd, onRemove, onApprove }) {
 
           {choices.length > 0 && (
             <form onSubmit={handleAdd} className="flex items-center gap-2 flex-wrap">
-              <select
-                value={pickProject}
-                onChange={(e) => setPickProject(e.target.value)}
-                className="bg-surface-2 border border-border rounded px-2 py-1"
-              >
+              <select value={pickProject} onChange={(e) => setPickProject(e.target.value)}
+                className="bg-surface-2 border border-border rounded px-2 py-1">
                 <option value="">Add project…</option>
                 {choices.map((p) => (
                   <option key={p.id} value={p.id}>{p.name} ({p.prefix})</option>
@@ -454,11 +552,8 @@ function ScopeSection({ account, currentUser, onAdd, onRemove, onApprove }) {
                 <input type="checkbox" checked={pickRecv} onChange={(e) => setPickRecv(e.target.checked)} />
                 recv
               </label>
-              <button
-                type="submit"
-                disabled={!pickProject}
-                className="text-xs bg-brand text-white rounded px-3 py-1 disabled:opacity-50"
-              >
+              <button type="submit" disabled={!pickProject}
+                className="text-xs bg-brand text-white rounded px-3 py-1 disabled:opacity-50">
                 Add scope
               </button>
             </form>
@@ -469,9 +564,6 @@ function ScopeSection({ account, currentUser, onAdd, onRemove, onApprove }) {
   );
 }
 
-// Known recipient-banner patterns for common mail-security gateways.
-// Each pattern is applied with /im flags on inbound bodies; matched
-// content is removed before the body lands in the queue.
 const BANNER_PRESETS = [
   {
     key: "inky",
@@ -516,11 +608,11 @@ function BannerStripSection({ account, onSave }) {
   const count = (account.inbound_banner_strip_patterns || []).length;
 
   return (
-    <div className="mt-2 border-t border-border pt-2">
+    <div className="border-t border-border pt-3">
       <button
         type="button"
         onClick={() => setOpen((v) => !v)}
-        className="text-xs text-fg-muted hover:text-fg flex items-center gap-1"
+        className="text-sm text-fg flex items-center gap-1.5 font-medium"
       >
         <span>{open ? "▾" : "▸"}</span>
         Inbound banner stripping
@@ -531,7 +623,7 @@ function BannerStripSection({ account, onSave }) {
         )}
       </button>
       {open && (
-        <div className="mt-2 space-y-2 text-[11px]">
+        <div className="mt-2 space-y-2 text-xs">
           <div className="rounded bg-blue-50 dark:bg-blue-950/40 border border-blue-300 dark:border-blue-700 px-2.5 py-2 text-blue-900 dark:text-blue-200 leading-snug">
             <strong>Try the gateway first.</strong> If this is a licensed
             resource mailbox (no human user), most gateways (Inky, Mimecast,

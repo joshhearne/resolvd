@@ -3,6 +3,7 @@ import { useParams, useNavigate, Link } from "react-router-dom";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
 import { useAuth } from "../context/AuthContext";
+import PageShell from "../components/PageShell";
 
 const ROLES = ["Admin", "Manager", "Submitter", "Viewer"];
 
@@ -216,7 +217,7 @@ export default function ProjectDetail() {
   const availableUsers = allUsers.filter((u) => !memberUserIds.has(u.id));
 
   return (
-    <div className="max-w-3xl space-y-6">
+    <PageShell variant="narrow" className="space-y-6">
       {/* Breadcrumb */}
       <div className="text-sm text-fg-dim">
         <Link to="/projects" className="hover:text-brand">
@@ -683,6 +684,6 @@ export default function ProjectDetail() {
           </table>
         )}
       </div>
-    </div>
+    </PageShell>
   );
 }

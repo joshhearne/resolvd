@@ -23,6 +23,9 @@ import AdminSupport from "./pages/AdminSupport";
 import AdminEncryption from "./pages/AdminEncryption";
 import AdminEmailBackends from "./pages/AdminEmailBackends";
 import AdminMerge from "./pages/AdminMerge";
+import AdminAlertSources from "./pages/AdminAlertSources";
+import AdminSystemHealth from "./pages/AdminSystemHealth";
+import AdminCannedResponses from "./pages/AdminCannedResponses";
 import PrintExport from "./pages/PrintExport";
 import Projects from "./pages/Projects";
 import ProjectDetail from "./pages/ProjectDetail";
@@ -153,6 +156,9 @@ function AppRoutes() {
           <Route path="encryption" element={<AdminEncryption />} />
           <Route path="email-backends" element={<AdminEmailBackends />} />
           <Route path="merge" element={<AdminMerge />} />
+          <Route path="alert-sources" element={<AdminAlertSources />} />
+          <Route path="system-health" element={<AdminSystemHealth />} />
+          <Route path="canned-responses" element={<AdminCannedResponses />} />
         </Route>
       </Route>
     </Routes>

@@ -576,6 +576,96 @@ async function initSchema() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_contacts_email_blind ON contacts(email_blind_idx)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_contacts_active ON contacts(is_active)`);
 
+    // Companies are now multi-modal:
+    //   vendor   — external party we escalate to (existing default).
+    //              project_id stays mandatory at the app layer for vendors
+    //              to keep the existing per-project escalation flow intact.
+    //   customer — external party we *serve* (MSP mode). project_id may be
+    //              NULL; multi-project linkage rides on company_projects.
+    //   internal — your own org's units (Internal IT, DevOps, dept). No
+    //              external contacts; members are real users; tracks
+    //              physical locations.
+    await client.query(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'vendor'`);
+    await client.query(`ALTER TABLE companies DROP CONSTRAINT IF EXISTS companies_kind_check`);
+    await client.query(`ALTER TABLE companies ADD CONSTRAINT companies_kind_check CHECK (kind IN ('vendor','customer','internal'))`);
+    await client.query(`ALTER TABLE companies ALTER COLUMN project_id DROP NOT NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_companies_kind ON companies(kind)`);
+
+    // Locations — physical sites, primarily for internal companies but
+    // available on customers too (MSPs track multi-site customers).
+    // location_code is optional shorthand (e.g. "HQ", "EAST"). use_extensions
+    // flips the contact-create UX: pre-fill phone from location, ask only
+    // for ext. is_primary drives default selection in pickers.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS locations (
+        id SERIAL PRIMARY KEY,
+        company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        location_code TEXT,
+        address TEXT,
+        timezone TEXT,
+        phone TEXT,
+        use_extensions BOOLEAN NOT NULL DEFAULT FALSE,
+        is_primary BOOLEAN NOT NULL DEFAULT FALSE,
+        is_archived BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_locations_company ON locations(company_id)`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_locations_one_primary
+      ON locations(company_id) WHERE is_primary = TRUE AND is_archived = FALSE`);
+
+    // Internal/customer companies can attribute Resolvd users to themselves.
+    // role kept as a free-text label for now; bare list w/ optional location.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS company_members (
+        company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL,
+        role_label TEXT,
+        added_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        added_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (company_id, user_id)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_company_members_user ON company_members(user_id)`);
+
+    // Customer-kind multi-project mapping. One customer org might span
+    // their helpdesk, infra, and security projects. Vendors stick with
+    // companies.project_id for now.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS company_projects (
+        company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        PRIMARY KEY (company_id, project_id)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_company_projects_project ON company_projects(project_id)`);
+
+    // Contacts can attach to a specific location for routing + extension
+    // pre-fill. extension lives alongside phone for compactness.
+    await client.query(`ALTER TABLE contacts ADD COLUMN IF NOT EXISTS location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL`);
+    await client.query(`ALTER TABLE contacts ADD COLUMN IF NOT EXISTS extension TEXT`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_contacts_location ON contacts(location_id)`);
+
+    // Admin-controlled feature flags for which company modes are active.
+    // Internal stays on by default since users always live somewhere.
+    // Customer (MSP mode) defaults OFF since most installs run helpdesk
+    // for their own org and exposing customer-facing visibility is a
+    // policy decision.
+    await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS enable_vendor_companies BOOLEAN NOT NULL DEFAULT TRUE`);
+    await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS enable_customer_companies BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS enable_internal_companies BOOLEAN NOT NULL DEFAULT TRUE`);
+
+    // Domain-based auto-membership for internal companies. Comma-stored as
+    // a TEXT[] of lowercased apex domains ("acme.com", "acme.co.uk"). On
+    // user activation we match user.email's domain against any internal
+    // company's array and insert company_members rows. NULL or empty =
+    // auto-join disabled for that company. Only meaningful for kind='internal'.
+    await client.query(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS auto_add_domains TEXT[]`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_companies_auto_add_domains ON companies USING GIN(auto_add_domains)`);
+
     await client.query(`
       CREATE TABLE IF NOT EXISTS ticket_contacts (
         ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
@@ -732,6 +822,10 @@ async function initSchema() {
 
     await client.query(`
       INSERT INTO system_jobs (name) VALUES ('inbox_subscription_renewal')
+      ON CONFLICT DO NOTHING
+    `);
+    await client.query(`
+      INSERT INTO system_jobs (name) VALUES ('auto_close')
       ON CONFLICT DO NOTHING
     `);
 
@@ -908,6 +1002,97 @@ async function initSchema() {
       )
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_push_subs_user ON push_subscriptions(user_id)`);
+
+    // External alert ingestion (Zabbix, Alertmanager, generic webhook, etc.).
+    // One row per configured monitoring source. Token is hashed (sha256) at
+    // rest; raw token is shown to the admin once on create/rotate. Severity
+    // map is preset-specific (e.g. Zabbix Disaster→1 ... Info→5) and merges
+    // over the preset's built-in defaults at receive time.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS external_alert_source (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        preset TEXT NOT NULL,
+        token_hash TEXT NOT NULL UNIQUE,
+        default_project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+        default_assignee_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        severity_map JSONB NOT NULL DEFAULT '{}'::jsonb,
+        auto_resolve_on_recovery BOOLEAN NOT NULL DEFAULT FALSE,
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        last_seen_at TIMESTAMPTZ,
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_alert_source_token ON external_alert_source(token_hash)`);
+    // Optional outbound API connection back to the monitoring tool. Lets
+    // Resolvd pull (backfill open problems, ack-on-close future). Token
+    // encrypts under standard mode via the standard envelope wrapper.
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS api_url TEXT`);
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS api_token TEXT`);
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS api_token_enc BYTEA`);
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS api_last_ok_at TIMESTAMPTZ`);
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS api_last_error TEXT`);
+
+    // Audit + dedup log. UNIQUE(source_id, external_event_id) blocks Zabbix
+    // resends from spawning duplicate tickets even if the mapper logic
+    // changes. raw_payload kept for debugging when a mapper misbehaves.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS external_alert_event (
+        id SERIAL PRIMARY KEY,
+        source_id INTEGER NOT NULL REFERENCES external_alert_source(id) ON DELETE CASCADE,
+        external_event_id TEXT NOT NULL,
+        ticket_id INTEGER REFERENCES tickets(id) ON DELETE SET NULL,
+        event_type TEXT NOT NULL,
+        raw_payload JSONB NOT NULL,
+        received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(source_id, external_event_id, event_type)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_alert_event_source ON external_alert_event(source_id, received_at DESC)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_alert_event_ticket ON external_alert_event(ticket_id)`);
+
+    // Tickets carry a back-pointer to the originating monitoring event so
+    // recoveries / repeat-firings can find the open ticket. Format:
+    //   external_ref = '<preset>:<external_event_id>'  e.g. 'zabbix:1842937'
+    // Partial unique index prevents two open tickets sharing a ref while
+    // still allowing the column to be NULL for human-filed tickets.
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS external_ref TEXT`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS external_source TEXT`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS external_alert_source_id INTEGER REFERENCES external_alert_source(id) ON DELETE SET NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_external_ref ON tickets(external_ref) WHERE external_ref IS NOT NULL`);
+
+    // Canned responses — reusable comment text. scope='global' rows are
+    // visible to everyone; scope='user' rows belong to user_id only.
+    // category is free-form for grouping in the picker UI ("Printer",
+    // "Vendor", etc.). use_count + last_used_at drive a "frequent" sort.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS canned_responses (
+        id SERIAL PRIMARY KEY,
+        scope TEXT NOT NULL CHECK (scope IN ('global', 'user')),
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        title TEXT NOT NULL,
+        body TEXT NOT NULL,
+        category TEXT,
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        use_count INTEGER NOT NULL DEFAULT 0,
+        last_used_at TIMESTAMPTZ,
+        CONSTRAINT canned_user_scope_consistency CHECK (
+          (scope = 'global' AND user_id IS NULL) OR
+          (scope = 'user' AND user_id IS NOT NULL)
+        )
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_canned_user ON canned_responses(user_id) WHERE user_id IS NOT NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_canned_scope ON canned_responses(scope, category)`);
+    // Optional per-project scope. NULL or empty array = applies to all
+    // projects. When set, the response only surfaces for tickets in one
+    // of the listed projects.
+    await client.query(`ALTER TABLE canned_responses ADD COLUMN IF NOT EXISTS project_ids INTEGER[]`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_canned_projects ON canned_responses USING GIN(project_ids)`);
 
     await client.query('COMMIT');
   } catch (err) {

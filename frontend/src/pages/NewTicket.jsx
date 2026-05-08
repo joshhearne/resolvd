@@ -11,6 +11,7 @@ import PriorityBadge from "../components/PriorityBadge";
 import { useAuth } from "../context/AuthContext";
 import DuplicateWarningModal from "../components/DuplicateWarningModal";
 import MarkdownEditor from "../components/MarkdownEditor";
+import PageShell from "../components/PageShell";
 
 export default function NewTicket() {
   const navigate = useNavigate();
@@ -194,7 +195,7 @@ export default function NewTicket() {
   }
 
   return (
-    <div className="max-w-2xl">
+    <PageShell variant="narrow">
       {duplicates?.length > 0 && (
         <DuplicateWarningModal
           matches={duplicates}
@@ -456,6 +457,6 @@ export default function NewTicket() {
           </button>
         </div>
       </form>
-    </div>
+    </PageShell>
   );
 }

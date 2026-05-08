@@ -18,6 +18,9 @@ export default function AdminBranding() {
     timezone: branding.timezone || "UTC",
     default_restrict_followers: branding.default_restrict_followers ?? true,
     default_restrict_mentions: branding.default_restrict_mentions ?? true,
+    enable_vendor_companies: branding.enable_vendor_companies ?? true,
+    enable_customer_companies: branding.enable_customer_companies ?? false,
+    enable_internal_companies: branding.enable_internal_companies ?? true,
   });
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -127,7 +130,7 @@ export default function AdminBranding() {
   }
 
   return (
-    <div className="max-w-2xl mx-auto space-y-6">
+    <div className="max-w-2xl space-y-6">
       <h1 className="text-2xl font-bold text-fg">Branding</h1>
 
       {/* Logo */}
@@ -426,6 +429,75 @@ export default function AdminBranding() {
                 <span className="block text-xs text-fg-muted mt-0.5">
                   When on, "add follower" on a ticket only lists users who
                   belong to that project.
+                </span>
+              </label>
+            </div>
+          </div>
+        </div>
+
+        <div className="border-t border-border pt-4">
+          <h2 className="text-sm font-semibold text-fg mb-1">Company modes</h2>
+          <p className="text-xs text-fg-muted mb-3">
+            Which kinds of companies are managed in this install. Disabled
+            modes are hidden from the Companies admin and from filters
+            elsewhere; existing rows of those kinds stay in the database
+            untouched.
+          </p>
+          <div className="space-y-2">
+            <div className="flex items-start gap-3">
+              <input
+                type="checkbox"
+                id="enable_vendor_companies"
+                checked={form.enable_vendor_companies}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, enable_vendor_companies: e.target.checked }))
+                }
+                className="mt-0.5 h-4 w-4 rounded border-border-strong text-brand focus:ring-brand/40"
+              />
+              <label htmlFor="enable_vendor_companies" className="text-sm text-fg">
+                Vendor companies
+                <span className="block text-xs text-fg-muted mt-0.5">
+                  External parties you escalate to (printer vendor, ISP,
+                  software support). Project-scoped; drives the existing
+                  vendor outbound + inbound mail flows.
+                </span>
+              </label>
+            </div>
+            <div className="flex items-start gap-3">
+              <input
+                type="checkbox"
+                id="enable_customer_companies"
+                checked={form.enable_customer_companies}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, enable_customer_companies: e.target.checked }))
+                }
+                className="mt-0.5 h-4 w-4 rounded border-border-strong text-brand focus:ring-brand/40"
+              />
+              <label htmlFor="enable_customer_companies" className="text-sm text-fg">
+                Customer companies (MSP mode)
+                <span className="block text-xs text-fg-muted mt-0.5">
+                  External parties you serve. One customer can map to
+                  multiple projects (helpdesk + infra + security). Off by
+                  default — leave off for pure internal helpdesk installs.
+                </span>
+              </label>
+            </div>
+            <div className="flex items-start gap-3">
+              <input
+                type="checkbox"
+                id="enable_internal_companies"
+                checked={form.enable_internal_companies}
+                onChange={(e) =>
+                  setForm((f) => ({ ...f, enable_internal_companies: e.target.checked }))
+                }
+                className="mt-0.5 h-4 w-4 rounded border-border-strong text-brand focus:ring-brand/40"
+              />
+              <label htmlFor="enable_internal_companies" className="text-sm text-fg">
+                Internal companies / departments
+                <span className="block text-xs text-fg-muted mt-0.5">
+                  Your own org units (Internal IT, DevOps, departments).
+                  Members are real Resolvd users, optionally pinned to a
+                  Location for routing and reporting.
                 </span>
               </label>
             </div>

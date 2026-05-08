@@ -72,6 +72,9 @@ const FIELD_MAP = {
     oauth_refresh_token: 'oauth_refresh_token_enc',
     smtp_password: 'smtp_password_enc',
   },
+  external_alert_source: {
+    api_token: 'api_token_enc',
+  },
 };
 
 // Build a column/value patch for a write. `plainObj` carries the human-

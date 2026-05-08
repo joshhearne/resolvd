@@ -56,6 +56,9 @@ async function upsertProviderUser({ provider, providerKey, providerValue, email,
       const { autoAddUserToFlaggedProjects } = require('../services/projectAutoAdd');
       autoAddUserToFlaggedProjects(r.rows[0].id).catch(err =>
         console.error('autoAdd (invite→active) failed:', err.message));
+      const { autoJoinInternalCompanies } = require('../services/companyAutoJoin');
+      autoJoinInternalCompanies(r.rows[0].id).catch(err =>
+        console.error('autoJoinInternalCompanies (invite→active) failed:', err.message));
     }
     return r.rows[0];
   }
@@ -79,6 +82,9 @@ async function upsertProviderUser({ provider, providerKey, providerValue, email,
   const { autoAddUserToFlaggedProjects } = require('../services/projectAutoAdd');
   autoAddUserToFlaggedProjects(r.rows[0].id).catch(err =>
     console.error('autoAdd (new SSO user) failed:', err.message));
+  const { autoJoinInternalCompanies } = require('../services/companyAutoJoin');
+  autoJoinInternalCompanies(r.rows[0].id).catch(err =>
+    console.error('autoJoinInternalCompanies (new SSO user) failed:', err.message));
   return r.rows[0];
 }
 

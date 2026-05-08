@@ -141,6 +141,9 @@ router.post('/:token/accept', async (req, res) => {
     const { autoAddUserToFlaggedProjects } = require('../services/projectAutoAdd');
     autoAddUserToFlaggedProjects(user.id).catch(err =>
       console.error('autoAdd (invite accept) failed:', err.message));
+    const { autoJoinInternalCompanies } = require('../services/companyAutoJoin');
+    autoJoinInternalCompanies(user.id).catch(err =>
+      console.error('autoJoinInternalCompanies (invite accept) failed:', err.message));
 
     if (invite.intended_provider === 'local') {
       const refreshed = await pool.query('SELECT * FROM users WHERE id = $1', [user.id]);

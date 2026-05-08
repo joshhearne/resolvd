@@ -84,7 +84,7 @@ export default function AdminAuth() {
     .filter(Boolean);
 
   return (
-    <div className="space-y-6 max-w-3xl mx-auto">
+    <div className="space-y-6 max-w-3xl">
       <h1 className="text-xl font-semibold text-fg">Authentication Settings</h1>
 
       <Section title="Sign-in providers">

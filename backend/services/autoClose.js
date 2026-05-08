@@ -125,7 +125,16 @@ async function runOnce() {
 async function tick() {
   const a = await runOnce().catch(err => { console.error('autoClose error:', err.message); return null; });
   const b = await runFollowups().catch(err => { console.error('followup error:', err.message); return null; });
-  return { closed: a?.closed || 0, fired: b?.fired || 0 };
+  const result = { closed: a?.closed || 0, fired: b?.fired || 0 };
+  await pool.query(
+    `UPDATE system_jobs
+        SET last_run_at = NOW(),
+            last_status = 'ok',
+            metadata = $1::jsonb
+      WHERE name = 'auto_close'`,
+    [JSON.stringify(result)]
+  ).catch(() => {});
+  return result;
 }
 
 let _interval = null;

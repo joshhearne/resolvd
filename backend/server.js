@@ -31,6 +31,10 @@ const inboundProviderRoutes = require('./routes/inboundProviders');
 const emailBackendRoutes = require('./routes/emailBackends');
 const notificationRoutes = require('./routes/notifications');
 const pushRoutes = require('./routes/push');
+const systemHealthRoutes = require('./routes/systemHealth');
+const webhookRoutes = require('./routes/webhooks');
+const alertSourceRoutes = require('./routes/alertSources');
+const cannedResponseRoutes = require('./routes/cannedResponses');
 const { requireSupportAccessIfSupport } = require('./middleware/supportAccess');
 
 const app = express();
@@ -66,6 +70,9 @@ app.use(session({
 
 // Routes
 app.use('/auth', authRoutes);
+// Webhook receivers authenticate via URL token, not session. Mount before
+// the support JIT guard since they aren't tied to any user principal.
+app.use('/api/webhooks', webhookRoutes);
 // Support routes mounted BEFORE the JIT guard so support principals can
 // poll their own grant status (/api/support/grants/me) and admins can
 // approve/revoke without being self-locked out.
@@ -98,6 +105,9 @@ app.use('/api/inbound', inboundProviderRoutes);
 app.use('/api/email-backends', emailBackendRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/push', pushRoutes);
+app.use('/api/system-health', systemHealthRoutes);
+app.use('/api/alert-sources', alertSourceRoutes);
+app.use('/api/canned-responses', cannedResponseRoutes);
 
 // Health check
 app.get('/health', (req, res) => res.json({ ok: true }));

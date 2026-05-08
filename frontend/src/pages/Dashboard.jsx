@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { api } from "../utils/api";
 import PriorityBadge from "../components/PriorityBadge";
 import HybridTime from "../components/HybridTime";
+import PageShell from "../components/PageShell";
 
 const STAT_TONES = {
   blue: "text-sky-500 dark:text-sky-400",
@@ -79,7 +80,7 @@ export default function Dashboard() {
   );
 
   return (
-    <div className="space-y-6">
+    <PageShell variant="wide" className="space-y-6">
       <h1 className="text-xl font-semibold text-fg tracking-tight">
         Dashboard
       </h1>
@@ -239,6 +240,6 @@ export default function Dashboard() {
           )}
         </div>
       </div>
-    </div>
+    </PageShell>
   );
 }

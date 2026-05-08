@@ -7,6 +7,7 @@ const { getMode, buildWritePatch, decryptRow, decryptRows } = require('../servic
 const blindIndex = require('../services/blindIndex');
 const { logSupportRead } = require('../middleware/supportAccess');
 const { sendVendorEmail } = require('../services/vendorOutbound');
+const { auditLog, systemComment } = require('../services/ticketHelpers');
 
 const router = express.Router();
 
@@ -15,32 +16,6 @@ const router = express.Router();
 const TICKET_JOIN_ALIASES = {
   blocking_ticket_title: 'tickets.title',
 };
-
-async function auditLog(client, { ticketId, userId, action, oldValue, newValue, note }) {
-  const patch = await buildWritePatch(client, 'audit_log', {
-    old_value: oldValue ?? null,
-    new_value: newValue ?? null,
-    note: note ?? null,
-  });
-  const cols = ['ticket_id', 'user_id', 'action', ...patch.cols];
-  const values = [ticketId || null, userId || null, action, ...patch.values];
-  const placeholders = cols.map((_, i) => `$${i + 1}`).join(', ');
-  await client.query(
-    `INSERT INTO audit_log (${cols.join(', ')}) VALUES (${placeholders})`,
-    values
-  );
-}
-
-async function systemComment(client, ticketId, body) {
-  const patch = await buildWritePatch(client, 'comments', { body });
-  const cols = ['ticket_id', 'user_id', 'is_internal', 'is_system', ...patch.cols];
-  const values = [ticketId, null, true, true, ...patch.values];
-  const placeholders = cols.map((_, i) => `$${i + 1}`).join(', ');
-  await client.query(
-    `INSERT INTO comments (${cols.join(', ')}) VALUES (${placeholders})`,
-    values
-  );
-}
 
 // Returns array of project IDs the user can access, or null if Admin (= all)
 async function getAccessibleProjectIds(user) {

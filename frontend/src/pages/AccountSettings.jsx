@@ -1,6 +1,7 @@
 import React from "react";
 import { NavLink, Outlet } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
+import PageShell from "../components/PageShell";
 
 export default function AccountSettings() {
   const { user } = useAuth();
@@ -14,7 +15,7 @@ export default function AccountSettings() {
     }`;
 
   return (
-    <div className="max-w-3xl">
+    <PageShell variant="narrow">
       <h1 className="text-2xl font-bold text-fg mb-1">Account settings</h1>
       <p className="text-sm text-fg-muted mb-4">
         Manage your profile, sign-in, security, and personal preferences.
@@ -36,6 +37,6 @@ export default function AccountSettings() {
         </NavLink>
       </div>
       <Outlet />
-    </div>
+    </PageShell>
   );
 }

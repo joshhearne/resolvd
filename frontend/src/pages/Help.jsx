@@ -1,5 +1,6 @@
 import { useState } from "react";
 import { useAuth } from "../context/AuthContext";
+import PageShell from "../components/PageShell";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -563,7 +564,7 @@ export default function Help() {
   const activeSection = SECTIONS.find(s => s.id === active);
 
   return (
-    <div className="space-y-4">
+    <PageShell variant="standard" className="space-y-4">
       <div>
         <h1 className="text-xl font-bold text-fg">Help &amp; Documentation</h1>
         <p className="text-xs text-fg-muted mt-0.5">
@@ -599,6 +600,6 @@ export default function Help() {
           {renderSection(active, role)}
         </div>
       </div>
-    </div>
+    </PageShell>
   );
 }

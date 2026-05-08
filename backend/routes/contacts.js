@@ -36,10 +36,21 @@ router.post('/companies/:companyId/contacts',
       const company = await pool.query(`SELECT id FROM companies WHERE id = $1`, [req.params.companyId]);
       if (!company.rows[0]) return res.status(404).json({ error: 'Company not found' });
 
-      const { name, email, phone, role_title, notes } = req.body || {};
+      const { name, email, phone, role_title, notes, location_id, extension } = req.body || {};
       if (!email) return res.status(400).json({ error: 'email required' });
       const check = await checkContactEmail(email);
       if (!check.ok) return res.status(400).json({ error: check.message, code: check.code });
+
+      // If a location is supplied, validate it belongs to this company.
+      let resolvedLocationId = null;
+      if (location_id) {
+        const loc = await pool.query(
+          `SELECT id FROM locations WHERE id = $1 AND company_id = $2 AND is_archived = FALSE`,
+          [Number(location_id), Number(req.params.companyId)]
+        );
+        if (!loc.rows[0]) return res.status(400).json({ error: 'location not found on this company' });
+        resolvedLocationId = Number(location_id);
+      }
 
       const normalizedEmail = String(email).trim().toLowerCase();
       const blind = hashWhole(normalizedEmail);
@@ -50,8 +61,16 @@ router.post('/companies/:companyId/contacts',
         phone: phone || null,
         notes: notes || null,
       });
-      const cols = ['company_id', 'email_blind_idx', 'role_title', 'created_by_user_id', ...patch.cols];
-      const values = [Number(req.params.companyId), blind, role_title || null, req.session.user.id, ...patch.values];
+      const cols = ['company_id', 'email_blind_idx', 'role_title', 'location_id', 'extension', 'created_by_user_id', ...patch.cols];
+      const values = [
+        Number(req.params.companyId),
+        blind,
+        role_title || null,
+        resolvedLocationId,
+        (extension || '').trim() || null,
+        req.session.user.id,
+        ...patch.values,
+      ];
       const placeholders = cols.map((_, i) => `$${i + 1}`).join(', ');
       const result = await pool.query(
         `INSERT INTO contacts (${cols.join(', ')}) VALUES (${placeholders}) RETURNING *`,
@@ -95,6 +114,19 @@ router.patch('/contacts/:id', requireAuth, requireRole('Admin', 'Manager'), asyn
     if (body.notes !== undefined) sensitiveObj.notes = body.notes || null;
     if (body.role_title !== undefined) passthrough.role_title = body.role_title || null;
     if (body.is_active !== undefined) passthrough.is_active = !!body.is_active;
+    if (body.extension !== undefined) passthrough.extension = (body.extension || '').toString().trim() || null;
+    if (body.location_id !== undefined) {
+      if (body.location_id) {
+        const loc = await pool.query(
+          `SELECT id FROM locations WHERE id = $1 AND company_id = $2`,
+          [Number(body.location_id), existing.rows[0].company_id]
+        );
+        if (!loc.rows[0]) return res.status(400).json({ error: 'location not found on this company' });
+        passthrough.location_id = Number(body.location_id);
+      } else {
+        passthrough.location_id = null;
+      }
+    }
 
     if (body.email !== undefined) {
       const check = await checkContactEmail(body.email);

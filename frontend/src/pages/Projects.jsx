@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
+import PageShell from "../components/PageShell";
 
 function StatusPill({ status }) {
   return status === "archived" ? (
@@ -97,7 +98,7 @@ export default function Projects() {
   const archived = projects.filter((p) => p.status === "archived");
 
   return (
-    <div className="space-y-6">
+    <PageShell variant="wide" className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-fg">Projects</h1>
         <button
@@ -213,7 +214,7 @@ export default function Projects() {
           )}
         </>
       )}
-    </div>
+    </PageShell>
   );
 }
 

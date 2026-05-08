@@ -230,12 +230,45 @@ Per-device opt-in lives in `Account settings → Preferences → Browser notific
 
 ---
 
-## Vendor coordination (CRM)
+## Companies (CRM)
 
-External vendor projects support a lightweight CRM in **Admin → Companies**:
+Resolvd's CRM is multi-modal. **Admin → Branding → Company modes** toggles which kinds are active:
 
-- **Companies** are scoped to a project and carry an optional `domain` (used for inbound sender-domain matching)
-- **Contacts** belong to a company. Each contact has name, email, phone, role/title — all encrypted under standard mode. Email is also HMAC'd into a blind index for inbound webhook lookup.
+| Kind | Default | Use case |
+|---|---|---|
+| **Vendor** | on | External party you escalate to (printer vendor, ISP, software support). Project-scoped; drives existing vendor outbound + inbound flows. |
+| **Customer** (MSP) | off | External party you serve. One customer can map to multiple projects (helpdesk + infra + security). Off by default — flip on for MSP installs. |
+| **Internal** | on | Your own org units (Internal IT, DevOps, departments). Members are Resolvd users, optionally pinned to a Location. |
+
+**Admin → Companies** is master-detail (account list left, selected company detail right). Detail tabs vary by kind:
+
+- **Vendor**: Contacts, Locations, Notification prefs
+- **Customer**: Contacts, Locations, Linked projects (multi-select)
+- **Internal**: Members (Resolvd users + optional location + role label), Locations
+
+### Locations
+
+Available on all kinds. Track sites with `name`, optional `location_code` (HQ, EAST), `address`, `timezone`, `phone`, `is_primary`, and `use_extensions`.
+
+When a contact is created against a location whose `use_extensions=true` AND has a phone number, the contact form locks the phone field to the location's number and asks only for an extension. If `use_extensions=false` or there's no location phone, you provide a DID phone manually. Contact rows render as `(555) 123-4567 ext. 1234`.
+
+Locations are soft-archived — deleting preserves contact `location_id` references.
+
+### Members (internal companies)
+
+Internal kind tracks which Resolvd users belong to that org unit, with optional location assignment and a free-text role label. Single source of truth for "who's on the IT team" / "who's in DevOps".
+
+#### Auto-join by email domain
+
+Each internal company carries an `auto_add_domains` list (e.g. `acme.com, acme.co.uk`). On any user activation event — SSO first login, invite acceptance — Resolvd matches the user's email domain against every internal company's list and auto-adds matching users to `company_members`. Idempotent. Saving an updated domain list also retroactively syncs existing matching users.
+
+Match is exact apex (no subdomain wildcards). List both `acme.com` and `dev.acme.com` if you need both.
+
+### Contacts
+
+External-kind companies (vendor + customer) carry contact lists:
+
+- **Contacts** belong to a company, optionally pinned to a location for routing + extension pre-fill. Name, email, phone, extension, role/title — all encrypted under standard mode. Email is also HMAC'd into a blind index for inbound webhook lookup.
 - **Generic mailboxes** (`support@`, `helpdesk@`, `noreply@`, …) are rejected at write time to prevent reply loops with the vendor's helpdesk. The list is extensible per-workspace via `auth_settings.email_blocklist`.
 - **Tickets** can attach contacts. Attached contacts receive vendor-visible comments and can be CC'd in inbound creation flows.
 
@@ -511,21 +544,132 @@ docker run --rm -v issues_uploads-data:/src:ro -v "$(pwd)":/dst alpine \
 
 ---
 
-## Admin tabs reference
+## Admin layout reference
 
-| Tab | Role | Purpose |
-|---|---|---|
-| Users | Admin/Mgr | Invite, role, MFA, status |
-| Companies | Admin/Mgr | Vendor CRM (companies + contacts) |
-| Inbound | Admin/Mgr | Manual-match queue, with auto-create reject reasons surfaced |
-| Export | Admin/Mgr | Bulk PDF/print export and CSV download; toggle to include/exclude images |
-| Authentication | Admin | SSO providers, MFA enforcement, email blocklist, digest schedule |
-| Statuses | Admin | Internal/external status workflow |
-| Branding | Admin | Site name, logo, favicon / home-screen icon, accent color |
-| Email templates | Admin | Tag-substitution editor + preview + test-send |
-| Email backends | Admin | Connect M365/Gmail via OAuth, SMTP fallback, monitor inbox toggle |
-| Support access | Admin | JIT grants — approve, revoke, deny, view access log |
-| Encryption | Admin | Mode reference + Standard-mode runbook |
+Admin uses a left-rail grouped sidebar (mobile collapses to a hamburger that auto-closes on selection). Manager role sees a subset (Users, Companies, Inbound email, System health, Export); Admin sees everything.
+
+| Group | Item | Role | Purpose |
+|---|---|---|---|
+| **People** | Users | Admin/Mgr | Invite, role, MFA, status |
+| | Companies | Admin/Mgr | Multi-modal CRM (vendor / customer / internal) — see [Companies](#companies-crm) |
+| | Support access | Admin | JIT grants — approve, revoke, deny, view access log |
+| **Workflow** | Statuses | Admin | Internal/external status workflow |
+| | Canned responses | Admin/Mgr | Reusable comment templates with tag substitution + project scope — see [Canned responses](#canned-responses) |
+| | Merge tickets | Admin | Search-driven picker for merging two tickets |
+| **Integrations** | Alert sources | Admin | Inbound webhooks from monitoring tools (Zabbix today; Alertmanager + generic next) — see [Alert sources](#alert-sources-monitoring-integrations) |
+| | Inbound email | Admin/Mgr | Manual-match queue, with auto-create reject reasons surfaced |
+| | Email backends | Admin | Connect M365/Gmail via OAuth, SMTP fallback, monitor inbox toggle |
+| | Email templates | Admin | Tag-substitution editor + preview + test-send |
+| **Site** | Branding | Admin | Site name, logo, favicon / home-screen icon, accent color, company-mode toggles |
+| | Authentication | Admin | SSO providers, MFA enforcement, email blocklist, digest schedule |
+| | Encryption | Admin | Mode reference + Standard-mode runbook |
+| **Data** | System health | Admin/Mgr | Scheduler heartbeats, integration last-seen, key counts, DB stats — see [System health](#system-health) |
+| | Export | Admin/Mgr | Bulk PDF/print export and CSV download; toggle to include/exclude images |
+
+### Page width + tables
+
+- Pages opt into a width via `<PageShell variant="wide|standard|narrow">` (`Layout.jsx` no longer caps to `max-w-7xl`). Lists/dashboards use `wide`; ticket/project detail uses `standard`; settings forms use `narrow`.
+- The ticket list table supports per-user **column visibility** via the ⚙ Columns popover. Hidden column ids persist to `users.preferences.hidden_columns.tickets[]`. Ref + Title are always-on. Reusable component (`<ColumnPicker>` + `useColumnPrefs(tableKey)` hook) ready for other tables.
+- Tables wrap in `overflow-x-auto` so horizontal scroll handles overflow on narrow viewports.
+
+---
+
+## Alert sources (monitoring integrations)
+
+**Admin → Integrations → Alert sources** turns Resolvd into a direct receiver for monitoring webhooks. No Zapier middleman.
+
+Each source has:
+- A **preset** (Zabbix today; Alertmanager / generic JSONPath fast-follow)
+- A **token** (hashed at rest; raw token shown once on create + rotate)
+- A **default project** + optional default assignee
+- A configurable **severity → priority** map (preset defaults preloaded; reset button)
+- An **auto-resolve on recovery** toggle
+- An optional **API connection** (URL + encrypted token) for backfill of existing open problems
+
+### Live ingestion
+
+`POST /api/webhooks/<preset>/<token>` — token-auth via URL, no session. The mapper for the preset normalizes the payload. Behavior:
+
+- **`event_status=problem`** — dedups by `external_ref = '<preset>:<event_id>'`. Existing open ticket → severity-update comment. New event → creates a ticket in the source's default project, severity → priority via the configured map.
+- **`event_status=recovery`** — finds the open ticket by `external_ref`, appends recovery comment, optionally auto-resolves to the first `resolved_pending_close` status.
+- **`user_email`** — when supplied (e.g. Zabbix `{INVENTORY.POC.PRIMARY.EMAIL}`), Resolvd looks up an active local user by that email; matched users are stamped as both `submitted_by` and `assigned_to`, auto-followed for notification fan-out. Unmatched emails surface in the ticket description and an `alert_unmatched_contact` audit row so they can be re-attributed once the user signs in.
+- **Dedup**: `UNIQUE(source_id, external_event_id, event_type)` blocks dup tickets from Zabbix retries.
+- **Audit**: every event (deduped or not) lands in `external_alert_event` with the raw payload for debugging.
+
+### Zabbix media-type setup
+
+The source detail page renders a copy-able JS snippet for Zabbix's Webhook media type. Required parameters set in the Zabbix media-type Parameters tab:
+
+```
+event_id        {EVENT.ID}
+event_status    {EVENT.VALUE}        # 1 = problem, 0 = recovery
+severity        {EVENT.SEVERITY}
+host_name       {HOST.NAME}
+trigger_name    {TRIGGER.NAME}
+trigger_description  {TRIGGER.DESCRIPTION}
+operational_data     {EVENT.OPDATA}
+event_tags      {EVENT.TAGS}
+event_url       {$ZABBIX.URL}/tr_events.php?triggerid={TRIGGER.ID}&eventid={EVENT.ID}
+user_email      {INVENTORY.POC.PRIMARY.EMAIL}
+```
+
+Replace `<your-token>` in the snippet with the source's token, paste into Zabbix → Administration → Media types → Webhook → script, then create an Action that scopes to the host group(s) you want ticketed.
+
+### Backfill of currently-open problems
+
+When the source has an `api_url` + `api_token` set, the source detail page exposes a **Backfill open problems** button (with optional host-group filter). Resolvd calls Zabbix's `problem.get` + `event.get` (selectHosts) + `host.get` (selectInventory: poc_1_email), normalizes each row to a synthetic webhook payload, and ingests via the same pipeline as a live fire. Idempotent. Bearer auth tried first; falls back to legacy `auth` field for older Zabbix.
+
+API tokens grant read of all monitored data — treat as prod creds. Encrypted at rest under the workspace key.
+
+### Tickets carry the alert ref
+
+Two new togglable columns on the ticket list:
+
+- **Vendor ref** — `external_ticket_ref` (existing field, now exposed)
+- **Alert ref** — `external_ref` (`zabbix:1234567`)
+
+Both render with the same NATO phonetic readback popover as the internal ref, so ops can read codes verbatim over the phone.
+
+---
+
+## Canned responses
+
+**Admin → Workflow → Canned responses** — saved comment templates for repeat replies. Two scopes (mix freely):
+
+- **Global** — Admin/Manager-managed, visible to everyone
+- **Personal** — your own; only you see them
+
+Each response also has a project scope (default **All**, or pick specific projects) so the picker on a ticket only shows relevant entries.
+
+### Tag substitution
+
+| Tag | Resolves to |
+|---|---|
+| `{ticket.ref}` / `{ticket.title}` / `{ticket.priority}` / `{ticket.url}` | Current ticket |
+| `{ticket.vendor_ref}` | `external_ticket_ref` |
+| `{submitter.name}` / `{submitter.firstName}` / `{submitter.email}` | Ticket submitter |
+| `{ticket.submitter}` | Alias for `{submitter.name}` |
+| `{assignee.name}` / `{assignee.firstName}` / `{assignee.email}` | Assigned user |
+| `{actor.name}` / `{actor.firstName}` / `{actor.email}` | The user inserting the response |
+| `{site.name}` / `{site.url}` | Branding site name + frontend URL |
+
+Unknown or unfilled tags pass through verbatim — the response never breaks. Insert via the **📋 Canned** button next to the comment composer. Inserting increments `use_count` so frequently-used responses float to the top of the picker.
+
+---
+
+## System health
+
+**Admin → Data → System health** — single-page operational dashboard. Auto-refreshes every 30s.
+
+Surfaces:
+
+- Top-line counters: active tickets / P1+P2 / flagged / inbound queue / active users + projects / DB size + uptime
+- **Scheduled jobs** — heartbeats from the in-process schedulers (`muted_digest`, `inbox_subscription_renewal`, `auto_close`) with a health dot (ok / stale / error / never_ran). "Stale" = last run older than 2× cadence.
+- **Alert sources** — event count + last_seen per source, with link to manage
+- **Email backends** — active, inbox monitor, last test
+- **Inbound email queue** — counts per status (unmatched / matched / discarded / spam)
+
+Manager role gets read access; Admin sees the same view.
 
 ---
 
