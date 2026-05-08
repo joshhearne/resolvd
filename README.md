@@ -44,7 +44,7 @@ The stack binds to `127.0.0.1:8090`. A host proxy (nginx, Caddy) or `cloudflared
 | `UPLOADS_DIR` | no | Attachment dir (default `/data/uploads`) |
 | `MAX_UPLOAD_MB` | no | Max attachment size (default `50`) |
 | `COMPOSE_PROJECT_NAME` | no | Override Compose project (preserve volumes after dir rename) |
-| `CLOUDFLARE_TUNNEL_TOKEN` | no | When set, the optional `cloudflared` service runs the tunnel. |
+| `CLOUDFLARE_TUNNEL_TOKEN` | no | When set, the optional in-Compose `cloudflared` service runs the tunnel. Leave unset if you run `cloudflared` on the host instead (recommended — see [Host reverse proxy](#host-reverse-proxy)). |
 
 ### Microsoft Entra ID (login + email backend OAuth)
 
@@ -463,9 +463,10 @@ The backfill encrypts plaintext into `*_enc` shadow columns, NULLs the plaintext
 
 ## Host reverse proxy
 
-The Docker stack does not terminate TLS. Either:
+The Docker stack does not terminate TLS. The bundled `nginx` service is plain HTTP only — it does not mount any certs (the `nginx/certs/` path is gitignored, so a cert volume on a fresh clone would point at nothing). Terminate TLS upstream with one of:
 
-- **Cloudflare Tunnel** — set `CLOUDFLARE_TUNNEL_TOKEN` in `.env`; the bundled `cloudflared` service runs the tunnel.
+- **Cloudflare Tunnel (host-based, recommended)** — run `cloudflared` as a host service (systemd) pointing at `http://localhost:8090` (or `localhost:80` if a host nginx fans out by `Host` header for multiple apps). Keeps the tunnel out of the Compose lifecycle so `docker compose down` doesn't drop it, and lets one tunnel front several stacks.
+- **Cloudflare Tunnel (in-Compose)** — set `CLOUDFLARE_TUNNEL_TOKEN` in `.env`; the optional `cloudflared` service in `docker-compose.yml` runs the tunnel inside the stack. Simpler for single-app deployments.
 - **nginx / Caddy** — forward HTTPS to `127.0.0.1:8090`. Sample nginx config in `nginx/host-proxy.conf`.
 
 ```nginx
