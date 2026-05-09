@@ -77,7 +77,7 @@ router.get('/grants', requireAuth, requireRole('Admin'), async (req, res) => {
     let where = '';
     if (status) {
       params.push(status);
-      where = `WHERE status = $1`;
+      where = `WHERE g.status = $1`;
     }
     const result = await pool.query(`
       SELECT g.*, u.display_name AS support_user_name, u.email AS support_user_email,
