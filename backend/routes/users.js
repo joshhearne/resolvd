@@ -134,9 +134,14 @@ router.get('/me/prefs', requireAuth, async (req, res) => {
       [req.session.user.id]
     );
     const stored = r.rows[0]?.preferences || {};
+    const mergedMatrix = {
+      ...DEFAULT_NOTIFICATION_PREFS,
+      ...(stored.notification_prefs || {}),
+    };
     res.json({
       ...PREF_DEFAULTS,
       ...stored,
+      notification_prefs: mergedMatrix,
       default_project_id: r.rows[0]?.default_project_id ?? null,
     });
   } catch (err) {
@@ -205,9 +210,14 @@ router.patch('/me/prefs', requireAuth, async (req, res) => {
       [JSON.stringify(patch), userId]
     );
     const stored = r.rows[0]?.preferences || {};
+    const mergedMatrix = {
+      ...DEFAULT_NOTIFICATION_PREFS,
+      ...(stored.notification_prefs || {}),
+    };
     res.json({
       ...PREF_DEFAULTS,
       ...stored,
+      notification_prefs: mergedMatrix,
       default_project_id: r.rows[0]?.default_project_id ?? null,
     });
   } catch (err) {
