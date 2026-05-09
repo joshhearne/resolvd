@@ -3,6 +3,7 @@ const rateLimit = require('express-rate-limit');
 const { pool } = require('../db/pool');
 const { getAuthSettings } = require('../services/authSettings');
 const { sendPasswordResetEmail } = require('../services/email');
+const { DEFAULT_NOTIFICATION_PREFS, DEFAULT_EMAIL_DIGEST } = require('../services/notificationPrefs');
 const entra = require('../auth/providers/entra');
 const google = require('../auth/providers/google');
 const local = require('../auth/providers/local');
@@ -382,11 +383,8 @@ const PREF_DEFAULTS = Object.freeze({
   scope_follows_filter: true,
   ctrl_enter_to_post: true,
   auto_follow_on_comment: true,
-  email_on_comment: true,
-  email_on_status_change: true,
-  email_on_assignment: true,
-  push_on_assignment: false,
-  push_on_mention: false,
+  notification_prefs: DEFAULT_NOTIFICATION_PREFS,
+  email_digest: DEFAULT_EMAIL_DIGEST,
   confirm_before_close: false,
   compact_mode: false,
   phonetic_readback: true,

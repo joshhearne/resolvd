@@ -2,12 +2,10 @@ const msal = require('@azure/msal-node');
 const fetch = require('node-fetch');
 const nodemailer = require('nodemailer');
 const { google } = require('googleapis');
-const { marked } = require('marked');
 const { getAuthSettings } = require('./authSettings');
 const { getBranding } = require('./branding');
 
 const FALLBACK_FROM = process.env.MAIL_FROM || 'noreply@localhost';
-const APP_URL = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
 
 // Wraps a display name in RFC 5322-quoted form when needed and returns
 // `"Display Name" <addr>`. Falls back to bare address when no name.
@@ -340,8 +338,6 @@ async function sendViaGmailUser(account, { from, fromName, to, subject, html, he
 }
 
 // ─── Templates ───────────────────────────────────────────────────────────────
-function ticketUrl(ticketId) { return `${APP_URL}/tickets/${ticketId}`; }
-
 async function baseHtml(title, body) {
   let siteName = 'Resolvd';
   let primary = '#16a34a';
@@ -366,99 +362,6 @@ async function baseHtml(title, body) {
     </div>
   </div>
 </body></html>`;
-}
-
-async function notifyStatusChange(pool, { ticket, oldStatus, newStatus, actorId }) {
-  const emails = await getFollowerEmails(pool, ticket.id, actorId, {
-    prefKey: 'email_on_status_change', defaultIncluded: true,
-  });
-  if (!emails.length) return;
-  const isClosed = newStatus === 'Closed';
-  const subject = isClosed
-    ? `[${ticket.internal_ref}] Ticket closed`
-    : `[${ticket.internal_ref}] Status updated: ${oldStatus} → ${newStatus}`;
-  const body = `
-    <p style="color:#374151;font-size:14px;margin:0 0 12px">
-      ${isClosed
-        ? `Ticket <strong>${ticket.internal_ref}</strong> has been closed.`
-        : `Status for <strong>${ticket.internal_ref}</strong> has been updated from <strong>${oldStatus}</strong> to <strong>${newStatus}</strong>.`}
-    </p>
-    <p style="color:#374151;font-size:14px;margin:0 0 16px"><strong>${ticket.title}</strong></p>
-    <a href="${ticketUrl(ticket.id)}" style="display:inline-block;background:#1e40af;color:#fff;text-decoration:none;padding:8px 16px;border-radius:6px;font-size:14px;font-weight:600">View Ticket</a>`;
-  await sendMail({ to: emails, subject, html: await baseHtml(subject, body), projectId: ticket.project_id });
-}
-
-async function notifyAssignment(pool, { ticket, assigneeId, actorId, actorName }) {
-  if (!assigneeId || assigneeId === actorId) return;
-  const r = await pool.query(
-    `SELECT email, preferences FROM users
-      WHERE id = $1 AND status = 'active'`,
-    [assigneeId]
-  );
-  const row = r.rows[0];
-  if (!row) return;
-  const pref = row.preferences || {};
-
-  // Best-effort browser push; gated by recipient pref (default off).
-  if (pref.push_on_assignment === true) {
-    try {
-      const { sendPushToUser } = require('./pushNotifications');
-      sendPushToUser(assigneeId, {
-        title: `Assigned: ${ticket.internal_ref}`,
-        body: `${actorName || 'Someone'} assigned this to you${ticket.title ? ` — ${ticket.title}` : ''}.`,
-        url: `/tickets/${ticket.id}`,
-        tag: `assign-${ticket.id}`,
-      }).catch(err => console.error('push (assignment) failed:', err.message));
-    } catch (err) {
-      console.error('push (assignment) require failed:', err.message);
-    }
-  }
-
-  // Email; gated by recipient pref.
-  if (pref.email_on_assignment === false) return;
-  if (!row.email) return;
-  const subject = `[${ticket.internal_ref}] Assigned to you`;
-  const body = `
-    <p style="color:#374151;font-size:14px;margin:0 0 12px">
-      <strong>${actorName || 'Someone'}</strong> assigned <strong>${ticket.internal_ref}</strong> to you.
-    </p>
-    <p style="color:#374151;font-size:14px;margin:0 0 16px"><strong>${ticket.title || ''}</strong></p>
-    <a href="${ticketUrl(ticket.id)}" style="display:inline-block;background:#1e40af;color:#fff;text-decoration:none;padding:8px 16px;border-radius:6px;font-size:14px;font-weight:600">View Ticket</a>`;
-  await sendMail({ to: row.email, subject, html: await baseHtml(subject, body), projectId: ticket.project_id });
-}
-
-async function notifyPendingReview(pool, { ticket, actorId }) {
-  const admins = await pool.query(
-    `SELECT email FROM users WHERE role = 'Admin' AND id != $1 AND email IS NOT NULL AND email != ''`,
-    [actorId]
-  );
-  const emails = admins.rows.map(r => r.email).filter(Boolean);
-  if (!emails.length) return;
-  const subject = `[${ticket.internal_ref}] Needs review — action required`;
-  const body = `
-    <p style="color:#374151;font-size:14px;margin:0 0 12px">
-      Ticket <strong>${ticket.internal_ref}</strong> has been flagged for review and requires your attention.
-    </p>
-    <p style="color:#374151;font-size:14px;margin:0 0 16px"><strong>${ticket.title}</strong></p>
-    <a href="${ticketUrl(ticket.id)}" style="display:inline-block;background:#7c3aed;color:#fff;text-decoration:none;padding:8px 16px;border-radius:6px;font-size:14px;font-weight:600">Review Ticket</a>`;
-  await sendMail({ to: emails, subject, html: await baseHtml(subject, body), projectId: ticket.project_id });
-}
-
-async function notifyNewComment(pool, { ticket, comment, actorId, actorName }) {
-  const emails = await getFollowerEmails(pool, ticket.id, actorId, {
-    prefKey: 'email_on_comment', defaultIncluded: true,
-  });
-  if (!emails.length) return;
-  const subject = `[${ticket.internal_ref}] New comment added`;
-  const preview = comment.length > 300 ? comment.slice(0, 300) + '…' : comment;
-  const previewHtml = marked(preview);
-  const body = `
-    <p style="color:#374151;font-size:14px;margin:0 0 12px">
-      <strong>${actorName || 'Someone'}</strong> added a comment on <strong>${ticket.internal_ref}</strong>:
-    </p>
-    <blockquote style="border-left:3px solid #e5e7eb;margin:0 0 16px;padding:8px 16px;color:#6b7280;font-size:14px">${previewHtml}</blockquote>
-    <a href="${ticketUrl(ticket.id)}" style="display:inline-block;background:#1e40af;color:#fff;text-decoration:none;padding:8px 16px;border-radius:6px;font-size:14px;font-weight:600">View Ticket</a>`;
-  await sendMail({ to: emails, subject, html: await baseHtml(subject, body), projectId: ticket.project_id });
 }
 
 async function sendInviteEmail({ to, inviteUrl, invitedByName, role }) {
@@ -486,37 +389,10 @@ async function sendPasswordResetEmail({ to, resetUrl }) {
   await sendMail({ to, subject, html: await baseHtml(subject, body) });
 }
 
-async function getFollowerEmails(pool, ticketId, excludeUserId, opts = {}) {
-  const result = await pool.query(`
-    SELECT DISTINCT u.email, u.preferences
-    FROM users u
-    WHERE u.email IS NOT NULL AND u.email != ''
-      AND u.id != $2
-      AND (
-        u.id IN (SELECT user_id FROM ticket_followers WHERE ticket_id = $1)
-        OR u.id IN (SELECT submitted_by FROM tickets WHERE id = $1 AND submitted_by IS NOT NULL)
-      )
-  `, [ticketId, excludeUserId || 0]);
-  // Per-user pref gating. opts.prefKey + opts.defaultIncluded lets each
-  // event type opt recipients in/out individually. Missing pref → default.
-  const { prefKey = null, defaultIncluded = true } = opts;
-  return result.rows
-    .filter(r => {
-      if (!prefKey) return true;
-      const pref = r.preferences && r.preferences[prefKey];
-      return pref === undefined ? defaultIncluded : pref !== false;
-    })
-    .map(r => r.email);
-}
-
 module.exports = {
   sendMail,
   sendMailViaAccount,
   baseHtml,
-  notifyStatusChange,
-  notifyPendingReview,
-  notifyNewComment,
-  notifyAssignment,
   sendInviteEmail,
   sendPasswordResetEmail,
 };

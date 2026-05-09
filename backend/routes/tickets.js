@@ -2,7 +2,11 @@ const express = require('express');
 const { pool, transaction } = require('../db/pool');
 const { nextInternalRef, computePriority } = require('../db/schema');
 const { requireAuth, requireRole } = require('../middleware/auth');
-const { notifyStatusChange, notifyPendingReview, notifyNewComment, notifyAssignment } = require('../services/email');
+const {
+  fanoutStatusChange,
+  fanoutPendingReview,
+  fanoutAssignment,
+} = require('../services/notificationFanout');
 const { getMode, buildWritePatch, decryptRow, decryptRows } = require('../services/fields');
 const blindIndex = require('../services/blindIndex');
 const { logSupportRead } = require('../middleware/supportAccess');
@@ -320,12 +324,12 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Submitter'), asyn
     // the creator. Covers both manual assignment and project-default
     // fall-through.
     if (ticket.assigned_to && ticket.assigned_to !== user.id) {
-      notifyAssignment(pool, {
+      fanoutAssignment(pool, {
         ticket,
         assigneeId: ticket.assigned_to,
         actorId: user.id,
         actorName: user.displayName,
-      }).catch(err => console.error('notifyAssignment (create) failed:', err.message));
+      }).catch(err => console.error('fanoutAssignment (create) failed:', err.message));
     }
   } catch (err) {
     console.error(err);
@@ -645,14 +649,14 @@ router.patch('/:id', requireAuth, async (req, res) => {
 
     // Fire notifications async (don't block response)
     if (body.internal_status && body.internal_status !== ticket.internal_status) {
-      notifyStatusChange(pool, {
+      fanoutStatusChange(pool, {
         ticket: updated,
         oldStatus: ticket.internal_status,
         newStatus: body.internal_status,
         actorId: user.id,
       }).catch(() => {});
       if (body.internal_status === 'Pending Review') {
-        notifyPendingReview(pool, { ticket: updated, actorId: user.id }).catch(() => {});
+        fanoutPendingReview(pool, { ticket: updated, actorId: user.id }).catch(() => {});
       }
       // Vendor-bound: 'Closed' uses the ticket_resolved template, every
       // other transition uses status_change. The template renderer
@@ -664,7 +668,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
     }
     // external_status → Resolved sets internal_status to Pending Review
     if (body.external_status === 'Resolved' && ticket.internal_status !== 'Pending Review') {
-      notifyPendingReview(pool, { ticket: updated, actorId: user.id }).catch(() => {});
+      fanoutPendingReview(pool, { ticket: updated, actorId: user.id }).catch(() => {});
     }
     // Email the assignee when assigned_to changes to a new non-null user.
     if (
@@ -672,12 +676,12 @@ router.patch('/:id', requireAuth, async (req, res) => {
       updated.assigned_to &&
       updated.assigned_to !== ticket.assigned_to
     ) {
-      notifyAssignment(pool, {
+      fanoutAssignment(pool, {
         ticket: updated,
         assigneeId: updated.assigned_to,
         actorId: user.id,
         actorName: user.displayName,
-      }).catch(err => console.error('notifyAssignment failed:', err.message));
+      }).catch(err => console.error('fanoutAssignment failed:', err.message));
     }
   } catch (err) {
     if (err.httpStatus) return res.status(err.httpStatus).json({ error: err.message });
@@ -891,13 +895,13 @@ router.post('/bulk', requireAuth, requireRole('Admin'), async (req, res) => {
       const byId = new Map(refRows.rows.map(r => [r.id, r]));
       for (const { ticketId, oldStatus, newStatus } of notifyStatusList) {
         const t = byId.get(ticketId); if (!t) continue;
-        notifyStatusChange(pool, { ticket: t, oldStatus, newStatus, actorId: user.id })
-          .catch(err => console.error('notifyStatusChange (bulk) failed:', err.message));
+        fanoutStatusChange(pool, { ticket: t, oldStatus, newStatus, actorId: user.id })
+          .catch(err => console.error('fanoutStatusChange (bulk) failed:', err.message));
       }
       for (const { ticketId, assigneeId } of notifyAssignList) {
         const t = byId.get(ticketId); if (!t) continue;
-        notifyAssignment(pool, { ticket: t, assigneeId, actorId: user.id, actorName: user.displayName })
-          .catch(err => console.error('notifyAssignment (bulk) failed:', err.message));
+        fanoutAssignment(pool, { ticket: t, assigneeId, actorId: user.id, actorName: user.displayName })
+          .catch(err => console.error('fanoutAssignment (bulk) failed:', err.message));
       }
     }
   } catch (err) {

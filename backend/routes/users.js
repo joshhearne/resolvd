@@ -6,6 +6,12 @@ const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { buildSessionUser } = require('../auth/session');
 const { avatarPath, saveAvatarFromBytes, clearAvatar } = require('../services/avatar');
+const {
+  DEFAULT_NOTIFICATION_PREFS,
+  DEFAULT_EMAIL_DIGEST,
+  EVENT_TYPES,
+  CADENCES,
+} = require('../services/notificationPrefs');
 
 const router = express.Router();
 
@@ -106,11 +112,8 @@ const PREF_DEFAULTS = Object.freeze({
   scope_follows_filter: true,
   ctrl_enter_to_post: true,
   auto_follow_on_comment: true,
-  email_on_comment: true,
-  email_on_status_change: true,
-  email_on_assignment: true,
-  push_on_assignment: false,
-  push_on_mention: false,
+  notification_prefs: DEFAULT_NOTIFICATION_PREFS,
+  email_digest: DEFAULT_EMAIL_DIGEST,
   confirm_before_close: false,
   compact_mode: false,
   phonetic_readback: true,
@@ -170,6 +173,30 @@ router.patch('/me/prefs', requireAuth, async (req, res) => {
       await pool.query('UPDATE users SET default_project_id = $1 WHERE id = $2', [val, userId]);
       req.session.user.defaultProjectId = val;
       req.session.save(() => {});
+    }
+
+    // Narrow validation for the two structured fields. Other keys remain
+    // additive — unknown values pass through unchanged (matches existing
+    // pattern for QoL toggles).
+    if (patch.email_digest !== undefined && !CADENCES.includes(patch.email_digest)) {
+      return res.status(400).json({ error: 'Invalid email_digest' });
+    }
+    if (patch.notification_prefs !== undefined) {
+      const np = patch.notification_prefs;
+      if (!np || typeof np !== 'object' || Array.isArray(np)) {
+        return res.status(400).json({ error: 'notification_prefs must be an object' });
+      }
+      const sanitized = {};
+      for (const evt of EVENT_TYPES) {
+        const row = np[evt];
+        if (!row || typeof row !== 'object') continue;
+        sanitized[evt] = {
+          in_app: !!row.in_app,
+          email: !!row.email,
+          push: !!row.push,
+        };
+      }
+      patch.notification_prefs = sanitized;
     }
 
     const r = await pool.query(
