@@ -26,19 +26,20 @@ const { getBranding } = require('./branding');
 // ─── Recipient resolution ────────────────────────────────────────────────
 
 // Followers (and ticket submitter) who should hear about ticket activity,
-// minus the actor. Returns full user rows so the caller can read prefs
-// without a second query.
-async function getFollowerRecipients(client, ticketId, excludeUserId) {
+// minus the actor + any extra excluded ids (e.g. mentioned users who
+// will get a separate, louder mention notification).
+async function getFollowerRecipients(client, ticketId, excludeUserId, extraExcludes = []) {
+  const exclude = [excludeUserId || 0, ...extraExcludes].filter(x => x != null);
   const r = await (client || pool).query(`
     SELECT DISTINCT u.id, u.email, u.display_name, u.preferences
       FROM users u
      WHERE u.status = 'active'
-       AND u.id != $2
+       AND NOT (u.id = ANY($2::int[]))
        AND (
          u.id IN (SELECT user_id FROM ticket_followers WHERE ticket_id = $1)
          OR u.id IN (SELECT submitted_by FROM tickets WHERE id = $1 AND submitted_by IS NOT NULL)
        )
-  `, [ticketId, excludeUserId || 0]);
+  `, [ticketId, exclude]);
   return r.rows;
 }
 
@@ -265,8 +266,8 @@ async function fanoutStatusChange(_unusedPool, { ticket, oldStatus, newStatus, a
   }
 }
 
-async function fanoutNewComment(_unusedPool, { ticket, comment, actorId, actorName }) {
-  const recipients = await getFollowerRecipients(null, ticket.id, actorId);
+async function fanoutNewComment(_unusedPool, { ticket, comment, actorId, actorName, excludeUserIds = [] }) {
+  const recipients = await getFollowerRecipients(null, ticket.id, actorId, excludeUserIds);
   if (!recipients.length) return;
   const ticketRef = ticket.internal_ref;
   const ticketTitle = ticket.title || '';

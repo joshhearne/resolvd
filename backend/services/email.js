@@ -6,6 +6,7 @@ const { getAuthSettings } = require('./authSettings');
 const { getBranding } = require('./branding');
 
 const FALLBACK_FROM = process.env.MAIL_FROM || 'noreply@localhost';
+const APP_URL = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
 
 // Wraps a display name in RFC 5322-quoted form when needed and returns
 // `"Display Name" <addr>`. Falls back to bare address when no name.

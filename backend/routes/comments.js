@@ -110,16 +110,6 @@ router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Submi
       }).catch(err => console.error('auto-reopen check failed:', err.message));
     }
 
-    // Notify followers async (skip system comments)
-    if (!result.is_system) {
-      fanoutNewComment(pool, {
-        ticket: ticket.rows[0],
-        comment: trimmedBody,
-        actorId: req.session.user.id,
-        actorName: req.session.user.displayName,
-      }).catch(() => {});
-    }
-
     // Vendor-bound outbound fires only when the comment is flagged for
     // external visibility AND there are contacts attached to the ticket.
     // send_as: 'submitter' resolves to ticket.submitted_by; a numeric id
@@ -145,10 +135,9 @@ router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Submi
       }).catch(err => console.error('vendor outbound failed:', err.message));
     }
 
-    // @mentions: resolve tokens to active users, fan out via the
-    // notifications matrix (in-app + email + push per recipient pref).
-    // The fanout helper auto-adds mentioned users as followers.
-    // System comments don't trigger.
+    // Resolve @mentions, then fire the comment fanout (excluding mentioned
+    // users — they get a louder mention notification instead) and the
+    // mention fanout in parallel. System comments skip both.
     if (!result.is_system) {
       (async () => {
         try {
@@ -156,17 +145,28 @@ router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Submi
             excludeUserId: req.session.user.id,
             projectId: ticket.rows[0].project_id,
           });
-          if (!mentioned.length) return;
-          await fanoutMention(pool, {
-            ticket: ticket.rows[0],
-            comment: trimmedBody,
-            commentId: insertResult.rows[0].id,
-            mentionedUsers: mentioned,
-            actorId: req.session.user.id,
-            actorName: req.session.user.displayName,
-          });
+          const mentionedIds = mentioned.map(m => m.id);
+          await Promise.all([
+            fanoutNewComment(pool, {
+              ticket: ticket.rows[0],
+              comment: trimmedBody,
+              actorId: req.session.user.id,
+              actorName: req.session.user.displayName,
+              excludeUserIds: mentionedIds,
+            }).catch(err => console.error('comment fanout failed:', err.message)),
+            mentioned.length
+              ? fanoutMention(pool, {
+                  ticket: ticket.rows[0],
+                  comment: trimmedBody,
+                  commentId: insertResult.rows[0].id,
+                  mentionedUsers: mentioned,
+                  actorId: req.session.user.id,
+                  actorName: req.session.user.displayName,
+                }).catch(err => console.error('mention fanout failed:', err.message))
+              : null,
+          ]);
         } catch (err) {
-          console.error('mention fanout failed:', err.message);
+          console.error('comment+mention fanout failed:', err.message);
         }
       })();
     }
