@@ -79,6 +79,29 @@ Site explicitly tags these as "launching soon" or part of paid hosted tiers. Bui
 ### UX small wins
 - (none currently queued — see "Recently shipped" for bulk actions, hybrid tooltips, and per-user locale overrides.)
 
+### AI assist — BYO-AI text punch-up
+User-level integration for AI text rewriting on comments + vendor outbound. **Bring-your-own-AI**: Resolvd ships the integration surface, the user/tech configures their own provider (OpenAI, Anthropic, Azure OpenAI, local Ollama, etc.) — no Resolvd-hosted model, no shared API costs, no data sent to Resolvd's infra. Per-user credentials, never org-shared by default.
+
+**Opt-in everywhere.** Default off at user level — feature is invisible until the user explicitly configures a provider. Org admins can hard-disable in Branding so no AI surface appears for any user in the org (compliance / data-handling shops that want zero AI touching their data). No "AI on by default" path ever.
+
+**Scope (initial):** rewrite-in-place for the comment composer + vendor outbound modal. Not generation from scratch, not summarization (yet), not auto-reply.
+
+**Modes:**
+- **Tone flavoring** — funny, formal, polite, apologetic, neutral, terse, friendly. Picker dropdown next to composer.
+- **Verbosity** — short (concise — *not* caveman level/style), functional (default — clear + complete), verbose / explanatory (walks through the why).
+- **ELI5 mode** — break down technical content for non-technical recipients (jargon → plain language, define acronyms inline). **Gated to tech / admin / manager roles** — submitter / vendor recipients shouldn't see ELI5 as a sender option (avoids condescension risk).
+
+**Settings surface:**
+- Account Preferences → AI Assist: provider dropdown, endpoint URL, model name, API key (encrypted at rest, per-user), default tone, default verbosity, enable/disable.
+- Org-level admin toggle in Branding to disable the feature entirely (compliance / data-handling override).
+- "Preview before send" enforced — never silently rewrite outbound. Original + rewrite shown side-by-side, user accepts or edits.
+
+**Open questions (defer until building):**
+- Streaming responses or full-shot? (streaming = better UX, more provider variance to handle)
+- Provider abstraction shape — single adapter interface vs per-provider plugins (mirrors alert-source preset SDK).
+- Audit log entry on AI-assisted comment? (probably yes — record provider + model name, not the raw prompt/response).
+- Token cost surfacing — show estimated tokens per call so user knows what their key is burning.
+
 ### Plumbing / debt
 - `ROADMAP.md` (this file) — keep current.
 
