@@ -1,4 +1,5 @@
 import React, { useState, useEffect, useRef, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { api } from "../utils/api";
 
 // Typeahead-driven ticket merge picker. Two slots (A, B). When invoked
@@ -47,8 +48,8 @@ export default function MergePicker({ open, anchorTicket = null, onCancel, onCon
     }
   }
 
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+  return createPortal(
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 px-4">
       <div className="bg-surface border border-border rounded-lg shadow-xl max-w-xl w-full p-5 space-y-4">
         <div>
           <h3 className="text-lg font-semibold text-fg">Merge tickets</h3>
@@ -111,7 +112,8 @@ export default function MergePicker({ open, anchorTicket = null, onCancel, onCon
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 

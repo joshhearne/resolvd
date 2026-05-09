@@ -1,4 +1,5 @@
 import React, { useEffect, useState, useCallback } from "react";
+import { createPortal } from "react-dom";
 import { useParams, useNavigate, useLocation } from "react-router-dom";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
@@ -2205,8 +2206,8 @@ export default function TicketDetail() {
       />
 
       {/* Send As modal — shown when admin/manager sends vendor email on behalf */}
-      {sendAsModal && sendAsModal.mode === 'has-submitter' && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      {sendAsModal && sendAsModal.mode === 'has-submitter' && createPortal(
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50">
           <div className="bg-bg border border-border rounded-xl shadow-xl p-6 w-full max-w-sm mx-4">
             <h3 className="text-sm font-semibold text-fg mb-1">Send as whom?</h3>
             <p className="text-xs text-fg-muted mb-4">
@@ -2243,14 +2244,15 @@ export default function TicketDetail() {
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
 
       {/* No-submitter variant: pick a project member to either send-as
           (one-off identity on vendor email) or submit-as (backfill the
           ticket's submitted_by, useful for imported tickets). */}
-      {sendAsModal && sendAsModal.mode === 'no-submitter' && (
-        <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40">
+      {sendAsModal && sendAsModal.mode === 'no-submitter' && createPortal(
+        <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50">
           <div className="bg-bg border border-border rounded-xl shadow-xl p-6 w-full max-w-md mx-4">
             <h3 className="text-sm font-semibold text-fg mb-1">No submitter on this ticket</h3>
             <p className="text-xs text-fg-muted mb-4">
@@ -2341,7 +2343,8 @@ export default function TicketDetail() {
               </button>
             </div>
           </div>
-        </div>
+        </div>,
+        document.body,
       )}
     </PageShell>
   );
@@ -2361,8 +2364,8 @@ function MoveDialog({ open, currentRef, currentProjectId, userRole, onCancel, on
 
   if (!open) return null;
   const choices = projects.filter((p) => p.id !== currentProjectId);
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 px-4">
+  return createPortal(
+    <div className="fixed inset-0 z-[100] flex items-center justify-center bg-black/50 px-4">
       <div className="bg-surface border border-border rounded-lg shadow-xl max-w-md w-full p-5">
         <h3 className="text-lg font-semibold text-fg mb-2">Move ticket</h3>
         <p className="text-sm text-fg-muted mb-3">
@@ -2403,7 +2406,8 @@ function MoveDialog({ open, currentRef, currentProjectId, userRole, onCancel, on
           </button>
         </div>
       </div>
-    </div>
+    </div>,
+    document.body,
   );
 }
 
