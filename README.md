@@ -437,7 +437,7 @@ A built-in **Help** page (`/help`, linked in the nav) provides role-aware docume
 - Each feature row lists which roles can use it, or shows **All roles** when universal
 - Warns Submitter/Viewer/Support where features are restricted, and notes project-level role overrides where applicable
 - Includes a **Support Access** section explaining the JIT grant workflow for Support-role users
-- Screenshot placeholder slots in every section, ready to be replaced with real images
+- Screenshots in every section render via the `<HelpScreenshot>` wrapper — real PNGs live under `frontend/public/help/<slug>.png` and fall back to a dashed placeholder when an image is missing (useful while shots are being authored or reshot)
 
 ---
 

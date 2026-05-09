@@ -1,6 +1,7 @@
 import { useState } from "react";
 import { useAuth } from "../context/AuthContext";
 import PageShell from "../components/PageShell";
+import HelpScreenshot from "../components/HelpScreenshot";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
@@ -59,16 +60,6 @@ function OverrideNote() {
     <p className="text-xs text-fg-muted italic mt-3 border-t border-border pt-3">
       Exception: if an Admin assigned you a role override on a specific project (e.g. Manager), you gain elevated permissions within that project only — your global role is unchanged elsewhere.
     </p>
-  );
-}
-
-// ── Screenshot placeholder ────────────────────────────────────────────────────
-
-function ScreenshotPlaceholder({ label }) {
-  return (
-    <div className="border-2 border-dashed border-border rounded-lg flex items-center justify-center h-32 my-3 bg-surface-2 text-fg-dim text-xs">
-      [ Screenshot: {label} ]
-    </div>
   );
 }
 
@@ -201,7 +192,7 @@ function SectionDashboard({ role }) {
       <p className="text-sm text-fg leading-relaxed">
         The Dashboard is your home screen — a live snapshot of ticket activity relevant to your role.
       </p>
-      <ScreenshotPlaceholder label="Dashboard overview" />
+      <HelpScreenshot src="/help/dashboard-overview.png" alt="Dashboard with assigned-to-you panel, recent activity feed, and per-project ticket count cards" />
       <div className="space-y-0">
         <Feature name="Open ticket snapshot" roles="all" />
         <Feature name="Recent activity feed" roles="all" />
@@ -226,7 +217,7 @@ function SectionTicketList({ role }) {
       <p className="text-sm text-fg leading-relaxed">
         The Tickets list shows all tickets you have access to. Use filters and search to narrow results.
       </p>
-      <ScreenshotPlaceholder label="Ticket list with filters" />
+      <HelpScreenshot src="/help/ticket-list-filters.png" alt="Ticket list with filter sidebar, project picker, status pills, and the column-visibility picker" />
       <div className="space-y-0">
         <Feature name="View ticket list" roles="all" />
         <Feature name="Search by title / ref" roles="all" />
@@ -253,7 +244,7 @@ function SectionNewTicket({ role }) {
         <p className="text-sm text-fg leading-relaxed">
           Submit a new ticket via <strong>+ New Ticket</strong> in the nav. Title, description, impact, and urgency are the required inputs — the system computes a priority score automatically.
         </p>
-        <ScreenshotPlaceholder label="New ticket form" />
+        <HelpScreenshot src="/help/new-ticket-form.png" alt="New ticket form with project picker, title, description, attachment dropzone, and impact / urgency selects" />
         <div className="space-y-0">
           <Feature name="Submit ticket" roles={["Admin","Manager","Submitter"]} />
           <Feature name="Markdown in description" roles={["Admin","Manager","Submitter"]} note="Full GFM: bold, italic, code blocks, lists, tables." />
@@ -280,7 +271,7 @@ function SectionTicketDetail({ role }) {
           ? <PartialAccess note="You can view and comment. Status changes, vendor actions, and several fields are Admin/Manager only." />
           : <PartialAccess note="Read-only access. You can view tickets and comments but cannot post or take actions." />
       }
-      <ScreenshotPlaceholder label="Ticket detail — comment area" />
+      <HelpScreenshot src="/help/ticket-detail-comments.png" alt="Ticket detail comment area with markdown composer, attach + canned-response controls, and a thread of vendor + internal comments" />
 
       <h3 className="text-sm font-semibold text-fg">Comments</h3>
       <div className="space-y-0">
@@ -289,11 +280,12 @@ function SectionTicketDetail({ role }) {
         <Feature name="@mention a user" roles={["Admin","Manager","Submitter"]} note="Dropdown scoped to project members. Triggers in-app and email notification." />
         <Feature name="Attach files to comment" roles={["Admin","Manager","Submitter"]} />
         <Feature name="Mark comment vendor-visible" roles={PRIV} note="Sends comment to attached vendor contacts via email." />
+        <Feature name="Insert canned response" roles={["Admin","Manager","Submitter"]} note="📋 popover next to the composer. Tags like {ticket.ref}, {submitter.firstName} render server-side at insert time." />
         <Feature name="Post & Close / Post & Reopen" roles={PRIV} note="Change ticket status in the same action as posting." />
         <Feature name="Mute / delete comments" roles={PRIV} note="Muting hides vendor replies without deleting." />
       </div>
 
-      <ScreenshotPlaceholder label="Ticket detail — status and metadata panel" />
+      <HelpScreenshot src="/help/ticket-detail-meta.png" alt="Ticket detail metadata panel — internal + external status, priority, assignee, followers, vendor contacts, blockers, and follow-up reminders" />
       <h3 className="text-sm font-semibold text-fg">Status &amp; Fields</h3>
       <div className="space-y-0">
         <Feature name="View status and all metadata" roles="all" />
@@ -342,7 +334,7 @@ function SectionProjects({ role }) {
         <p className="text-sm text-fg leading-relaxed">
           Projects group tickets into logical workstreams. Each has its own reference prefix, member list, and optionally an external vendor workflow.
         </p>
-        <ScreenshotPlaceholder label="Project list" />
+        <HelpScreenshot src="/help/project-list.png" alt="Projects page with member counts, ticket counts, and the New project action" />
         <div className="space-y-0">
           <Feature name="View all projects" roles={PRIV} />
           <Feature name="Create / archive project" roles={PRIV} />
@@ -369,20 +361,27 @@ function SectionAdmin({ role }) {
       }
       {(isAdmin || isManager) && <>
         <p className="text-sm text-fg leading-relaxed">
-          System-wide configuration. Some sub-sections are Admin-only even for Managers.
+          System-wide configuration. The left-rail nav groups sections by area
+          — <strong>People</strong>, <strong>Workflow</strong>, <strong>Integrations</strong>,
+          <strong>Site</strong>, <strong>Data</strong> — and collapses into a hamburger
+          drawer on mobile. Some sub-sections are Admin-only even for Managers.
         </p>
-        <ScreenshotPlaceholder label="Admin panel navigation" />
+        <HelpScreenshot src="/help/admin-left-rail-nav.png" alt="Admin panel left-rail navigation grouped into People, Workflow, Integrations, Site, and Data" />
         <div className="space-y-0">
-          <Feature name="Statuses — workflow status configuration" roles={PRIV} note="Semantic tags, transitions, sort order." />
-          <Feature name="Companies &amp; Contacts — vendor directory" roles={PRIV} note="Includes per-company notification preference toggles." />
-          <Feature name="Email Templates — outbound vendor email content" roles={PRIV} />
-          <Feature name="Email Backends — SMTP configuration" roles={PRIV} />
-          <Feature name="Inbound email — parse replies into comments" roles={PRIV} />
-          <Feature name="Branding — logo, site name, colors" roles={PRIV} />
-          <Feature name="Export — full data export" roles={PRIV} />
           <Feature name="Users — invite, deactivate, reset passwords" roles={["Admin"]} note="Manager role cannot manage other users." />
+          <Feature name="Companies — vendor / customer / internal directories" roles={PRIV} note="Three kinds: vendors keep project-scoped contacts; customers link to projects via a join table; internal companies model your org with members + auto-add domains for SSO first-login." />
+          <Feature name="Statuses — workflow status configuration" roles={PRIV} note="Semantic tags, transitions, sort order." />
+          <Feature name="Canned responses — reusable comment templates" roles={PRIV} note="Tag substitution ({ticket.ref}, {submitter.name}, etc) rendered server-side; project-scoped picker." />
+          <Feature name="Merge tickets — search-driven duplicate consolidation" roles={PRIV} note="Two-slot picker by ref/title/description, swap-winner toggle, project locks to first pick." />
+          <Feature name="Email Templates — outbound vendor email content" roles={PRIV} />
+          <Feature name="Email Backends — SMTP / Graph / Gmail with project scope" roles={PRIV} note="Many-to-many account-to-project scoping for helpdesk routing." />
+          <Feature name="Inbound email — parse replies into comments" roles={PRIV} />
+          <Feature name="Alert sources — Zabbix + webhook ingestion" roles={PRIV} note="Token-authed webhook receiver, severity → priority map, optional API backfill of currently-open problems." />
           <Feature name="Authentication — MFA policy, SSO / Azure AD" roles={["Admin"]} />
+          <Feature name="Branding — logo, site name, colors, locale defaults" roles={PRIV} />
+          <Feature name="System health — scheduler heartbeats + DB / queue stats" roles={PRIV} note="Auto-refreshes every 30s; shows ok / stale / error / never_ran per scheduled job." />
           <Feature name="Support — issue JIT access grants" roles={["Admin"]} note="Time-limited read grants for Support role users." />
+          <Feature name="Export — full data export" roles={PRIV} />
           <Feature name="Encryption — field-level encryption keys" roles={["Admin"]} />
         </div>
       </>}
@@ -401,7 +400,7 @@ function SectionNotifications({ role }) {
       <p className="text-sm text-fg leading-relaxed">
         The notification bell in the top nav shows in-app alerts. Email notifications run in parallel where configured.
       </p>
-      <ScreenshotPlaceholder label="Notification tray" />
+      <HelpScreenshot src="/help/notification-tray.png" alt="Notification tray dropdown showing unread mentions, assignments, and follower events" />
       <div className="space-y-0">
         <Feature name="In-app notification tray" roles="all" note="Bell icon visible to all roles." />
         <Feature name="Receive mention notifications" roles="all" note="Alert when someone @mentions you in a comment." />
@@ -426,7 +425,7 @@ function SectionMentions({ role }) {
         Type <code className="bg-surface px-1 rounded text-brand text-xs">@</code> in any comment box to trigger the mention autocomplete.
         Results are scoped to members of the ticket's project.
       </p>
-      <ScreenshotPlaceholder label="@mention autocomplete dropdown" />
+      <HelpScreenshot src="/help/mentions-autocomplete.png" alt="Comment composer with @mention autocomplete dropdown filtered to project members" />
       <div className="space-y-0">
         <Feature name="Trigger @mention autocomplete" roles={["Admin","Manager","Submitter"]} note="Scoped to current project's members." />
         <Feature name="Arrow keys / Enter / Right arrow to select" roles={["Admin","Manager","Submitter"]} />
@@ -448,7 +447,7 @@ function SectionMarkdown({ role }) {
       <p className="text-sm text-fg leading-relaxed">
         Comments and descriptions support GitHub Flavored Markdown. The editor has Write and Preview tabs plus a formatting toolbar with keyboard shortcuts.
       </p>
-      <ScreenshotPlaceholder label="Markdown editor toolbar" />
+      <HelpScreenshot src="/help/markdown-toolbar.png" alt="Markdown comment composer with formatting toolbar (bold, italic, code, list, link, attach)" />
       <h3 className="text-sm font-semibold text-fg pt-1">Keyboard shortcuts</h3>
       <div className="grid grid-cols-2 gap-x-6 gap-y-0 text-xs">
         {[
@@ -468,7 +467,7 @@ function SectionMarkdown({ role }) {
       <p className="text-xs text-fg-muted mt-1">
         On mobile the toolbar shows Bold, Italic, Code, Code Block, and Bullet List only. Full toolbar at <code className="font-mono">sm:</code> breakpoint and wider.
       </p>
-      <ScreenshotPlaceholder label="Markdown rendered output" />
+      <HelpScreenshot src="/help/markdown-rendered.png" alt="Comment rendered after submission — bold, italic, code, lists, links, and embedded attachments" />
       <p className="text-xs text-fg-muted">
         Supported: <strong className="text-fg">**bold**</strong>, <em className="text-fg">_italic_</em>,{" "}
         <code className="bg-surface px-1 rounded text-brand">`code`</code>, fenced code blocks, #&nbsp;headings, lists, &gt;&nbsp;blockquotes, tables, [links](url).
@@ -490,7 +489,7 @@ function SectionSupport({ role }) {
       <p className="text-sm text-fg leading-relaxed">
         The Support role provides tightly controlled read-only access for external support personnel. Access is granted just-in-time by an Admin, expires automatically, and every ticket view is recorded.
       </p>
-      <ScreenshotPlaceholder label="Admin → Support grant management" />
+      <HelpScreenshot src="/help/admin-support-grants.png" alt="Admin Support grants page — pending requests, active grants with expiry timers, and the issue-grant action" />
       <div className="space-y-0">
         <Feature name="Issue support grant (set duration + scope)" roles={["Admin"]} />
         <Feature name="Revoke active grant early" roles={["Admin"]} />
@@ -508,7 +507,7 @@ function SectionAccount({ role }) {
       <p className="text-sm text-fg leading-relaxed">
         Access via your avatar menu (top right) → Account Settings.
       </p>
-      <ScreenshotPlaceholder label="Account settings tabs" />
+      <HelpScreenshot src="/help/account-settings.png" alt="Account settings with Profile, Password, MFA, and Preferences tabs" />
       <div className="space-y-0">
         <Feature name="Profile — name, display name, avatar" roles="all" />
         <Feature name="Password — change password" roles="all" note="Not available if SSO is your only login method." />
