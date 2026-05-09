@@ -40,3 +40,7 @@ backup-*.sql
 
 # Claude Code workspace (local only)
 .claude/
+
+# Screenshot tooling (local-only — runner + plan + git hooks)
+scripts/
+.githooks/
