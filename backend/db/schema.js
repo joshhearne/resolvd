@@ -1145,6 +1145,106 @@ async function initSchema() {
        ]
     `);
 
+    // ── SLA tracker ──────────────────────────────────────────────────────
+    // One row per (priority, project_id) pair. project_id IS NULL = org
+    // default. Project-specific row overrides the default for that
+    // (project, priority). Targets in minutes; sla.js converts to/from
+    // due-at timestamps when applying to tickets.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS sla_policies (
+        id SERIAL PRIMARY KEY,
+        priority INTEGER NOT NULL CHECK (priority BETWEEN 1 AND 5),
+        project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+        response_target_minutes INTEGER NOT NULL CHECK (response_target_minutes > 0),
+        resolve_target_minutes INTEGER NOT NULL CHECK (resolve_target_minutes > 0),
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    // Cannot enforce UNIQUE(priority, project_id) directly because NULL
+    // is not equal to NULL — use a partial unique index pair.
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_sla_policies_org_default
+      ON sla_policies(priority) WHERE project_id IS NULL`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_sla_policies_project
+      ON sla_policies(priority, project_id) WHERE project_id IS NOT NULL`);
+
+    // Per-ticket SLA timer columns. Set on create from policyForTicket().
+    // first_response_at populates when the first qualifying comment
+    // posts (non-system, not by submitter). paused_at + paused_seconds
+    // implement pause-on-blocker semantics so vendor/customer wait time
+    // doesn't count against us.
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_first_response_at TIMESTAMPTZ`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_response_due_at TIMESTAMPTZ`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_resolve_due_at TIMESTAMPTZ`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_paused_seconds INTEGER NOT NULL DEFAULT 0`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_paused_at TIMESTAMPTZ`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_response_breached BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_resolve_breached BOOLEAN NOT NULL DEFAULT FALSE`);
+    // When the breach flag was first flipped — drives MTD breach
+    // counts on the dashboard. Stays NULL for unbreached tickets.
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_response_breached_at TIMESTAMPTZ`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_resolve_breached_at TIMESTAMPTZ`);
+    // Backfill timestamps for any tickets that were already flagged
+    // breached before this column existed. Use the due_at as the best
+    // proxy. Only updates rows missing the timestamp — idempotent.
+    await client.query(`
+      UPDATE tickets SET sla_response_breached_at = sla_response_due_at
+       WHERE sla_response_breached = TRUE
+         AND sla_response_breached_at IS NULL
+         AND sla_response_due_at IS NOT NULL
+    `);
+    await client.query(`
+      UPDATE tickets SET sla_resolve_breached_at = sla_resolve_due_at
+       WHERE sla_resolve_breached = TRUE
+         AND sla_resolve_breached_at IS NULL
+         AND sla_resolve_due_at IS NOT NULL
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_sla_response_breached_at
+      ON tickets(sla_response_breached_at) WHERE sla_response_breached_at IS NOT NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_sla_resolve_breached_at
+      ON tickets(sla_resolve_breached_at) WHERE sla_resolve_breached_at IS NOT NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_sla_response_due
+      ON tickets(sla_response_due_at) WHERE sla_response_due_at IS NOT NULL AND sla_first_response_at IS NULL AND sla_response_breached = FALSE`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_sla_resolve_due
+      ON tickets(sla_resolve_due_at) WHERE sla_resolve_due_at IS NOT NULL AND resolved_at IS NULL AND sla_resolve_breached = FALSE`);
+
+    await client.query(`INSERT INTO system_jobs (name) VALUES ('sla_breach_check') ON CONFLICT DO NOTHING`);
+
+    // Sensible org-default targets per priority. Idempotent: only inserts
+    // when the row doesn't already exist. Customers tune these in the
+    // admin UI; these are starting values.
+    //   P1: respond within 30 min, resolve within 4 hrs   (critical)
+    //   P2: respond within 1 hr,    resolve within 8 hrs   (high)
+    //   P3: respond within 4 hrs,   resolve within 24 hrs  (normal)
+    //   P4: respond within 8 hrs,   resolve within 72 hrs  (low)
+    //   P5: respond within 1 day,   resolve within 7 days  (cosmetic / planning)
+    await client.query(`
+      INSERT INTO sla_policies (priority, project_id, response_target_minutes, resolve_target_minutes)
+      VALUES
+        (1, NULL,   30,    240),
+        (2, NULL,   60,    480),
+        (3, NULL,  240,   1440),
+        (4, NULL,  480,   4320),
+        (5, NULL, 1440,  10080)
+      ON CONFLICT DO NOTHING
+    `);
+
+    // One-time backfill: any pre-existing ticket without sla_*_due_at
+    // gets timers stamped from its created_at + the matching policy
+    // target. Tickets already past due will be flagged on the next
+    // breach tick. Updates only rows where the column is currently null
+    // — re-running the migration is a no-op once stamped.
+    await client.query(`
+      UPDATE tickets t
+         SET sla_response_due_at = t.created_at + (sp.response_target_minutes || ' minutes')::interval,
+             sla_resolve_due_at  = t.created_at + (sp.resolve_target_minutes  || ' minutes')::interval
+        FROM sla_policies sp
+       WHERE sp.project_id IS NULL
+         AND sp.priority = COALESCE(t.effective_priority, 3)
+         AND t.sla_response_due_at IS NULL
+         AND t.sla_resolve_due_at IS NULL
+    `);
+
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');

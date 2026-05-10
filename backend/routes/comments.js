@@ -2,6 +2,7 @@ const express = require('express');
 const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { fanoutNewComment, fanoutMention } = require('../services/notificationFanout');
+const sla = require('../services/sla');
 const { buildWritePatch, decryptRow, decryptRows } = require('../services/fields');
 const { sendVendorEmail } = require('../services/vendorOutbound');
 const { resolveMentions } = require('../services/mentions');
@@ -108,6 +109,14 @@ router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Submi
         commentBody: trimmedBody,
         actorUserId: req.session.user.id,
       }).catch(err => console.error('auto-reopen check failed:', err.message));
+    }
+
+    // SLA first-response stamp: any non-system comment by someone other
+    // than the submitter qualifies. Self-replies by the submitter
+    // shouldn't tick the response clock.
+    if (!result.is_system && req.session.user.id !== ticket.rows[0].submitted_by) {
+      sla.markResponded(null, ticket.rows[0].id)
+        .catch(err => console.error('sla markResponded failed:', err.message));
     }
 
     // Vendor-bound outbound fires only when the comment is flagged for

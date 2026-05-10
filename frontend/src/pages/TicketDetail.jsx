@@ -11,6 +11,7 @@ import {
   URGENCY_LABELS,
 } from "../utils/helpers";
 import HybridTime from "../components/HybridTime";
+import SlaTimer from "../components/SlaTimer";
 import {
   useStatuses,
   nextAllowedStatusIds,
@@ -788,6 +789,9 @@ export default function TicketDetail() {
             {ticket.assigned_to_name &&
               ` · Assigned: ${ticket.assigned_to_name}`}
           </p>
+          <div className="mt-1.5">
+            <SlaTimer ticket={ticket} />
+          </div>
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
           <button

@@ -35,6 +35,7 @@ const systemHealthRoutes = require('./routes/systemHealth');
 const webhookRoutes = require('./routes/webhooks');
 const alertSourceRoutes = require('./routes/alertSources');
 const cannedResponseRoutes = require('./routes/cannedResponses');
+const slaRoutes = require('./routes/sla');
 const { requireSupportAccessIfSupport } = require('./middleware/supportAccess');
 
 const app = express();
@@ -108,6 +109,7 @@ app.use('/api/push', pushRoutes);
 app.use('/api/system-health', systemHealthRoutes);
 app.use('/api/alert-sources', alertSourceRoutes);
 app.use('/api/canned-responses', cannedResponseRoutes);
+app.use('/api/sla', slaRoutes);
 
 // Health check
 app.get('/health', (req, res) => res.json({ ok: true }));
@@ -127,6 +129,10 @@ initSchema()
     // whose email_digest cadence (hourly / 12h / daily) has elapsed.
     // 5-minute tick.
     require('./services/notificationOutbox').startScheduler();
+    // SLA breach detector: every 5 min, find tickets past their
+    // sla_response_due_at / sla_resolve_due_at without being responded
+    // / resolved, mark breached, fan out to assignee + followers.
+    require('./services/sla').startScheduler();
     app.listen(PORT, () => {
       console.log(`Resolvd backend running on port ${PORT}`);
     });
