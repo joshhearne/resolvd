@@ -11,6 +11,7 @@ import PriorityBadge from "../components/PriorityBadge";
 import { useAuth } from "../context/AuthContext";
 import DuplicateWarningModal from "../components/DuplicateWarningModal";
 import MarkdownEditor from "../components/MarkdownEditor";
+import AiRewriteButton from "../components/AiRewriteButton";
 import PageShell from "../components/PageShell";
 
 export default function NewTicket() {
@@ -259,9 +260,21 @@ export default function NewTicket() {
         </div>
 
         <div>
-          <label className="block text-sm font-medium text-fg mb-1">
-            Title <span className="text-red-500">*</span>
-          </label>
+          <div className="flex items-center justify-between mb-1">
+            <label className="block text-sm font-medium text-fg">
+              Title <span className="text-red-500">*</span>
+            </label>
+            <AiRewriteButton
+              value={form.title}
+              surface="ticket_subject"
+              projectId={form.project_id || null}
+              size="xs"
+              onChange={(t, meta) => {
+                set("title", t);
+                if (meta?.logId) setAiLogId(meta.logId);
+              }}
+            />
+          </div>
           <input
             type="text"
             value={form.title}

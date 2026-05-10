@@ -4,6 +4,7 @@ import toast from "react-hot-toast";
 import { api } from "../utils/api";
 import { useAuth } from "../context/AuthContext";
 import PageShell from "../components/PageShell";
+import AiRewriteButton from "../components/AiRewriteButton";
 
 const ROLES = ["Admin", "Manager", "Submitter", "Viewer"];
 
@@ -294,9 +295,17 @@ export default function ProjectDetail() {
               />
             </div>
             <div>
-              <label className="block text-sm font-medium text-fg mb-1">
-                Description
-              </label>
+              <div className="flex items-center justify-between mb-1">
+                <label className="block text-sm font-medium text-fg">
+                  Description
+                </label>
+                <AiRewriteButton
+                  value={editForm.description}
+                  surface="ticket_description"
+                  size="xs"
+                  onChange={(t) => setEditForm((f) => ({ ...f, description: t }))}
+                />
+              </div>
               <input
                 type="text"
                 value={editForm.description}
