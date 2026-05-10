@@ -418,6 +418,56 @@ async function fanoutFollowUp(_unusedPool, { ticket, schedulerUserId, schedulerE
   });
 }
 
+async function fanoutSlaBreach(_unusedPool, { ticket, kind }) {
+  // kind: 'response' | 'resolve'
+  // Recipients: assignee (if any) + ticket followers + submitter, minus
+  // the actor (which doesn't exist for cron-fired events — pass null).
+  const recipients = await getFollowerRecipients(null, ticket.id, null);
+  const assigneeId = ticket.assigned_to;
+  if (assigneeId && !recipients.find(u => u.id === assigneeId)) {
+    const u = await getUserById(assigneeId);
+    if (u) recipients.push(u);
+  }
+  if (!recipients.length) return;
+  const ticketRef = ticket.internal_ref;
+  const ticketTitle = ticket.title || '';
+  const titleVerb = kind === 'response' ? 'Response SLA breached' : 'Resolve SLA breached';
+  const bodyText = kind === 'response'
+    ? `No response within target on ${ticketRef}${ticketTitle ? ` — ${ticketTitle}` : ''}.`
+    : `Resolve target missed on ${ticketRef}${ticketTitle ? ` — ${ticketTitle}` : ''}.`;
+  const payload = {
+    ticket_id: ticket.id,
+    ticket_ref: ticketRef,
+    ticket_title: ticketTitle,
+    breach_kind: kind,
+  };
+  for (const user of recipients) {
+    // Always create in-app + send email immediately. SLA breaches are
+    // action-required; bypass the matrix and the digest cadence.
+    await dispatchPerRecipient({
+      user,
+      // Re-use 'pending_review' event type for matrix lookup so the
+      // recipient doesn't see an unknown row, but the actual title /
+      // body / data carries breach_kind so the UI / future filters can
+      // distinguish.
+      eventType: 'pending_review',
+      ticketId: ticket.id,
+      ticketRef,
+      inApp: { title: `${titleVerb}: ${ticketRef}`, body: bodyText, extraData: { breach_kind: kind } },
+      push: null,
+      payload,
+    });
+    await routeEmail({
+      user,
+      eventType: 'pending_review',
+      payload: { ticket_id: ticket.id, ticket_ref: ticketRef, ticket_title: ticketTitle },
+      ticketId: ticket.id,
+      projectId: ticket.project_id,
+      bypassDigest: true,
+    });
+  }
+}
+
 module.exports = {
   fanoutAssignment,
   fanoutStatusChange,
@@ -425,6 +475,7 @@ module.exports = {
   fanoutMention,
   fanoutPendingReview,
   fanoutFollowUp,
+  fanoutSlaBreach,
   // Exported for tests / outbox flusher
   getFollowerRecipients,
   nextFlushBoundary,

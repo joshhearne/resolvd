@@ -7,6 +7,7 @@ const {
   fanoutPendingReview,
   fanoutAssignment,
 } = require('../services/notificationFanout');
+const sla = require('../services/sla');
 const { getMode, buildWritePatch, decryptRow, decryptRows } = require('../services/fields');
 const blindIndex = require('../services/blindIndex');
 const { logSupportRead } = require('../middleware/supportAccess');
@@ -283,6 +284,14 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Submitter'), asyn
       );
 
       const t = result.rows[0];
+      // Stamp SLA due-at timestamps from the policy table. No-op when
+      // no policy is configured for this priority/project pair.
+      await sla.applyPolicyOnCreate(client, {
+        ticketId: t.id,
+        priority: t.effective_priority || computed,
+        projectId: t.project_id,
+        createdAt: t.created_at,
+      });
       await auditLog(client, { ticketId: t.id, userId: user.id, action: 'ticket_created', newValue: internalRef });
       if (effectiveSubmitterId !== user.id) {
         await auditLog(client, {
@@ -529,6 +538,15 @@ router.patch('/:id', requireAuth, async (req, res) => {
         } else {
           updates.resolved_at = null;
         }
+        // SLA pause/resume on transitions into / out of awaiting_input
+        // or on_hold tagged statuses. Done in the same transaction so
+        // the pause-second accounting stays consistent with the audit
+        // row above.
+        await sla.onStatusChange(client, {
+          ticketId: ticket.id,
+          oldStatus: old,
+          newStatus: body.internal_status,
+        });
         // Follow-up timer lives on pending_review states. Defensive
         // clear on any move out of pending_review (the in-flight guard
         // above already blocks transitions while followup_at is set).

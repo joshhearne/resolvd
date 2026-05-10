@@ -20,6 +20,7 @@ const NAV_GROUPS = [
     label: "Workflow",
     items: [
       { to: "/admin/statuses", label: "Statuses" },
+      { to: "/admin/sla", label: "SLA policies", manager: true },
       { to: "/admin/canned-responses", label: "Canned responses", manager: true },
       { to: "/admin/merge", label: "Merge tickets" },
     ],

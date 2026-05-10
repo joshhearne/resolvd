@@ -26,6 +26,7 @@ import AdminMerge from "./pages/AdminMerge";
 import AdminAlertSources from "./pages/AdminAlertSources";
 import AdminSystemHealth from "./pages/AdminSystemHealth";
 import AdminCannedResponses from "./pages/AdminCannedResponses";
+import AdminSlaPolicies from "./pages/AdminSlaPolicies";
 import PrintExport from "./pages/PrintExport";
 import Projects from "./pages/Projects";
 import ProjectDetail from "./pages/ProjectDetail";
@@ -159,6 +160,7 @@ function AppRoutes() {
           <Route path="alert-sources" element={<AdminAlertSources />} />
           <Route path="system-health" element={<AdminSystemHealth />} />
           <Route path="canned-responses" element={<AdminCannedResponses />} />
+          <Route path="sla" element={<AdminSlaPolicies />} />
         </Route>
       </Route>
     </Routes>
