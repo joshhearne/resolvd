@@ -261,6 +261,10 @@ export default function TicketDetail() {
   const [attachments, setAttachments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [commentBody, setCommentBody] = useState("");
+  // Captured when the AI modal applies a rewrite to commentBody. Sent
+  // up with the next comment POST + cleared. One-shot — discarded if
+  // the user edits the body further before submitting.
+  const [commentAiLogId, setCommentAiLogId] = useState(null);
   const [commentFiles, setCommentFiles] = useState([]);
   const [submittingComment, setSubmittingComment] = useState(false);
   const [shareWithVendor, setShareWithVendor] = useState(false);
@@ -525,6 +529,7 @@ export default function TicketDetail() {
           body: commentBody.trim(),
           is_external_visible: shareWithVendor,
           ...(shareWithVendor && send_as ? { send_as } : {}),
+          ...(commentAiLogId ? { ai_rewrite_log_id: commentAiLogId } : {}),
         });
         setComments((prev) => [...prev, c]);
       }
@@ -542,6 +547,7 @@ export default function TicketDetail() {
         setAttachments((prev) => [...prev, ...newAtts]);
       }
       setCommentBody("");
+      setCommentAiLogId(null);
       setCommentFiles([]);
       setShareWithVendor(false);
       if (andStatus) {
@@ -1114,11 +1120,15 @@ export default function TicketDetail() {
               <div className="space-y-2">
                 <MarkdownEditor
                   aiSurface="ticket_description"
+                  aiProjectId={ticket?.project_id || null}
                   value={editValues.description}
                   onChange={(e) =>
                     setEditValues((v) => ({
                       ...v,
                       description: e.target.value,
+                      ...(Object.prototype.hasOwnProperty.call(e.target, "_aiLogId")
+                        ? { _ai_log_id: e.target._aiLogId }
+                        : {}),
                     }))
                   }
                   rows={5}
@@ -1126,7 +1136,10 @@ export default function TicketDetail() {
                 <div className="flex gap-2">
                   <button
                     onClick={() =>
-                      patch({ description: editValues.description })
+                      patch({
+                        description: editValues.description,
+                        ...(editValues._ai_log_id ? { ai_rewrite_log_id: editValues._ai_log_id } : {}),
+                      })
                     }
                     disabled={saving}
                     className="btn-primary btn btn-sm"
@@ -1143,7 +1156,24 @@ export default function TicketDetail() {
               </div>
             ) : (
               ticket.description ? (
-                <MarkdownContent>{ticket.description}</MarkdownContent>
+                <>
+                  {ticket.ai_provider && (
+                    <div
+                      className="mb-1 text-[11px] text-fg-muted font-mono inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-surface-2 border border-border"
+                      title={
+                        (ticket.ai_tone ? `tone: ${ticket.ai_tone} · ` : "") +
+                        (ticket.ai_verbosity ? `verbosity: ${ticket.ai_verbosity}` : "") +
+                        (ticket.ai_eli5 ? " · ELI5" : "")
+                      }
+                    >
+                      ✨ AI · {ticket.ai_provider} · {ticket.ai_model}
+                      {(ticket.ai_input_tokens != null || ticket.ai_output_tokens != null) && (
+                        <> · {ticket.ai_input_tokens || 0} in / {ticket.ai_output_tokens || 0} out</>
+                      )}
+                    </div>
+                  )}
+                  <MarkdownContent>{ticket.description}</MarkdownContent>
+                </>
               ) : (
                 <span className="text-fg-dim text-sm">No description</span>
               )
@@ -1225,6 +1255,21 @@ export default function TicketDetail() {
                           <HybridTime dt={c.created_at} className="text-xs text-fg-dim" />
                         </span>
                       </div>
+                      {c.ai_provider && (
+                        <div
+                          className="mb-1 text-[11px] text-fg-muted font-mono inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-surface-2 border border-border"
+                          title={
+                            (c.ai_tone ? `tone: ${c.ai_tone} · ` : "") +
+                            (c.ai_verbosity ? `verbosity: ${c.ai_verbosity}` : "") +
+                            (c.ai_eli5 ? " · ELI5" : "")
+                          }
+                        >
+                          ✨ AI · {c.ai_provider} · {c.ai_model}
+                          {(c.ai_input_tokens != null || c.ai_output_tokens != null) && (
+                            <> · {c.ai_input_tokens || 0} in / {c.ai_output_tokens || 0} out</>
+                          )}
+                        </div>
+                      )}
                       <MarkdownContent>{c.body}</MarkdownContent>
                       {attachments.filter((a) => a.comment_id === c.id).length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-1.5">
@@ -1281,8 +1326,18 @@ export default function TicketDetail() {
                     </div>
                     <MarkdownEditor
                       aiSurface={shareWithVendor ? "comment_vendor" : "comment_internal"}
+                      aiProjectId={ticket?.project_id || null}
                       value={commentBody}
-                      onChange={(e) => setCommentBody(e.target.value)}
+                      onChange={(e) => {
+                        setCommentBody(e.target.value);
+                        // _aiLogId rides on the synthetic event emitted by the
+                        // AI modal. Capture it; clear when present=null (means
+                        // user edited manually) but keep a previously-set id
+                        // until next submit.
+                        if (Object.prototype.hasOwnProperty.call(e.target, "_aiLogId")) {
+                          setCommentAiLogId(e.target._aiLogId);
+                        }
+                      }}
                       onKeyDown={(e) => {
                         if (
                           user?.preferences?.ctrl_enter_to_post !== false &&

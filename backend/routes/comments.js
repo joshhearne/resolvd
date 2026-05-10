@@ -36,6 +36,33 @@ router.get('/:id/comments', requireAuth, async (req, res) => {
         vendor_company_name: 'companies.name',
       },
     });
+
+    // AI usage visibility — strip ai_* fields the viewer isn't allowed
+    // to see. Vendors never see (they don't reach this endpoint anyway,
+    // but defensive). Comment author always sees own. Admin/Manager
+    // sees all. Otherwise it depends on branding.ai_disclosure_audience
+    // and the comment's snapshotted ai_publish_consent.
+    const viewer = req.session.user;
+    const branding = await require('../services/branding').getBranding().catch(() => null);
+    const audience = branding?.ai_disclosure_audience || 'self_and_admin';
+    const isPriv = ['Admin', 'Manager'].includes(viewer.role);
+    for (const row of result.rows) {
+      if (!row.ai_provider) continue;
+      const isAuthor = row.user_id === viewer.id;
+      let visible = isPriv || isAuthor;
+      if (!visible && audience === 'all_users') visible = true;
+      if (!visible && row.ai_publish_consent === true) visible = true;
+      if (!visible) {
+        row.ai_provider = null;
+        row.ai_model = null;
+        row.ai_input_tokens = null;
+        row.ai_output_tokens = null;
+        row.ai_tone = null;
+        row.ai_verbosity = null;
+        row.ai_eli5 = null;
+      }
+    }
+
     res.json(result.rows);
   } catch (err) {
     console.error(err);
@@ -46,7 +73,7 @@ router.get('/:id/comments', requireAuth, async (req, res) => {
 // POST /api/tickets/:id/comments
 router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Submitter'), async (req, res) => {
   try {
-    const { body, is_external_visible, send_as } = req.body;
+    const { body, is_external_visible, send_as, ai_rewrite_log_id } = req.body;
     if (!body || !body.trim()) return res.status(400).json({ error: 'Comment body required' });
 
     const ticket = await pool.query(
@@ -72,6 +99,37 @@ router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Submi
       `INSERT INTO comments (${cols.join(', ')}) VALUES (${placeholders}) RETURNING id`,
       values
     );
+    const newCommentId = insertResult.rows[0].id;
+
+    // Apply the AI rewrite log if the client passed one. Copies provider /
+    // model / tokens onto the comment + snapshots publish_usage consent
+    // so visibility is locked at apply time. Silently skips on bad
+    // log_id — the comment posts either way.
+    if (ai_rewrite_log_id) {
+      try {
+        const aiRewrite = require('../services/aiRewrite');
+        const meta = await aiRewrite.applyRewriteLog({
+          logId: Number(ai_rewrite_log_id),
+          userId: req.session.user.id,
+          table: 'comments',
+          rowId: newCommentId,
+        });
+        if (meta) {
+          await pool.query(
+            `UPDATE comments
+                SET ai_provider = $1, ai_model = $2,
+                    ai_input_tokens = $3, ai_output_tokens = $4,
+                    ai_tone = $5, ai_verbosity = $6, ai_eli5 = $7,
+                    ai_publish_consent = $8
+              WHERE id = $9`,
+            [meta.provider, meta.model, meta.input_tokens, meta.output_tokens,
+             meta.tone, meta.verbosity, meta.eli5, meta.publish_consent, newCommentId]
+          );
+        }
+      } catch (err) {
+        console.error('apply ai_rewrite_log failed:', err.message);
+      }
+    }
 
     // Update ticket updated_at
     await pool.query('UPDATE tickets SET updated_at = NOW() WHERE id = $1', [req.params.id]);

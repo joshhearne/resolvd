@@ -32,6 +32,35 @@ async function getAccessibleProjectIds(user) {
   return result.rows.map(r => r.project_id);
 }
 
+// Strip ai_* fields from a ticket row when the viewer isn't allowed
+// to see them. Author + Admins/Managers always see; otherwise the
+// branding audience setting + per-row publish_consent control. Vendors
+// (external) never reach this code path; defensive check kept for
+// safety.
+async function stripAiMetadataIfHidden(viewer, row) {
+  if (!row || !row.ai_provider) return;
+  const isPriv = ['Admin', 'Manager'].includes(viewer.role);
+  const isAuthor = row.submitted_by === viewer.id;
+  let visible = isPriv || isAuthor;
+  if (!visible) {
+    try {
+      const branding = await require('../services/branding').getBranding();
+      const audience = branding?.ai_disclosure_audience || 'self_and_admin';
+      if (audience === 'all_users') visible = true;
+    } catch {}
+  }
+  if (!visible && row.ai_publish_consent === true) visible = true;
+  if (!visible) {
+    row.ai_provider = null;
+    row.ai_model = null;
+    row.ai_input_tokens = null;
+    row.ai_output_tokens = null;
+    row.ai_tone = null;
+    row.ai_verbosity = null;
+    row.ai_eli5 = null;
+  }
+}
+
 // GET /api/tickets/counts
 router.get('/counts', requireAuth, async (req, res) => {
   try {
@@ -284,6 +313,44 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Submitter'), asyn
       );
 
       const t = result.rows[0];
+
+      // Apply AI rewrite log if client passed one (description was
+      // AI-rewritten in the new-ticket form). Snapshot metadata onto
+      // the ticket row.
+      if (req.body.ai_rewrite_log_id) {
+        try {
+          const aiRewrite = require('../services/aiRewrite');
+          const meta = await aiRewrite.applyRewriteLog({
+            logId: Number(req.body.ai_rewrite_log_id),
+            userId: user.id,
+            table: 'tickets',
+            rowId: t.id,
+            client,
+          });
+          if (meta) {
+            await client.query(
+              `UPDATE tickets
+                  SET ai_provider = $1, ai_model = $2,
+                      ai_input_tokens = $3, ai_output_tokens = $4,
+                      ai_tone = $5, ai_verbosity = $6, ai_eli5 = $7,
+                      ai_publish_consent = $8
+                WHERE id = $9`,
+              [meta.provider, meta.model, meta.input_tokens, meta.output_tokens,
+               meta.tone, meta.verbosity, meta.eli5, meta.publish_consent, t.id]
+            );
+            // Refresh local ref so subsequent helpers see the metadata.
+            Object.assign(t, {
+              ai_provider: meta.provider, ai_model: meta.model,
+              ai_input_tokens: meta.input_tokens, ai_output_tokens: meta.output_tokens,
+              ai_tone: meta.tone, ai_verbosity: meta.verbosity, ai_eli5: meta.eli5,
+              ai_publish_consent: meta.publish_consent,
+            });
+          }
+        } catch (err) {
+          console.error('apply ai_rewrite_log (ticket create) failed:', err.message);
+        }
+      }
+
       // Stamp SLA due-at timestamps from the policy table. No-op when
       // no policy is configured for this priority/project pair.
       await sla.applyPolicyOnCreate(client, {
@@ -442,6 +509,7 @@ router.get('/:id', requireAuth, async (req, res) => {
     if (!result.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
     await decryptRow('tickets', result.rows[0], { aliases: TICKET_JOIN_ALIASES });
     await logSupportRead(req, { action: 'ticket.view', targetTable: 'tickets', targetId: result.rows[0].id });
+    await stripAiMetadataIfHidden(req.session.user, result.rows[0]);
     res.json(result.rows[0]);
   } catch (err) {
     console.error(err);
@@ -641,6 +709,36 @@ router.patch('/:id', requireAuth, async (req, res) => {
         `UPDATE tickets SET ${setClauses} WHERE id = $${finalCols.length + 1}`,
         [...finalVals, ticket.id]
       );
+
+      // Apply AI rewrite log if client passed one (description / title
+      // was rewritten via the modal). Snapshot metadata onto the ticket
+      // so the badge surfaces in the timeline.
+      if (body.ai_rewrite_log_id) {
+        try {
+          const aiRewrite = require('../services/aiRewrite');
+          const meta = await aiRewrite.applyRewriteLog({
+            logId: Number(body.ai_rewrite_log_id),
+            userId: user.id,
+            table: 'tickets',
+            rowId: ticket.id,
+            client,
+          });
+          if (meta) {
+            await client.query(
+              `UPDATE tickets
+                  SET ai_provider = $1, ai_model = $2,
+                      ai_input_tokens = $3, ai_output_tokens = $4,
+                      ai_tone = $5, ai_verbosity = $6, ai_eli5 = $7,
+                      ai_publish_consent = $8
+                WHERE id = $9`,
+              [meta.provider, meta.model, meta.input_tokens, meta.output_tokens,
+               meta.tone, meta.verbosity, meta.eli5, meta.publish_consent, ticket.id]
+            );
+          }
+        } catch (err) {
+          console.error('apply ai_rewrite_log (ticket) failed:', err.message);
+        }
+      }
 
       const updResult = await client.query(`
         SELECT t.*,

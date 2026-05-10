@@ -33,7 +33,43 @@ function defaultsForUser(prefsBlob) {
     enabled: !!a.enabled,
     default_tone: a.default_tone || 'neutral',
     default_verbosity: a.default_verbosity || 'functional',
+    // Per-user opt-out for project AI context. Default ON since context
+    // generally improves output; users on a tight token budget can flip
+    // it off.
+    use_project_context: a.use_project_context !== false,
+    // When ON, AI usage on this user's comments + tickets becomes
+    // visible to all internal users regardless of org-wide audience
+    // (vendors still never see). Default OFF — explicit consent required.
+    publish_usage: !!a.publish_usage,
   };
+}
+
+// Resolve project AI context — admin-authored markdown blob that gets
+// prepended to the rewrite prompt so the model speaks the project's
+// lingo (sites, integrations, glossary). Returns null when:
+//   - org admin disabled the feature globally
+//   - project hasn't authored any context (or set ai_context_enabled=false)
+//   - user opted out via use_project_context=false
+//   - no projectId provided (rewrite isn't ticket-scoped)
+async function resolveProjectContext({ projectId, userPrefs, branding }) {
+  if (!projectId) return null;
+  if (branding && branding.ai_project_context_enabled === false) return null;
+  if (userPrefs && userPrefs.use_project_context === false) return null;
+  try {
+    const r = await pool.query(
+      `SELECT ai_context_md, ai_context_enabled FROM projects WHERE id = $1`,
+      [projectId]
+    );
+    const row = r.rows[0];
+    if (!row) return null;
+    if (row.ai_context_enabled === false) return null;
+    const md = (row.ai_context_md || '').trim();
+    if (!md) return null;
+    return md;
+  } catch (err) {
+    console.error(`resolveProjectContext failed for project ${projectId}:`, err.message);
+    return null;
+  }
 }
 
 // Returns the org-level enabled flag (admin can disable BYO-AI for the
@@ -78,7 +114,7 @@ async function saveUserApiKey(userId, plaintext) {
   await pool.query(`UPDATE users SET ai_api_key_enc = $1 WHERE id = $2`, [enc, userId]);
 }
 
-function buildPrompt({ surface, tone, verbosity, eli5, text }) {
+function buildPrompt({ surface, tone, verbosity, eli5, text, projectContext }) {
   const verbosityHint = {
     short: 'Be concise — minimum words to convey the point. Not slangy or elliptical, just trim.',
     functional: 'Be clear and complete without unnecessary elaboration.',
@@ -114,6 +150,14 @@ function buildPrompt({ surface, tone, verbosity, eli5, text }) {
     ? 'IMPORTANT: this text contains placeholder tokens like {ticket.ref}, {vendor.name}, {site.url}. Preserve every {…} token character-for-character — do not rename, expand, replace with examples, or remove them. Reword only the surrounding prose.'
     : '';
 
+  // Project context (admin-authored markdown). Wrap in a delimited block
+  // so the model can distinguish it from instructions. Explicitly tell
+  // the model to USE the names verbatim but NOT to invent claims based
+  // on the context — it's a lexicon, not source material.
+  const contextBlock = projectContext
+    ? `Project context (use these names, sites, and definitions verbatim when they appear in the user's text; DO NOT invent claims based on this context — it is a glossary, not source material):\n<project_context>\n${projectContext}\n</project_context>`
+    : '';
+
   const system = [
     'You are a writing assistant that rewrites the user\'s draft text in-place.',
     'Output ONLY the rewritten text — no preamble, no quotes around the result, no commentary, no explanation of what you changed.',
@@ -124,12 +168,13 @@ function buildPrompt({ surface, tone, verbosity, eli5, text }) {
     verbosityHint,
     templateHint,
     eli5Hint,
-  ].filter(Boolean).join(' ');
+    contextBlock,
+  ].filter(Boolean).join('\n\n');
 
   return { system, user: text };
 }
 
-async function rewrite({ userId, surface, tone, verbosity, eli5, text }) {
+async function rewrite({ userId, surface, tone, verbosity, eli5, text, projectId }) {
   if (!isSurfaceAllowed(surface)) throw httpError(400, `invalid surface: ${surface}`);
   if (!isToneAllowed(tone)) throw httpError(400, `invalid tone: ${tone}`);
   if (!isVerbosityAllowed(verbosity)) throw httpError(400, `invalid verbosity: ${verbosity}`);
@@ -151,7 +196,12 @@ async function rewrite({ userId, surface, tone, verbosity, eli5, text }) {
   if (adapter.needsApiKey !== false && !cfg.api_key) {
     throw httpError(400, 'API key not set for this provider');
   }
-  const { system, user } = buildPrompt({ surface, tone, verbosity, eli5, text });
+
+  // Project context — adds tokens; gated by org + per-project + per-user toggles.
+  const branding = await getBranding().catch(() => null);
+  const projectContext = await resolveProjectContext({ projectId, userPrefs: cfg, branding });
+
+  const { system, user } = buildPrompt({ surface, tone, verbosity, eli5, text, projectContext });
   const result = await adapter.complete({
     endpoint: cfg.endpoint || adapter.defaultEndpoint,
     apiKey: cfg.api_key,
@@ -159,12 +209,63 @@ async function rewrite({ userId, surface, tone, verbosity, eli5, text }) {
     system,
     user,
   });
+  // Log the rewrite — the modal's Apply button passes log_id back when
+  // the user accepts. Stays unapplied (applied_at NULL) until then; the
+  // consuming endpoint marks it applied + copies metadata onto the row.
+  let logId = null;
+  try {
+    const logRow = await pool.query(
+      `INSERT INTO ai_rewrite_logs
+         (user_id, provider, model, surface, project_id,
+          input_tokens, output_tokens, tone, verbosity, eli5)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       RETURNING id`,
+      [
+        userId, cfg.provider, cfg.model, surface, projectId || null,
+        result.usage?.input_tokens ?? null,
+        result.usage?.output_tokens ?? null,
+        tone, verbosity, !!eli5,
+      ]
+    );
+    logId = logRow.rows[0].id;
+  } catch (err) {
+    console.error('ai_rewrite_logs insert failed:', err.message);
+  }
+
   return {
+    log_id: logId,
     rewritten: result.text,
     usage: result.usage || null,
     provider: cfg.provider,
     model: cfg.model,
+    project_context_used: !!projectContext,
   };
+}
+
+// One-shot consumer for an ai_rewrite_logs row. Validates the log
+// belongs to userId and isn't already applied, marks it applied to
+// (table, id), returns the metadata payload to copy onto the row.
+// Snapshot the author's publish_usage pref at apply time so future
+// pref changes don't retroactively widen visibility.
+async function applyRewriteLog({ logId, userId, table, rowId, client = null }) {
+  if (!logId) return null;
+  const db = client || pool;
+  const r = await db.query(
+    `UPDATE ai_rewrite_logs
+        SET applied_at = NOW(),
+            applied_to_table = $3,
+            applied_to_id = $4
+      WHERE id = $1
+        AND user_id = $2
+        AND applied_at IS NULL
+      RETURNING provider, model, input_tokens, output_tokens, tone, verbosity, eli5`,
+    [logId, userId, table, rowId]
+  );
+  if (!r.rows[0]) return null;
+
+  const u = await db.query(`SELECT preferences FROM users WHERE id = $1`, [userId]);
+  const publish = !!(u.rows[0]?.preferences?.ai_assist?.publish_usage);
+  return { ...r.rows[0], publish_consent: publish };
 }
 
 // Light-weight test call used by the "Test connection" button in prefs.
@@ -201,6 +302,7 @@ module.exports = {
   testConnection,
   saveUserApiKey,
   loadUserAssistConfig,
+  applyRewriteLog,
   listProviders,
   isOrgEnabled,
   defaultsForUser,

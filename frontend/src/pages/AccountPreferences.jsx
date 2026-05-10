@@ -519,6 +519,22 @@ function AiAssistCard() {
               </label>
             </div>
 
+            <Toggle
+              label="Include project context when rewriting"
+              hint="Admins can author a per-project glossary (sites, integrations, lingo). When ON, that context is sent with each rewrite so the model knows your terms. Adds to input tokens — turn off if cost is a concern."
+              value={cfg.use_project_context !== false}
+              onChange={(v) => patch({ use_project_context: v })}
+              disabled={busy}
+            />
+
+            <Toggle
+              label="Publish my AI usage to teammates"
+              hint="When ON, the ✨ AI badge (provider · model · tokens) on comments and tickets you post becomes visible to every internal user, not just Admins. Useful when you're paying for your own API key and want the org to see your usage so they can offer to fund it."
+              value={!!cfg.publish_usage}
+              onChange={(v) => patch({ publish_usage: v })}
+              disabled={busy}
+            />
+
             <div className="flex items-center gap-3 pt-1">
               <button
                 type="button"

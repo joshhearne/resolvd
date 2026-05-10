@@ -250,6 +250,15 @@ async function initSchema() {
     // org-wide queues like the helpdesk / incident project where every
     // employee should be able to file or follow.
     await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS auto_add_new_users BOOLEAN NOT NULL DEFAULT FALSE`);
+
+    // BYO-AI project context: admin-authored markdown that gets prepended
+    // to the AI rewrite system prompt for tickets in this project. Lets
+    // the model speak the project's lingo (sites, integrations, glossary)
+    // without the user having to rewrite every reference. Per-project
+    // toggle so admins can disable it on noisy projects without losing
+    // the authored content.
+    await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS ai_context_md TEXT`);
+    await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS ai_context_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
     // Global defaults (admin panel). Apply when a project hasn't set its
     // own value. Defaults TRUE so a fresh install is locked down.
     await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS default_restrict_followers BOOLEAN NOT NULL DEFAULT TRUE`);
@@ -1257,6 +1266,69 @@ async function initSchema() {
     // opt-in per user; org-level just gates whether per-user opt-in is
     // possible at all.
     await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS ai_assist_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
+    // Org-wide toggle for the project AI context feature. When OFF, no
+    // project's ai_context_md is ever included in the rewrite prompt
+    // regardless of per-project / per-user settings. Default ON.
+    await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS ai_project_context_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
+    // Org-wide visibility tier for the AI usage badge on comments +
+    // tickets. 'self_and_admin' (default) = author + Admins see; 'admin_only'
+    // = Admins only; 'all_users' = every internal user sees (vendors never).
+    // A per-comment ai_publish_consent (snapshotted from the author's user
+    // pref at apply time) can override admin_only/self_and_admin upward to
+    // org-wide visibility for that single comment.
+    await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS ai_disclosure_audience TEXT NOT NULL DEFAULT 'self_and_admin' CHECK (ai_disclosure_audience IN ('self_and_admin','admin_only','all_users'))`);
+
+    // Per-rewrite log. Every successful /api/ai/rewrite call writes a
+    // row. When the user clicks 'Apply' in the modal, the consuming
+    // endpoint (comment POST / ticket description PATCH) takes the
+    // log_id, validates ownership + un-applied state, copies the
+    // provider/model/tokens onto the saved row, and marks the log as
+    // applied. Logs are kept long-term for usage reporting; one-shot
+    // 'applied' flag prevents replay.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ai_rewrite_logs (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        provider TEXT NOT NULL,
+        model TEXT NOT NULL,
+        surface TEXT NOT NULL,
+        project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+        input_tokens INTEGER,
+        output_tokens INTEGER,
+        tone TEXT,
+        verbosity TEXT,
+        eli5 BOOLEAN NOT NULL DEFAULT FALSE,
+        applied_to_table TEXT,
+        applied_to_id INTEGER,
+        applied_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ai_rewrite_logs_user_created ON ai_rewrite_logs(user_id, created_at DESC)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ai_rewrite_logs_unapplied ON ai_rewrite_logs(user_id) WHERE applied_at IS NULL`);
+
+    // Per-comment AI usage metadata. Set when an AI rewrite was applied
+    // before posting. ai_publish_consent snapshots the author's
+    // 'publish my AI usage' pref at apply time so future pref changes
+    // don't retroactively widen visibility.
+    await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS ai_provider TEXT`);
+    await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS ai_model TEXT`);
+    await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS ai_input_tokens INTEGER`);
+    await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS ai_output_tokens INTEGER`);
+    await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS ai_tone TEXT`);
+    await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS ai_verbosity TEXT`);
+    await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS ai_eli5 BOOLEAN`);
+    await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS ai_publish_consent BOOLEAN`);
+
+    // Same metadata for tickets (description / title rewrites).
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS ai_provider TEXT`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS ai_model TEXT`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS ai_input_tokens INTEGER`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS ai_output_tokens INTEGER`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS ai_tone TEXT`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS ai_verbosity TEXT`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS ai_eli5 BOOLEAN`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS ai_publish_consent BOOLEAN`);
 
     await client.query('COMMIT');
   } catch (err) {

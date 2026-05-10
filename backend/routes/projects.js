@@ -123,7 +123,7 @@ router.get('/:id', requireAuth, async (req, res) => {
 // PATCH /api/projects/:id — Admin only
 router.patch('/:id', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
-    const { name, description, status, has_external_vendor, default_assignee_id, restrict_followers_to_members, restrict_mentions_to_members, auto_add_new_users } = req.body;
+    const { name, description, status, has_external_vendor, default_assignee_id, restrict_followers_to_members, restrict_mentions_to_members, auto_add_new_users, ai_context_md, ai_context_enabled } = req.body;
     const updates = {};
     if (name !== undefined) updates.name = name.trim();
     if (description !== undefined) updates.description = description?.trim() || null;
@@ -146,6 +146,17 @@ router.patch('/:id', requireAuth, requireRole('Admin', 'Manager'), async (req, r
     }
     if (auto_add_new_users !== undefined) {
       updates.auto_add_new_users = auto_add_new_users !== false && auto_add_new_users !== 'false';
+    }
+    if (ai_context_md !== undefined) {
+      // Cap context at 8KB. AI providers will accept much more, but
+      // every byte costs input tokens on every rewrite call. If admin
+      // needs more, raise the cap deliberately.
+      const md = (ai_context_md ?? '').toString();
+      if (md.length > 8000) return res.status(400).json({ error: 'ai_context_md too long (8000 char limit)' });
+      updates.ai_context_md = md.trim() || null;
+    }
+    if (ai_context_enabled !== undefined) {
+      updates.ai_context_enabled = ai_context_enabled !== false && ai_context_enabled !== 'false';
     }
     if (default_assignee_id !== undefined) {
       if (default_assignee_id === null || default_assignee_id === '') {

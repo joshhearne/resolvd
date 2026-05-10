@@ -22,6 +22,8 @@ export default function AdminBranding() {
     enable_customer_companies: branding.enable_customer_companies ?? false,
     enable_internal_companies: branding.enable_internal_companies ?? true,
     ai_assist_enabled: branding.ai_assist_enabled ?? true,
+    ai_project_context_enabled: branding.ai_project_context_enabled ?? true,
+    ai_disclosure_audience: branding.ai_disclosure_audience || 'self_and_admin',
   });
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -405,6 +407,57 @@ export default function AdminBranding() {
               and key.
             </span>
           </label>
+        </div>
+
+        <div className="flex items-start gap-3">
+          <input
+            type="checkbox"
+            id="ai_project_context_enabled"
+            checked={form.ai_project_context_enabled}
+            disabled={!form.ai_assist_enabled}
+            onChange={(e) =>
+              setForm((f) => ({
+                ...f,
+                ai_project_context_enabled: e.target.checked,
+              }))
+            }
+            className="mt-0.5 h-4 w-4 rounded border-border-strong text-brand focus:ring-brand/40 disabled:opacity-40"
+          />
+          <label htmlFor="ai_project_context_enabled" className="text-sm text-fg">
+            Allow project AI context
+            <span className="block text-xs text-fg-muted mt-0.5">
+              When ON, admins can author a per-project glossary (sites,
+              integrations, lingo) that gets prepended to AI rewrites for
+              tickets in that project. Adds input tokens per call. Per-user
+              opt-out lives in Account → Preferences → AI Assist.
+            </span>
+          </label>
+        </div>
+
+        <div>
+          <label htmlFor="ai_disclosure_audience" className="block text-sm font-medium text-fg mb-1">
+            AI usage disclosure
+          </label>
+          <p className="text-xs text-fg-muted mb-2">
+            Who sees the "✨ AI · provider · model · tokens" badge on
+            comments + tickets. Comment author + Admin/Manager always see.
+            Vendors never see (badge is stripped from any content sent
+            externally). Per-user opt-in to publish own usage org-wide
+            overrides this for their own posts only.
+          </p>
+          <select
+            id="ai_disclosure_audience"
+            value={form.ai_disclosure_audience}
+            disabled={!form.ai_assist_enabled}
+            onChange={(e) =>
+              setForm((f) => ({ ...f, ai_disclosure_audience: e.target.value }))
+            }
+            className="border border-border-strong rounded-md px-2 py-1 text-sm disabled:opacity-40"
+          >
+            <option value="self_and_admin">Author + Admins/Managers (default)</option>
+            <option value="admin_only">Admins/Managers only</option>
+            <option value="all_users">Every internal user</option>
+          </select>
         </div>
 
         <div className="border-t border-border pt-4">

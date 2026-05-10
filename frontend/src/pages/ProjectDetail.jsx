@@ -45,6 +45,8 @@ export default function ProjectDetail() {
     restrict_followers_to_members: "",
     restrict_mentions_to_members: "",
     auto_add_new_users: false,
+    ai_context_md: "",
+    ai_context_enabled: true,
   });
   const [savingSettings, setSavingSettings] = useState(false);
 
@@ -87,6 +89,8 @@ export default function ProjectDetail() {
                 ? "true"
                 : "false",
           auto_add_new_users: proj.auto_add_new_users === true,
+          ai_context_md: proj.ai_context_md || "",
+          ai_context_enabled: proj.ai_context_enabled !== false,
         });
         setAllUsers(users);
       })
@@ -118,6 +122,8 @@ export default function ProjectDetail() {
             ? null
             : editForm.restrict_mentions_to_members === "true",
         auto_add_new_users: editForm.auto_add_new_users,
+        ai_context_md: editForm.ai_context_md || null,
+        ai_context_enabled: editForm.ai_context_enabled,
       });
       setProject((p) => ({ ...p, ...updated }));
       setEditing(false);
@@ -341,6 +347,49 @@ export default function ProjectDetail() {
                 </p>
               </div>
             </div>
+            <div className="border-t border-border pt-3">
+              <h3 className="text-xs font-semibold text-fg mb-1">AI rewrite context</h3>
+              <p className="text-[11px] text-fg-muted mb-2">
+                Admin-authored markdown that gets prepended to AI rewrite
+                prompts on tickets in this project. Use it to teach the
+                model your sites, integrations, and glossary so it speaks
+                the project's language. Adds input tokens per call. Cap:
+                8000 chars.
+              </p>
+              <div className="flex items-start gap-2 mb-2">
+                <input
+                  type="checkbox"
+                  id="edit_ai_context_enabled"
+                  checked={editForm.ai_context_enabled}
+                  onChange={(e) =>
+                    setEditForm((f) => ({
+                      ...f,
+                      ai_context_enabled: e.target.checked,
+                    }))
+                  }
+                  className="h-4 w-4 mt-0.5 rounded border-border-strong text-brand focus:ring-brand/40"
+                />
+                <label htmlFor="edit_ai_context_enabled" className="text-sm text-fg">
+                  Inject this context into AI rewrites
+                  <span className="block text-[11px] text-fg-muted">
+                    Off keeps the content saved but skips it on every call.
+                  </span>
+                </label>
+              </div>
+              <textarea
+                value={editForm.ai_context_md}
+                onChange={(e) =>
+                  setEditForm((f) => ({ ...f, ai_context_md: e.target.value }))
+                }
+                placeholder={"# Sites\n- example.com\n\n# Integrations\n- GitHub (org: acme)\n\n# Glossary\n- \"the bot\" = our Slack notifier"}
+                rows={10}
+                className="w-full border border-border-strong rounded-md px-2 py-1.5 text-xs font-mono"
+              />
+              <p className="text-[11px] text-fg-dim mt-1">
+                {editForm.ai_context_md?.length || 0} / 8000 chars
+              </p>
+            </div>
+
             <div className="border-t border-border pt-3">
               <h3 className="text-xs font-semibold text-fg mb-1">Cross-project visibility</h3>
               <p className="text-[11px] text-fg-muted mb-2">

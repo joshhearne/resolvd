@@ -30,6 +30,9 @@ export default function NewTicket() {
     urgency: 2,
     external_ticket_ref: "",
   });
+  // Captured from the AI modal when the user accepts a description
+  // rewrite. Sent up with the ticket POST + cleared on submit.
+  const [aiLogId, setAiLogId] = useState(null);
   const [submitting, setSubmitting] = useState(false);
   const [duplicates, setDuplicates] = useState(null); // null = no check yet, [] = none found, [...] = matches
   const [pendingFiles, setPendingFiles] = useState([]);
@@ -157,6 +160,7 @@ export default function NewTicket() {
         external_ticket_ref: form.external_ticket_ref.trim() || null,
         contact_ids: selectedContactIds,
         submitted_by: onBehalfOfId ? Number(onBehalfOfId) : undefined,
+        ...(aiLogId ? { ai_rewrite_log_id: aiLogId } : {}),
       });
 
       if (pendingFiles.length > 0) {
@@ -273,8 +277,14 @@ export default function NewTicket() {
           </label>
           <MarkdownEditor
             aiSurface="ticket_description"
+            aiProjectId={form.project_id || null}
             value={form.description}
-            onChange={(e) => set("description", e.target.value)}
+            onChange={(e) => {
+              set("description", e.target.value);
+              if (Object.prototype.hasOwnProperty.call(e.target, "_aiLogId")) {
+                setAiLogId(e.target._aiLogId);
+              }
+            }}
             rows={4}
             placeholder="Steps to reproduce, expected vs actual behavior, etc."
           />
