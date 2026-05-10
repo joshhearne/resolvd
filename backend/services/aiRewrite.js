@@ -106,6 +106,14 @@ function buildPrompt({ surface, tone, verbosity, eli5, text }) {
     ? 'IMPORTANT: rewrite for a non-technical reader. Replace jargon with plain language, expand acronyms on first use, and explain technical concepts in everyday terms without being condescending.'
     : '';
 
+  // If the input contains template placeholders like {ticket.ref} or
+  // {vendor.name}, those are server-rendered substitutions — do NOT
+  // expand or alter them. Detect any and add a preservation directive.
+  const hasTemplateTags = /\{[a-z][a-z0-9_]*(?:\.[a-z0-9_]+)*\}/i.test(text || '');
+  const templateHint = hasTemplateTags
+    ? 'IMPORTANT: this text contains placeholder tokens like {ticket.ref}, {vendor.name}, {site.url}. Preserve every {…} token character-for-character — do not rename, expand, replace with examples, or remove them. Reword only the surrounding prose.'
+    : '';
+
   const system = [
     'You are a writing assistant that rewrites the user\'s draft text in-place.',
     'Output ONLY the rewritten text — no preamble, no quotes around the result, no commentary, no explanation of what you changed.',
@@ -114,6 +122,7 @@ function buildPrompt({ surface, tone, verbosity, eli5, text }) {
     surfaceHint,
     toneHint,
     verbosityHint,
+    templateHint,
     eli5Hint,
   ].filter(Boolean).join(' ');
 

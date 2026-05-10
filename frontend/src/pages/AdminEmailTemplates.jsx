@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
+import AiRewriteButton from "../components/AiRewriteButton";
 
 const TAGS = [
   "{vendor.name}", "{vendor.contact}", "{vendor.contact_email}", "{vendor.contact_role}",
@@ -108,14 +109,30 @@ export default function AdminEmailTemplates() {
               </div>
 
               <div>
-                <label className="text-xs text-fg-dim">Subject</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs text-fg-dim">Subject</label>
+                  <AiRewriteButton
+                    surface="ticket_subject"
+                    value={editing.subject_template}
+                    onChange={(t) => setEditing({ ...editing, subject_template: t })}
+                    size="xs"
+                  />
+                </div>
                 <input className="w-full bg-surface-2 border border-border rounded px-2 py-1 text-sm font-mono"
                   value={editing.subject_template}
                   onChange={e => setEditing({ ...editing, subject_template: e.target.value })} />
               </div>
 
               <div>
-                <label className="text-xs text-fg-dim">Body</label>
+                <div className="flex items-center justify-between mb-1">
+                  <label className="text-xs text-fg-dim">Body</label>
+                  <AiRewriteButton
+                    surface="comment_vendor"
+                    value={editing.body_template}
+                    onChange={(t) => setEditing({ ...editing, body_template: t })}
+                    size="xs"
+                  />
+                </div>
                 <textarea rows={12}
                   className="w-full bg-surface-2 border border-border rounded px-2 py-1 text-sm font-mono"
                   value={editing.body_template}
