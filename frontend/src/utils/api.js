@@ -21,7 +21,16 @@ async function request(path, options = {}) {
   }
 
   const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
+  if (!res.ok) {
+    const err = new Error(data.error || `HTTP ${res.status}`);
+    // Pass through structured error fields the server may have returned
+    // (e.g. error_kind / provider / provider_message from BYO-AI). Callers
+    // that want richer UX read these; everyone else just sees .message.
+    err.status = res.status;
+    err.body = data;
+    if (data.error_kind) err.kind = data.error_kind;
+    throw err;
+  }
   return data;
 }
 

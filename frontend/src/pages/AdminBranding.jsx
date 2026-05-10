@@ -21,6 +21,7 @@ export default function AdminBranding() {
     enable_vendor_companies: branding.enable_vendor_companies ?? true,
     enable_customer_companies: branding.enable_customer_companies ?? false,
     enable_internal_companies: branding.enable_internal_companies ?? true,
+    ai_assist_enabled: branding.ai_assist_enabled ?? true,
   });
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -378,6 +379,30 @@ export default function AdminBranding() {
             <span className="block text-xs text-fg-muted mt-0.5">
               Hover a ticket ref (e.g. WEB-0079) to see "Whiskey Echo Bravo - 0
               0 7 9" for verbal readback. Users can opt out individually.
+            </span>
+          </label>
+        </div>
+
+        <div className="flex items-start gap-3">
+          <input
+            type="checkbox"
+            id="ai_assist_enabled"
+            checked={form.ai_assist_enabled}
+            onChange={(e) =>
+              setForm((f) => ({
+                ...f,
+                ai_assist_enabled: e.target.checked,
+              }))
+            }
+            className="mt-0.5 h-4 w-4 rounded border-border-strong text-brand focus:ring-brand/40"
+          />
+          <label htmlFor="ai_assist_enabled" className="text-sm text-fg">
+            AI Assist available org-wide (BYO-AI)
+            <span className="block text-xs text-fg-muted mt-0.5">
+              When OFF, the AI rewrite button is hidden everywhere and the
+              per-user AI Assist card is locked. Use this if your org wants
+              zero AI traffic — even with each user using their own provider
+              and key.
             </span>
           </label>
         </div>

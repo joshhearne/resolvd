@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import { useAuth } from "../context/AuthContext";
 import { useBranding } from "../context/BrandingContext";
+import { api } from "../utils/api";
 import {
   isPushSupported,
   getNotificationPermission,
@@ -189,6 +190,263 @@ function NotificationMatrix({ value, onChange, disabled, pushAvailable }) {
   );
 }
 
+function AiAssistCard() {
+  const [providers, setProviders] = useState([]);
+  const [tones, setTones] = useState([]);
+  const [verbosities, setVerbosities] = useState([]);
+  const [cfg, setCfg] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const [keyInput, setKeyInput] = useState("");
+  const [showKeyEditor, setShowKeyEditor] = useState(false);
+  const [testResult, setTestResult] = useState(null);
+
+  useEffect(() => {
+    Promise.all([
+      api.get("/api/ai/providers"),
+      api.get("/api/ai/config"),
+    ]).then(([provs, c]) => {
+      setProviders(provs.providers);
+      setTones(provs.tones);
+      setVerbosities(provs.verbosities);
+      setCfg(c);
+    }).catch(e => console.error("ai config load:", e.message));
+  }, []);
+
+  if (!cfg) return null;
+
+  const provider = providers.find(p => p.id === cfg.provider) || null;
+
+  async function patch(partial) {
+    setBusy(true);
+    try {
+      const r = await api.patch("/api/ai/config", partial);
+      setCfg(prev => ({ ...prev, ...r.ai_assist }));
+      toast.success("Saved");
+    } catch (e) {
+      toast.error(e.message || "Failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function saveKey() {
+    if (!keyInput.trim()) {
+      toast.error("Enter a key");
+      return;
+    }
+    setBusy(true);
+    try {
+      const r = await api.post("/api/ai/api-key", { api_key: keyInput });
+      setCfg(prev => ({ ...prev, has_key: r.has_key }));
+      setKeyInput("");
+      setShowKeyEditor(false);
+      toast.success("Key saved (encrypted at rest)");
+    } catch (e) {
+      toast.error(e.message || "Failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function clearKey() {
+    if (!confirm("Remove the stored API key?")) return;
+    setBusy(true);
+    try {
+      await api.post("/api/ai/api-key", { api_key: null });
+      setCfg(prev => ({ ...prev, has_key: false }));
+      toast.success("Key removed");
+    } catch (e) {
+      toast.error(e.message || "Failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function testConnection() {
+    setBusy(true);
+    setTestResult(null);
+    try {
+      const r = await api.post("/api/ai/test", {});
+      setTestResult({ ok: true, msg: `OK · ${r.model} · ${r.latency_ms}ms` });
+    } catch (e) {
+      // Friendly per-kind messages from the new ProviderError mapping;
+      // raw e.message is already user-facing text from the server.
+      setTestResult({
+        ok: false,
+        msg: e.message || "Failed",
+        kind: e.kind || null,
+        providerMessage: e.body?.provider_message || null,
+      });
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className="bg-surface rounded-lg border border-border shadow-sm p-5">
+      <h2 className="text-lg font-semibold text-fg mb-1">AI Assist</h2>
+      <p className="text-sm text-fg-muted mb-3">
+        Bring your own AI provider to rewrite comments and ticket text in
+        different tones / verbosities. Your provider, your key, your call —
+        Resolvd never sees the model output beyond passing it back to your
+        browser. Disabled by default; opt in below.
+      </p>
+
+      {!cfg.org_enabled && (
+        <div className="mb-3 px-3 py-2 rounded-md bg-amber-100 dark:bg-amber-900/30 text-amber-900 dark:text-amber-200 text-xs">
+          Your org admin has disabled AI Assist organization-wide. The
+          feature is unavailable until they re-enable it in Branding.
+        </div>
+      )}
+
+      <Toggle
+        label="Enable AI Assist for my account"
+        hint="When off, no AI rewrite buttons appear in your composer."
+        value={!!cfg.enabled}
+        onChange={(v) => patch({ enabled: v })}
+        disabled={busy || !cfg.org_enabled}
+      />
+
+      <div className={`mt-3 space-y-3 ${cfg.enabled ? "" : "opacity-50 pointer-events-none"}`}>
+        <label className="block">
+          <span className="block text-sm font-medium text-fg mb-1">Provider</span>
+          <select
+            value={cfg.provider || ""}
+            onChange={(e) => patch({ provider: e.target.value || null })}
+            disabled={busy}
+            className="w-full border border-border-strong rounded-md px-2 py-1 text-sm"
+          >
+            <option value="">— pick a provider —</option>
+            {providers.map(p => (
+              <option key={p.id} value={p.id}>{p.label}</option>
+            ))}
+          </select>
+        </label>
+
+        {provider && (
+          <>
+            <label className="block">
+              <span className="block text-sm font-medium text-fg mb-1">Endpoint URL</span>
+              <input
+                type="url"
+                placeholder={provider.default_endpoint}
+                value={cfg.endpoint || ""}
+                onChange={(e) => setCfg(prev => ({ ...prev, endpoint: e.target.value }))}
+                onBlur={(e) => patch({ endpoint: e.target.value || null })}
+                disabled={busy}
+                className="w-full border border-border-strong rounded-md px-2 py-1 text-sm font-mono"
+              />
+              <span className="block text-xs text-fg-muted mt-0.5">
+                Leave blank to use provider default ({provider.default_endpoint}).
+              </span>
+            </label>
+
+            <label className="block">
+              <span className="block text-sm font-medium text-fg mb-1">Model</span>
+              <input
+                type="text"
+                placeholder={provider.default_model}
+                value={cfg.model || ""}
+                onChange={(e) => setCfg(prev => ({ ...prev, model: e.target.value }))}
+                onBlur={(e) => patch({ model: e.target.value || null })}
+                disabled={busy}
+                className="w-full border border-border-strong rounded-md px-2 py-1 text-sm font-mono"
+              />
+            </label>
+
+            {provider.needs_api_key && (
+              <div>
+                <span className="block text-sm font-medium text-fg mb-1">API key</span>
+                {!cfg.has_key && !showKeyEditor && (
+                  <button
+                    type="button"
+                    onClick={() => setShowKeyEditor(true)}
+                    className="text-sm text-brand hover:underline"
+                  >
+                    + Add API key
+                  </button>
+                )}
+                {cfg.has_key && !showKeyEditor && (
+                  <div className="flex items-center gap-3">
+                    <span className="text-xs text-fg-muted font-mono">••••••••••••••• (stored, encrypted)</span>
+                    <button type="button" onClick={() => setShowKeyEditor(true)} className="text-xs text-brand hover:underline">Replace</button>
+                    <button type="button" onClick={clearKey} className="text-xs text-red-600 hover:underline">Remove</button>
+                  </div>
+                )}
+                {showKeyEditor && (
+                  <div className="flex items-center gap-2">
+                    <input
+                      type="password"
+                      placeholder="Paste API key"
+                      value={keyInput}
+                      onChange={(e) => setKeyInput(e.target.value)}
+                      autoComplete="off"
+                      className="flex-1 border border-border-strong rounded-md px-2 py-1 text-sm font-mono"
+                    />
+                    <button type="button" onClick={saveKey} disabled={busy} className="px-3 py-1 text-sm bg-brand text-white rounded">Save</button>
+                    <button type="button" onClick={() => { setShowKeyEditor(false); setKeyInput(""); }} className="px-2 py-1 text-sm text-fg-muted">Cancel</button>
+                  </div>
+                )}
+              </div>
+            )}
+
+            <div className="grid grid-cols-2 gap-3">
+              <label className="block">
+                <span className="block text-sm font-medium text-fg mb-1">Default tone</span>
+                <select
+                  value={cfg.default_tone}
+                  onChange={(e) => patch({ default_tone: e.target.value })}
+                  disabled={busy}
+                  className="w-full border border-border-strong rounded-md px-2 py-1 text-sm"
+                >
+                  {tones.map(t => <option key={t} value={t}>{t}</option>)}
+                </select>
+              </label>
+              <label className="block">
+                <span className="block text-sm font-medium text-fg mb-1">Default verbosity</span>
+                <select
+                  value={cfg.default_verbosity}
+                  onChange={(e) => patch({ default_verbosity: e.target.value })}
+                  disabled={busy}
+                  className="w-full border border-border-strong rounded-md px-2 py-1 text-sm"
+                >
+                  {verbosities.map(v => <option key={v} value={v}>{v}</option>)}
+                </select>
+              </label>
+            </div>
+
+            <div className="flex items-center gap-3 pt-1">
+              <button
+                type="button"
+                onClick={testConnection}
+                disabled={busy || !cfg.model || (provider.needs_api_key && !cfg.has_key)}
+                className="px-3 py-1.5 text-sm border border-border-strong rounded-md hover:bg-surface-2 disabled:opacity-50"
+              >
+                Test connection
+              </button>
+              {testResult && (
+                <div className="flex-1 text-xs">
+                  <div className={testResult.ok ? "text-green-600" : "text-red-600"}>
+                    {testResult.msg}
+                  </div>
+                  {testResult.providerMessage && (
+                    <details className="mt-0.5 text-fg-dim">
+                      <summary className="cursor-pointer select-none">Provider details</summary>
+                      <pre className="mt-1 p-2 bg-surface-2 rounded text-[11px] whitespace-pre-wrap">
+{testResult.providerMessage}
+                      </pre>
+                    </details>
+                  )}
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
+    </div>
+  );
+}
+
 export default function AccountPreferences() {
   const { user, updatePrefs } = useAuth();
   const { branding } = useBranding();
@@ -361,6 +619,8 @@ export default function AccountPreferences() {
           pushAvailable={pushSubscribed}
         />
       </div>
+
+      <AiAssistCard />
 
       <div className="bg-surface rounded-lg border border-border shadow-sm p-5">
         <h2 className="text-lg font-semibold text-fg mb-1">Localization</h2>

@@ -1113,6 +1113,7 @@ export default function TicketDetail() {
             {editing.description ? (
               <div className="space-y-2">
                 <MarkdownEditor
+                  aiSurface="ticket_description"
                   value={editValues.description}
                   onChange={(e) =>
                     setEditValues((v) => ({
@@ -1279,6 +1280,7 @@ export default function TicketDetail() {
                       />
                     </div>
                     <MarkdownEditor
+                      aiSurface={shareWithVendor ? "comment_vendor" : "comment_internal"}
                       value={commentBody}
                       onChange={(e) => setCommentBody(e.target.value)}
                       onKeyDown={(e) => {
