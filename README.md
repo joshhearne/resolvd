@@ -173,19 +173,35 @@ Any internal status with `semantic_tag='resolved_pending_close'` carries an `aut
 
 Inbound email replies during the grace window, and web UI comments on any terminal ticket, auto-reopen the ticket unless the body matches the editable gratitude phrase list (also under **Admin → Statuses**). "Thanks" → leave alone. Anything substantive → flip to `Reopened`. This covers the case where a ticket is closed in someone else's name and the actual reporter follows up with a still-open issue. Auto-reopens also fire a `ticket_reopened` vendor outbound email if the ticket has attached contacts and they have been previously contacted.
 
-### In-app notifications
+### Notifications matrix
 
-All authenticated users (Admin, Manager, Submitter, Viewer, Support) see the notification bell. Clicking a notification navigates to the relevant ticket. Mention notifications scroll to and flash the specific comment so the user lands on the exact context, not just the page.
+Each user has a 6-row × 3-column preference matrix at **Account → Preferences → Notifications**. Rows are event types (assignment, mention, comment, status change, pending review, follow-up). Columns are channels (in-app, email, push). Toggle any cell to opt in or out per channel.
 
-Notification types:
+`pending_review` and `follow_up` rows are server-side LOCKED_ON: in-app + email always fire and bypass the digest cadence — these are action-required events that shouldn't be silently batched. Push remains opt-in even for locked rows.
 
-| Event | Who receives |
+**Email digest cadence** lives next to the matrix as a per-user dropdown: `instant` (default) sends each notification immediately; `hourly` / `12h` / `daily` buffer to the `notification_outbox` table and a 5-minute scheduler tick flushes ripe rows into a single digest email per user, grouped by ticket; `off` suppresses notification email entirely (in-app + push still fire if those channels are on).
+
+The bell tray itself is generic — it renders whatever the matrix populated. Mention notifications scroll to and flash the specific comment so the user lands on the exact context, not just the page.
+
+### AI Assist (BYO-AI)
+
+Optional, opt-in **bring-your-own-AI** rewrite for comments + ticket text. Each user configures their own provider in **Account → Preferences → AI Assist** — Resolvd ships the integration surface, you ship the API key. Provider, endpoint, model, default tone, default verbosity, and the API key (encrypted at rest via the standard envelope wrapper) all live per-user.
+
+Three adapters out of the box:
+
+| Adapter | Notes |
 |---|---|
-| `mention` | The @mentioned user (in-app + email + opt-in browser push) |
-| Followed-ticket comment | All followers (email) |
-| Followed-ticket status change | All followers (email) |
-| Assignment | Assigned user (email + opt-in browser push) |
-| Follow-up reminder | Followers of the ticket (in-app + email) |
+| `openai` | OpenAI Chat Completions endpoint. Compatible with Azure OpenAI, OpenRouter, vLLM, LM Studio, and anything else speaking `/v1/chat/completions`. |
+| `anthropic` | Anthropic Messages API (Claude models). |
+| `ollama` | Self-hosted Ollama. No API key required by default. |
+
+New providers drop in by adding a file under `backend/services/aiProviders/` and registering it in `index.js`.
+
+A ✨ AI button appears in the toolbar of any composer wired with an `aiSurface` prop — currently the internal comment composer, the vendor comment composer (auto-flips when "Share with vendor" is on), the ticket description editor, and the admin email-template Subject + Body inputs. Click it to open a preview-before-send modal with tone (7 options), verbosity (3 options), and an ELI5 toggle (Admin/Manager only). The model output is shown side-by-side with the original — Apply commits it back, Re-roll calls again with the same params, Cancel discards.
+
+**Org kill switch**: Admin → Branding → "AI Assist available org-wide" disables the feature for the entire org regardless of per-user opt-in. Set this OFF if your compliance / data-handling policy doesn't allow any AI traffic — even with each user using their own key.
+
+Template-aware: when the input contains `{tag.path}` placeholders (the email-template substitution syntax), the prompt explicitly tells the model to preserve every `{...}` token verbatim and reword only the surrounding prose.
 
 ### Pending Review follow-ups
 
