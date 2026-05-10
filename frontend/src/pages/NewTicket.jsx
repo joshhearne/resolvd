@@ -272,6 +272,7 @@ export default function NewTicket() {
             Description
           </label>
           <MarkdownEditor
+            aiSurface="ticket_description"
             value={form.description}
             onChange={(e) => set("description", e.target.value)}
             rows={4}

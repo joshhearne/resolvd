@@ -35,6 +35,7 @@ const systemHealthRoutes = require('./routes/systemHealth');
 const webhookRoutes = require('./routes/webhooks');
 const alertSourceRoutes = require('./routes/alertSources');
 const cannedResponseRoutes = require('./routes/cannedResponses');
+const aiAssistRoutes = require('./routes/aiAssist');
 const { requireSupportAccessIfSupport } = require('./middleware/supportAccess');
 
 const app = express();
@@ -108,6 +109,7 @@ app.use('/api/push', pushRoutes);
 app.use('/api/system-health', systemHealthRoutes);
 app.use('/api/alert-sources', alertSourceRoutes);
 app.use('/api/canned-responses', cannedResponseRoutes);
+app.use('/api/ai', aiAssistRoutes);
 
 // Health check
 app.get('/health', (req, res) => res.json({ ok: true }));

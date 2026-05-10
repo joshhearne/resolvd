@@ -1,6 +1,8 @@
 import { useState, useRef } from "react";
 import MentionTextarea from "./MentionTextarea";
 import MarkdownContent from "./MarkdownContent";
+import AiRewriteModal from "./AiRewriteModal";
+import { useBranding } from "../context/BrandingContext";
 
 // Apply markdown wrapping to selected text in a textarea.
 // Returns { value, selStart, selEnd } with updated string and cursor.
@@ -85,12 +87,16 @@ export default function MarkdownEditor({
   onChange,
   onKeyDown,
   placeholder,
-  rows = 5,
+  rows = 10,
   className = "",
   mentionProjectId,   // if provided, use MentionTextarea instead of plain textarea
+  aiSurface,          // if set ("comment_internal" | "comment_vendor" | "ticket_description"), enables AI rewrite button
 }) {
   const [tab, setTab] = useState("write");
+  const [aiOpen, setAiOpen] = useState(false);
   const ref = useRef(null);
+  const { branding } = useBranding();
+  const aiAvailable = !!aiSurface && branding?.ai_assist_enabled !== false;
 
   function format(fmt) {
     const el = ref.current;
@@ -154,9 +160,33 @@ export default function MarkdownEditor({
                 </button>
               )
             )}
+            {aiAvailable && (
+              <>
+                <span className="w-px h-4 bg-border mx-1 hidden sm:block" />
+                <button
+                  type="button"
+                  title="AI rewrite"
+                  onClick={() => setAiOpen(true)}
+                  disabled={!value || !value.trim()}
+                  className="px-2 py-1 text-xs text-fg-muted hover:text-fg hover:bg-surface rounded transition-colors touch-manipulation disabled:opacity-40"
+                  aria-label="Rewrite with AI"
+                >
+                  ✨ AI
+                </button>
+              </>
+            )}
           </div>
         )}
       </div>
+      {aiAvailable && (
+        <AiRewriteModal
+          open={aiOpen}
+          onClose={() => setAiOpen(false)}
+          originalText={value || ""}
+          surface={aiSurface}
+          onAccept={(t) => onChange({ target: { value: t } })}
+        />
+      )}
 
       {/* Input or preview */}
       {tab === "write" ? (
