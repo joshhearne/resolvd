@@ -199,6 +199,10 @@ function AiAssistCard() {
   const [keyInput, setKeyInput] = useState("");
   const [showKeyEditor, setShowKeyEditor] = useState(false);
   const [testResult, setTestResult] = useState(null);
+  const [models, setModels] = useState([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState(null);
+  const [liveCount, setLiveCount] = useState(0);
 
   useEffect(() => {
     Promise.all([
@@ -211,6 +215,35 @@ function AiAssistCard() {
       setCfg(c);
     }).catch(e => console.error("ai config load:", e.message));
   }, []);
+
+  // Curated model list refreshes whenever provider changes. Live fetch
+  // (which calls the provider's /v1/models endpoint) only fires on
+  // explicit Refresh-button click — keeps the API key from being used
+  // implicitly on every page render.
+  useEffect(() => {
+    if (!cfg?.provider) {
+      setModels([]);
+      setLiveCount(0);
+      setModelsError(null);
+      return;
+    }
+    loadModels(false);
+  }, [cfg?.provider]);
+
+  async function loadModels(live) {
+    setModelsLoading(true);
+    setModelsError(null);
+    try {
+      const r = await api.get(`/api/ai/models${live ? "?live=true" : ""}`);
+      setModels(r.models || []);
+      setLiveCount(r.live_count || 0);
+      if (r.live_error) setModelsError(r.live_error);
+    } catch (e) {
+      setModelsError(e.message || "Failed to load models");
+    } finally {
+      setModelsLoading(false);
+    }
+  }
 
   if (!cfg) return null;
 
@@ -341,18 +374,89 @@ function AiAssistCard() {
               </span>
             </label>
 
-            <label className="block">
-              <span className="block text-sm font-medium text-fg mb-1">Model</span>
-              <input
-                type="text"
-                placeholder={provider.default_model}
-                value={cfg.model || ""}
-                onChange={(e) => setCfg(prev => ({ ...prev, model: e.target.value }))}
-                onBlur={(e) => patch({ model: e.target.value || null })}
-                disabled={busy}
-                className="w-full border border-border-strong rounded-md px-2 py-1 text-sm font-mono"
-              />
-            </label>
+            <div>
+              <div className="flex items-center justify-between mb-1">
+                <span className="block text-sm font-medium text-fg">Model</span>
+                <button
+                  type="button"
+                  onClick={() => loadModels(true)}
+                  disabled={
+                    busy ||
+                    modelsLoading ||
+                    (provider.needs_api_key && !cfg.has_key)
+                  }
+                  className="text-xs text-brand hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
+                  title={
+                    provider.needs_api_key && !cfg.has_key
+                      ? "Save an API key first"
+                      : "Fetch the live model list from the provider"
+                  }
+                >
+                  {modelsLoading ? "Refreshing…" : "Refresh from provider"}
+                </button>
+              </div>
+              {(() => {
+                const grouped = {
+                  cheap:    { label: "Cheap / fast",   items: [] },
+                  balanced: { label: "Balanced",       items: [] },
+                  heavy:    { label: "Heavy / pricey", items: [] },
+                  live:     { label: "Other (live)",   items: [] },
+                };
+                for (const m of models) {
+                  const tier = grouped[m.tier] ? m.tier : "live";
+                  grouped[tier].items.push(m);
+                }
+                const recommendedId = (provider.default_model && models.find(m => m.id === provider.default_model)) ? provider.default_model : null;
+                const includesCurrent = cfg.model && models.some(m => m.id === cfg.model);
+                return (
+                  <select
+                    value={cfg.model || ""}
+                    onChange={(e) => {
+                      const v = e.target.value;
+                      setCfg(prev => ({ ...prev, model: v }));
+                      patch({ model: v || null });
+                    }}
+                    disabled={busy}
+                    className="w-full border border-border-strong rounded-md px-2 py-1 text-sm font-mono bg-surface"
+                  >
+                    <option value="">— pick a model —</option>
+                    {!includesCurrent && cfg.model && (
+                      <option value={cfg.model}>{cfg.model} (custom)</option>
+                    )}
+                    {Object.entries(grouped).map(([key, g]) =>
+                      g.items.length > 0 ? (
+                        <optgroup key={key} label={g.label}>
+                          {g.items.map(m => (
+                            <option key={m.id} value={m.id}>
+                              {m.label}{m.recommended ? " — recommended" : ""}{m.note && m.tier !== "live" ? "" : ""}
+                            </option>
+                          ))}
+                        </optgroup>
+                      ) : null
+                    )}
+                  </select>
+                );
+              })()}
+              {(() => {
+                const current = models.find(m => m.id === cfg.model);
+                if (current && current.note) {
+                  return (
+                    <div className="mt-1 text-xs text-fg-muted">{current.note}</div>
+                  );
+                }
+                if (liveCount > 0) {
+                  return (
+                    <div className="mt-1 text-xs text-fg-dim">
+                      {liveCount} live model{liveCount === 1 ? "" : "s"} fetched from provider.
+                    </div>
+                  );
+                }
+                return null;
+              })()}
+              {modelsError && (
+                <div className="mt-1 text-xs text-amber-600">{modelsError}</div>
+              )}
+            </div>
 
             {provider.needs_api_key && (
               <div>

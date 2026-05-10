@@ -115,6 +115,69 @@ router.post('/api-key', requireAuth, async (req, res) => {
   }
 });
 
+// GET /api/ai/models?live=true — list models available for the caller's
+// configured provider. Always returns the curated recommendedModels for
+// that provider. When live=true (and the user has a key configured),
+// also fetches the provider's /v1/models endpoint and merges. Live
+// fetch failures fall back to the curated list with `live_error` set.
+router.get('/models', requireAuth, async (req, res) => {
+  try {
+    const cfg = await aiRewrite.loadUserAssistConfig(req.session.user.id);
+    if (!cfg || !cfg.provider) {
+      return res.status(400).json({ error: 'No AI provider configured' });
+    }
+    const adapter = require('../services/aiProviders').getAdapter(cfg.provider);
+    const curated = (adapter.recommendedModels || []).map(m => ({ ...m, source: 'curated' }));
+
+    let live = [];
+    let liveError = null;
+    const wantLive = String(req.query.live || '').toLowerCase() === 'true';
+    if (wantLive && typeof adapter.listLiveModels === 'function') {
+      // Live fetch needs endpoint + apiKey from the user's config.
+      const needsKey = adapter.needsApiKey !== false;
+      if (needsKey && !cfg.api_key) {
+        liveError = 'API key not set — save one before fetching live model list';
+      } else {
+        try {
+          const models = await adapter.listLiveModels({
+            endpoint: cfg.endpoint || adapter.defaultEndpoint,
+            apiKey: cfg.api_key,
+          });
+          live = models.map(m => ({ ...m, source: 'live' }));
+        } catch (err) {
+          liveError = err.friendly || err.message || 'Live fetch failed';
+        }
+      }
+    }
+
+    // Merge: curated first (with their tier + recommended flags), then
+    // any live-only ids the curated list didn't already cover.
+    const seen = new Set(curated.map(m => m.id));
+    const merged = [...curated];
+    for (const m of live) {
+      if (!seen.has(m.id)) merged.push(m);
+    }
+
+    res.json({
+      provider: cfg.provider,
+      models: merged,
+      live_count: live.length,
+      live_error: liveError,
+    });
+  } catch (err) {
+    if (err.name === 'ProviderError') {
+      return res.status(err.httpStatus || 502).json({
+        error: err.friendly,
+        error_kind: err.kind,
+        provider: err.provider,
+        provider_message: err.providerMessage,
+      });
+    }
+    console.error('ai models:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 // POST /api/ai/test — issue a tiny call against the configured provider
 // to confirm endpoint + key + model work. Returns latency + model echo,
 // or a useful error message.
