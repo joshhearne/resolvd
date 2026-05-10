@@ -217,14 +217,16 @@ async function rewrite({ userId, surface, tone, verbosity, eli5, text, projectId
     const logRow = await pool.query(
       `INSERT INTO ai_rewrite_logs
          (user_id, provider, model, surface, project_id,
-          input_tokens, output_tokens, tone, verbosity, eli5)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+          input_tokens, output_tokens, tone, verbosity, eli5,
+          project_context_used)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING id`,
       [
         userId, cfg.provider, cfg.model, surface, projectId || null,
         result.usage?.input_tokens ?? null,
         result.usage?.output_tokens ?? null,
         tone, verbosity, !!eli5,
+        !!projectContext,
       ]
     );
     logId = logRow.rows[0].id;
@@ -258,7 +260,7 @@ async function applyRewriteLog({ logId, userId, table, rowId, client = null }) {
       WHERE id = $1
         AND user_id = $2
         AND applied_at IS NULL
-      RETURNING provider, model, input_tokens, output_tokens, tone, verbosity, eli5`,
+      RETURNING provider, model, input_tokens, output_tokens, tone, verbosity, eli5, project_context_used`,
     [logId, userId, table, rowId]
   );
   if (!r.rows[0]) return null;

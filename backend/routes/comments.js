@@ -60,6 +60,7 @@ router.get('/:id/comments', requireAuth, async (req, res) => {
         row.ai_tone = null;
         row.ai_verbosity = null;
         row.ai_eli5 = null;
+        row.ai_project_context_used = null;
       }
     }
 
@@ -120,10 +121,12 @@ router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Submi
                 SET ai_provider = $1, ai_model = $2,
                     ai_input_tokens = $3, ai_output_tokens = $4,
                     ai_tone = $5, ai_verbosity = $6, ai_eli5 = $7,
-                    ai_publish_consent = $8
-              WHERE id = $9`,
+                    ai_publish_consent = $8,
+                    ai_project_context_used = $9
+              WHERE id = $10`,
             [meta.provider, meta.model, meta.input_tokens, meta.output_tokens,
-             meta.tone, meta.verbosity, meta.eli5, meta.publish_consent, newCommentId]
+             meta.tone, meta.verbosity, meta.eli5, meta.publish_consent,
+             meta.project_context_used, newCommentId]
           );
         }
       } catch (err) {

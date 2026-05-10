@@ -12,6 +12,7 @@ import {
 } from "../utils/helpers";
 import HybridTime from "../components/HybridTime";
 import SlaTimer from "../components/SlaTimer";
+import AiUsageBadge from "../components/AiUsageBadge";
 import {
   useStatuses,
   nextAllowedStatusIds,
@@ -1102,8 +1103,20 @@ export default function TicketDetail() {
         <div className="lg:col-span-2 space-y-4">
           {/* Description */}
           <div className="bg-surface rounded-lg border border-border shadow-sm p-4">
-            <div className="flex items-center justify-between mb-2">
-              <h2 className="text-sm font-semibold text-fg">Description</h2>
+            <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
+              <div className="flex items-center gap-2 flex-wrap">
+                <h2 className="text-sm font-semibold text-fg">Description</h2>
+                <AiUsageBadge
+                  provider={ticket.ai_provider}
+                  model={ticket.ai_model}
+                  inputTokens={ticket.ai_input_tokens}
+                  outputTokens={ticket.ai_output_tokens}
+                  tone={ticket.ai_tone}
+                  verbosity={ticket.ai_verbosity}
+                  eli5={ticket.ai_eli5}
+                  projectContextUsed={ticket.ai_project_context_used}
+                />
+              </div>
               {canEdit && !editing.description && (
                 <button
                   onClick={() => {
@@ -1156,24 +1169,7 @@ export default function TicketDetail() {
               </div>
             ) : (
               ticket.description ? (
-                <>
-                  {ticket.ai_provider && (
-                    <div
-                      className="mb-1 text-[11px] text-fg-muted font-mono inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-surface-2 border border-border"
-                      title={
-                        (ticket.ai_tone ? `tone: ${ticket.ai_tone} · ` : "") +
-                        (ticket.ai_verbosity ? `verbosity: ${ticket.ai_verbosity}` : "") +
-                        (ticket.ai_eli5 ? " · ELI5" : "")
-                      }
-                    >
-                      ✨ AI · {ticket.ai_provider} · {ticket.ai_model}
-                      {(ticket.ai_input_tokens != null || ticket.ai_output_tokens != null) && (
-                        <> · {ticket.ai_input_tokens || 0} in / {ticket.ai_output_tokens || 0} out</>
-                      )}
-                    </div>
-                  )}
-                  <MarkdownContent>{ticket.description}</MarkdownContent>
-                </>
+                <MarkdownContent>{ticket.description}</MarkdownContent>
               ) : (
                 <span className="text-fg-dim text-sm">No description</span>
               )
@@ -1220,8 +1216,8 @@ export default function TicketDetail() {
                       id={`comment-${c.id}`}
                       className={`rounded-lg p-3 transition-all duration-500 ${c.is_system ? "bg-brand/10 border border-brand/30" : c.is_muted ? "bg-surface-2 border border-dashed border-border opacity-90" : "bg-surface-2"}`}
                     >
-                      <div className="flex items-center justify-between mb-1 gap-2">
-                        <span className="text-xs font-semibold text-fg-muted flex items-center gap-1.5">
+                      <div className="flex items-center justify-between mb-1 gap-2 flex-wrap">
+                        <span className="text-xs font-semibold text-fg-muted flex items-center gap-1.5 flex-wrap">
                           {c.is_system ? "🤖 System" : (c.vendor_contact_id ? `↩ ${c.vendor_contact_name || c.vendor_company_name || "Vendor"}` : c.user_name)}
                           {c.is_external_visible && !c.vendor_contact_id && (
                             <span className="text-[10px] px-1 py-0.5 rounded bg-brand/15 text-brand uppercase">to vendor</span>
@@ -1239,7 +1235,17 @@ export default function TicketDetail() {
                             <span className="text-[10px] px-1 py-0.5 rounded bg-surface text-fg-dim uppercase">muted</span>
                           )}
                         </span>
-                        <span className="flex items-center gap-2">
+                        <span className="flex items-center gap-2 flex-wrap">
+                          <AiUsageBadge
+                            provider={c.ai_provider}
+                            model={c.ai_model}
+                            inputTokens={c.ai_input_tokens}
+                            outputTokens={c.ai_output_tokens}
+                            tone={c.ai_tone}
+                            verbosity={c.ai_verbosity}
+                            eli5={c.ai_eli5}
+                            projectContextUsed={c.ai_project_context_used}
+                          />
                           {isAdmin && !c.is_system && (
                             <>
                               <button onClick={() => setCommentMuted(c.id, !c.is_muted)}
@@ -1255,21 +1261,6 @@ export default function TicketDetail() {
                           <HybridTime dt={c.created_at} className="text-xs text-fg-dim" />
                         </span>
                       </div>
-                      {c.ai_provider && (
-                        <div
-                          className="mb-1 text-[11px] text-fg-muted font-mono inline-flex items-center gap-1 px-1.5 py-0.5 rounded bg-surface-2 border border-border"
-                          title={
-                            (c.ai_tone ? `tone: ${c.ai_tone} · ` : "") +
-                            (c.ai_verbosity ? `verbosity: ${c.ai_verbosity}` : "") +
-                            (c.ai_eli5 ? " · ELI5" : "")
-                          }
-                        >
-                          ✨ AI · {c.ai_provider} · {c.ai_model}
-                          {(c.ai_input_tokens != null || c.ai_output_tokens != null) && (
-                            <> · {c.ai_input_tokens || 0} in / {c.ai_output_tokens || 0} out</>
-                          )}
-                        </div>
-                      )}
                       <MarkdownContent>{c.body}</MarkdownContent>
                       {attachments.filter((a) => a.comment_id === c.id).length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-1.5">

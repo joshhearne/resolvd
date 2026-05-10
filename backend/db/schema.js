@@ -1306,6 +1306,9 @@ async function initSchema() {
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_ai_rewrite_logs_user_created ON ai_rewrite_logs(user_id, created_at DESC)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_ai_rewrite_logs_unapplied ON ai_rewrite_logs(user_id) WHERE applied_at IS NULL`);
+    // Track whether the project AI context was actually injected on this
+    // call. Surfaces in the badge popover as an extra disclosure line.
+    await client.query(`ALTER TABLE ai_rewrite_logs ADD COLUMN IF NOT EXISTS project_context_used BOOLEAN NOT NULL DEFAULT FALSE`);
 
     // Per-comment AI usage metadata. Set when an AI rewrite was applied
     // before posting. ai_publish_consent snapshots the author's
@@ -1319,6 +1322,7 @@ async function initSchema() {
     await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS ai_verbosity TEXT`);
     await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS ai_eli5 BOOLEAN`);
     await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS ai_publish_consent BOOLEAN`);
+    await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS ai_project_context_used BOOLEAN`);
 
     // Same metadata for tickets (description / title rewrites).
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS ai_provider TEXT`);
@@ -1329,6 +1333,7 @@ async function initSchema() {
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS ai_verbosity TEXT`);
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS ai_eli5 BOOLEAN`);
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS ai_publish_consent BOOLEAN`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS ai_project_context_used BOOLEAN`);
 
     await client.query('COMMIT');
   } catch (err) {

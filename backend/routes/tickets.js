@@ -58,6 +58,7 @@ async function stripAiMetadataIfHidden(viewer, row) {
     row.ai_tone = null;
     row.ai_verbosity = null;
     row.ai_eli5 = null;
+    row.ai_project_context_used = null;
   }
 }
 
@@ -333,10 +334,12 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Submitter'), asyn
                   SET ai_provider = $1, ai_model = $2,
                       ai_input_tokens = $3, ai_output_tokens = $4,
                       ai_tone = $5, ai_verbosity = $6, ai_eli5 = $7,
-                      ai_publish_consent = $8
-                WHERE id = $9`,
+                      ai_publish_consent = $8,
+                      ai_project_context_used = $9
+                WHERE id = $10`,
               [meta.provider, meta.model, meta.input_tokens, meta.output_tokens,
-               meta.tone, meta.verbosity, meta.eli5, meta.publish_consent, t.id]
+               meta.tone, meta.verbosity, meta.eli5, meta.publish_consent,
+               meta.project_context_used, t.id]
             );
             // Refresh local ref so subsequent helpers see the metadata.
             Object.assign(t, {
@@ -344,6 +347,7 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Submitter'), asyn
               ai_input_tokens: meta.input_tokens, ai_output_tokens: meta.output_tokens,
               ai_tone: meta.tone, ai_verbosity: meta.verbosity, ai_eli5: meta.eli5,
               ai_publish_consent: meta.publish_consent,
+              ai_project_context_used: meta.project_context_used,
             });
           }
         } catch (err) {
@@ -729,10 +733,12 @@ router.patch('/:id', requireAuth, async (req, res) => {
                   SET ai_provider = $1, ai_model = $2,
                       ai_input_tokens = $3, ai_output_tokens = $4,
                       ai_tone = $5, ai_verbosity = $6, ai_eli5 = $7,
-                      ai_publish_consent = $8
-                WHERE id = $9`,
+                      ai_publish_consent = $8,
+                      ai_project_context_used = $9
+                WHERE id = $10`,
               [meta.provider, meta.model, meta.input_tokens, meta.output_tokens,
-               meta.tone, meta.verbosity, meta.eli5, meta.publish_consent, ticket.id]
+               meta.tone, meta.verbosity, meta.eli5, meta.publish_consent,
+               meta.project_context_used, ticket.id]
             );
           }
         } catch (err) {
