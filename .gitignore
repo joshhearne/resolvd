@@ -46,3 +46,4 @@ scripts/
 .githooks/
 /package.json
 /package-lock.json
+.preview-last-sha

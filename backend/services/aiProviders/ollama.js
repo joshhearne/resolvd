@@ -51,6 +51,46 @@ async function complete({ endpoint, apiKey, model, system, user, signal, timeout
   }
 }
 
+// Curated suggestions only — what Ollama can actually run depends on
+// what the user has pulled locally. The dropdown UI prefers the live
+// list (via listLiveModels) when reachable; this static list serves as
+// fallback hints when the Ollama server is unreachable.
+const recommendedModels = [
+  { id: 'llama3.1',  label: 'Llama 3.1 (8B)',     tier: 'cheap',    recommended: true, note: 'Common default. `ollama pull llama3.1` first.' },
+  { id: 'llama3.3',  label: 'Llama 3.3 (70B)',    tier: 'heavy',    note: 'Heaviest open weight from Meta. Needs a GPU.' },
+  { id: 'qwen2.5',   label: 'Qwen 2.5',           tier: 'balanced', note: 'Strong on instruction-following.' },
+  { id: 'mistral',   label: 'Mistral 7B',         tier: 'cheap' },
+  { id: 'phi4',      label: 'Phi-4 (14B)',        tier: 'balanced', note: 'Microsoft\'s small-model series.' },
+];
+
+// Hit the local Ollama instance for its model list. Returns whatever
+// the user has pulled.
+async function listLiveModels({ endpoint, apiKey }) {
+  const url = (endpoint || 'http://localhost:11434').replace(/\/$/, '') + '/api/tags';
+  let r;
+  try {
+    r = await fetch(url, {
+      headers: apiKey ? { Authorization: `Bearer ${apiKey}` } : {},
+    });
+  } catch (err) {
+    throw fromFetchError({ provider: PROVIDER, err });
+  }
+  if (!r.ok) {
+    const body = await r.text().catch(() => '');
+    throw fromResponse({ provider: PROVIDER, status: r.status, body });
+  }
+  const json = await r.json();
+  return (json?.models || [])
+    .map(m => ({
+      id: m.name || m.model,
+      label: m.name || m.model,
+      tier: 'live',
+      // Surface size in note so users see what they have at a glance.
+      note: m.size ? `${(m.size / 1e9).toFixed(1)} GB` : null,
+    }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
 module.exports = {
   id: 'ollama',
   label: 'Ollama (self-hosted)',
@@ -58,4 +98,6 @@ module.exports = {
   defaultModel: 'llama3.1',
   needsApiKey: false,
   complete,
+  recommendedModels,
+  listLiveModels,
 };

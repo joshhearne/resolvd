@@ -53,10 +53,47 @@ async function complete({ endpoint, apiKey, model, system, user, signal, timeout
   }
 }
 
+// Curated list of Anthropic Claude models. Anthropic uses dated model
+// IDs — the latest dated build is what `claude-X-Y` aliases roll up to,
+// but the explicit dated form is what the API expects. Refresh this list
+// when Anthropic ships a new generation.
+const recommendedModels = [
+  { id: 'claude-haiku-4-5-20251001',  label: 'Claude Haiku 4.5',  tier: 'cheap',    recommended: true, note: 'Recommended default. Fast, cheap, surprisingly strong on rewrite tasks.' },
+  { id: 'claude-sonnet-4-6',          label: 'Claude Sonnet 4.6', tier: 'balanced', note: 'Bigger model — better nuance on tone shifts. Recommended for ELI5 / verbose output.' },
+  { id: 'claude-opus-4-7',            label: 'Claude Opus 4.7',   tier: 'heavy',    note: 'Heaviest tier. Overkill for short rewrites; useful for long-form polish.' },
+];
+
+// Live fetch from /v1/models. Anthropic added this endpoint in 2024 — it
+// returns models the caller's API key can access.
+async function listLiveModels({ endpoint, apiKey }) {
+  const url = (endpoint || 'https://api.anthropic.com').replace(/\/$/, '') + '/v1/models';
+  let r;
+  try {
+    r = await fetch(url, {
+      headers: {
+        'x-api-key': apiKey || '',
+        'anthropic-version': API_VERSION,
+      },
+    });
+  } catch (err) {
+    throw fromFetchError({ provider: PROVIDER, err });
+  }
+  if (!r.ok) {
+    const body = await r.text().catch(() => '');
+    throw fromResponse({ provider: PROVIDER, status: r.status, body });
+  }
+  const json = await r.json();
+  return (json?.data || [])
+    .map(m => ({ id: m.id, label: m.display_name || m.id, tier: 'live' }))
+    .sort((a, b) => a.id.localeCompare(b.id));
+}
+
 module.exports = {
   id: 'anthropic',
   label: 'Anthropic (Claude)',
   defaultEndpoint: 'https://api.anthropic.com',
   defaultModel: 'claude-haiku-4-5-20251001',
   complete,
+  recommendedModels,
+  listLiveModels,
 };
