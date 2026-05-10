@@ -7,12 +7,10 @@
 // recording the auto-close so the trail isn't silent.
 
 const { pool } = require('../db/pool');
-const { createNotification } = require('./notifications');
-const { sendMail, baseHtml } = require('./email');
+const { fanoutFollowUp } = require('./notificationFanout');
 const { decryptRow } = require('./fields');
 
 const TICK_MS = 60 * 60 * 1000; // 1 hour
-const APP_URL = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
 
 async function findTerminalStatusName() {
   const r = await pool.query(
@@ -38,40 +36,15 @@ async function runFollowups() {
   let fired = 0;
   for (const row of due.rows) {
     await decryptRow('tickets', row).catch(() => {});
-    const url = `${APP_URL}/tickets/${row.id}`;
     try {
-      await createNotification(null, {
-        userId: row.followup_user_id,
-        type: 'ticket_followup',
-        title: `Follow-up: ${row.internal_ref}`,
-        body: 'Scheduled follow-up reminder. Verify the issue stays resolved.',
-        data: { ticket_id: row.id, ticket_ref: row.internal_ref },
+      await fanoutFollowUp(pool, {
+        ticket: row,
+        schedulerUserId: row.followup_user_id,
+        schedulerEmail: row.user_email,
+        schedulerName: row.user_name,
       });
     } catch (e) {
-      console.error('followup notify failed:', e.message);
-    }
-    if (row.user_email) {
-      try {
-        const subject = `[${row.internal_ref}] Follow-up reminder`;
-        const body = `
-          <p>Hi ${row.user_name || ''},</p>
-          <p>You scheduled a follow-up on <strong>${row.internal_ref}</strong>${row.title ? ` — ${row.title}` : ''}.</p>
-          <p>Current status: <strong>${row.internal_status}</strong></p>
-          <p>Verify the fix has held, then advance or reopen as needed.</p>
-          <p><a href="${url}">${url}</a></p>
-        `;
-        await sendMail({
-          to: row.user_email,
-          subject,
-          html: await baseHtml(subject, body),
-          headers: {
-            'X-Resolvd-Ticket': row.internal_ref,
-            'X-Resolvd-No-Reply': '1',
-          },
-        });
-      } catch (e) {
-        console.error('followup email failed:', e.message);
-      }
+      console.error('followup fanout failed:', e.message);
     }
     await pool.query(
       `UPDATE tickets SET followup_at = NULL, followup_user_id = NULL WHERE id = $1`,

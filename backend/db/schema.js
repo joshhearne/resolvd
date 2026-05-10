@@ -1,4 +1,5 @@
 const { pool } = require('./pool');
+const { DEFAULT_NOTIFICATION_PREFS, DEFAULT_EMAIL_DIGEST } = require('../services/notificationPrefs');
 
 async function initSchema() {
   const client = await pool.connect();
@@ -1093,6 +1094,56 @@ async function initSchema() {
     // of the listed projects.
     await client.query(`ALTER TABLE canned_responses ADD COLUMN IF NOT EXISTS project_ids INTEGER[]`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_canned_projects ON canned_responses USING GIN(project_ids)`);
+
+    // ── Notifications matrix refactor ────────────────────────────────────
+    // Buffered email rows when a user has email_digest != 'instant'.
+    // Each row carries enough payload snapshot to render the digest
+    // without re-querying the source ticket. Indexed for the flusher's
+    // "ripe & unsent" lookup.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS notification_outbox (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        event_type TEXT NOT NULL,
+        ticket_id INTEGER REFERENCES tickets(id) ON DELETE CASCADE,
+        payload JSONB NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        scheduled_flush_at TIMESTAMPTZ NOT NULL,
+        sent_at TIMESTAMPTZ
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_notif_outbox_pending ON notification_outbox (user_id, scheduled_flush_at) WHERE sent_at IS NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_notif_outbox_ticket ON notification_outbox (ticket_id) WHERE sent_at IS NULL`);
+    await client.query(`INSERT INTO system_jobs (name) VALUES ('notification_outbox') ON CONFLICT DO NOTHING`);
+
+    // Backfill notification_prefs + email_digest into every existing
+    // users.preferences blob. Only writes the keys when missing — safe
+    // to re-run.
+    await client.query(`
+      UPDATE users
+         SET preferences = preferences
+           || CASE WHEN preferences ? 'notification_prefs' THEN '{}'::jsonb
+                   ELSE jsonb_build_object('notification_prefs', $1::jsonb) END
+           || CASE WHEN preferences ? 'email_digest' THEN '{}'::jsonb
+                   ELSE jsonb_build_object('email_digest', $2::text) END
+    `, [JSON.stringify(DEFAULT_NOTIFICATION_PREFS), DEFAULT_EMAIL_DIGEST]);
+
+    // One-time legacy-key sweep. The five deprecated flags are no longer
+    // read; strip them so users.preferences stays clean. Idempotent —
+    // re-running is a no-op once the keys are gone.
+    await client.query(`
+      UPDATE users
+         SET preferences = preferences
+           - 'email_on_comment'
+           - 'email_on_status_change'
+           - 'email_on_assignment'
+           - 'push_on_assignment'
+           - 'push_on_mention'
+       WHERE preferences ?| ARRAY[
+         'email_on_comment','email_on_status_change',
+         'email_on_assignment','push_on_assignment','push_on_mention'
+       ]
+    `);
 
     await client.query('COMMIT');
   } catch (err) {

@@ -79,6 +79,116 @@ function Toggle({ label, hint, value, onChange, disabled }) {
   );
 }
 
+function MatrixSwitch({ checked, onChange, disabled }) {
+  return (
+    <button
+      type="button"
+      role="switch"
+      aria-checked={checked}
+      disabled={disabled}
+      onClick={() => onChange(!checked)}
+      className={`relative inline-flex h-5 w-9 flex-shrink-0 items-center rounded-full transition-colors ${
+        checked ? "bg-brand" : "bg-surface-2 border border-border-strong"
+      } ${disabled ? "opacity-50 cursor-not-allowed" : "cursor-pointer"}`}
+    >
+      <span
+        className={`inline-block h-3.5 w-3.5 rounded-full bg-white shadow transition-transform ${
+          checked ? "translate-x-5" : "translate-x-0.5"
+        }`}
+      />
+    </button>
+  );
+}
+
+const NOTIFICATION_EVENTS = [
+  { key: "assignment", label: "Assigned to me", hint: "Someone assigns a ticket to me." },
+  { key: "mention", label: "I get @mentioned", hint: "Someone mentions me in a comment." },
+  { key: "comment", label: "New comment", hint: "A comment lands on a ticket I follow." },
+  { key: "status_change", label: "Status changes", hint: "Internal status changes on a ticket I follow." },
+  { key: "pending_review", label: "Pending review", hint: "Ticket flagged for admin review.", locked: true },
+  { key: "follow_up", label: "Follow-up reminder", hint: "Scheduled follow-up I set.", locked: true },
+];
+
+const DEFAULT_MATRIX = {
+  assignment: { in_app: true, email: true, push: false },
+  mention: { in_app: true, email: true, push: true },
+  comment: { in_app: true, email: true, push: false },
+  status_change: { in_app: true, email: true, push: false },
+  pending_review: { in_app: true, email: true, push: false },
+  follow_up: { in_app: true, email: true, push: false },
+};
+
+function NotificationMatrix({ value, onChange, disabled, pushAvailable }) {
+  const matrix = value || DEFAULT_MATRIX;
+  function setCell(eventKey, channel, v) {
+    onChange({
+      ...matrix,
+      [eventKey]: { ...matrix[eventKey], [channel]: v },
+    });
+  }
+  return (
+    <div className="border border-border rounded-md overflow-hidden">
+      <table className="w-full text-sm">
+        <thead className="bg-surface-2 text-xs text-fg-muted">
+          <tr>
+            <th className="text-left px-3 py-2 font-medium">Event</th>
+            <th className="px-3 py-2 font-medium w-20 text-center">In-app</th>
+            <th className="px-3 py-2 font-medium w-20 text-center">Email</th>
+            <th className="px-3 py-2 font-medium w-20 text-center">Push</th>
+          </tr>
+        </thead>
+        <tbody>
+          {NOTIFICATION_EVENTS.map((ev) => {
+            const row = matrix[ev.key] || { in_app: false, email: false, push: false };
+            return (
+              <tr key={ev.key} className="border-t border-border">
+                <td className="px-3 py-3">
+                  <div className="text-sm font-medium text-fg">
+                    {ev.label}
+                    {ev.locked && (
+                      <span className="ml-2 text-xs font-normal text-fg-muted">
+                        (always on)
+                      </span>
+                    )}
+                  </div>
+                  <div className="text-xs text-fg-muted mt-0.5">{ev.hint}</div>
+                </td>
+                <td className="px-3 py-3 text-center">
+                  <div className="inline-flex">
+                    <MatrixSwitch
+                      checked={ev.locked ? true : !!row.in_app}
+                      onChange={(v) => setCell(ev.key, "in_app", v)}
+                      disabled={disabled || ev.locked}
+                    />
+                  </div>
+                </td>
+                <td className="px-3 py-3 text-center">
+                  <div className="inline-flex">
+                    <MatrixSwitch
+                      checked={ev.locked ? true : !!row.email}
+                      onChange={(v) => setCell(ev.key, "email", v)}
+                      disabled={disabled || ev.locked}
+                    />
+                  </div>
+                </td>
+                <td className="px-3 py-3 text-center">
+                  <div className="inline-flex">
+                    <MatrixSwitch
+                      checked={ev.locked ? false : !!row.push}
+                      onChange={(v) => setCell(ev.key, "push", v)}
+                      disabled={disabled || ev.locked || !pushAvailable}
+                    />
+                  </div>
+                </td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 export default function AccountPreferences() {
   const { user, updatePrefs } = useAuth();
   const { branding } = useBranding();
@@ -192,76 +302,64 @@ export default function AccountPreferences() {
       </div>
 
       <div className="bg-surface rounded-lg border border-border shadow-sm p-5">
-        <h2 className="text-lg font-semibold text-fg mb-1">Email</h2>
-        <p className="text-sm text-fg-muted mb-2">
-          Choose which events on tickets you follow trigger an email. The
-          in-app bell tray is unaffected.
+        <h2 className="text-lg font-semibold text-fg mb-1">Notifications</h2>
+        <p className="text-sm text-fg-muted mb-4">
+          Pick how you find out about ticket activity. Pending review and
+          follow-up reminders are always on. Pending review and follow-ups
+          send email immediately regardless of the digest cadence below.
         </p>
-        <div className="mt-3">
-          <Toggle
-            label="Email me on new comments"
-            hint="Receive an email when someone posts a comment on a ticket I follow."
-            value={!!prefs.email_on_comment}
-            onChange={(v) => set("email_on_comment", v)}
-            disabled={busy}
-          />
-          <Toggle
-            label="Email me on status changes"
-            hint="Receive an email when a followed ticket's internal status changes."
-            value={!!prefs.email_on_status_change}
-            onChange={(v) => set("email_on_status_change", v)}
-            disabled={busy}
-          />
-          <Toggle
-            label="Email me when a ticket is assigned to me"
-            hint="Receive an email when someone assigns a ticket to you. Self-assignments don't trigger this."
-            value={!!prefs.email_on_assignment}
-            onChange={(v) => set("email_on_assignment", v)}
-            disabled={busy}
-          />
-        </div>
-      </div>
 
-      <div className="bg-surface rounded-lg border border-border shadow-sm p-5">
-        <h2 className="text-lg font-semibold text-fg mb-1">Browser notifications</h2>
-        <p className="text-sm text-fg-muted mb-2">
-          Get a desktop notification even when Resolvd isn't focused. Enable
-          per browser; choose which events fire below.
-        </p>
-        {!pushSupported && (
-          <div className="mt-2 text-xs text-fg-muted">
-            This browser doesn't support push notifications.
-          </div>
-        )}
-        {pushSupported && pushPerm === "denied" && (
-          <div className="mt-2 text-xs text-amber-600">
-            Notifications blocked at the browser level. Re-enable in your
-            browser's site settings, then come back.
-          </div>
-        )}
-        <div className="mt-3">
+        <div className="mb-4 pb-4 border-b border-border">
+          {!pushSupported && (
+            <div className="text-xs text-fg-muted">
+              This browser doesn't support push notifications.
+            </div>
+          )}
+          {pushSupported && pushPerm === "denied" && (
+            <div className="text-xs text-amber-600">
+              Notifications blocked at the browser level. Re-enable in your
+              browser's site settings, then come back.
+            </div>
+          )}
           <Toggle
             label="Enable browser notifications on this device"
-            hint="First enable prompts your browser for permission. Disable removes this device's subscription."
+            hint="Required for the Push column below. First enable prompts your browser for permission; disable removes this device's subscription."
             value={pushSubscribed}
             onChange={(v) => togglePushSubscription(v)}
             disabled={!pushSupported || pushBusy || pushPerm === "denied"}
           />
-          <Toggle
-            label="Notify me when a ticket is assigned to me"
-            hint="Browser notification when someone assigns a ticket to you."
-            value={!!prefs.push_on_assignment}
-            onChange={(v) => set("push_on_assignment", v)}
-            disabled={busy || !pushSubscribed}
-          />
-          <Toggle
-            label="Notify me when I'm @mentioned"
-            hint="Browser notification when someone mentions you in a comment."
-            value={!!prefs.push_on_mention}
-            onChange={(v) => set("push_on_mention", v)}
-            disabled={busy || !pushSubscribed}
-          />
         </div>
+
+        <label className="block mb-4 pb-4 border-b border-border">
+          <span className="block text-sm font-medium text-fg mb-1">
+            Email digest cadence
+          </span>
+          <span className="block text-xs text-fg-muted mb-2">
+            How often emails are batched. <strong>Instant</strong> sends each
+            one as it happens. The digest groups events by ticket into a
+            single email per cadence boundary. Set to <strong>Off</strong> to
+            stop notification emails entirely.
+          </span>
+          <select
+            value={prefs.email_digest || "instant"}
+            onChange={(e) => set("email_digest", e.target.value)}
+            disabled={busy}
+            className="border border-border-strong rounded-md px-2 py-1 text-sm"
+          >
+            <option value="instant">Instant</option>
+            <option value="hourly">Hourly</option>
+            <option value="12h">Every 12 hours</option>
+            <option value="daily">Daily digest</option>
+            <option value="off">Off (no notification emails)</option>
+          </select>
+        </label>
+
+        <NotificationMatrix
+          value={prefs.notification_prefs || DEFAULT_MATRIX}
+          onChange={(v) => set("notification_prefs", v)}
+          disabled={busy}
+          pushAvailable={pushSubscribed}
+        />
       </div>
 
       <div className="bg-surface rounded-lg border border-border shadow-sm p-5">

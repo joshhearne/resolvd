@@ -123,6 +123,10 @@ initSchema()
     // Auto-close tickets sitting in a resolved_pending_close status
     // past their configured grace period. Hourly tick.
     require('./services/autoClose').startScheduler();
+    // Notification outbox flusher: drains buffered email rows for users
+    // whose email_digest cadence (hourly / 12h / daily) has elapsed.
+    // 5-minute tick.
+    require('./services/notificationOutbox').startScheduler();
     app.listen(PORT, () => {
       console.log(`Resolvd backend running on port ${PORT}`);
     });

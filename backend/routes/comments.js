@@ -1,14 +1,11 @@
 const express = require('express');
 const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
-const { notifyNewComment } = require('../services/email');
+const { fanoutNewComment, fanoutMention } = require('../services/notificationFanout');
 const { buildWritePatch, decryptRow, decryptRows } = require('../services/fields');
 const { sendVendorEmail } = require('../services/vendorOutbound');
 const { resolveMentions } = require('../services/mentions');
 const { applyCommentToTerminalTicket } = require('../services/autoResolve');
-const { createNotification } = require('../services/notifications');
-const { sendMail, baseHtml } = require('../services/email');
-const { sendPushToUser } = require('../services/pushNotifications');
 
 const router = express.Router();
 
@@ -113,16 +110,6 @@ router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Submi
       }).catch(err => console.error('auto-reopen check failed:', err.message));
     }
 
-    // Notify followers async (skip system comments)
-    if (!result.is_system) {
-      notifyNewComment(pool, {
-        ticket: ticket.rows[0],
-        comment: trimmedBody,
-        actorId: req.session.user.id,
-        actorName: req.session.user.displayName,
-      }).catch(() => {});
-    }
-
     // Vendor-bound outbound fires only when the comment is flagged for
     // external visibility AND there are contacts attached to the ticket.
     // send_as: 'submitter' resolves to ticket.submitted_by; a numeric id
@@ -148,9 +135,9 @@ router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Submi
       }).catch(err => console.error('vendor outbound failed:', err.message));
     }
 
-    // @mentions: resolve tokens to active users, fan out an in-app
-    // notification + best-effort email, auto-add as followers. Unmatched
-    // tokens fall through silently. System comments don't trigger.
+    // Resolve @mentions, then fire the comment fanout (excluding mentioned
+    // users — they get a louder mention notification instead) and the
+    // mention fanout in parallel. System comments skip both.
     if (!result.is_system) {
       (async () => {
         try {
@@ -158,54 +145,28 @@ router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Submi
             excludeUserId: req.session.user.id,
             projectId: ticket.rows[0].project_id,
           });
-          if (!mentioned.length) return;
-          const ticketRef = ticket.rows[0].internal_ref;
-          const ticketTitle = ticket.rows[0].title || '';
-          const url = `${(process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '')}/tickets/${ticket.rows[0].id}`;
-          for (const u of mentioned) {
-            await pool.query(
-              `INSERT INTO ticket_followers (ticket_id, user_id) VALUES ($1, $2)
-               ON CONFLICT DO NOTHING`,
-              [ticket.rows[0].id, u.id]
-            );
-            await createNotification(null, {
-              userId: u.id,
-              type: 'mention',
-              title: `Mentioned on ${ticketRef}`,
-              body: `${req.session.user.displayName || 'Someone'} mentioned you in a comment.`,
-              data: { ticket_id: ticket.rows[0].id, ticket_ref: ticketRef, comment_id: insertResult.rows[0].id },
-            }).catch(() => {});
-            // Best-effort push; gated by recipient pref (default off).
-            try {
-              const prefRow = await pool.query(
-                'SELECT preferences FROM users WHERE id = $1', [u.id]
-              );
-              const pref = prefRow.rows[0]?.preferences || {};
-              if (pref.push_on_mention === true) {
-                sendPushToUser(u.id, {
-                  title: `Mentioned on ${ticketRef}`,
-                  body: `${req.session.user.displayName || 'Someone'} mentioned you in a comment.`,
-                  url: `/tickets/${ticket.rows[0].id}`,
-                  tag: `mention-${ticket.rows[0].id}`,
-                }).catch(err => console.error('push (mention) failed:', err.message));
-              }
-              // Best-effort email; gated by recipient pref.
-              if (pref.email_on_comment === false) continue;
-              if (!u.email) continue;
-              const subject = `[${ticketRef}] You were mentioned`;
-              const html = await baseHtml(subject, `
-                <p style="color:#374151;font-size:14px;margin:0 0 12px">
-                  <strong>${req.session.user.displayName || 'Someone'}</strong> mentioned you on <strong>${ticketRef}</strong>${ticketTitle ? ` — ${ticketTitle}` : ''}.
-                </p>
-                <a href="${url}" style="display:inline-block;background:#1e40af;color:#fff;text-decoration:none;padding:8px 16px;border-radius:6px;font-size:14px;font-weight:600">View Ticket</a>
-              `);
-              await sendMail({ to: u.email, subject, html });
-            } catch (err) {
-              console.error('mention email failed:', err.message);
-            }
-          }
+          const mentionedIds = mentioned.map(m => m.id);
+          await Promise.all([
+            fanoutNewComment(pool, {
+              ticket: ticket.rows[0],
+              comment: trimmedBody,
+              actorId: req.session.user.id,
+              actorName: req.session.user.displayName,
+              excludeUserIds: mentionedIds,
+            }).catch(err => console.error('comment fanout failed:', err.message)),
+            mentioned.length
+              ? fanoutMention(pool, {
+                  ticket: ticket.rows[0],
+                  comment: trimmedBody,
+                  commentId: insertResult.rows[0].id,
+                  mentionedUsers: mentioned,
+                  actorId: req.session.user.id,
+                  actorName: req.session.user.displayName,
+                }).catch(err => console.error('mention fanout failed:', err.message))
+              : null,
+          ]);
         } catch (err) {
-          console.error('mention fanout failed:', err.message);
+          console.error('comment+mention fanout failed:', err.message);
         }
       })();
     }

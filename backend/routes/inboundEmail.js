@@ -18,7 +18,7 @@ const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { buildWritePatch, decryptRow, decryptRows } = require('../services/fields');
 const { hashWhole } = require('../services/blindIndex');
-const { notifyNewComment } = require('../services/email');
+const { fanoutNewComment } = require('../services/notificationFanout');
 const inboundProcessor = require('../services/inboundProcessor');
 
 const router = express.Router();
@@ -213,9 +213,9 @@ router.post('/generic', async (req, res) => {
 
       // Fan out follower notifications for the vendor reply. No
       // user-side actor (the comment came from a contact, not a user),
-      // so excludeUserId is null — submitter + every follower with
-      // email_on_comment=true gets the email.
-      notifyNewComment(pool, {
+      // so actorId is null — submitter + every follower with the
+      // comment row enabled in their notification matrix gets the email.
+      fanoutNewComment(pool, {
         ticket: autoReply.ticket,
         comment: autoReply.cleanedBody || '',
         actorId: null,
@@ -376,7 +376,7 @@ router.post('/:id/match', requireAuth, requireRole('Admin', 'Manager'), async (r
     // Followers only get pinged for non-muted comments — the whole point
     // of muting at the ticket level is to silence the noise.
     if (!muteByDefault) {
-      notifyNewComment(pool, {
+      fanoutNewComment(pool, {
         ticket: ticket.rows[0],
         comment: commentBody,
         actorId: req.session.user.id,

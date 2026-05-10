@@ -93,7 +93,13 @@ export default function NotificationTray() {
       </button>
 
       {open && (
-        <div className="absolute right-0 mt-1 w-80 bg-surface border border-border rounded-lg shadow-lg z-50 overflow-hidden">
+        <div
+          className="
+            fixed top-14 left-1/2 -translate-x-1/2 w-[min(calc(100vw-1rem),22rem)]
+            sm:absolute sm:top-full sm:left-auto sm:right-0 sm:translate-x-0 sm:mt-1 sm:w-80
+            bg-surface border border-border rounded-lg shadow-lg z-50 overflow-hidden
+          "
+        >
           <div className="flex items-center justify-between px-3 py-2 border-b border-border">
             <span className="text-xs font-semibold text-fg">Notifications</span>
             {unread > 0 && (
