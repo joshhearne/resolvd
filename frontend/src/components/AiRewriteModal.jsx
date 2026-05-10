@@ -61,7 +61,10 @@ export default function AiRewriteModal({ open, onClose, originalText, surface, o
       setProvider(r.provider);
       setModel(r.model);
     } catch (e) {
-      setError(e.message || "Rewrite failed");
+      setError({
+        msg: e.message || "Rewrite failed",
+        providerMessage: e.body?.provider_message || null,
+      });
     } finally {
       setBusy(false);
     }
@@ -172,7 +175,15 @@ export default function AiRewriteModal({ open, onClose, originalText, surface, o
 
         {error && (
           <div className="px-4 py-2 border-t border-border bg-red-50 dark:bg-red-900/20 text-red-700 dark:text-red-300 text-xs">
-            {error}
+            <div>{typeof error === "string" ? error : error.msg}</div>
+            {typeof error === "object" && error.providerMessage && (
+              <details className="mt-1">
+                <summary className="cursor-pointer select-none opacity-80">Provider details</summary>
+                <pre className="mt-1 p-2 bg-surface-2 rounded text-[11px] text-fg-muted whitespace-pre-wrap">
+{error.providerMessage}
+                </pre>
+              </details>
+            )}
           </div>
         )}
 

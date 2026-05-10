@@ -123,6 +123,14 @@ router.post('/test', requireAuth, async (req, res) => {
     const r = await aiRewrite.testConnection({ userId: req.session.user.id });
     res.json(r);
   } catch (err) {
+    if (err.name === 'ProviderError') {
+      return res.status(err.httpStatus || 502).json({
+        error: err.friendly,
+        error_kind: err.kind,
+        provider: err.provider,
+        provider_message: err.providerMessage,
+      });
+    }
     if (err.httpStatus) return res.status(err.httpStatus).json({ error: err.message });
     console.error('ai test:', err);
     res.status(502).json({ error: err.message || 'connection failed' });
@@ -142,6 +150,14 @@ router.post('/rewrite', requireAuth, async (req, res) => {
     });
     res.json(r);
   } catch (err) {
+    if (err.name === 'ProviderError') {
+      return res.status(err.httpStatus || 502).json({
+        error: err.friendly,
+        error_kind: err.kind,
+        provider: err.provider,
+        provider_message: err.providerMessage,
+      });
+    }
     if (err.httpStatus) return res.status(err.httpStatus).json({ error: err.message });
     console.error('ai rewrite:', err);
     res.status(502).json({ error: err.message || 'rewrite failed' });

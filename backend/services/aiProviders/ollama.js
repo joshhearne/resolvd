@@ -4,33 +4,41 @@
 // it with bearer auth — apiKey is optional).
 
 const fetch = require('node-fetch');
+const { fromResponse, fromFetchError } = require('./errors');
+
+const PROVIDER = 'Ollama';
 
 async function complete({ endpoint, apiKey, model, system, user, signal, timeoutMs = 60000 }) {
   const url = (endpoint || 'http://localhost:11434').replace(/\/$/, '') + '/api/chat';
   const ctrl = new AbortController();
   const sig = signal || ctrl.signal;
   const timer = setTimeout(() => ctrl.abort(), timeoutMs);
+  let r;
   try {
-    const r = await fetch(url, {
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
-      },
-      body: JSON.stringify({
-        model,
-        stream: false,
-        messages: [
-          { role: 'system', content: system },
-          { role: 'user', content: user },
-        ],
-        options: { temperature: 0.6 },
-      }),
-      signal: sig,
-    });
+    try {
+      r = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          ...(apiKey ? { Authorization: `Bearer ${apiKey}` } : {}),
+        },
+        body: JSON.stringify({
+          model,
+          stream: false,
+          messages: [
+            { role: 'system', content: system },
+            { role: 'user', content: user },
+          ],
+          options: { temperature: 0.6 },
+        }),
+        signal: sig,
+      });
+    } catch (err) {
+      throw fromFetchError({ provider: PROVIDER, err });
+    }
     if (!r.ok) {
       const body = await r.text().catch(() => '');
-      throw new Error(`ollama http ${r.status}: ${body.slice(0, 200)}`);
+      throw fromResponse({ provider: PROVIDER, status: r.status, body });
     }
     const json = await r.json();
     const text = json?.message?.content || '';

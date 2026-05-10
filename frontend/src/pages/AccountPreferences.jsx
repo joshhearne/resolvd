@@ -269,7 +269,14 @@ function AiAssistCard() {
       const r = await api.post("/api/ai/test", {});
       setTestResult({ ok: true, msg: `OK · ${r.model} · ${r.latency_ms}ms` });
     } catch (e) {
-      setTestResult({ ok: false, msg: e.message || "Failed" });
+      // Friendly per-kind messages from the new ProviderError mapping;
+      // raw e.message is already user-facing text from the server.
+      setTestResult({
+        ok: false,
+        msg: e.message || "Failed",
+        kind: e.kind || null,
+        providerMessage: e.body?.provider_message || null,
+      });
     } finally {
       setBusy(false);
     }
@@ -418,9 +425,19 @@ function AiAssistCard() {
                 Test connection
               </button>
               {testResult && (
-                <span className={`text-xs ${testResult.ok ? "text-green-600" : "text-red-600"}`}>
-                  {testResult.msg}
-                </span>
+                <div className="flex-1 text-xs">
+                  <div className={testResult.ok ? "text-green-600" : "text-red-600"}>
+                    {testResult.msg}
+                  </div>
+                  {testResult.providerMessage && (
+                    <details className="mt-0.5 text-fg-dim">
+                      <summary className="cursor-pointer select-none">Provider details</summary>
+                      <pre className="mt-1 p-2 bg-surface-2 rounded text-[11px] whitespace-pre-wrap">
+{testResult.providerMessage}
+                      </pre>
+                    </details>
+                  )}
+                </div>
               )}
             </div>
           </>
