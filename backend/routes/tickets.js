@@ -44,9 +44,8 @@ async function stripAiMetadataIfHidden(viewer, row) {
   let visible = isPriv || isAuthor;
   if (!visible) {
     try {
-      const branding = await require('../services/branding').getBranding();
-      const audience = branding?.ai_disclosure_audience || 'self_and_admin';
-      if (audience === 'all_users') visible = true;
+      const aiSettings = await require('../services/aiSettings').getSettings();
+      if (aiSettings.disclosure_audience === 'all_users') visible = true;
     } catch {}
   }
   if (!visible && row.ai_publish_consent === true) visible = true;

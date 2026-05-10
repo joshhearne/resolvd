@@ -1309,6 +1309,9 @@ async function initSchema() {
     // Track whether the project AI context was actually injected on this
     // call. Surfaces in the badge popover as an extra disclosure line.
     await client.query(`ALTER TABLE ai_rewrite_logs ADD COLUMN IF NOT EXISTS project_context_used BOOLEAN NOT NULL DEFAULT FALSE`);
+    // Source of credentials — 'user' (BYOK) or 'org' (admin-managed).
+    // Lets usage reports attribute cost to the right party.
+    await client.query(`ALTER TABLE ai_rewrite_logs ADD COLUMN IF NOT EXISTS config_source TEXT`);
 
     // Per-comment AI usage metadata. Set when an AI rewrite was applied
     // before posting. ai_publish_consent snapshots the author's
@@ -1355,6 +1358,43 @@ async function initSchema() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_login_attempts_ip_time ON login_attempts(ip, attempted_at DESC)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_login_attempts_email_time ON login_attempts(email_attempted, attempted_at DESC) WHERE email_attempted IS NOT NULL`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_login_attempts_failures ON login_attempts(ip, attempted_at DESC) WHERE success = FALSE`);
+
+    // ── AI Settings — dedicated singleton table ──────────────────────────
+    // Centralizes BYO-AI / org-managed-AI configuration that previously
+    // lived under branding.ai_*. Three admin-facing layers:
+    //   1. Integration  — org provider / endpoint / model + encrypted key
+    //   2. Permissions  — enabled, disclosure audience, BYOK policy
+    //   3. Project ctx  — feature toggle lives here, content edited inline
+    //
+    // When org_locked=TRUE, users cannot override the org config — every
+    // rewrite uses the org credentials. When allow_user_byok=TRUE and
+    // org_locked=FALSE, users may set their own provider/model/key.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ai_settings (
+        id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        org_provider TEXT,
+        org_endpoint TEXT,
+        org_model TEXT,
+        org_api_key_enc BYTEA,
+        org_locked BOOLEAN NOT NULL DEFAULT FALSE,
+        allow_user_byok BOOLEAN NOT NULL DEFAULT TRUE,
+        project_context_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        disclosure_audience TEXT NOT NULL DEFAULT 'self_and_admin'
+          CHECK (disclosure_audience IN ('self_and_admin','admin_only','all_users')),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    // Backfill from existing branding.ai_* on first run. Idempotent —
+    // only inserts when the singleton row is missing.
+    await client.query(`
+      INSERT INTO ai_settings (id, enabled, project_context_enabled, disclosure_audience)
+      SELECT 1,
+             COALESCE((SELECT ai_assist_enabled FROM branding WHERE id = 1), TRUE),
+             COALESCE((SELECT ai_project_context_enabled FROM branding WHERE id = 1), TRUE),
+             COALESCE((SELECT ai_disclosure_audience FROM branding WHERE id = 1), 'self_and_admin')
+      ON CONFLICT DO NOTHING
+    `);
 
     await client.query('COMMIT');
   } catch (err) {

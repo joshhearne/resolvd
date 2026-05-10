@@ -37,6 +37,7 @@ const alertSourceRoutes = require('./routes/alertSources');
 const cannedResponseRoutes = require('./routes/cannedResponses');
 const slaRoutes = require('./routes/sla');
 const aiAssistRoutes = require('./routes/aiAssist');
+const aiSettingsRoutes = require('./routes/aiSettings');
 const securityRoutes = require('./routes/security');
 const { requireSupportAccessIfSupport } = require('./middleware/supportAccess');
 const { securityHeaders } = require('./middleware/securityHeaders');
@@ -117,6 +118,7 @@ app.use('/api/alert-sources', alertSourceRoutes);
 app.use('/api/canned-responses', cannedResponseRoutes);
 app.use('/api/sla', slaRoutes);
 app.use('/api/ai', aiAssistRoutes);
+app.use('/api/ai-settings', aiSettingsRoutes);
 app.use('/api/security', securityRoutes);
 
 // Health check
