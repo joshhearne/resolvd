@@ -37,6 +37,10 @@ function defaultsForUser(prefsBlob) {
     // generally improves output; users on a tight token budget can flip
     // it off.
     use_project_context: a.use_project_context !== false,
+    // When ON, AI usage on this user's comments + tickets becomes
+    // visible to all internal users regardless of org-wide audience
+    // (vendors still never see). Default OFF — explicit consent required.
+    publish_usage: !!a.publish_usage,
   };
 }
 
@@ -205,13 +209,63 @@ async function rewrite({ userId, surface, tone, verbosity, eli5, text, projectId
     system,
     user,
   });
+  // Log the rewrite — the modal's Apply button passes log_id back when
+  // the user accepts. Stays unapplied (applied_at NULL) until then; the
+  // consuming endpoint marks it applied + copies metadata onto the row.
+  let logId = null;
+  try {
+    const logRow = await pool.query(
+      `INSERT INTO ai_rewrite_logs
+         (user_id, provider, model, surface, project_id,
+          input_tokens, output_tokens, tone, verbosity, eli5)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       RETURNING id`,
+      [
+        userId, cfg.provider, cfg.model, surface, projectId || null,
+        result.usage?.input_tokens ?? null,
+        result.usage?.output_tokens ?? null,
+        tone, verbosity, !!eli5,
+      ]
+    );
+    logId = logRow.rows[0].id;
+  } catch (err) {
+    console.error('ai_rewrite_logs insert failed:', err.message);
+  }
+
   return {
+    log_id: logId,
     rewritten: result.text,
     usage: result.usage || null,
     provider: cfg.provider,
     model: cfg.model,
     project_context_used: !!projectContext,
   };
+}
+
+// One-shot consumer for an ai_rewrite_logs row. Validates the log
+// belongs to userId and isn't already applied, marks it applied to
+// (table, id), returns the metadata payload to copy onto the row.
+// Snapshot the author's publish_usage pref at apply time so future
+// pref changes don't retroactively widen visibility.
+async function applyRewriteLog({ logId, userId, table, rowId, client = null }) {
+  if (!logId) return null;
+  const db = client || pool;
+  const r = await db.query(
+    `UPDATE ai_rewrite_logs
+        SET applied_at = NOW(),
+            applied_to_table = $3,
+            applied_to_id = $4
+      WHERE id = $1
+        AND user_id = $2
+        AND applied_at IS NULL
+      RETURNING provider, model, input_tokens, output_tokens, tone, verbosity, eli5`,
+    [logId, userId, table, rowId]
+  );
+  if (!r.rows[0]) return null;
+
+  const u = await db.query(`SELECT preferences FROM users WHERE id = $1`, [userId]);
+  const publish = !!(u.rows[0]?.preferences?.ai_assist?.publish_usage);
+  return { ...r.rows[0], publish_consent: publish };
 }
 
 // Light-weight test call used by the "Test connection" button in prefs.
@@ -248,6 +302,7 @@ module.exports = {
   testConnection,
   saveUserApiKey,
   loadUserAssistConfig,
+  applyRewriteLog,
   listProviders,
   isOrgEnabled,
   defaultsForUser,

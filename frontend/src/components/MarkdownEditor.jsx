@@ -186,7 +186,7 @@ export default function MarkdownEditor({
           originalText={value || ""}
           surface={aiSurface}
           projectId={aiProjectId || null}
-          onAccept={(t) => onChange({ target: { value: t } })}
+          onAccept={(t, meta) => onChange({ target: { value: t, _aiLogId: meta?.logId || null } })}
         />
       )}
 

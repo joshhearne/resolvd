@@ -84,6 +84,7 @@ router.patch('/config', requireAuth, async (req, res) => {
     }
     if (body.enabled !== undefined) sanitized.enabled = !!body.enabled;
     if (body.use_project_context !== undefined) sanitized.use_project_context = !!body.use_project_context;
+    if (body.publish_usage !== undefined) sanitized.publish_usage = !!body.publish_usage;
 
     // Merge into existing ai_assist sub-object then back into preferences.
     const current = await pool.query(`SELECT preferences FROM users WHERE id = $1`, [userId]);

@@ -22,6 +22,7 @@ export default function AiRewriteModal({ open, onClose, originalText, surface, p
   const [provider, setProvider] = useState(null);
   const [model, setModel] = useState(null);
   const [contextUsed, setContextUsed] = useState(false);
+  const [logId, setLogId] = useState(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
 
@@ -63,6 +64,7 @@ export default function AiRewriteModal({ open, onClose, originalText, surface, p
       setProvider(r.provider);
       setModel(r.model);
       setContextUsed(!!r.project_context_used);
+      setLogId(r.log_id || null);
     } catch (e) {
       setError({
         msg: e.message || "Rewrite failed",
@@ -75,7 +77,7 @@ export default function AiRewriteModal({ open, onClose, originalText, surface, p
 
   function accept() {
     if (!rewritten) return;
-    onAccept(rewritten);
+    onAccept(rewritten, { logId });
     toast.success("Applied");
     onClose();
   }
