@@ -50,12 +50,15 @@ export function AuthProvider({ children }) {
     window.location.href = "/auth/logout";
   };
 
-  async function loginLocal(email, password) {
+  async function loginLocal(email, password, { honeypot = "", formDwellMs = null } = {}) {
     const res = await fetch("/auth/local/login", {
       method: "POST",
       credentials: "include",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ email, password }),
+      // honeypot + form_dwell_ms are bot-detection signals. Real form
+      // never fills the honeypot field; dwell tracks render-to-submit
+      // delay so sub-800ms bot submits get refused server-side.
+      body: JSON.stringify({ email, password, website: honeypot, form_dwell_ms: formDwellMs }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);

@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import toast from "react-hot-toast";
 import { useAuth } from "../context/AuthContext";
@@ -25,6 +25,12 @@ export default function Login() {
   const [submitting, setSubmitting] = useState(false);
   const [setupDisplayName, setSetupDisplayName] = useState("");
   const [setupConfirm, setSetupConfirm] = useState("");
+  // Bot detection signals — invisible to humans.
+  // honeypot = hidden field auto-filled by naive scrapers/bots
+  // formMountTs = render timestamp; server rejects submits faster than
+  // ~800ms which no human can hit.
+  const [honeypot, setHoneypot] = useState("");
+  const formMountRef = useRef(Date.now());
 
   useEffect(() => {
     const err = params.get("error");
@@ -41,7 +47,8 @@ export default function Login() {
     e.preventDefault();
     setSubmitting(true);
     try {
-      const result = await loginLocal(email, password);
+      const dwell = Date.now() - formMountRef.current;
+      const result = await loginLocal(email, password, { honeypot, formDwellMs: dwell });
       if (result.pendingMfa) navigate("/mfa-challenge");
       else navigate("/");
     } catch (err) {
@@ -231,6 +238,19 @@ export default function Login() {
 
         {methods.local && (
           <form onSubmit={handleLocalSubmit} className="space-y-3">
+            {/* Honeypot — hidden from sighted users + assistive tech.
+                Real submissions leave it empty; naive bots fill it in. */}
+            <input
+              type="text"
+              name="website"
+              tabIndex={-1}
+              autoComplete="off"
+              value={honeypot}
+              onChange={(e) => setHoneypot(e.target.value)}
+              aria-hidden="true"
+              className="absolute opacity-0 pointer-events-none w-px h-px -left-[9999px]"
+              style={{ position: "absolute", left: "-9999px" }}
+            />
             <input
               type="email"
               required

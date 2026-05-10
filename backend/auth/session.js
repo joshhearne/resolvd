@@ -114,14 +114,20 @@ async function mfaRequired(user) {
 
 function loginUser(req, user, { pendingMfa = false } = {}) {
   return new Promise((resolve, reject) => {
-    if (pendingMfa) {
-      req.session.pendingMfaUserId = user.id;
-      req.session.user = null;
-    } else {
-      req.session.user = buildSessionUser(user);
-      req.session.pendingMfaUserId = null;
-    }
-    req.session.save(err => err ? reject(err) : resolve());
+    // Regenerate the session ID on every successful auth transition.
+    // Prevents session fixation: an attacker who poisoned the pre-login
+    // cookie can't carry that ID into the authenticated session.
+    req.session.regenerate(regenErr => {
+      if (regenErr) return reject(regenErr);
+      if (pendingMfa) {
+        req.session.pendingMfaUserId = user.id;
+        req.session.user = null;
+      } else {
+        req.session.user = buildSessionUser(user);
+        req.session.pendingMfaUserId = null;
+      }
+      req.session.save(err => err ? reject(err) : resolve());
+    });
   });
 }
 

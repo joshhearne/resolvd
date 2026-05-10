@@ -23,12 +23,20 @@ const router = express.Router();
 const PROVIDERS = { entra, google };
 
 const loginLimiter = rateLimit({
+  // Tightened from 20 → 8 per 15-min window. Targeted credential stuffing
+  // is the common attack; legitimate humans rarely fail this often.
+  // Persistent IP block in loginSecurity catches anything that rotates
+  // across windows.
   windowMs: 15 * 60 * 1000,
-  max: 20,
+  max: 8,
   standardHeaders: true,
   legacyHeaders: false,
+  // Don't count successful logins against the rate limit — only failures.
+  skipSuccessfulRequests: true,
   message: { error: 'Too many login attempts. Try again later.' },
 });
+
+const loginSecurity = require('../services/loginSecurity');
 
 const resetRequestLimiter = rateLimit({
   windowMs: 60 * 60 * 1000,
@@ -101,17 +109,70 @@ router.get('/google/callback', (req, res) => handleSsoCallback('google', req, re
 
 // ─── Local username/password ─────────────────────────────────────────────────
 router.post('/local/login', loginLimiter, async (req, res) => {
+  const ip = loginSecurity.getClientIp(req);
+  const userAgent = loginSecurity.getUserAgent(req);
+  const { isBot, honeypot, dwell } = loginSecurity.botSignals(req.body);
+  const email = req.body?.email;
   try {
     if (!(await local.isEnabled())) return res.status(403).json({ error: 'Local login disabled' });
-    const { email, password } = req.body || {};
-    const user = await local.authenticate({ email, password });
+
+    // Honeypot / dwell-time bot rejection. Log + refuse without
+    // touching auth path — saves both Argon2 cost and a real user row
+    // from getting locked by a bot churning across emails.
+    if (isBot) {
+      await loginSecurity.recordAttempt({
+        email, ip, userAgent,
+        success: false,
+        reason: honeypot ? 'honeypot' : 'fast_submit',
+        honeypotFilled: honeypot.length > 0,
+        formDwellMs: dwell,
+      });
+      // Mimic the rate-limit error so a bot can't distinguish honeypot
+      // hit from being rate-limited.
+      return res.status(429).json({ error: 'Too many login attempts. Try again later.' });
+    }
+
+    // Persistent IP block check — catches credential stuffing that
+    // rotates across the express-rate-limit window.
+    const ipBlock = await loginSecurity.checkIpBlocked(ip);
+    if (ipBlock.blocked) {
+      await loginSecurity.recordAttempt({
+        email, ip, userAgent,
+        success: false,
+        reason: ipBlock.reason,
+        formDwellMs: dwell,
+      });
+      if (ipBlock.retry_after_seconds) {
+        res.set('Retry-After', String(ipBlock.retry_after_seconds));
+      }
+      return res.status(429).json({ error: 'Too many failures from this address. Try again later.' });
+    }
+
+    const user = await local.authenticate({ email, password: req.body?.password });
     if (await mfaRequired(user)) {
       await loginUser(req, user, { pendingMfa: true });
+      await loginSecurity.recordAttempt({
+        email, ip, userAgent,
+        success: true, reason: 'mfa_pending', formDwellMs: dwell,
+      });
       return res.json({ pendingMfa: true });
     }
     await loginUser(req, user);
+    await loginSecurity.recordAttempt({
+      email, ip, userAgent,
+      success: true, reason: null, formDwellMs: dwell,
+    });
     res.json({ user: buildSessionUser(user) });
   } catch (err) {
+    // Log every failure so the audit table reflects reality (including
+    // 401 / 423 / etc — not just rate-limit). Generic error to client
+    // to avoid enumeration.
+    await loginSecurity.recordAttempt({
+      email, ip, userAgent,
+      success: false,
+      reason: err.code || 'server_error',
+      formDwellMs: dwell,
+    });
     if (err.code === 'INVALID_CREDENTIALS') return res.status(401).json({ error: 'Invalid email or password' });
     if (err.code === 'ACCOUNT_LOCKED') return res.status(423).json({ error: err.message });
     if (err.code === 'ACCOUNT_DISABLED') return res.status(403).json({ error: err.message });

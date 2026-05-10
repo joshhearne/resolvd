@@ -1335,6 +1335,27 @@ async function initSchema() {
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS ai_publish_consent BOOLEAN`);
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS ai_project_context_used BOOLEAN`);
 
+    // ── Login security — attempt audit + IP-based blocking ──────────────
+    // Logs every /auth/local/login + bootstrap attempt for forensics and
+    // to feed the IP rate limiter. Indexed by ip + email for fast
+    // lookback windows. Rows are small; long retention OK.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS login_attempts (
+        id BIGSERIAL PRIMARY KEY,
+        email_attempted TEXT,
+        ip TEXT,
+        user_agent TEXT,
+        success BOOLEAN NOT NULL,
+        reason TEXT,
+        honeypot_filled BOOLEAN NOT NULL DEFAULT FALSE,
+        form_dwell_ms INTEGER,
+        attempted_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_login_attempts_ip_time ON login_attempts(ip, attempted_at DESC)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_login_attempts_email_time ON login_attempts(email_attempted, attempted_at DESC) WHERE email_attempted IS NOT NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_login_attempts_failures ON login_attempts(ip, attempted_at DESC) WHERE success = FALSE`);
+
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');
