@@ -191,6 +191,14 @@ Notification types:
 
 Any internal status with `semantic_tag='pending_review'` accepts a follow-up reminder (1–90 days, default 3). Click "Schedule follow-up" on the ticket; an in-app notification + email fire when the timer elapses. Status advancement is blocked while a reminder is pending — cancel it or wait for it to fire (then ack via the bell tray) before moving on. Another reminder can be scheduled afterwards.
 
+### SLA tracker
+
+Two clocks per ticket: **response** (closes when someone other than the submitter posts a non-system comment) and **resolve** (closes when `resolved_at` is set). Targets come from `sla_policies` keyed on `priority` (org default) or `priority + project_id` (project override beats default). Default policies seeded P1 30m/4h, P2 1h/8h, P3 4h/24h, P4 8h/72h, P5 1d/7d — admins tune them at **Admin → SLA policies**.
+
+Both clocks **pause** when the ticket transitions into a status tagged `awaiting_input` or `on_hold` (vendor / customer wait time doesn't count against you), and **resume** on transition out — the due-at timestamps shift forward by the paused duration. A 5-minute breach scheduler flips the breached flag + stamps the breach timestamp + fans out via the `sla_breach` notification event (in-app + immediate email — bypasses the digest cadence since breaches are action-required) to assignee + followers + submitter, deduped.
+
+The dashboard gets a **SLA — Month to date** card: stat tiles for MTD response/resolve breach counts, currently-breached count (clickable to a filtered ticket list), open-with-SLA-clock count, plus a per-project breakdown table when MTD breaches exist. Admin / Manager see "All projects"; Submitter / Viewer see only their `project_members` rows. Empty-state collapses to a single line.
+
 ### Other ticket admin tools
 
 - **Submit on behalf**: Admin/Manager can pick a different submitter at creation time, or change the submitter on an existing ticket.
