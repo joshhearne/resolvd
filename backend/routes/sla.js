@@ -122,12 +122,50 @@ router.delete('/policies/:id', requireAuth, requireRole('Admin'), async (req, re
 
 // ─── Dashboard ───────────────────────────────────────────────────────────
 
-// GET /api/sla/dashboard — at-a-glance counts + breach lists.
-// Returns: { counts: {open, at_risk, breached_response, breached_resolve},
-//           breached: [...recent breached tickets], at_risk: [...] }
-// at_risk = within 25% of due-at, not yet responded / resolved.
-router.get('/dashboard', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+// Returns array of project IDs the user can access, or null if
+// Admin/Manager (which means "all projects"). Mirrors the helper in
+// routes/tickets.js — kept inline so this module stays self-contained.
+async function getAccessibleProjectIds(user) {
+  if (['Admin', 'Manager'].includes(user.role)) return null;
+  const result = await pool.query(
+    'SELECT project_id FROM project_members WHERE user_id = $1',
+    [user.id]
+  );
+  return result.rows.map(r => r.project_id);
+}
+
+// GET /api/sla/dashboard — counts + breach lists for the dashboard
+// SLA card. Open to any authenticated user; project visibility is
+// scoped by membership (Admin/Manager see all, Submitter/Viewer see
+// only project_members rows). MTD breach counts are grouped per
+// project so the user can see where their pain is.
+router.get('/dashboard', requireAuth, async (req, res) => {
   try {
+    const accessible = await getAccessibleProjectIds(req.session.user);
+    // Empty array case: scoped user with zero project memberships → no
+    // SLA data to show. Return zeroed shape so the frontend can render
+    // an empty state without special-casing.
+    if (accessible !== null && accessible.length === 0) {
+      return res.json({
+        scope: 'project_member',
+        live: { breached_response: 0, breached_resolve: 0, open_response: 0, open_resolve: 0 },
+        mtd_total: { response: 0, resolve: 0 },
+        mtd_by_project: [],
+        at_risk: [],
+        breached: [],
+      });
+    }
+
+    // Build a "project_id IN ($scope)" SQL fragment + params. Reuses
+    // the same scope across the four queries below.
+    const scopeParams = [];
+    let scopeWhere = '';
+    if (accessible !== null) {
+      scopeParams.push(accessible);
+      scopeWhere = `AND project_id = ANY($1)`;
+    }
+
+    // Live state across in-scope tickets.
     const counts = await pool.query(`
       SELECT
         SUM(CASE WHEN sla_response_breached = TRUE AND sla_first_response_at IS NULL THEN 1 ELSE 0 END)::int AS breached_response,
@@ -135,12 +173,42 @@ router.get('/dashboard', requireAuth, requireRole('Admin', 'Manager'), async (re
         SUM(CASE WHEN sla_response_due_at IS NOT NULL AND sla_first_response_at IS NULL AND sla_response_breached = FALSE THEN 1 ELSE 0 END)::int AS open_response,
         SUM(CASE WHEN sla_resolve_due_at  IS NOT NULL AND resolved_at IS NULL              AND sla_resolve_breached  = FALSE THEN 1 ELSE 0 END)::int AS open_resolve
       FROM tickets
-    `);
+      WHERE 1=1 ${scopeWhere}
+    `, scopeParams);
 
-    // At-risk = unresponded tickets where (now → due) is < 25% of
-    // (created → due) remaining. Quick-and-dirty proxy for "due soon".
+    // Month-to-date breach totals across all in-scope projects.
+    const mtdTotal = await pool.query(`
+      SELECT
+        SUM(CASE WHEN sla_response_breached_at IS NOT NULL AND sla_response_breached_at >= date_trunc('month', NOW()) THEN 1 ELSE 0 END)::int AS response,
+        SUM(CASE WHEN sla_resolve_breached_at  IS NOT NULL AND sla_resolve_breached_at  >= date_trunc('month', NOW()) THEN 1 ELSE 0 END)::int AS resolve
+      FROM tickets
+      WHERE 1=1 ${scopeWhere}
+    `, scopeParams);
+
+    // Per-project MTD breakdown — joined with projects so we have a
+    // friendly name + prefix for the UI.
+    const mtdByProject = await pool.query(`
+      SELECT
+        t.project_id,
+        p.name    AS project_name,
+        p.prefix  AS project_prefix,
+        SUM(CASE WHEN t.sla_response_breached_at IS NOT NULL AND t.sla_response_breached_at >= date_trunc('month', NOW()) THEN 1 ELSE 0 END)::int AS breached_response,
+        SUM(CASE WHEN t.sla_resolve_breached_at  IS NOT NULL AND t.sla_resolve_breached_at  >= date_trunc('month', NOW()) THEN 1 ELSE 0 END)::int AS breached_resolve
+      FROM tickets t
+      LEFT JOIN projects p ON p.id = t.project_id
+      WHERE 1=1 ${scopeWhere ? 'AND t.project_id = ANY($1)' : ''}
+      GROUP BY t.project_id, p.name, p.prefix
+      HAVING SUM(CASE WHEN t.sla_response_breached_at >= date_trunc('month', NOW()) THEN 1 ELSE 0 END) > 0
+          OR SUM(CASE WHEN t.sla_resolve_breached_at  >= date_trunc('month', NOW()) THEN 1 ELSE 0 END) > 0
+      ORDER BY (
+        SUM(CASE WHEN t.sla_response_breached_at >= date_trunc('month', NOW()) THEN 1 ELSE 0 END) +
+        SUM(CASE WHEN t.sla_resolve_breached_at  >= date_trunc('month', NOW()) THEN 1 ELSE 0 END)
+      ) DESC
+    `, scopeParams);
+
+    // At-risk + breached samples (capped) for inline drill-down.
     const atRisk = await pool.query(`
-      SELECT id, internal_ref, title, title_enc, priority, sla_response_due_at, sla_resolve_due_at,
+      SELECT id, internal_ref, title, title_enc, effective_priority, sla_response_due_at, sla_resolve_due_at,
              sla_first_response_at, resolved_at, sla_paused_at, project_id
         FROM tickets
        WHERE sla_paused_at IS NULL
@@ -151,27 +219,32 @@ router.get('/dashboard', requireAuth, requireRole('Admin', 'Manager'), async (re
            (sla_resolve_due_at IS NOT NULL AND resolved_at IS NULL AND sla_resolve_breached = FALSE
               AND sla_resolve_due_at < NOW() + INTERVAL '4 hours')
          )
+         ${scopeWhere}
        ORDER BY LEAST(COALESCE(sla_response_due_at, 'infinity'), COALESCE(sla_resolve_due_at, 'infinity')) ASC
-       LIMIT 50
-    `);
+       LIMIT 25
+    `, scopeParams);
     await decryptRows('tickets', atRisk.rows);
 
     const breached = await pool.query(`
-      SELECT id, internal_ref, title, title_enc, priority, sla_response_due_at, sla_resolve_due_at,
+      SELECT id, internal_ref, title, title_enc, effective_priority, sla_response_due_at, sla_resolve_due_at,
              sla_response_breached, sla_resolve_breached, sla_first_response_at, resolved_at, project_id
         FROM tickets
-       WHERE (sla_response_breached = TRUE AND sla_first_response_at IS NULL)
-          OR (sla_resolve_breached  = TRUE AND resolved_at IS NULL)
+       WHERE ((sla_response_breached = TRUE AND sla_first_response_at IS NULL)
+           OR (sla_resolve_breached  = TRUE AND resolved_at IS NULL))
+         ${scopeWhere}
        ORDER BY GREATEST(
            COALESCE(sla_response_due_at, '-infinity'),
            COALESCE(sla_resolve_due_at,  '-infinity')
        ) DESC
-       LIMIT 50
-    `);
+       LIMIT 25
+    `, scopeParams);
     await decryptRows('tickets', breached.rows);
 
     res.json({
-      counts: counts.rows[0],
+      scope: accessible === null ? 'all' : 'project_member',
+      live: counts.rows[0],
+      mtd_total: mtdTotal.rows[0],
+      mtd_by_project: mtdByProject.rows,
       at_risk: atRisk.rows,
       breached: breached.rows,
     });

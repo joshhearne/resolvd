@@ -139,10 +139,13 @@ async function markResponded(client, ticketId) {
 async function tickBreaches() {
   let respondedBreached = 0;
   let resolveBreached = 0;
-  // Response-time breaches.
+  // Response-time breaches. Stamp the breach timestamp so MTD reports
+  // can group by month — this is the only signal we have for "when did
+  // this breach occur".
   const respDue = await pool.query(
     `UPDATE tickets
-        SET sla_response_breached = TRUE
+        SET sla_response_breached = TRUE,
+            sla_response_breached_at = NOW()
       WHERE sla_response_due_at IS NOT NULL
         AND sla_response_due_at < NOW()
         AND sla_first_response_at IS NULL
@@ -154,7 +157,8 @@ async function tickBreaches() {
   // Resolve-time breaches.
   const resDue = await pool.query(
     `UPDATE tickets
-        SET sla_resolve_breached = TRUE
+        SET sla_resolve_breached = TRUE,
+            sla_resolve_breached_at = NOW()
       WHERE sla_resolve_due_at IS NOT NULL
         AND sla_resolve_due_at < NOW()
         AND resolved_at IS NULL

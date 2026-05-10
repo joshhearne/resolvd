@@ -1180,6 +1180,29 @@ async function initSchema() {
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_paused_at TIMESTAMPTZ`);
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_response_breached BOOLEAN NOT NULL DEFAULT FALSE`);
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_resolve_breached BOOLEAN NOT NULL DEFAULT FALSE`);
+    // When the breach flag was first flipped — drives MTD breach
+    // counts on the dashboard. Stays NULL for unbreached tickets.
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_response_breached_at TIMESTAMPTZ`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_resolve_breached_at TIMESTAMPTZ`);
+    // Backfill timestamps for any tickets that were already flagged
+    // breached before this column existed. Use the due_at as the best
+    // proxy. Only updates rows missing the timestamp — idempotent.
+    await client.query(`
+      UPDATE tickets SET sla_response_breached_at = sla_response_due_at
+       WHERE sla_response_breached = TRUE
+         AND sla_response_breached_at IS NULL
+         AND sla_response_due_at IS NOT NULL
+    `);
+    await client.query(`
+      UPDATE tickets SET sla_resolve_breached_at = sla_resolve_due_at
+       WHERE sla_resolve_breached = TRUE
+         AND sla_resolve_breached_at IS NULL
+         AND sla_resolve_due_at IS NOT NULL
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_sla_response_breached_at
+      ON tickets(sla_response_breached_at) WHERE sla_response_breached_at IS NOT NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_sla_resolve_breached_at
+      ON tickets(sla_resolve_breached_at) WHERE sla_resolve_breached_at IS NOT NULL`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_sla_response_due
       ON tickets(sla_response_due_at) WHERE sla_response_due_at IS NOT NULL AND sla_first_response_at IS NULL AND sla_response_breached = FALSE`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_sla_resolve_due
