@@ -22,6 +22,7 @@ import AdminInbound from "./pages/AdminInbound";
 import AdminSupport from "./pages/AdminSupport";
 import AdminEncryption from "./pages/AdminEncryption";
 import AdminEmailBackends from "./pages/AdminEmailBackends";
+import AdminAiAssist from "./pages/AdminAiAssist";
 import AdminMerge from "./pages/AdminMerge";
 import AdminAlertSources from "./pages/AdminAlertSources";
 import AdminSystemHealth from "./pages/AdminSystemHealth";
@@ -156,6 +157,7 @@ function AppRoutes() {
           <Route path="support" element={<AdminSupport />} />
           <Route path="encryption" element={<AdminEncryption />} />
           <Route path="email-backends" element={<AdminEmailBackends />} />
+          <Route path="ai-assist" element={<AdminAiAssist />} />
           <Route path="merge" element={<AdminMerge />} />
           <Route path="alert-sources" element={<AdminAlertSources />} />
           <Route path="system-health" element={<AdminSystemHealth />} />

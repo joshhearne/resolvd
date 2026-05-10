@@ -43,8 +43,8 @@ router.get('/:id/comments', requireAuth, async (req, res) => {
     // sees all. Otherwise it depends on branding.ai_disclosure_audience
     // and the comment's snapshotted ai_publish_consent.
     const viewer = req.session.user;
-    const branding = await require('../services/branding').getBranding().catch(() => null);
-    const audience = branding?.ai_disclosure_audience || 'self_and_admin';
+    const aiSettings = await require('../services/aiSettings').getSettings().catch(() => null);
+    const audience = aiSettings?.disclosure_audience || 'self_and_admin';
     const isPriv = ['Admin', 'Manager'].includes(viewer.role);
     for (const row of result.rows) {
       if (!row.ai_provider) continue;

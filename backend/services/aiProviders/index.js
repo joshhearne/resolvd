@@ -23,6 +23,9 @@ function listProviders() {
     default_endpoint: a.defaultEndpoint,
     default_model: a.defaultModel,
     needs_api_key: a.needsApiKey !== false,
+    console_url: a.consoleUrl || null,
+    console_label: a.consoleLabel || null,
+    setup_hint: a.setupHint || null,
   }));
 }
 

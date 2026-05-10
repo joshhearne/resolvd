@@ -356,6 +356,24 @@ function AiAssistCard() {
           </select>
         </label>
 
+        {provider && (provider.setup_hint || provider.console_url) && (
+          <div className="rounded-md border border-border bg-surface-2 px-3 py-2 text-xs text-fg-muted">
+            {provider.setup_hint && <p className="leading-snug">{provider.setup_hint}</p>}
+            {provider.console_url && (
+              <p className="mt-1">
+                <a
+                  href={provider.console_url}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-brand hover:underline"
+                >
+                  Open {provider.console_label || "console"} ↗
+                </a>
+              </p>
+            )}
+          </div>
+        )}
+
         {provider && (
           <>
             <label className="block">

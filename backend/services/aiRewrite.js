@@ -181,52 +181,67 @@ async function rewrite({ userId, surface, tone, verbosity, eli5, text, projectId
   if (typeof text !== 'string' || !text.trim()) throw httpError(400, 'text required');
   if (text.length > 8000) throw httpError(400, 'text too long (8000 char limit)');
 
-  if (!(await isOrgEnabled())) throw httpError(403, 'AI Assist disabled by org admin');
+  // Load org settings + user config + resolve effective config (org vs user).
+  const aiSettings = require('./aiSettings');
+  const orgSettings = await aiSettings.getSettings({ withKey: true });
+  const userCfg = await loadUserAssistConfig(userId);
+  if (!userCfg) throw httpError(404, 'user not found');
+  if (!userCfg.enabled) throw httpError(403, 'AI Assist not enabled for your account');
 
-  const cfg = await loadUserAssistConfig(userId);
-  if (!cfg) throw httpError(404, 'user not found');
-  if (!cfg.enabled) throw httpError(403, 'AI Assist not enabled for your account');
-  if (!cfg.provider || !cfg.model) throw httpError(400, 'AI provider not configured');
+  const eff = aiSettings.resolveEffectiveConfig({ orgSettings, userCfg });
+  if (!eff.allowed) {
+    const msg = {
+      org_disabled: 'AI Assist disabled by org admin',
+      org_locked_unconfigured: 'Org admin has locked AI Assist but hasn\'t configured a provider',
+      byok_disabled: 'BYOK disabled — set personal credentials cleared, but org has no fallback',
+      unconfigured: 'AI provider not configured',
+    }[eff.reason] || 'AI Assist not available';
+    throw httpError(403, msg);
+  }
 
-  if (eli5 && !ELIGIBLE_ROLES.has(cfg.role)) {
+  if (eli5 && !ELIGIBLE_ROLES.has(userCfg.role)) {
     throw httpError(403, 'ELI5 mode is restricted to Admin / Manager roles');
   }
 
-  const adapter = getAdapter(cfg.provider);
-  if (adapter.needsApiKey !== false && !cfg.api_key) {
+  const adapter = getAdapter(eff.provider);
+  if (adapter.needsApiKey !== false && !eff.api_key) {
     throw httpError(400, 'API key not set for this provider');
   }
 
-  // Project context — adds tokens; gated by org + per-project + per-user toggles.
-  const branding = await getBranding().catch(() => null);
-  const projectContext = await resolveProjectContext({ projectId, userPrefs: cfg, branding });
+  // Project context — feature toggle now lives on ai_settings.
+  const projectContext = await resolveProjectContext({
+    projectId,
+    userPrefs: userCfg,
+    branding: { ai_project_context_enabled: orgSettings.project_context_enabled },
+  });
 
   const { system, user } = buildPrompt({ surface, tone, verbosity, eli5, text, projectContext });
   const result = await adapter.complete({
-    endpoint: cfg.endpoint || adapter.defaultEndpoint,
-    apiKey: cfg.api_key,
-    model: cfg.model,
+    endpoint: eff.endpoint || adapter.defaultEndpoint,
+    apiKey: eff.api_key,
+    model: eff.model,
     system,
     user,
   });
-  // Log the rewrite — the modal's Apply button passes log_id back when
-  // the user accepts. Stays unapplied (applied_at NULL) until then; the
-  // consuming endpoint marks it applied + copies metadata onto the row.
+  // Log the rewrite — record the source (org vs user) so usage reports
+  // can attribute cost. Stays unapplied (applied_at NULL) until the
+  // modal's Apply button fires the consuming endpoint.
   let logId = null;
   try {
     const logRow = await pool.query(
       `INSERT INTO ai_rewrite_logs
          (user_id, provider, model, surface, project_id,
           input_tokens, output_tokens, tone, verbosity, eli5,
-          project_context_used)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+          project_context_used, config_source)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        RETURNING id`,
       [
-        userId, cfg.provider, cfg.model, surface, projectId || null,
+        userId, eff.provider, eff.model, surface, projectId || null,
         result.usage?.input_tokens ?? null,
         result.usage?.output_tokens ?? null,
         tone, verbosity, !!eli5,
         !!projectContext,
+        eff.source,
       ]
     );
     logId = logRow.rows[0].id;
@@ -238,8 +253,9 @@ async function rewrite({ userId, surface, tone, verbosity, eli5, text, projectId
     log_id: logId,
     rewritten: result.text,
     usage: result.usage || null,
-    provider: cfg.provider,
-    model: cfg.model,
+    provider: eff.provider,
+    model: eff.model,
+    config_source: eff.source,
     project_context_used: !!projectContext,
   };
 }
@@ -270,26 +286,47 @@ async function applyRewriteLog({ logId, userId, table, rowId, client = null }) {
   return { ...r.rows[0], publish_consent: publish };
 }
 
-// Light-weight test call used by the "Test connection" button in prefs.
-// Returns { ok: true, model, latency_ms } or throws httpError.
-async function testConnection({ userId }) {
-  const cfg = await loadUserAssistConfig(userId);
-  if (!cfg) throw httpError(404, 'user not found');
-  if (!cfg.provider || !cfg.model) throw httpError(400, 'AI provider not configured');
-  const adapter = getAdapter(cfg.provider);
-  if (adapter.needsApiKey !== false && !cfg.api_key) {
+// Light-weight test call used by the "Test connection" button. Tests
+// whichever config the resolver picks (org or user). Caller can pass
+// `mode: 'org'` to test org config explicitly even when not yet locked.
+async function testConnection({ userId, mode = null }) {
+  const aiSettings = require('./aiSettings');
+  const orgSettings = await aiSettings.getSettings({ withKey: true });
+
+  let provider, endpoint, model, apiKey;
+  if (mode === 'org') {
+    if (!orgSettings.org_provider || !orgSettings.org_model) {
+      throw httpError(400, 'Org AI provider not configured');
+    }
+    provider = orgSettings.org_provider;
+    endpoint = orgSettings.org_endpoint;
+    model = orgSettings.org_model;
+    apiKey = orgSettings._orgApiKey;
+  } else {
+    const cfg = await loadUserAssistConfig(userId);
+    if (!cfg) throw httpError(404, 'user not found');
+    const eff = aiSettings.resolveEffectiveConfig({ orgSettings, userCfg: cfg });
+    if (!eff.allowed) throw httpError(400, `AI provider not configured (${eff.reason})`);
+    provider = eff.provider;
+    endpoint = eff.endpoint;
+    model = eff.model;
+    apiKey = eff.api_key;
+  }
+
+  const adapter = getAdapter(provider);
+  if (adapter.needsApiKey !== false && !apiKey) {
     throw httpError(400, 'API key not set');
   }
   const start = Date.now();
   await adapter.complete({
-    endpoint: cfg.endpoint || adapter.defaultEndpoint,
-    apiKey: cfg.api_key,
-    model: cfg.model,
+    endpoint: endpoint || adapter.defaultEndpoint,
+    apiKey,
+    model,
     system: 'Reply with the single word: OK',
     user: 'ping',
     timeoutMs: 15000,
   });
-  return { ok: true, model: cfg.model, latency_ms: Date.now() - start };
+  return { ok: true, model, latency_ms: Date.now() - start, source: mode || 'effective' };
 }
 
 function httpError(status, msg) {

@@ -36,11 +36,20 @@ router.get('/config', requireAuth, async (req, res) => {
     );
     const row = r.rows[0];
     const cfg = aiRewrite.defaultsForUser(row?.preferences);
-    const orgEnabled = await aiRewrite.isOrgEnabled();
+    // Surface org settings so the user UI can adjust — when org_locked,
+    // hide provider/model/key fields; when allow_user_byok=false, lock
+    // BYOK section.
+    const aiSettings = await require('../services/aiSettings').getSettings();
     res.json({
       ...cfg,
       has_key: !!row?.has_key,
-      org_enabled: orgEnabled,
+      org_enabled: aiSettings.enabled,
+      org_locked: aiSettings.org_locked,
+      org_has_config: !!(aiSettings.org_provider && aiSettings.has_org_key),
+      org_provider: aiSettings.org_provider,
+      org_model: aiSettings.org_model,
+      allow_user_byok: aiSettings.allow_user_byok,
+      project_context_enabled: aiSettings.project_context_enabled,
     });
   } catch (err) {
     console.error('ai config get:', err);
