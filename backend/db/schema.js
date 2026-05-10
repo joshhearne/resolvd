@@ -1244,6 +1244,19 @@ async function initSchema() {
          AND t.sla_response_due_at IS NULL
          AND t.sla_resolve_due_at IS NULL
     `);
+    // ── BYO-AI text rewrite ──────────────────────────────────────────────
+    // Per-user encrypted API key for the user's chosen AI provider.
+    // Non-secret config (provider id, endpoint, model, default tone /
+    // verbosity, enabled flag) lives under users.preferences.ai_assist
+    // JSONB — no schema needed. The api key is always encrypted at rest
+    // via the standard envelope wrapper.
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS ai_api_key_enc BYTEA`);
+
+    // Org-level kill switch. Admin can disable BYO-AI for the entire org
+    // (compliance / data-handling override). Default ON — feature is
+    // opt-in per user; org-level just gates whether per-user opt-in is
+    // possible at all.
+    await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS ai_assist_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
 
     await client.query('COMMIT');
   } catch (err) {
