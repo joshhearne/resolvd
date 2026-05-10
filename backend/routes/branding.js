@@ -53,6 +53,7 @@ function brandingPayload(row) {
     enable_customer_companies: row.enable_customer_companies === true,
     enable_internal_companies: row.enable_internal_companies !== false,
     ai_assist_enabled: row.ai_assist_enabled !== false,
+    ai_project_context_enabled: row.ai_project_context_enabled !== false,
     logo_url: row.logo_filename ? '/api/branding/logo' : null,
     favicon_url: row.favicon_filename ? '/api/branding/favicon' : null,
   };
@@ -92,6 +93,7 @@ router.patch('/', requireAuth, requireRole('Admin'), async (req, res) => {
       enable_customer_companies,
       enable_internal_companies,
       ai_assist_enabled,
+      ai_project_context_enabled,
     } = req.body;
     const updates = {};
     if (site_name !== undefined) updates.site_name = site_name.trim() || 'Resolvd';
@@ -132,6 +134,9 @@ router.patch('/', requireAuth, requireRole('Admin'), async (req, res) => {
     }
     if (ai_assist_enabled !== undefined) {
       updates.ai_assist_enabled = !!ai_assist_enabled;
+    }
+    if (ai_project_context_enabled !== undefined) {
+      updates.ai_project_context_enabled = !!ai_project_context_enabled;
     }
 
     if (Object.keys(updates).length === 0) {

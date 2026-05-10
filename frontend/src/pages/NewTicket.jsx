@@ -273,6 +273,7 @@ export default function NewTicket() {
           </label>
           <MarkdownEditor
             aiSurface="ticket_description"
+            aiProjectId={form.project_id || null}
             value={form.description}
             onChange={(e) => set("description", e.target.value)}
             rows={4}

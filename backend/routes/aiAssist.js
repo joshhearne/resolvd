@@ -83,6 +83,7 @@ router.patch('/config', requireAuth, async (req, res) => {
       sanitized.default_verbosity = body.default_verbosity;
     }
     if (body.enabled !== undefined) sanitized.enabled = !!body.enabled;
+    if (body.use_project_context !== undefined) sanitized.use_project_context = !!body.use_project_context;
 
     // Merge into existing ai_assist sub-object then back into preferences.
     const current = await pool.query(`SELECT preferences FROM users WHERE id = $1`, [userId]);
@@ -204,12 +205,13 @@ router.post('/test', requireAuth, async (req, res) => {
 // { text, surface, tone, verbosity, eli5? }. Returns { rewritten, usage }.
 router.post('/rewrite', requireAuth, async (req, res) => {
   try {
-    const { text, surface, tone, verbosity, eli5 } = req.body || {};
+    const { text, surface, tone, verbosity, eli5, project_id } = req.body || {};
     const r = await aiRewrite.rewrite({
       userId: req.session.user.id,
       surface, tone, verbosity,
       eli5: !!eli5,
       text,
+      projectId: project_id ? Number(project_id) : null,
     });
     res.json(r);
   } catch (err) {

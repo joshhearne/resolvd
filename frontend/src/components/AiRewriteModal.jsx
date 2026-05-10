@@ -11,7 +11,7 @@ import toast from "react-hot-toast";
 // Always preview-before-send: we never silently mutate the text. Modal
 // surfaces provider/model + token usage when available.
 
-export default function AiRewriteModal({ open, onClose, originalText, surface, onAccept }) {
+export default function AiRewriteModal({ open, onClose, originalText, surface, projectId = null, onAccept }) {
   const [providers, setProviders] = useState(null);
   const [cfg, setCfg] = useState(null);
   const [tone, setTone] = useState("neutral");
@@ -21,6 +21,7 @@ export default function AiRewriteModal({ open, onClose, originalText, surface, o
   const [usage, setUsage] = useState(null);
   const [provider, setProvider] = useState(null);
   const [model, setModel] = useState(null);
+  const [contextUsed, setContextUsed] = useState(false);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState(null);
 
@@ -55,11 +56,13 @@ export default function AiRewriteModal({ open, onClose, originalText, surface, o
         tone,
         verbosity,
         eli5,
+        project_id: projectId,
       });
       setRewritten(r.rewritten || "");
       setUsage(r.usage || null);
       setProvider(r.provider);
       setModel(r.model);
+      setContextUsed(!!r.project_context_used);
     } catch (e) {
       setError({
         msg: e.message || "Rewrite failed",
@@ -98,6 +101,7 @@ export default function AiRewriteModal({ open, onClose, originalText, surface, o
               <p className="text-[11px] text-fg-muted mt-0.5 font-mono">
                 {provider}{model ? ` · ${model}` : ""}
                 {usage ? ` · ${usage.input_tokens || 0} in / ${usage.output_tokens || 0} out tokens` : ""}
+                {contextUsed && <span className="ml-2 text-brand">· project context applied</span>}
               </p>
             )}
           </div>

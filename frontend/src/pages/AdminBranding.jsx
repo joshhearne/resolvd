@@ -22,6 +22,7 @@ export default function AdminBranding() {
     enable_customer_companies: branding.enable_customer_companies ?? false,
     enable_internal_companies: branding.enable_internal_companies ?? true,
     ai_assist_enabled: branding.ai_assist_enabled ?? true,
+    ai_project_context_enabled: branding.ai_project_context_enabled ?? true,
   });
   const [saving, setSaving] = useState(false);
   const [uploading, setUploading] = useState(false);
@@ -403,6 +404,31 @@ export default function AdminBranding() {
               per-user AI Assist card is locked. Use this if your org wants
               zero AI traffic — even with each user using their own provider
               and key.
+            </span>
+          </label>
+        </div>
+
+        <div className="flex items-start gap-3">
+          <input
+            type="checkbox"
+            id="ai_project_context_enabled"
+            checked={form.ai_project_context_enabled}
+            disabled={!form.ai_assist_enabled}
+            onChange={(e) =>
+              setForm((f) => ({
+                ...f,
+                ai_project_context_enabled: e.target.checked,
+              }))
+            }
+            className="mt-0.5 h-4 w-4 rounded border-border-strong text-brand focus:ring-brand/40 disabled:opacity-40"
+          />
+          <label htmlFor="ai_project_context_enabled" className="text-sm text-fg">
+            Allow project AI context
+            <span className="block text-xs text-fg-muted mt-0.5">
+              When ON, admins can author a per-project glossary (sites,
+              integrations, lingo) that gets prepended to AI rewrites for
+              tickets in that project. Adds input tokens per call. Per-user
+              opt-out lives in Account → Preferences → AI Assist.
             </span>
           </label>
         </div>

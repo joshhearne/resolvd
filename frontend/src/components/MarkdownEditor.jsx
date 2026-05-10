@@ -91,6 +91,7 @@ export default function MarkdownEditor({
   className = "",
   mentionProjectId,   // if provided, use MentionTextarea instead of plain textarea
   aiSurface,          // if set ("comment_internal" | "comment_vendor" | "ticket_description"), enables AI rewrite button
+  aiProjectId,        // if set, AI rewrite includes the project's admin-authored context blob
 }) {
   const [tab, setTab] = useState("write");
   const [aiOpen, setAiOpen] = useState(false);
@@ -184,6 +185,7 @@ export default function MarkdownEditor({
           onClose={() => setAiOpen(false)}
           originalText={value || ""}
           surface={aiSurface}
+          projectId={aiProjectId || null}
           onAccept={(t) => onChange({ target: { value: t } })}
         />
       )}

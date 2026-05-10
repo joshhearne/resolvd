@@ -519,6 +519,14 @@ function AiAssistCard() {
               </label>
             </div>
 
+            <Toggle
+              label="Include project context when rewriting"
+              hint="Admins can author a per-project glossary (sites, integrations, lingo). When ON, that context is sent with each rewrite so the model knows your terms. Adds to input tokens — turn off if cost is a concern."
+              value={cfg.use_project_context !== false}
+              onChange={(v) => patch({ use_project_context: v })}
+              disabled={busy}
+            />
+
             <div className="flex items-center gap-3 pt-1">
               <button
                 type="button"

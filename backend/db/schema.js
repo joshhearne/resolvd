@@ -250,6 +250,15 @@ async function initSchema() {
     // org-wide queues like the helpdesk / incident project where every
     // employee should be able to file or follow.
     await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS auto_add_new_users BOOLEAN NOT NULL DEFAULT FALSE`);
+
+    // BYO-AI project context: admin-authored markdown that gets prepended
+    // to the AI rewrite system prompt for tickets in this project. Lets
+    // the model speak the project's lingo (sites, integrations, glossary)
+    // without the user having to rewrite every reference. Per-project
+    // toggle so admins can disable it on noisy projects without losing
+    // the authored content.
+    await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS ai_context_md TEXT`);
+    await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS ai_context_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
     // Global defaults (admin panel). Apply when a project hasn't set its
     // own value. Defaults TRUE so a fresh install is locked down.
     await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS default_restrict_followers BOOLEAN NOT NULL DEFAULT TRUE`);
@@ -1257,6 +1266,10 @@ async function initSchema() {
     // opt-in per user; org-level just gates whether per-user opt-in is
     // possible at all.
     await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS ai_assist_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
+    // Org-wide toggle for the project AI context feature. When OFF, no
+    // project's ai_context_md is ever included in the rewrite prompt
+    // regardless of per-project / per-user settings. Default ON.
+    await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS ai_project_context_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
 
     await client.query('COMMIT');
   } catch (err) {

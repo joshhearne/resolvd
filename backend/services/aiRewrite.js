@@ -33,7 +33,39 @@ function defaultsForUser(prefsBlob) {
     enabled: !!a.enabled,
     default_tone: a.default_tone || 'neutral',
     default_verbosity: a.default_verbosity || 'functional',
+    // Per-user opt-out for project AI context. Default ON since context
+    // generally improves output; users on a tight token budget can flip
+    // it off.
+    use_project_context: a.use_project_context !== false,
   };
+}
+
+// Resolve project AI context — admin-authored markdown blob that gets
+// prepended to the rewrite prompt so the model speaks the project's
+// lingo (sites, integrations, glossary). Returns null when:
+//   - org admin disabled the feature globally
+//   - project hasn't authored any context (or set ai_context_enabled=false)
+//   - user opted out via use_project_context=false
+//   - no projectId provided (rewrite isn't ticket-scoped)
+async function resolveProjectContext({ projectId, userPrefs, branding }) {
+  if (!projectId) return null;
+  if (branding && branding.ai_project_context_enabled === false) return null;
+  if (userPrefs && userPrefs.use_project_context === false) return null;
+  try {
+    const r = await pool.query(
+      `SELECT ai_context_md, ai_context_enabled FROM projects WHERE id = $1`,
+      [projectId]
+    );
+    const row = r.rows[0];
+    if (!row) return null;
+    if (row.ai_context_enabled === false) return null;
+    const md = (row.ai_context_md || '').trim();
+    if (!md) return null;
+    return md;
+  } catch (err) {
+    console.error(`resolveProjectContext failed for project ${projectId}:`, err.message);
+    return null;
+  }
 }
 
 // Returns the org-level enabled flag (admin can disable BYO-AI for the
@@ -78,7 +110,7 @@ async function saveUserApiKey(userId, plaintext) {
   await pool.query(`UPDATE users SET ai_api_key_enc = $1 WHERE id = $2`, [enc, userId]);
 }
 
-function buildPrompt({ surface, tone, verbosity, eli5, text }) {
+function buildPrompt({ surface, tone, verbosity, eli5, text, projectContext }) {
   const verbosityHint = {
     short: 'Be concise — minimum words to convey the point. Not slangy or elliptical, just trim.',
     functional: 'Be clear and complete without unnecessary elaboration.',
@@ -114,6 +146,14 @@ function buildPrompt({ surface, tone, verbosity, eli5, text }) {
     ? 'IMPORTANT: this text contains placeholder tokens like {ticket.ref}, {vendor.name}, {site.url}. Preserve every {…} token character-for-character — do not rename, expand, replace with examples, or remove them. Reword only the surrounding prose.'
     : '';
 
+  // Project context (admin-authored markdown). Wrap in a delimited block
+  // so the model can distinguish it from instructions. Explicitly tell
+  // the model to USE the names verbatim but NOT to invent claims based
+  // on the context — it's a lexicon, not source material.
+  const contextBlock = projectContext
+    ? `Project context (use these names, sites, and definitions verbatim when they appear in the user's text; DO NOT invent claims based on this context — it is a glossary, not source material):\n<project_context>\n${projectContext}\n</project_context>`
+    : '';
+
   const system = [
     'You are a writing assistant that rewrites the user\'s draft text in-place.',
     'Output ONLY the rewritten text — no preamble, no quotes around the result, no commentary, no explanation of what you changed.',
@@ -124,12 +164,13 @@ function buildPrompt({ surface, tone, verbosity, eli5, text }) {
     verbosityHint,
     templateHint,
     eli5Hint,
-  ].filter(Boolean).join(' ');
+    contextBlock,
+  ].filter(Boolean).join('\n\n');
 
   return { system, user: text };
 }
 
-async function rewrite({ userId, surface, tone, verbosity, eli5, text }) {
+async function rewrite({ userId, surface, tone, verbosity, eli5, text, projectId }) {
   if (!isSurfaceAllowed(surface)) throw httpError(400, `invalid surface: ${surface}`);
   if (!isToneAllowed(tone)) throw httpError(400, `invalid tone: ${tone}`);
   if (!isVerbosityAllowed(verbosity)) throw httpError(400, `invalid verbosity: ${verbosity}`);
@@ -151,7 +192,12 @@ async function rewrite({ userId, surface, tone, verbosity, eli5, text }) {
   if (adapter.needsApiKey !== false && !cfg.api_key) {
     throw httpError(400, 'API key not set for this provider');
   }
-  const { system, user } = buildPrompt({ surface, tone, verbosity, eli5, text });
+
+  // Project context — adds tokens; gated by org + per-project + per-user toggles.
+  const branding = await getBranding().catch(() => null);
+  const projectContext = await resolveProjectContext({ projectId, userPrefs: cfg, branding });
+
+  const { system, user } = buildPrompt({ surface, tone, verbosity, eli5, text, projectContext });
   const result = await adapter.complete({
     endpoint: cfg.endpoint || adapter.defaultEndpoint,
     apiKey: cfg.api_key,
@@ -164,6 +210,7 @@ async function rewrite({ userId, surface, tone, verbosity, eli5, text }) {
     usage: result.usage || null,
     provider: cfg.provider,
     model: cfg.model,
+    project_context_used: !!projectContext,
   };
 }
 
