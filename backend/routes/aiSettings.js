@@ -67,6 +67,47 @@ router.patch('/', async (req, res) => {
   }
 });
 
+// GET /api/ai-settings/models?live=true — same shape as the user-side
+// /api/ai/models endpoint, but uses the org config (provider, endpoint,
+// API key) for the live fetch instead of the caller's personal config.
+// Always returns curated list for the configured org provider.
+router.get('/models', async (req, res) => {
+  try {
+    const cur = await aiSettings.getSettings({ withKey: true });
+    if (!cur.org_provider) return res.status(400).json({ error: 'Org provider not configured' });
+    const adapter = require('../services/aiProviders').getAdapter(cur.org_provider);
+    const curated = (adapter.recommendedModels || []).map(m => ({ ...m, source: 'curated' }));
+    let live = [];
+    let liveError = null;
+    if (String(req.query.live || '').toLowerCase() === 'true' && typeof adapter.listLiveModels === 'function') {
+      const needsKey = adapter.needsApiKey !== false;
+      if (needsKey && !cur._orgApiKey) {
+        liveError = 'Org API key not set — save one before fetching live model list';
+      } else {
+        try {
+          const models = await adapter.listLiveModels({
+            endpoint: cur.org_endpoint || adapter.defaultEndpoint,
+            apiKey: cur._orgApiKey,
+          });
+          live = models.map(m => ({ ...m, source: 'live' }));
+        } catch (err) {
+          liveError = err.friendly || err.message || 'Live fetch failed';
+        }
+      }
+    }
+    const seen = new Set(curated.map(m => m.id));
+    const merged = [...curated];
+    for (const m of live) if (!seen.has(m.id)) merged.push(m);
+    res.json({ provider: cur.org_provider, models: merged, live_count: live.length, live_error: liveError });
+  } catch (err) {
+    if (err.name === 'ProviderError') {
+      return res.status(err.httpStatus || 502).json({ error: err.friendly, error_kind: err.kind });
+    }
+    console.error('ai-settings models:', err);
+    res.status(500).json({ error: err.message });
+  }
+});
+
 router.post('/api-key', async (req, res) => {
   try {
     const v = req.body?.api_key;

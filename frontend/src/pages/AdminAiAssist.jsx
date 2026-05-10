@@ -97,7 +97,37 @@ function IntegrationPane({ settings, meta, patch, busy, setSettings }) {
   const [keyInput, setKeyInput] = useState("");
   const [showKeyEditor, setShowKeyEditor] = useState(false);
   const [testResult, setTestResult] = useState(null);
+  const [models, setModels] = useState([]);
+  const [modelsLoading, setModelsLoading] = useState(false);
+  const [modelsError, setModelsError] = useState(null);
+  const [liveCount, setLiveCount] = useState(0);
   const provider = meta?.providers.find((p) => p.id === settings.org_provider);
+
+  // Curated list refreshes whenever provider changes. Live fetch only
+  // on Refresh-button click.
+  useEffect(() => {
+    if (!settings.org_provider) {
+      setModels([]); setLiveCount(0); setModelsError(null);
+      return;
+    }
+    loadModels(false);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [settings.org_provider]);
+
+  async function loadModels(live) {
+    setModelsLoading(true);
+    setModelsError(null);
+    try {
+      const r = await api.get(`/api/ai-settings/models${live ? "?live=true" : ""}`);
+      setModels(r.models || []);
+      setLiveCount(r.live_count || 0);
+      if (r.live_error) setModelsError(r.live_error);
+    } catch (e) {
+      setModelsError(e.message || "Failed to load models");
+    } finally {
+      setModelsLoading(false);
+    }
+  }
 
   async function saveKey() {
     if (!keyInput.trim()) return;
@@ -163,6 +193,24 @@ function IntegrationPane({ settings, meta, patch, busy, setSettings }) {
         </select>
       </label>
 
+      {provider && (provider.setup_hint || provider.console_url) && (
+        <div className="rounded-md border border-border bg-surface-2 px-3 py-2 text-xs text-fg-muted">
+          {provider.setup_hint && <p className="leading-snug">{provider.setup_hint}</p>}
+          {provider.console_url && (
+            <p className="mt-1">
+              <a
+                href={provider.console_url}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="text-brand hover:underline"
+              >
+                Open {provider.console_label || "console"} ↗
+              </a>
+            </p>
+          )}
+        </div>
+      )}
+
       <label className="block">
         <span className="block text-sm font-medium text-fg mb-1">Endpoint URL</span>
         <input
@@ -179,18 +227,68 @@ function IntegrationPane({ settings, meta, patch, busy, setSettings }) {
         </span>
       </label>
 
-      <label className="block">
-        <span className="block text-sm font-medium text-fg mb-1">Model</span>
-        <input
-          type="text"
-          placeholder={provider?.default_model || "model-name"}
-          value={settings.org_model || ""}
-          onChange={(e) => setSettings((s) => ({ ...s, org_model: e.target.value }))}
-          onBlur={(e) => patch({ org_model: e.target.value || null })}
-          disabled={busy}
-          className="w-full border border-border-strong rounded-md px-2 py-1 text-sm font-mono"
-        />
-      </label>
+      <div>
+        <div className="flex items-center justify-between mb-1">
+          <span className="block text-sm font-medium text-fg">Model</span>
+          <button
+            type="button"
+            onClick={() => loadModels(true)}
+            disabled={busy || modelsLoading || !provider || (provider.needs_api_key && !settings.has_org_key)}
+            className="text-xs text-brand hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
+            title={provider?.needs_api_key && !settings.has_org_key ? "Save an API key first" : "Fetch the live model list from the provider"}
+          >
+            {modelsLoading ? "Refreshing…" : "Refresh from provider"}
+          </button>
+        </div>
+        {(() => {
+          const grouped = {
+            cheap:    { label: "Cheap / fast",   items: [] },
+            balanced: { label: "Balanced",       items: [] },
+            heavy:    { label: "Heavy / pricey", items: [] },
+            live:     { label: "Other (live)",   items: [] },
+          };
+          for (const m of models) {
+            const tier = grouped[m.tier] ? m.tier : "live";
+            grouped[tier].items.push(m);
+          }
+          const includesCurrent = settings.org_model && models.some(m => m.id === settings.org_model);
+          return (
+            <select
+              value={settings.org_model || ""}
+              onChange={(e) => {
+                const v = e.target.value;
+                setSettings((s) => ({ ...s, org_model: v }));
+                patch({ org_model: v || null });
+              }}
+              disabled={busy || !provider}
+              className="w-full border border-border-strong rounded-md px-2 py-1 text-sm font-mono bg-surface"
+            >
+              <option value="">— pick a model —</option>
+              {!includesCurrent && settings.org_model && (
+                <option value={settings.org_model}>{settings.org_model} (custom)</option>
+              )}
+              {Object.entries(grouped).map(([key, g]) =>
+                g.items.length > 0 ? (
+                  <optgroup key={key} label={g.label}>
+                    {g.items.map(m => (
+                      <option key={m.id} value={m.id}>
+                        {m.label}{m.recommended ? " — recommended" : ""}
+                      </option>
+                    ))}
+                  </optgroup>
+                ) : null
+              )}
+            </select>
+          );
+        })()}
+        {(() => {
+          const cur = models.find(m => m.id === settings.org_model);
+          if (cur && cur.note) return <div className="mt-1 text-xs text-fg-muted">{cur.note}</div>;
+          if (liveCount > 0) return <div className="mt-1 text-xs text-fg-dim">{liveCount} live model{liveCount === 1 ? "" : "s"} fetched from provider.</div>;
+          return null;
+        })()}
+        {modelsError && <div className="mt-1 text-xs text-amber-600">{modelsError}</div>}
+      </div>
 
       <div>
         <span className="block text-sm font-medium text-fg mb-1">API key</span>
