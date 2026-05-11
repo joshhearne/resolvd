@@ -692,7 +692,7 @@ export default function TicketDetail() {
             ) : null}
           </div>
           {editing.title ? (
-            <div className="mt-2 flex items-center gap-2">
+            <div className="mt-2 flex items-center gap-2 flex-wrap">
               <input
                 type="text"
                 autoFocus
@@ -702,17 +702,36 @@ export default function TicketDetail() {
                 }
                 onKeyDown={(e) => {
                   if (e.key === "Enter" && editValues.title?.trim()) {
-                    patch({ title: editValues.title.trim() });
+                    patch({
+                      title: editValues.title.trim(),
+                      ...(editValues._ai_log_id ? { ai_rewrite_log_id: editValues._ai_log_id } : {}),
+                    });
                   } else if (e.key === "Escape") {
                     setEditing({});
                   }
                 }}
-                className="flex-1 text-xl font-semibold border border-border-strong rounded-md px-2 py-1 focus:outline-none focus:ring-2 focus:ring-brand/40"
+                className="flex-1 min-w-[200px] text-xl font-semibold border border-border-strong rounded-md px-2 py-1 focus:outline-none focus:ring-2 focus:ring-brand/40"
+              />
+              <AiRewriteButton
+                value={editValues.title || ""}
+                surface="ticket_subject"
+                projectId={ticket?.project_id || null}
+                size="xs"
+                onChange={(t, meta) => {
+                  setEditValues((v) => ({
+                    ...v,
+                    title: t,
+                    ...(meta?.logId ? { _ai_log_id: meta.logId } : {}),
+                  }));
+                }}
               />
               <button
                 onClick={() =>
                   editValues.title?.trim() &&
-                  patch({ title: editValues.title.trim() })
+                  patch({
+                    title: editValues.title.trim(),
+                    ...(editValues._ai_log_id ? { ai_rewrite_log_id: editValues._ai_log_id } : {}),
+                  })
                 }
                 disabled={saving || !editValues.title?.trim()}
                 className="btn-primary btn btn-sm"

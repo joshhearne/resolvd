@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
 import { useAuth } from "../context/AuthContext";
+import AiRewriteButton from "../components/AiRewriteButton";
 
 const TAG_HINTS = [
   "{ticket.ref}",
@@ -303,7 +304,15 @@ function Editor({ form, isPriv, projects, onCancel, onSubmit }) {
         </label>
       </div>
       <label className="text-xs text-fg-muted flex flex-col gap-1">
-        Body
+        <span className="flex items-center justify-between">
+          <span>Body</span>
+          <AiRewriteButton
+            value={local.body}
+            surface="comment_internal"
+            size="xs"
+            onChange={(t) => setLocal((l) => ({ ...l, body: t }))}
+          />
+        </span>
         <textarea
           value={local.body}
           onChange={(e) => setLocal((l) => ({ ...l, body: e.target.value }))}

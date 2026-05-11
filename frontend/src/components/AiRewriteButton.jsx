@@ -10,6 +10,7 @@ export default function AiRewriteButton({
   value,
   onChange,
   surface,
+  projectId = null,
   disabled,
   className = "",
   size = "sm",
@@ -38,7 +39,10 @@ export default function AiRewriteButton({
         onClose={() => setOpen(false)}
         originalText={String(value || "")}
         surface={surface}
-        onAccept={(t) => onChange(t)}
+        projectId={projectId}
+        // onChange receives (rewrittenText, meta) so the caller can capture
+        // meta.logId and attach it to the eventual save POST/PATCH.
+        onAccept={(t, meta) => onChange(t, meta)}
       />
     </>
   );
