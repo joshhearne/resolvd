@@ -8,6 +8,20 @@ const { getBranding } = require('./branding');
 const FALLBACK_FROM = process.env.MAIL_FROM || 'noreply@localhost';
 const APP_URL = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
 
+// RFC 2606 + 6762 reserved TLDs that must never resolve to real mailboxes.
+// Seeded demo / sandbox stacks use these for fixture users; without this
+// guard, real outbound backends (Graph / Gmail / SMTP) attempt delivery and
+// the postmaster bounces ricochet back to the connected mailbox.
+const RESERVED_FAKE_TLDS = ['.local', '.test', '.example', '.invalid', '.localhost'];
+function isFakeAddress(addr) {
+  if (typeof addr !== 'string') return false;
+  const at = addr.lastIndexOf('@');
+  if (at < 0) return false;
+  const domain = addr.slice(at + 1).toLowerCase();
+  if (domain === 'localhost') return true;
+  return RESERVED_FAKE_TLDS.some(suffix => domain.endsWith(suffix));
+}
+
 // Wraps a display name in RFC 5322-quoted form when needed and returns
 // `"Display Name" <addr>`. Falls back to bare address when no name.
 function formatAddress(address, displayName) {
@@ -173,7 +187,13 @@ function pickFromAddress(settings, backend) {
 // From with the submitter's address. This guarantees vendor replies land
 // in the system inbox instead of a personal mailbox.
 async function sendMail({ to, subject, html, headers, replyTo, senderName, attachments, projectId }) {
-  const addresses = (Array.isArray(to) ? to : [to]).filter(Boolean);
+  const rawAddresses = (Array.isArray(to) ? to : [to]).filter(Boolean);
+  if (!rawAddresses.length) return;
+  const fake = rawAddresses.filter(isFakeAddress);
+  const addresses = rawAddresses.filter(a => !isFakeAddress(a));
+  if (fake.length) {
+    console.warn(`sendMail: dropped ${fake.length} reserved-TLD recipient(s) — ${fake.join(', ')}`);
+  }
   if (!addresses.length) return;
 
   // Prefer a project-scoped account when projectId is given (lets each
@@ -220,6 +240,13 @@ async function sendMail({ to, subject, html, headers, replyTo, senderName, attac
 // near expiry. Used by both the active-account fast path above and by
 // the admin "test send" endpoint.
 async function sendMailViaAccount(rawAccount, { to, subject, html, headers, replyTo, senderName, attachments }, req) {
+  const rawAddresses = (Array.isArray(to) ? to : [to]).filter(Boolean);
+  const fake = rawAddresses.filter(isFakeAddress);
+  to = rawAddresses.filter(a => !isFakeAddress(a));
+  if (fake.length) {
+    console.warn(`sendMailViaAccount: dropped ${fake.length} reserved-TLD recipient(s) — ${fake.join(', ')}`);
+  }
+  if (!to.length) return;
   const eb = require('./emailBackends');
   // Decrypt secrets if not already decrypted (recordTest etc. might have
   // bypassed the helper).
