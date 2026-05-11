@@ -29,6 +29,25 @@ function loadLocalMasterKey() {
   return buf;
 }
 
+// Non-throwing check: returns true when RESOLVD_MASTER_KEY is set and
+// decodes to a valid 32-byte key. Used by feature gates (e.g., AI Assist)
+// that must stay disabled until the operator has provisioned the key.
+function isAvailable() {
+  const raw = process.env.RESOLVD_MASTER_KEY;
+  if (!raw) return false;
+  try {
+    return Buffer.from(raw, 'base64').length === KEY_LEN;
+  } catch {
+    return false;
+  }
+}
+
+// Generate a fresh master key suitable for RESOLVD_MASTER_KEY (base64 of
+// 32 random bytes). Pure helper — does not persist or activate the key.
+function generateMasterKeyBase64() {
+  return crypto.randomBytes(KEY_LEN).toString('base64');
+}
+
 const localProvider = {
   id: 'local',
   // Stable identifier for the active KEK. Local provider supports
@@ -78,4 +97,4 @@ function generateDek() {
   return crypto.randomBytes(KEY_LEN);
 }
 
-module.exports = { getProvider, generateDek, KEY_LEN };
+module.exports = { getProvider, generateDek, KEY_LEN, isAvailable, generateMasterKeyBase64 };

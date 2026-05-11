@@ -110,6 +110,11 @@ async function saveUserApiKey(userId, plaintext) {
     await pool.query(`UPDATE users SET ai_api_key_enc = NULL WHERE id = $1`, [userId]);
     return;
   }
+  if (!require('./kms').isAvailable()) {
+    const err = new Error('AI Assist is not yet enabled by your administrator. Ask them to generate RESOLVD_MASTER_KEY in Admin → AI Assist → Integration before saving an API key.');
+    err.httpStatus = 400;
+    throw err;
+  }
   const enc = await encrypt(Buffer.from(String(plaintext), 'utf8'), 'users.ai_api_key');
   await pool.query(`UPDATE users SET ai_api_key_enc = $1 WHERE id = $2`, [enc, userId]);
 }

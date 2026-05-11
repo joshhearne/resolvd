@@ -15,6 +15,7 @@ const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const aiSettings = require('../services/aiSettings');
 const aiRewrite = require('../services/aiRewrite');
+const kms = require('../services/kms');
 const { listProviders } = require('../services/aiProviders');
 
 const router = express.Router();
@@ -28,6 +29,7 @@ router.get('/', async (req, res) => {
     const cur = await aiSettings.getSettings();
     res.json({
       enabled: cur.enabled,
+      admin_enabled: cur.admin_enabled,
       org_provider: cur.org_provider,
       org_endpoint: cur.org_endpoint,
       org_model: cur.org_model,
@@ -36,6 +38,7 @@ router.get('/', async (req, res) => {
       project_context_enabled: cur.project_context_enabled,
       disclosure_audience: cur.disclosure_audience,
       has_org_key: cur.has_org_key,
+      kms_available: cur.kms_available,
       providers: listProviders(),
       tones: aiRewrite.TONES,
       verbosities: aiRewrite.VERBOSITIES,
@@ -51,6 +54,7 @@ router.patch('/', async (req, res) => {
     const cur = await aiSettings.patchSettings(req.body || {});
     res.json({
       enabled: cur.enabled,
+      admin_enabled: cur.admin_enabled,
       org_provider: cur.org_provider,
       org_endpoint: cur.org_endpoint,
       org_model: cur.org_model,
@@ -59,11 +63,36 @@ router.patch('/', async (req, res) => {
       project_context_enabled: cur.project_context_enabled,
       disclosure_audience: cur.disclosure_audience,
       has_org_key: cur.has_org_key,
+      kms_available: cur.kms_available,
     });
   } catch (err) {
     if (err.httpStatus) return res.status(err.httpStatus).json({ error: err.message });
     console.error('ai-settings patch:', err);
     res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// POST /api/ai-settings/generate-master-key — One-shot generator. Returns
+// a freshly-minted base64 RESOLVD_MASTER_KEY for the admin to paste into
+// .env and restart the backend. Server NEVER persists this — the operator
+// is responsible for storing it (and a backup) outside the database.
+router.post('/generate-master-key', async (req, res) => {
+  try {
+    const key = kms.generateMasterKeyBase64();
+    res.json({
+      key,
+      already_configured: kms.isAvailable(),
+      env_var: 'RESOLVD_MASTER_KEY',
+      instructions: [
+        'Copy the key and add to your .env: RESOLVD_MASTER_KEY=<key>',
+        'Back up the key in a password manager / KMS / sealed envelope — losing it after encryption is enabled permanently destroys access.',
+        'Restart the backend (e.g. `docker compose up -d --force-recreate backend`).',
+        'Return to this page; the banner clears once the key is detected.',
+      ],
+    });
+  } catch (err) {
+    console.error('ai-settings generate-master-key:', err);
+    res.status(500).json({ error: 'Failed to generate key' });
   }
 });
 
@@ -116,6 +145,7 @@ router.post('/api-key', async (req, res) => {
     await aiSettings.setOrgApiKey(v);
     res.json({ ok: true, has_org_key: !!(typeof v === 'string' && v.trim()) });
   } catch (err) {
+    if (err.httpStatus) return res.status(err.httpStatus).json({ error: err.message });
     console.error('ai-settings api-key:', err);
     res.status(500).json({ error: 'Server error' });
   }

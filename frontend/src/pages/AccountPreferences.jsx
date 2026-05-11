@@ -327,8 +327,9 @@ function AiAssistCard() {
 
       {!cfg.org_enabled && (
         <div className="mb-3 px-3 py-2 rounded-md bg-amber-100 dark:bg-amber-900/30 text-amber-900 dark:text-amber-200 text-xs">
-          Your org admin has disabled AI Assist organization-wide. The
-          feature is unavailable until they re-enable it in Branding.
+          {cfg.kms_available === false
+            ? "AI Assist has not yet been enabled by your administrator. Ask them to finish setup in Admin → AI Assist → Integration."
+            : "Your organization administrator has disabled AI Assist. The feature is unavailable until they re-enable it."}
         </div>
       )}
 

@@ -72,7 +72,7 @@ Add `https://yourdomain/api/email-backends/oauth/callback` to the OAuth client's
 
 | Variable | Description |
 |---|---|
-| `RESOLVD_MASTER_KEY` | base64 of 32 random bytes. Required when `encryption_settings.mode` is `standard`. Generate with `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"`. **Losing this key after enabling encryption permanently destroys access.** |
+| `RESOLVD_MASTER_KEY` | base64 of 32 random bytes. Required when `encryption_settings.mode` is `standard` **and** before AI Assist will accept API keys. Generate with `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"` (or click **Generate master key** in Admin → AI Assist → Integration). **Losing this key after enabling encryption or saving any AI provider key permanently destroys access.** |
 
 ### Web Push (browser notifications)
 
@@ -186,6 +186,8 @@ The bell tray itself is generic — it renders whatever the matrix populated. Me
 ### AI Assist (BYO-AI)
 
 Optional, opt-in **bring-your-own-AI** rewrite for comments + ticket text. Each user configures their own provider in **Account → Preferences → AI Assist** — Resolvd ships the integration surface, you ship the API key. Provider, endpoint, model, default tone, default verbosity, and the API key (encrypted at rest via the standard envelope wrapper) all live per-user.
+
+> **Admin must enable AI Assist before users can save keys.** API keys (user *and* org) are encrypted at rest with `RESOLVD_MASTER_KEY`. The feature stays disabled org-wide until that env var is set. Easiest path: visit **Admin → Integrations → AI Assist → Integration** — when the key is missing, a banner offers a one-click **Generate master key** button. Copy the value, paste into `.env`, restart the backend, and AI Assist comes online. The server never persists the generated key, so back it up separately (password manager / KMS); losing it after any AI keys are saved makes them unrecoverable.
 
 Three adapters out of the box:
 
