@@ -73,6 +73,12 @@ Site explicitly tags these as "launching soon" or part of paid hosted tiers. Bui
 - Auto-resume `awaiting_input` → `in_progress` on inbound vendor reply (mirror the gratitude reopen path on the resolved state).
 - Inbound queue match flow could detect `awaiting_input` status and surface "this likely unblocks ticket X" hint to admin reviewer.
 
+### SLA follow-ups
+- **Business hours awareness** — per-policy calendar. Clocks only count working hours, skip weekends + holidays. Required before SLAs work for teams that don't run 24/7. Schema: `sla_policies.business_hours_calendar_id` → new `business_hours_calendars` table (weekly schedule + holiday exception dates, timezone-bound). Pause/resume + due-at math both need to clamp to working windows.
+- **Escalations** — on breach, auto-bump priority by 1 and reassign to a per-policy escalation chain (Manager → next-level Manager → org Admin pool). Configurable per-policy. Re-uses the existing breach scheduler tick.
+- **Pre-breach warnings** — fire a softer in-app + email notification at 80% of the clock so the assignee can engage before the formal breach pings everyone.
+- **Custom breach destinations** — webhook out on breach for Slack / Teams / PagerDuty. Today only the in-app + email fanout fires.
+
 ### Reporting
 - Time-in-status histogram (extend the just-shipped SLA tracker — group time spent per status, not just first-response / resolve timers).
 - "Time blocked by vendor vs internal" breakdown using `awaiting_input` / `on_hold`.
