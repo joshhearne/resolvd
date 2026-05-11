@@ -244,7 +244,7 @@ function SectionNewTicket({ role }) {
         <p className="text-sm text-fg leading-relaxed">
           Submit a new ticket via <strong>+ New Ticket</strong> in the nav. Title, description, impact, and urgency are the required inputs — the system computes a priority score automatically.
         </p>
-        <HelpScreenshot src="/help/new-ticket-form.png" alt="New ticket form with project picker, title, description, attachment dropzone, and impact / urgency selects" />
+        <HelpScreenshot src="/help/new-ticket-form.png?v=2" alt="New ticket form with project picker, title, description, attachment dropzone, and impact / urgency selects" />
         <div className="space-y-0">
           <Feature name="Submit ticket" roles={["Admin","Manager","Submitter"]} />
           <Feature name="Markdown in description" roles={["Admin","Manager","Submitter"]} note="Full GFM: bold, italic, code blocks, lists, tables." />
@@ -271,7 +271,7 @@ function SectionTicketDetail({ role }) {
           ? <PartialAccess note="You can view and comment. Status changes, vendor actions, and several fields are Admin/Manager only." />
           : <PartialAccess note="Read-only access. You can view tickets and comments but cannot post or take actions." />
       }
-      <HelpScreenshot src="/help/ticket-detail-comments.png" alt="Ticket detail comment area with markdown composer, attach + canned-response controls, and a thread of vendor + internal comments" />
+      <HelpScreenshot src="/help/ticket-detail-comments.png?v=2" alt="Ticket detail comment area with markdown composer, attach + canned-response controls, and a thread of vendor + internal comments" />
 
       <h3 className="text-sm font-semibold text-fg">Comments</h3>
       <div className="space-y-0">
@@ -398,16 +398,178 @@ function SectionNotifications({ role }) {
         : <PartialAccess note="You will receive in-app notifications if mentioned, but cannot post comments that would generate them for others." />
       }
       <p className="text-sm text-fg leading-relaxed">
-        The notification bell in the top nav shows in-app alerts. Email notifications run in parallel where configured.
+        Notifications fan out across three channels — in-app (the bell tray), email, and browser push — for six event types: assignment, mention, comment, status change, pending review, follow-up reminder. A 6×3 matrix in <strong>Account → Preferences → Notifications</strong> lets you toggle each channel per event independently.
       </p>
-      <HelpScreenshot src="/help/notification-tray.png" alt="Notification tray dropdown showing unread mentions, assignments, and follower events" />
+      <HelpScreenshot src="/help/notifications-matrix.png?v=2" alt="Account → Preferences → Notifications — 6 event rows × 3 channel columns (in-app, email, push). Pending review and follow-up rows are greyed (always on)." />
+      <p className="text-sm text-fg leading-relaxed">
+        <strong>Pending review</strong> and <strong>follow-up reminder</strong> rows are locked-on: in-app + email always fire and bypass the digest cadence below. They're action-required events that shouldn't be silently batched.
+      </p>
+      <h3 className="text-sm font-semibold text-fg mt-3">Email digest cadence</h3>
+      <p className="text-sm text-fg leading-relaxed">
+        A dropdown next to the matrix picks how email notifications get delivered:
+      </p>
+      <ul className="text-sm text-fg leading-relaxed list-disc ml-5 space-y-0.5">
+        <li><strong>Instant</strong> (default) — each event sends immediately.</li>
+        <li><strong>Hourly</strong> — buffered, flushed at the next top-of-hour as one digest grouped by ticket.</li>
+        <li><strong>12 hours</strong> — buffered, flushed at the next 00:00 / 12:00 in your local timezone.</li>
+        <li><strong>Daily</strong> — buffered, flushed at 09:00 user-local.</li>
+        <li><strong>Off</strong> — notification emails suppressed entirely; in-app + push still fire if those cells are on.</li>
+      </ul>
+      <p className="text-sm text-fg leading-relaxed">
+        Empty buckets are skipped — no email at the boundary if nothing happened. Pending-review and follow-up bypass the cadence and always email instantly.
+      </p>
+      <HelpScreenshot src="/help/notification-tray.png" alt="Notification tray dropdown showing rows for all 6 event types" />
       <div className="space-y-0">
-        <Feature name="In-app notification tray" roles="all" note="Bell icon visible to all roles." />
-        <Feature name="Receive mention notifications" roles="all" note="Alert when someone @mentions you in a comment." />
-        <Feature name="Follower email on new comment" roles={["Admin","Manager","Submitter"]} note="Sent to followers when a comment is posted." />
-        <Feature name="Click notification → jump to comment" roles="all" note="Navigates to the ticket and flashes the relevant comment." />
+        <Feature name="6×3 channel matrix" roles="all" note="Per-event toggles for in-app / email / push. Account → Preferences → Notifications." />
+        <Feature name="Email digest cadence" roles="all" note="Instant / hourly / 12h / daily / off. Pending review + follow-up bypass." />
+        <Feature name="In-app tray with all 6 event types" roles="all" note="Bell icon. Mention rows scroll-and-flash to the specific comment." />
+        <Feature name="Browser push (opt-in)" roles="all" note="Requires permission per device. Mention defaults on; other events default off." />
         <Feature name="Mark all read" roles="all" />
-        <Feature name="Email-on-mention preference" roles="all" note="Toggle in Account → Preferences." />
+        <Feature name="Auto-follow on comment + mention" roles={["Admin","Manager","Submitter"]} note="Posting a comment subscribes you to the ticket; being mentioned subscribes you." />
+      </div>
+    </div>
+  );
+}
+
+function SectionSla({ role }) {
+  const canManage = role === "Admin";
+  return (
+    <div className="space-y-4">
+      {canManage ? <FullAccess /> : <PartialAccess note="You can see the SLA dashboard scoped to your projects. Tuning policies and managing breaches is Admin-only." />}
+      <p className="text-sm text-fg leading-relaxed">
+        Two clocks run on every ticket: <strong>response</strong> (closes when someone other than the submitter posts a non-system comment) and <strong>resolve</strong> (closes when the ticket reaches a resolved state). Targets come from the <code className="bg-surface px-1 rounded text-xs">sla_policies</code> table — an org-default per priority, with optional project-specific overrides.
+      </p>
+      <h3 className="text-sm font-semibold text-fg mt-3">Default targets</h3>
+      <table className="text-sm border border-border rounded overflow-hidden">
+        <thead className="bg-surface-2 text-xs text-fg-muted">
+          <tr><th className="px-3 py-1 text-left">Priority</th><th className="px-3 py-1 text-left">Response</th><th className="px-3 py-1 text-left">Resolve</th></tr>
+        </thead>
+        <tbody className="divide-y divide-border">
+          <tr><td className="px-3 py-1">P1</td><td className="px-3 py-1">30 min</td><td className="px-3 py-1">4 hrs</td></tr>
+          <tr><td className="px-3 py-1">P2</td><td className="px-3 py-1">1 hr</td><td className="px-3 py-1">8 hrs</td></tr>
+          <tr><td className="px-3 py-1">P3</td><td className="px-3 py-1">4 hrs</td><td className="px-3 py-1">24 hrs</td></tr>
+          <tr><td className="px-3 py-1">P4</td><td className="px-3 py-1">8 hrs</td><td className="px-3 py-1">72 hrs</td></tr>
+          <tr><td className="px-3 py-1">P5</td><td className="px-3 py-1">1 day</td><td className="px-3 py-1">7 days</td></tr>
+        </tbody>
+      </table>
+      <p className="text-sm text-fg leading-relaxed">
+        Tune them at <strong>Admin → SLA policies</strong>. A project override beats the org default for that priority.
+      </p>
+      <h3 className="text-sm font-semibold text-fg mt-3">Pause on blocker</h3>
+      <p className="text-sm text-fg leading-relaxed">
+        Both clocks pause when the ticket transitions into a status tagged <code className="bg-surface px-1 rounded text-xs">awaiting_input</code> or <code className="bg-surface px-1 rounded text-xs">on_hold</code> — vendor / customer wait time doesn't count against you. Resume on transition out shifts due-ats forward by the paused duration.
+      </p>
+      <h3 className="text-sm font-semibold text-fg mt-3">Breach + dashboard card</h3>
+      <p className="text-sm text-fg leading-relaxed">
+        A 5-minute scheduler flips the breached flag, stamps the breach timestamp, and fans out a notification (in-app + immediate email; bypasses digest cadence) to the assignee, followers, and submitter. The Dashboard <strong>SLA — Month to date</strong> card shows MTD response/resolve breach counts, current breaches, open clocks, plus a per-project breakdown. Admin/Manager see all projects; Submitter/Viewer see only their member projects.
+      </p>
+      <HelpScreenshot src="/help/sla-breach-card.png?v=2" alt="Dashboard SLA card — MTD breach stats and per-project breakdown table" />
+      <div className="space-y-0">
+        <Feature name="View SLA dashboard card" roles="all" note="Scoped to projects you can access." />
+        <Feature name="Configure SLA policies" roles={["Admin"]} note="Admin → SLA policies. Per-priority defaults + project overrides." />
+        <Feature name="Breach notifications" roles="all" note="Assignee, followers, and submitter receive in-app + immediate email on breach." />
+        <Feature name="Pause-on-blocker" roles="all" note="Vendor / customer wait time excluded from the clock automatically." />
+      </div>
+    </div>
+  );
+}
+
+function SectionAiAssist({ role }) {
+  const isAdmin = role === "Admin";
+  const eligibleForEli5 = ["Admin", "Manager"].includes(role);
+  return (
+    <div className="space-y-4">
+      <FullAccess />
+      <p className="text-sm text-fg leading-relaxed">
+        Resolvd ships an integration surface for AI text rewriting. You bring the API key — your org's, or your personal one. A ✨ AI button shows up on every composer: internal comment, vendor comment, ticket title, ticket description, canned response body, project description, admin email templates.
+      </p>
+      <h3 className="text-sm font-semibold text-fg mt-3">Per-user setup</h3>
+      <p className="text-sm text-fg leading-relaxed">
+        Go to <strong>Account → Preferences → AI Assist</strong>. Pick a provider (OpenAI, Anthropic, Ollama), follow the helper banner's link to the provider's key console, paste the key, pick a model (or hit <strong>Refresh from provider</strong> to fetch the live model list), and toggle <strong>Enable AI Assist</strong>. Test connection verifies everything works.
+      </p>
+      <HelpScreenshot src="/help/ai-prefs-card.png?v=2" alt="Account → Preferences → AI Assist card — provider dropdown, helper banner with provider console link, endpoint + model + masked API key, default tone/verbosity, Test connection button" />
+      <h3 className="text-sm font-semibold text-fg mt-3">Using the rewrite button</h3>
+      <p className="text-sm text-fg leading-relaxed">
+        Type a draft, click ✨ AI, pick tone (neutral / formal / friendly / polite / apologetic / terse / funny) and verbosity (short / functional / verbose), hit <strong>Rewrite</strong>. Preview shows side-by-side with the original; <strong>Apply</strong> commits, <strong>Re-roll</strong> generates a new variant, <strong>Cancel</strong> discards.
+      </p>
+      <HelpScreenshot src="/help/ai-rewrite-modal.png?v=2" alt="AI rewrite modal — provider/model/token badge in the header, tone + verbosity selectors, side-by-side original / rewritten panes, Apply / Re-roll / Cancel" />
+      {eligibleForEli5 && (
+        <p className="text-sm text-fg leading-relaxed">
+          <strong>ELI5 mode</strong> (Admin/Manager only) — rewrites for a non-technical reader: replaces jargon, expands acronyms on first use, explains technical concepts in plain terms.
+        </p>
+      )}
+      <h3 className="text-sm font-semibold text-fg mt-3">Usage badge + clipboard</h3>
+      <p className="text-sm text-fg leading-relaxed">
+        After posting a comment or ticket description with an AI rewrite applied, a compact ✨ AI pill renders inline next to the timestamp. Hover for the full readout — provider, model, tokens, tone, verbosity, project context flag. Click to copy the metadata block to your clipboard.
+      </p>
+      <HelpScreenshot src="/help/ai-badge-popover.png?v=2" alt="Compact AI badge in comment header showing a popover with provider/model/tokens/tone/verbosity readout" />
+      {isAdmin && (
+        <>
+          <h3 className="text-sm font-semibold text-fg mt-3">Admin org-managed AI</h3>
+          <p className="text-sm text-fg leading-relaxed">
+            <strong>Admin → Integrations → AI Assist</strong> is a three-section page:
+          </p>
+          <ul className="text-sm text-fg leading-relaxed list-disc ml-5 space-y-1">
+            <li><strong>Integration</strong> — set an org provider/endpoint/model + encrypted org API key. Test connection.</li>
+            <li><strong>Permissions</strong> — enable feature org-wide, lock users to org config (forces every user onto the same provider), or allow user BYOK (personal credentials override the org config). Picks the usage badge disclosure tier (author + Admin / Admin only / all internal users — vendors never see).</li>
+            <li><strong>Project contexts</strong> — pick a project, paste a markdown glossary (sites, integrations, lingo). Up to 8000 chars. Gets prepended to every AI rewrite fired from a ticket in that project so the model knows your project's terms verbatim.</li>
+          </ul>
+          <HelpScreenshot src="/help/admin-ai-integration.png?v=2" alt="Admin → AI Assist → Integration pane — provider dropdown, console deep link, endpoint + model picker, masked API key, Lock + BYOK toggles, Test connection" />
+          <HelpScreenshot src="/help/admin-ai-permissions.png?v=2" alt="Admin → AI Assist → Permissions pane — enabled, lock-to-org, allow BYOK, project context toggle, disclosure audience dropdown" />
+          <HelpScreenshot src="/help/admin-ai-project-contexts.png?v=2" alt="Admin → AI Assist → Project contexts — master-detail view with project list on left, markdown context editor on right" />
+        </>
+      )}
+      <div className="space-y-0">
+        <Feature name="AI rewrite on any composer" roles="all" note="✨ AI button on comments, ticket title/description, canned responses, project description, admin email templates." />
+        <Feature name="Tone + verbosity selectors" roles="all" note="7 tones × 3 verbosities. Default values configurable in Account Preferences." />
+        <Feature name="ELI5 mode" roles={["Admin","Manager"]} note="Rewrites for non-technical readers. Restricted to Admin/Manager." />
+        <Feature name="Project context glossary" roles="all" note="Admin-authored per-project markdown blob ships with rewrites in that project's tickets." />
+        <Feature name="Usage disclosure badge" roles="all" note="Inline ✨ AI pill on AI-rewritten posts. Hover for details, click to copy." />
+        <Feature name="Publish my AI usage" roles="all" note="Per-user opt-in to make own AI badge org-wide visible — for cost transparency when on personal keys." />
+        <Feature name="Admin org AI integration" roles={["Admin"]} note="Admin → Integrations → AI Assist. Configure org provider + lock + audience tier." />
+      </div>
+    </div>
+  );
+}
+
+function SectionSecurity({ role }) {
+  const isAdmin = role === "Admin";
+  return (
+    <div className="space-y-4">
+      {isAdmin ? <FullAccess /> : <PartialAccess note="Login protections apply to everyone. Forensics views are Admin-only." />}
+      <p className="text-sm text-fg leading-relaxed">
+        Login protections layer in front of the password check:
+      </p>
+      <ul className="text-sm text-fg leading-relaxed list-disc ml-5 space-y-1">
+        <li><strong>Argon2id</strong> hashing on every stored password.</li>
+        <li><strong>Per-user lockout</strong> — 8 failed attempts locks the account for 15 minutes.</li>
+        <li><strong>IP rate limit</strong> — 8 login attempts per 15-minute window per IP. Successful logins don't count against the budget.</li>
+        <li><strong>Persistent IP blocking</strong> — an IP with 20+ failures in 24 hours is refused for 1 hour past its most recent failure. Catches credential stuffing that rotates across rate-limit windows.</li>
+        <li><strong>Bot detection</strong> — invisible honeypot field on the login form + sub-800ms form-dwell timer. Either trip refuses with the same 429 a rate limit would return (no bot-distinguishable feedback).</li>
+        <li><strong>Session regeneration</strong> on every successful login — closes the session fixation gap.</li>
+        <li><strong>Response security headers</strong> — Content-Security-Policy, HSTS (when behind HTTPS), X-Frame-Options DENY, Referrer-Policy, Permissions-Policy.</li>
+      </ul>
+      {isAdmin && (
+        <>
+          <h3 className="text-sm font-semibold text-fg mt-3">Forensics endpoints</h3>
+          <p className="text-sm text-fg leading-relaxed">
+            Two admin-only endpoints expose the <code className="bg-surface px-1 rounded text-xs">login_attempts</code> audit trail:
+          </p>
+          <ul className="text-sm text-fg leading-relaxed list-disc ml-5 space-y-0.5">
+            <li><code className="bg-surface px-1 rounded text-xs">GET /api/security/login-attempts?since=&amp;limit=</code> — raw recent log</li>
+            <li><code className="bg-surface px-1 rounded text-xs">GET /api/security/login-attempts/summary</code> — per-IP + per-email aggregates, sorted by failures DESC</li>
+          </ul>
+          <p className="text-sm text-fg leading-relaxed">
+            A dedicated Admin → Security page is coming next — for now, hit the endpoints directly when investigating an incident.
+          </p>
+        </>
+      )}
+      <div className="space-y-0">
+        <Feature name="Argon2id password hashing" roles="all" />
+        <Feature name="8-failure lockout per account" roles="all" note="15-minute auto-unlock." />
+        <Feature name="IP rate limit + persistent block" roles="all" note="8/15min window + 20-failures/24h block." />
+        <Feature name="Honeypot + form dwell bot detection" roles="all" />
+        <Feature name="Login attempt forensics" roles={["Admin"]} note="GET /api/security/login-attempts and /summary." />
       </div>
     </div>
   );
@@ -447,7 +609,7 @@ function SectionMarkdown({ role }) {
       <p className="text-sm text-fg leading-relaxed">
         Comments and descriptions support GitHub Flavored Markdown. The editor has Write and Preview tabs plus a formatting toolbar with keyboard shortcuts.
       </p>
-      <HelpScreenshot src="/help/markdown-toolbar.png" alt="Markdown comment composer with formatting toolbar (bold, italic, code, list, link, attach)" />
+      <HelpScreenshot src="/help/markdown-toolbar.png?v=2" alt="Markdown comment composer with formatting toolbar (bold, italic, code, list, link, attach)" />
       <h3 className="text-sm font-semibold text-fg pt-1">Keyboard shortcuts</h3>
       <div className="grid grid-cols-2 gap-x-6 gap-y-0 text-xs">
         {[
@@ -529,8 +691,11 @@ const SECTIONS = [
   { id: "projects",       label: "Projects",             icon: "📁" },
   { id: "admin",          label: "Admin Panel",          icon: "⚙" },
   { id: "notifications",  label: "Notifications",        icon: "🔔" },
+  { id: "sla",            label: "SLA tracker",          icon: "⏱" },
+  { id: "ai-assist",      label: "AI Assist",            icon: "✨" },
   { id: "mentions",       label: "@Mentions",            icon: "@" },
   { id: "markdown",       label: "Markdown Formatting",  icon: "✏" },
+  { id: "security",       label: "Login security",       icon: "🛡" },
   { id: "support-role",   label: "Support Access",       icon: "🔐" },
   { id: "account",        label: "Account Settings",     icon: "👤" },
 ];
@@ -545,8 +710,11 @@ function renderSection(id, role) {
     case "projects":      return <SectionProjects role={role} />;
     case "admin":         return <SectionAdmin role={role} />;
     case "notifications": return <SectionNotifications role={role} />;
+    case "sla":           return <SectionSla role={role} />;
+    case "ai-assist":     return <SectionAiAssist role={role} />;
     case "mentions":      return <SectionMentions role={role} />;
     case "markdown":      return <SectionMarkdown role={role} />;
+    case "security":      return <SectionSecurity role={role} />;
     case "support-role":  return <SectionSupport role={role} />;
     case "account":       return <SectionAccount role={role} />;
     default:              return null;

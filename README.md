@@ -197,11 +197,38 @@ Three adapters out of the box:
 
 New providers drop in by adding a file under `backend/services/aiProviders/` and registering it in `index.js`.
 
-A ✨ AI button appears in the toolbar of any composer wired with an `aiSurface` prop — currently the internal comment composer, the vendor comment composer (auto-flips when "Share with vendor" is on), the ticket description editor, and the admin email-template Subject + Body inputs. Click it to open a preview-before-send modal with tone (7 options), verbosity (3 options), and an ELI5 toggle (Admin/Manager only). The model output is shown side-by-side with the original — Apply commits it back, Re-roll calls again with the same params, Cancel discards.
+Each provider ships a curated `recommendedModels` list (cheap / balanced / heavy tiers) grouped by an admin-friendly tier system. A **Refresh from provider** button on the model dropdown pulls the live model catalog via the provider's `/v1/models` (or `/api/tags` for Ollama) using your saved key. Per-provider helper banner with deep link to the provider's key console makes setup explicit (OpenAI: platform.openai.com/api-keys, Anthropic: console.anthropic.com/settings/keys, Ollama: ollama.com/library).
 
-**Org kill switch**: Admin → Branding → "AI Assist available org-wide" disables the feature for the entire org regardless of per-user opt-in. Set this OFF if your compliance / data-handling policy doesn't allow any AI traffic — even with each user using their own key.
+A ✨ AI button shows up on any composer wired with an `aiSurface` prop — internal comment composer, vendor comment composer (auto-flips when "Share with vendor" is on), ticket title (single-line surface, terse-default), ticket description (rich), admin email-template Subject + Body, canned response body, project description. Click opens a preview-before-send modal with tone (7 options), verbosity (3 options), and an ELI5 toggle (Admin/Manager only). The model output renders side-by-side with the original — Apply commits, Re-roll generates a new variant, Cancel discards.
+
+**Project context glossary**: at **Admin → Integrations → AI Assist → Project contexts**, admins author a markdown blob per project (8KB cap) covering its sites, integrations, and lingo. The blob gets prepended to every AI rewrite fired from a ticket in that project so the model uses those names verbatim. Three layers of opt-in (org admin / project admin / per-user) all must be ON for the context to ship with a call. Per-comment badge shows "project context applied" when the blob fired.
+
+**Org-managed AI** (the lock + BYOK story): at **Admin → Integrations → AI Assist → Integration**, the org can set its own provider/endpoint/model + encrypted org API key. The Permissions section controls how users interact with the org config:
+
+- **Lock users to org config** — every rewrite uses the org credentials, no override possible
+- **Allow user BYOK** (default on, only when not locked) — users can set personal credentials and bypass the org fallback
+- **AI usage disclosure** — three tiers controlling who sees the ✨ AI badge: author + Admin / Admin only / all internal users (vendors never see). Per-user "Publish my AI usage" override lets users opt their own posts up to org-wide visibility.
+- **Org kill switch** — when off, every AI surface hides regardless of per-user opt-in.
+
+**Usage badge**: every AI-rewritten comment + ticket description carries a compact ✨ AI pill inline. Hover for the full readout (provider, model, tokens, tone, verbosity, project context applied). Click copies the metadata block to clipboard — useful when reporting issues back to admin or support.
+
+**Friendly provider errors**: adapters wrap non-ok responses + fetch errors in a `ProviderError` carrying a kind-aware friendly message (`auth`, `billing`, `rate_limit`, `model_not_found`, `bad_request`, `server_error`, `network`). Rendered inline with an expandable "Provider details" disclosure carrying the raw upstream body for debugging.
 
 Template-aware: when the input contains `{tag.path}` placeholders (the email-template substitution syntax), the prompt explicitly tells the model to preserve every `{...}` token verbatim and reword only the surrounding prose.
+
+### Login security
+
+Layered protections on the local-login path:
+
+- **Argon2id** password hashing
+- **Per-user lockout** — 8 failed attempts → 15-minute auto-unlock
+- **IP rate limit** — 8 attempts per 15-min window per IP; successes don't count
+- **Persistent IP block** — 20+ failures in 24h refuses for 1h past last failure (catches credential stuffing rotating across rate-limit windows)
+- **Honeypot field** on the login form + sub-800ms form-dwell rejection (bot detection without CAPTCHA)
+- **Session regeneration** on every successful login (closes session fixation)
+- **Response security headers** — CSP with explicit AI provider connect-src allowlist, HSTS (HTTPS only), X-Frame-Options DENY, Referrer-Policy, Permissions-Policy
+
+Admins access forensics at `GET /api/security/login-attempts[/summary]` — raw log + per-IP and per-email aggregates. A dedicated UI page is queued for v0.6.1.
 
 ### Pending Review follow-ups
 
