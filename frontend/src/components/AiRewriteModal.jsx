@@ -155,7 +155,9 @@ export default function AiRewriteModal({ open, onClose, originalText, surface, p
           )}
           {!cfg?.org_enabled && (
             <div className="text-xs text-amber-600">
-              AI Assist is disabled organization-wide.
+              {cfg?.kms_available === false
+                ? "AI Assist has not yet been enabled by your administrator."
+                : "AI Assist is disabled organization-wide."}
             </div>
           )}
         </div>

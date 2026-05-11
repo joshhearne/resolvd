@@ -50,6 +50,7 @@ router.get('/config', requireAuth, async (req, res) => {
       org_model: aiSettings.org_model,
       allow_user_byok: aiSettings.allow_user_byok,
       project_context_enabled: aiSettings.project_context_enabled,
+      kms_available: aiSettings.kms_available,
     });
   } catch (err) {
     console.error('ai config get:', err);
@@ -121,6 +122,7 @@ router.post('/api-key', requireAuth, async (req, res) => {
     await aiRewrite.saveUserApiKey(req.session.user.id, v);
     res.json({ ok: true, has_key: !!(typeof v === 'string' && v.trim()) });
   } catch (err) {
+    if (err.httpStatus) return res.status(err.httpStatus).json({ error: err.message });
     console.error('ai api-key set:', err);
     res.status(500).json({ error: 'Server error' });
   }

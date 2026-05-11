@@ -178,6 +178,12 @@ function IntegrationPane({ settings, meta, patch, busy, setSettings }) {
         </p>
       </div>
 
+      {!settings.kms_available && (
+        <MasterKeySetup
+          onGenerated={() => { /* admin must restart to pick up; banner will clear next load */ }}
+        />
+      )}
+
       <label className="block">
         <span className="block text-sm font-medium text-fg mb-1">Provider</span>
         <select
@@ -292,12 +298,17 @@ function IntegrationPane({ settings, meta, patch, busy, setSettings }) {
 
       <div>
         <span className="block text-sm font-medium text-fg mb-1">API key</span>
+        {!settings.kms_available && (
+          <div className="text-xs text-amber-600 mb-1">
+            Configure the master key above before saving an API key.
+          </div>
+        )}
         {!settings.has_org_key && !showKeyEditor && (
           <button
             type="button"
             onClick={() => setShowKeyEditor(true)}
-            className="text-sm text-brand hover:underline"
-            disabled={!provider || provider.needs_api_key === false}
+            className="text-sm text-brand hover:underline disabled:opacity-50 disabled:cursor-not-allowed"
+            disabled={!provider || provider.needs_api_key === false || !settings.kms_available}
           >
             {provider?.needs_api_key === false ? "Provider doesn't require a key" : "Set API key"}
           </button>
@@ -573,6 +584,122 @@ function ProjectContextsPane() {
         </div>
       </div>
     </div>
+  );
+}
+
+// Inline banner shown in the Integration pane when RESOLVD_MASTER_KEY is
+// absent. Generates a fresh key on demand and walks the admin through
+// adding it to .env + restarting the backend. The key never leaves this
+// modal — the server returns it once and does not persist it anywhere.
+function MasterKeySetup({ onGenerated }) {
+  const [generating, setGenerating] = useState(false);
+  const [shown, setShown] = useState(null); // { key, instructions }
+  const [copied, setCopied] = useState(false);
+  const [acknowledged, setAcknowledged] = useState(false);
+
+  async function generate() {
+    setGenerating(true);
+    try {
+      const r = await api.post("/api/ai-settings/generate-master-key", {});
+      setShown(r);
+      onGenerated?.();
+    } catch (e) {
+      toast.error(e.message || "Failed to generate key");
+    } finally {
+      setGenerating(false);
+    }
+  }
+
+  async function copy() {
+    if (!shown?.key) return;
+    try {
+      await navigator.clipboard.writeText(shown.key);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch {
+      toast.error("Clipboard unavailable — copy manually.");
+    }
+  }
+
+  function close() {
+    if (!acknowledged) {
+      if (!confirm("This key will not be shown again. Did you copy and back it up?")) return;
+    }
+    setShown(null);
+    setAcknowledged(false);
+  }
+
+  return (
+    <>
+      <div className="rounded-md border border-amber-400/60 bg-amber-50 dark:bg-amber-900/20 px-3 py-3 text-sm">
+        <div className="font-medium text-amber-900 dark:text-amber-200 mb-1">
+          AI Assist is disabled — master key not configured
+        </div>
+        <p className="text-xs text-amber-900/80 dark:text-amber-200/80 mb-2">
+          AI provider keys are stored encrypted using <code className="font-mono">RESOLVD_MASTER_KEY</code>.
+          Without it the AI module stays off for the whole org. Generate a key
+          below, paste it into your <code className="font-mono">.env</code>, then restart the backend.
+        </p>
+        <button
+          type="button"
+          onClick={generate}
+          disabled={generating}
+          className="px-3 py-1.5 text-sm bg-amber-600 hover:bg-amber-700 text-white rounded-md disabled:opacity-50"
+        >
+          {generating ? "Generating…" : "Generate master key"}
+        </button>
+      </div>
+
+      {shown && (
+        <div className="fixed inset-0 z-50 bg-black/50 flex items-center justify-center p-4" role="dialog" aria-modal="true">
+          <div className="bg-surface rounded-lg shadow-xl border border-border max-w-lg w-full p-5 space-y-4">
+            <div>
+              <h3 className="text-base font-semibold text-fg">Your new master key</h3>
+              <p className="text-xs text-fg-muted mt-1">
+                Shown <span className="font-semibold">once</span>. Resolvd does not store this anywhere — copy it now, back it up
+                outside the database, then paste into <code className="font-mono">.env</code> and restart the backend.
+              </p>
+            </div>
+
+            <div className="rounded-md border border-border-strong bg-surface-2 px-3 py-2 font-mono text-xs break-all select-all">
+              {shown.key}
+            </div>
+
+            <button
+              type="button"
+              onClick={copy}
+              className="w-full px-3 py-1.5 text-sm border border-border-strong rounded-md hover:bg-surface-2"
+            >
+              {copied ? "Copied ✓" : "Copy to clipboard"}
+            </button>
+
+            <ol className="text-xs text-fg-muted list-decimal pl-5 space-y-1">
+              {(shown.instructions || []).map((line, i) => <li key={i}>{line}</li>)}
+            </ol>
+
+            <label className="flex items-start gap-2 text-xs text-fg cursor-pointer">
+              <input
+                type="checkbox"
+                checked={acknowledged}
+                onChange={(e) => setAcknowledged(e.target.checked)}
+                className="mt-0.5 h-4 w-4 rounded border-border-strong text-brand"
+              />
+              <span>I have copied this key and backed it up in a secure location.</span>
+            </label>
+
+            <div className="flex justify-end gap-2 pt-1">
+              <button
+                type="button"
+                onClick={close}
+                className="px-3 py-1.5 text-sm bg-brand text-white rounded-md hover:bg-brand/90"
+              >
+                Done
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+    </>
   );
 }
 
