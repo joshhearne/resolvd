@@ -1100,6 +1100,55 @@ async function initSchema() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_assets_serial ON assets(serial) WHERE serial IS NOT NULL`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_assets_last_seen ON assets(last_seen_at DESC NULLS LAST)`);
 
+    // Custom field definitions. entity_type lets one table cover assets,
+    // tickets, companies, etc. as the system grows. slug is a stable
+    // machine-readable handle (lowercase, no spaces); label is the
+    // display name. type drives the validator + which value_* column
+    // holds the actual data. options is type='select' specific: a JSON
+    // array of {value, label}. sort_order controls UI display order
+    // within an entity_type. UNIQUE on (entity_type, slug) prevents
+    // duplicate slugs per scope.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS custom_field_defs (
+        id SERIAL PRIMARY KEY,
+        entity_type TEXT NOT NULL CHECK (entity_type IN ('asset', 'ticket')),
+        slug TEXT NOT NULL,
+        label TEXT NOT NULL,
+        type TEXT NOT NULL CHECK (type IN ('text', 'number', 'date', 'bool', 'select')),
+        options JSONB NOT NULL DEFAULT '[]'::jsonb,
+        required BOOLEAN NOT NULL DEFAULT FALSE,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        help_text TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(entity_type, slug)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_custom_field_defs_entity
+      ON custom_field_defs(entity_type, sort_order, id)`);
+
+    // Custom field values. One row per (def_id, asset_id). Only one
+    // value_* column is populated per row based on the def's type;
+    // others stay NULL. ON DELETE CASCADE both directions keeps the
+    // join clean. Asset-only for now; ticket support adds a parallel
+    // ticket_id column when we wire that entity.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS custom_field_values (
+        id SERIAL PRIMARY KEY,
+        def_id INTEGER NOT NULL REFERENCES custom_field_defs(id) ON DELETE CASCADE,
+        asset_id INTEGER REFERENCES assets(id) ON DELETE CASCADE,
+        value_text TEXT,
+        value_number NUMERIC,
+        value_date TIMESTAMPTZ,
+        value_bool BOOLEAN,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(def_id, asset_id)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_custom_field_values_asset
+      ON custom_field_values(asset_id) WHERE asset_id IS NOT NULL`);
+
     // Audit + dedup log. UNIQUE(source_id, external_event_id) blocks Zabbix
     // resends from spawning duplicate tickets even if the mapper logic
     // changes. raw_payload kept for debugging when a mapper misbehaves.

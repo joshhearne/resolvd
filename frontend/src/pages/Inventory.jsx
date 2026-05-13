@@ -199,12 +199,121 @@ function AssetDetail({ detail, onBack }) {
           </React.Fragment>
         ))}
       </dl>
+      <CustomFieldsPanel assetId={detail.id} />
       <details className="text-xs">
         <summary className="cursor-pointer text-fg-muted hover:text-fg">Raw payload</summary>
         <pre className="mt-2 bg-surface-2 border border-border rounded p-2 overflow-x-auto text-[10px] font-mono max-h-80 overflow-y-auto">
           {JSON.stringify(detail.raw_data, null, 2)}
         </pre>
       </details>
+    </div>
+  );
+}
+
+function CustomFieldsPanel({ assetId }) {
+  const [rows, setRows] = useState(null);
+  const [edits, setEdits] = useState({});
+  const [saving, setSaving] = useState(false);
+
+  async function load() {
+    try {
+      const r = await api.get(`/api/custom-field-defs/values/asset/${assetId}`);
+      setRows(r);
+      setEdits({});
+    } catch (e) {
+      setRows([]);
+    }
+  }
+  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [assetId]);
+
+  if (rows == null) return null;
+  if (rows.length === 0) return null;
+
+  function currentValue(d) {
+    if (Object.prototype.hasOwnProperty.call(edits, d.id)) return edits[d.id];
+    switch (d.type) {
+      case 'number': return d.value_number != null ? String(d.value_number) : '';
+      case 'date': return d.value_date ? String(d.value_date).slice(0, 10) : '';
+      case 'bool': return !!d.value_bool;
+      case 'select':
+      case 'text':
+      default: return d.value_text || '';
+    }
+  }
+
+  function setEdit(id, val) {
+    setEdits((prev) => ({ ...prev, [id]: val }));
+  }
+
+  const dirty = Object.keys(edits).length > 0;
+
+  async function save() {
+    setSaving(true);
+    try {
+      const items = Object.entries(edits).map(([id, value]) => ({ def_id: Number(id), value }));
+      await api.put(`/api/custom-field-defs/values/asset/${assetId}`, items);
+      toast.success("Saved");
+      await load();
+    } catch (e) {
+      toast.error(e.message || "Failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <div className="border-t border-border pt-3 space-y-2">
+      <div className="flex items-center justify-between">
+        <div className="text-xs font-semibold text-fg-muted uppercase tracking-wider">Custom fields</div>
+        {dirty && (
+          <button onClick={save} disabled={saving}
+            className="text-xs px-2 py-0.5 bg-brand text-white rounded disabled:opacity-50">
+            {saving ? "Saving…" : "Save"}
+          </button>
+        )}
+      </div>
+      <dl className="grid grid-cols-[7rem_1fr] gap-y-1.5 text-xs items-center">
+        {rows.map((d) => {
+          const v = currentValue(d);
+          let input;
+          if (d.type === "bool") {
+            input = (
+              <input type="checkbox" checked={!!v} onChange={(e) => setEdit(d.id, e.target.checked)} />
+            );
+          } else if (d.type === "select") {
+            input = (
+              <select value={v} onChange={(e) => setEdit(d.id, e.target.value)}
+                className="border border-border-strong rounded px-2 py-1 text-xs w-full">
+                <option value="">—</option>
+                {(d.options || []).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+              </select>
+            );
+          } else if (d.type === "date") {
+            input = (
+              <input type="date" value={v} onChange={(e) => setEdit(d.id, e.target.value)}
+                className="border border-border-strong rounded px-2 py-1 text-xs font-mono" />
+            );
+          } else if (d.type === "number") {
+            input = (
+              <input type="number" value={v} onChange={(e) => setEdit(d.id, e.target.value)}
+                className="border border-border-strong rounded px-2 py-1 text-xs font-mono w-full" />
+            );
+          } else {
+            input = (
+              <input value={v} onChange={(e) => setEdit(d.id, e.target.value)}
+                className="border border-border-strong rounded px-2 py-1 text-xs w-full" />
+            );
+          }
+          return (
+            <React.Fragment key={d.id}>
+              <dt className="text-fg-muted" title={d.help_text || ""}>
+                {d.label}{d.required ? <span className="text-red-500 ml-0.5">*</span> : null}
+              </dt>
+              <dd>{input}</dd>
+            </React.Fragment>
+          );
+        })}
+      </dl>
     </div>
   );
 }
