@@ -7,6 +7,14 @@ const SOURCE_LABELS = {
   action1: "Action1",
 };
 
+const OFFLINE_DAYS = 14;
+
+function isOffline(lastSeenAt) {
+  if (!lastSeenAt) return true;
+  const ageMs = Date.now() - new Date(lastSeenAt).getTime();
+  return ageMs > OFFLINE_DAYS * 86400_000;
+}
+
 function PatchBadge({ crit, other }) {
   const c = Number(crit) || 0;
   const o = Number(other) || 0;
@@ -53,17 +61,23 @@ export default function Inventory() {
   const [detail, setDetail] = useState(null);
   const [creating, setCreating] = useState(false);
   const [types, setTypes] = useState([]);
+  const [offlineOnly, setOfflineOnly] = useState(false);
 
   useEffect(() => {
     api.get("/api/asset-types").then(setTypes).catch(() => setTypes([]));
   }, []);
 
-  async function load(searchQ = q) {
+  function buildQs(searchQ = q, offline = offlineOnly) {
+    const parts = [];
+    if (searchQ) parts.push(`q=${encodeURIComponent(searchQ)}`);
+    if (offline) parts.push(`offline_days=${OFFLINE_DAYS}`);
+    return parts.length ? `?${parts.join("&")}` : "";
+  }
+
+  async function load(searchQ = q, offline = offlineOnly) {
     setLoading(true);
     try {
-      const r = await api.get(
-        `/api/assets${searchQ ? `?q=${encodeURIComponent(searchQ)}` : ""}`
-      );
+      const r = await api.get(`/api/assets${buildQs(searchQ, offline)}`);
       setItems(r.items || []);
       setTotal(r.total || 0);
     } catch (e) {
@@ -73,7 +87,8 @@ export default function Inventory() {
     }
   }
 
-  useEffect(() => { load(""); }, []);
+  useEffect(() => { load("", false); }, []);
+  useEffect(() => { load(q, offlineOnly); /* eslint-disable-next-line */ }, [offlineOnly]);
 
   useEffect(() => {
     if (!selected) {
@@ -110,6 +125,21 @@ export default function Inventory() {
             className="bg-surface-2 text-fg placeholder:text-fg-dim text-sm rounded-md border border-border px-3 py-1.5 w-64 focus:outline-none focus:ring-2 focus:ring-brand/40"
           />
           <button type="submit" className="btn btn-secondary btn-sm">Search</button>
+          <label className="inline-flex items-center gap-1.5 text-xs text-fg-muted ml-2">
+            <input
+              type="checkbox"
+              checked={offlineOnly}
+              onChange={(e) => setOfflineOnly(e.target.checked)}
+            />
+            Offline only ({OFFLINE_DAYS}d+)
+          </label>
+          <a
+            href={`/api/assets/export.csv${buildQs(q, offlineOnly)}`}
+            className="btn btn-secondary btn-sm"
+            title="Download current view as CSV"
+          >
+            Export CSV
+          </a>
           <button
             type="button"
             onClick={() => setCreating(true)}
@@ -163,7 +193,17 @@ export default function Inventory() {
                       className={`cursor-pointer hover:bg-surface-2 ${selected === a.id ? "bg-brand/5" : ""}`}
                     >
                       <td className="px-3 py-2 font-medium text-fg">
-                        {a.hostname || <span className="text-fg-dim italic">unnamed</span>}
+                        <div className="flex items-center gap-1.5">
+                          <span>{a.hostname || <span className="text-fg-dim italic">unnamed</span>}</span>
+                          {isOffline(a.last_seen_at) && (
+                            <span
+                              className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300"
+                              title={`Last seen > ${OFFLINE_DAYS} days ago`}
+                            >
+                              offline
+                            </span>
+                          )}
+                        </div>
                       </td>
                       <td className="px-3 py-2 text-fg-muted">
                         {a.os || "—"}{a.os_version ? ` ${a.os_version}` : ""}

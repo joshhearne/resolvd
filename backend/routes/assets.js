@@ -15,9 +15,15 @@ router.get('/', requireAuth, async (req, res) => {
     const offset = Math.max(0, Number(req.query.offset) || 0);
     const q = (req.query.q || '').trim();
     const projectId = req.query.project_id ? Number(req.query.project_id) : null;
+    const offlineRaw = Number(req.query.offline_days);
+    const offlineDays = Number.isFinite(offlineRaw) && offlineRaw > 0 ? Math.floor(offlineRaw) : null;
 
     const params = [];
     const conds = [];
+    if (offlineDays) {
+      params.push(offlineDays);
+      conds.push(`(a.last_seen_at IS NULL OR a.last_seen_at < NOW() - ($${params.length} || ' days')::interval)`);
+    }
     if (q) {
       params.push(`%${q.toLowerCase()}%`);
       conds.push(`(LOWER(a.hostname) LIKE $${params.length}
@@ -244,6 +250,71 @@ router.delete('/:id', requireAuth, requireRole('Admin', 'Manager'), async (req, 
   } catch (err) {
     console.error('asset delete error:', err);
     res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// GET /api/assets/export.csv — current inventory as CSV. Honors the
+// same q + project_id + offline_days filters as the list endpoint.
+function csvEscape(v) {
+  if (v == null) return '';
+  const s = String(v);
+  if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
+  return s;
+}
+router.get('/export.csv', requireAuth, async (req, res) => {
+  try {
+    const q = (req.query.q || '').trim();
+    const offlineRaw = Number(req.query.offline_days);
+    const offlineDays = Number.isFinite(offlineRaw) && offlineRaw > 0 ? Math.floor(offlineRaw) : null;
+    const params = [];
+    const conds = [];
+    if (offlineDays) {
+      params.push(offlineDays);
+      conds.push(`(a.last_seen_at IS NULL OR a.last_seen_at < NOW() - ($${params.length} || ' days')::interval)`);
+    }
+    if (q) {
+      params.push(`%${q.toLowerCase()}%`);
+      conds.push(`(LOWER(a.hostname) LIKE $${params.length} OR LOWER(a.serial) LIKE $${params.length} OR LOWER(a.organization) LIKE $${params.length} OR LOWER(a.model) LIKE $${params.length})`);
+    }
+    const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+    const r = await pool.query(
+      `SELECT a.id, a.hostname, at.label AS type, a.manufacturer, a.model,
+              a.serial, a.os, a.os_version, a.cpu, a.ram_bytes, a.storage_bytes,
+              a.mac, a.ip_address, a.organization, c.name AS company,
+              u.display_name AS linked_user, u.email AS linked_user_email,
+              a.missing_updates_critical, a.missing_updates_other,
+              a.vulnerabilities_critical, a.vulnerabilities_other,
+              a.update_status, a.reboot_required, a.source_system,
+              a.last_seen_at, a.last_software_sync_at
+         FROM assets a
+         LEFT JOIN asset_types at ON at.id = a.asset_type_id
+         LEFT JOIN companies c ON c.id = a.company_id
+         LEFT JOIN users u ON u.id = a.linked_user_id
+         ${where}
+         ORDER BY a.last_seen_at DESC NULLS LAST, a.hostname`,
+      params
+    );
+    const cols = [
+      'id', 'hostname', 'type', 'manufacturer', 'model',
+      'serial', 'os', 'os_version', 'cpu', 'ram_bytes', 'storage_bytes',
+      'mac', 'ip_address', 'organization', 'company',
+      'linked_user', 'linked_user_email',
+      'missing_updates_critical', 'missing_updates_other',
+      'vulnerabilities_critical', 'vulnerabilities_other',
+      'update_status', 'reboot_required', 'source_system',
+      'last_seen_at', 'last_software_sync_at',
+    ];
+    const lines = [cols.join(',')];
+    for (const row of r.rows) {
+      lines.push(cols.map((c) => csvEscape(row[c])).join(','));
+    }
+    const stamp = new Date().toISOString().slice(0, 10);
+    res.setHeader('Content-Type', 'text/csv; charset=utf-8');
+    res.setHeader('Content-Disposition', `attachment; filename="inventory-${stamp}.csv"`);
+    res.send(lines.join('\n'));
+  } catch (err) {
+    console.error('asset csv export error:', err);
+    res.status(500).json({ error: 'Export failed' });
   }
 });
 
