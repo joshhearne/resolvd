@@ -22,7 +22,16 @@
 const { pool } = require('../db/pool');
 const businessHours = require('./businessHours');
 
-const PAUSE_TAGS = new Set(['awaiting_input', 'on_hold']);
+// Map semantic_tag → pause kind. awaiting_input is treated as vendor
+// (the dominant case — waiting on external party). on_hold is internal
+// (our team blocked itself: gathering info, scheduling, etc.). Admins
+// who want different behavior can rename statuses; the tag set is
+// fixed.
+const PAUSE_KIND_BY_TAG = {
+  awaiting_input: 'vendor',
+  on_hold: 'internal',
+};
+const PAUSE_TAGS = new Set(Object.keys(PAUSE_KIND_BY_TAG));
 
 // Look up the effective policy for a (priority, project_id) pair.
 // Project-specific row beats org default. Returns the full row (incl.
@@ -80,46 +89,70 @@ async function applyPolicyOnCreate(client, { ticketId, priority, projectId, crea
   );
 }
 
-async function isPauseStatus(client, statusName) {
-  if (!statusName) return false;
+// Returns null when the status isn't a pause status; otherwise returns
+// the pause kind ('vendor' | 'internal') so callers can split the
+// resulting wait time on the right counter.
+async function pauseKindForStatus(client, statusName) {
+  if (!statusName) return null;
   const r = await (client || pool).query(
     `SELECT semantic_tag FROM statuses WHERE name = $1 LIMIT 1`,
     [statusName]
   );
   const tag = r.rows[0]?.semantic_tag;
-  return PAUSE_TAGS.has(tag);
+  return PAUSE_KIND_BY_TAG[tag] || null;
 }
 
-async function pauseSla(client, ticketId) {
+async function pauseSla(client, ticketId, kind = 'vendor') {
   await (client || pool).query(
-    `UPDATE tickets SET sla_paused_at = NOW()
-       WHERE id = $1 AND sla_paused_at IS NULL`,
-    [ticketId]
+    `UPDATE tickets
+        SET sla_paused_at = NOW(),
+            sla_pause_kind = $2
+      WHERE id = $1 AND sla_paused_at IS NULL`,
+    [ticketId, kind]
   );
 }
 
-// Resume: shift all four timestamps (due × {response,resolve} + warn ×
-// {response,resolve}) forward by the wall-clock pause duration. The
-// warn_at columns track due_at exactly during pauses.
+// Resume: shift all four timestamps forward by wall-clock pause
+// duration, AND increment either sla_vendor_wait_seconds or
+// sla_internal_hold_seconds based on the kind stamped at pause time.
+// sla_paused_seconds is still maintained as the total so legacy
+// readers don't break.
 async function resumeSla(client, ticketId) {
   await (client || pool).query(
     `UPDATE tickets
         SET sla_paused_seconds = sla_paused_seconds + GREATEST(0, EXTRACT(EPOCH FROM (NOW() - sla_paused_at))::int),
+            sla_vendor_wait_seconds = sla_vendor_wait_seconds
+              + CASE WHEN sla_pause_kind = 'vendor'
+                     THEN GREATEST(0, EXTRACT(EPOCH FROM (NOW() - sla_paused_at))::int)
+                     ELSE 0 END,
+            sla_internal_hold_seconds = sla_internal_hold_seconds
+              + CASE WHEN sla_pause_kind = 'internal'
+                     THEN GREATEST(0, EXTRACT(EPOCH FROM (NOW() - sla_paused_at))::int)
+                     ELSE 0 END,
             sla_response_due_at  = sla_response_due_at  + (NOW() - sla_paused_at),
             sla_resolve_due_at   = sla_resolve_due_at   + (NOW() - sla_paused_at),
             sla_response_warn_at = sla_response_warn_at + (NOW() - sla_paused_at),
             sla_resolve_warn_at  = sla_resolve_warn_at  + (NOW() - sla_paused_at),
-            sla_paused_at = NULL
+            sla_paused_at = NULL,
+            sla_pause_kind = NULL
       WHERE id = $1 AND sla_paused_at IS NOT NULL`,
     [ticketId]
   );
 }
 
 async function onStatusChange(client, { ticketId, oldStatus, newStatus }) {
-  const wasPaused = await isPauseStatus(client, oldStatus);
-  const isPaused = await isPauseStatus(client, newStatus);
-  if (!wasPaused && isPaused) await pauseSla(client, ticketId);
-  else if (wasPaused && !isPaused) await resumeSla(client, ticketId);
+  const oldKind = await pauseKindForStatus(client, oldStatus);
+  const newKind = await pauseKindForStatus(client, newStatus);
+  if (!oldKind && newKind) {
+    await pauseSla(client, ticketId, newKind);
+  } else if (oldKind && !newKind) {
+    await resumeSla(client, ticketId);
+  } else if (oldKind && newKind && oldKind !== newKind) {
+    // Kind changed mid-pause (rare but legal — e.g. moving from
+    // awaiting_input → on_hold). Close the old kind, open the new.
+    await resumeSla(client, ticketId);
+    await pauseSla(client, ticketId, newKind);
+  }
 }
 
 async function markResponded(client, ticketId) {

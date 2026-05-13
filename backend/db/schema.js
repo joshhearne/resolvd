@@ -1212,6 +1212,25 @@ async function initSchema() {
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_resolve_warned BOOLEAN NOT NULL DEFAULT FALSE`);
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_response_warned_at TIMESTAMPTZ`);
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_resolve_warned_at TIMESTAMPTZ`);
+    // D1 breakdown: split sla_paused_seconds by pause kind so the
+    // dashboard can show "vendor wait" vs "internal hold" separately.
+    // sla_pause_kind tracks the in-progress pause's kind so resume can
+    // route to the right counter; semantic_tag 'awaiting_input' = vendor,
+    // 'on_hold' = internal (default mapping in services/sla.js).
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_vendor_wait_seconds INTEGER NOT NULL DEFAULT 0`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_internal_hold_seconds INTEGER NOT NULL DEFAULT 0`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_pause_kind TEXT CHECK (sla_pause_kind IN ('vendor', 'internal'))`);
+    // One-time backfill: legacy sla_paused_seconds gets attributed to
+    // vendor wait (the more common case). Idempotent — only updates
+    // rows where the new counters are still zero and there's something
+    // to attribute. Loss is acceptable: this is approximate history.
+    await client.query(`
+      UPDATE tickets
+         SET sla_vendor_wait_seconds = sla_paused_seconds
+       WHERE sla_paused_seconds > 0
+         AND sla_vendor_wait_seconds = 0
+         AND sla_internal_hold_seconds = 0
+    `);
     // Backfill timestamps for any tickets that were already flagged
     // breached before this column existed. Use the due_at as the best
     // proxy. Only updates rows missing the timestamp — idempotent.
