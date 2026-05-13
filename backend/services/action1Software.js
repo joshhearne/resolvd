@@ -75,29 +75,49 @@ async function fetchPaged(baseUrl, accessToken, startUrl, maxPages = 20) {
   return out;
 }
 
+// Action1 reports each row as { id, type:'ReportRow', fields: { ... } }.
+// Pull from .fields first, fall back to flat keys for other RMM shapes.
+function f(s, ...keys) {
+  const fields = s?.fields || {};
+  for (const k of keys) {
+    if (fields[k] != null && fields[k] !== '') return fields[k];
+    if (s?.[k] != null && s?.[k] !== '') return s[k];
+  }
+  return null;
+}
 function pickName(s) {
-  return String(s?.name || s?.display_name || s?.title || '').trim();
+  return String(f(s, 'Name', 'name', 'display_name', 'title') || '').trim();
 }
 function pickVersion(s) {
-  return String(s?.version || s?.display_version || '').trim() || null;
+  return String(f(s, 'Version', 'version', 'display_version') || '').trim() || null;
 }
 function pickVendor(s) {
-  return String(s?.vendor || s?.publisher || s?.manufacturer || '').trim() || null;
+  return String(f(s, 'Vendor', 'vendor', 'publisher', 'manufacturer', 'Publisher') || '').trim() || null;
 }
 function pickInstallDate(s) {
-  const v = s?.install_date || s?.installed_at || s?.installdate;
+  const v = f(s, 'Install Date', 'install_date', 'installed_at', 'installdate', 'InstallDate');
   if (!v) return null;
-  // Accept "YYYY-MM-DD" or "YYYY-MM-DD_HH-MM-SS" (Action1 idiom) or ISO.
-  const m = String(v).match(/^(\d{4})-(\d{2})-(\d{2})(?:[_T](\d{2})[-:](\d{2})[-:](\d{2}))?/);
-  if (!m) return null;
-  const iso = m[4]
-    ? `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z`
-    : `${m[1]}-${m[2]}-${m[3]}T00:00:00Z`;
-  const d = new Date(iso);
+  const raw = String(v).trim();
+  // Action1 reports "20260505" (YYYYMMDD, no separators).
+  const ymd = raw.match(/^(\d{4})(\d{2})(\d{2})$/);
+  if (ymd) {
+    const d = new Date(`${ymd[1]}-${ymd[2]}-${ymd[3]}T00:00:00Z`);
+    return isNaN(d.getTime()) ? null : d.toISOString();
+  }
+  // Also accept "YYYY-MM-DD" / "YYYY-MM-DD_HH-MM-SS" / ISO.
+  const m = raw.match(/^(\d{4})-(\d{2})-(\d{2})(?:[_T](\d{2})[-:](\d{2})[-:](\d{2}))?/);
+  if (m) {
+    const iso = m[4]
+      ? `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z`
+      : `${m[1]}-${m[2]}-${m[3]}T00:00:00Z`;
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? null : d.toISOString();
+  }
+  const d = new Date(raw);
   return isNaN(d.getTime()) ? null : d.toISOString();
 }
 function pickSize(s) {
-  const v = s?.size_bytes || s?.size || s?.installed_size;
+  const v = f(s, 'size_bytes', 'size', 'installed_size', 'Size');
   if (v == null) return null;
   const n = Number(v);
   return Number.isFinite(n) ? Math.trunc(n) : null;
