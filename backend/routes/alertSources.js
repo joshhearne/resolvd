@@ -161,6 +161,14 @@ router.patch('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
       sets.push(`severity_map = $${p++}::jsonb`);
       values.push(JSON.stringify(body.severity_map || {}));
     }
+    if (Object.prototype.hasOwnProperty.call(body, 'attribute_map')) {
+      if (typeof body.attribute_map !== 'object' || Array.isArray(body.attribute_map)) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'attribute_map must be an object' });
+      }
+      sets.push(`attribute_map = $${p++}::jsonb`);
+      values.push(JSON.stringify(body.attribute_map || {}));
+    }
 
     // api_token is sensitive — route through buildWritePatch which writes
     // to api_token_enc (standard mode) or api_token (off mode).
@@ -443,6 +451,40 @@ router.get('/_meta/presets', requireAuth, requireRole('Admin'), (_req, res) => {
       default_severity_map: PRESET_DEFAULT_SEVERITY_MAPS[name] || {},
     })),
   });
+});
+
+// GET /api/alert-sources/:id/attributes — list the custom-attribute
+// names from the most recent synced asset's raw_data.custom[] for this
+// source. Powers the admin mapping UI ("what attributes can I map?").
+// Falls back to numbered placeholders if no asset has synced yet so
+// admins can pre-configure mappings.
+router.get('/:id/attributes', requireAuth, requireRole('Admin'), async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT raw_data FROM assets
+        WHERE source_alert_source_id = $1
+          AND raw_data ? 'custom'
+        ORDER BY last_seen_at DESC NULLS LAST, id DESC
+        LIMIT 1`,
+      [Number(req.params.id)]
+    );
+    if (!r.rows[0]) {
+      return res.json({
+        attributes: [],
+        sample_source: null,
+        hint: 'No assets synced yet for this source; click Pull now then revisit.',
+      });
+    }
+    const custom = r.rows[0].raw_data?.custom;
+    if (!Array.isArray(custom)) return res.json({ attributes: [], sample_source: null });
+    const attrs = custom
+      .filter((c) => c && typeof c.name === 'string' && c.name.trim())
+      .map((c) => ({ name: String(c.name).trim(), sample_value: c.value != null ? String(c.value) : '' }));
+    res.json({ attributes: attrs, sample_source: 'most_recent_asset' });
+  } catch (err) {
+    console.error('attributes list error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
 });
 
 module.exports = router;

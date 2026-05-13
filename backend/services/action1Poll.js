@@ -208,14 +208,116 @@ function mapEndpointToAsset(ep) {
   };
 }
 
-async function upsertAssets(sourceId, sourceSystem, endpoints) {
+// Asset columns the attribute_map is allowed to overwrite. Whitelist
+// keeps malicious / sloppy mapping config from writing arbitrary cols
+// (no FK columns, no timestamps, no raw_data).
+const MAPPABLE_ASSET_COLUMNS = new Set([
+  'hostname', 'serial', 'mac', 'manufacturer', 'model',
+  'os', 'os_version', 'cpu', 'ip_address',
+]);
+
+// Walk ep.custom[] against the source's attribute_map. Returns
+//   { columnOverrides: { col: value }, customFieldValues: [{def_id, value}] }
+// for the caller to merge into the asset upsert. Unknown / unmapped
+// attributes are silently skipped — extra custom slots are common in
+// Action1 tenants.
+function resolveAttributeMappings(ep, attributeMap) {
+  const out = { columnOverrides: {}, customFieldValues: [] };
+  if (!attributeMap || typeof attributeMap !== 'object') return out;
+  const custom = Array.isArray(ep?.custom) ? ep.custom : null;
+  if (!custom) return out;
+  for (const item of custom) {
+    if (!item || typeof item.name !== 'string') continue;
+    const value = item.value;
+    if (value == null || value === '') continue;
+    const mapping = attributeMap[item.name];
+    if (!mapping || !mapping.type || !mapping.target) continue;
+    if (mapping.type === 'asset_column') {
+      if (MAPPABLE_ASSET_COLUMNS.has(mapping.target)) {
+        out.columnOverrides[mapping.target] = String(value);
+      }
+    } else if (mapping.type === 'custom_field') {
+      const defId = Number(mapping.target);
+      if (Number.isInteger(defId) && defId > 0) {
+        out.customFieldValues.push({ def_id: defId, value });
+      }
+    }
+  }
+  return out;
+}
+
+// Apply custom field values to an asset post-upsert. Loads each def to
+// know which value_* column to write. Empty value clears the row.
+async function applyCustomFieldValues(assetId, items) {
+  if (!items.length) return;
+  const ids = items.map((i) => i.def_id);
+  const defs = await pool.query(
+    `SELECT id, type, options FROM custom_field_defs
+      WHERE id = ANY($1::int[]) AND entity_type = 'asset'`,
+    [ids]
+  );
+  const byId = Object.fromEntries(defs.rows.map((d) => [d.id, d]));
+  for (const it of items) {
+    const def = byId[it.def_id];
+    if (!def) continue;
+    let col = null, val = null;
+    const raw = it.value;
+    switch (def.type) {
+      case 'text':
+        col = 'value_text'; val = String(raw); break;
+      case 'number': {
+        const n = Number(raw);
+        if (!Number.isFinite(n)) continue;
+        col = 'value_number'; val = n; break;
+      }
+      case 'date': {
+        const d = new Date(raw);
+        if (isNaN(d.getTime())) continue;
+        col = 'value_date'; val = d.toISOString(); break;
+      }
+      case 'bool': {
+        const s = String(raw).toLowerCase();
+        col = 'value_bool'; val = ['true', '1', 'yes', 'on'].includes(s); break;
+      }
+      case 'select': {
+        const valid = (def.options || []).some((o) => o.value === String(raw));
+        if (!valid) continue;
+        col = 'value_text'; val = String(raw); break;
+      }
+      default: continue;
+    }
+    const cols = ['value_text', 'value_number', 'value_date', 'value_bool'];
+    const vals = cols.map((c) => (c === col ? val : null));
+    await pool.query(
+      `INSERT INTO custom_field_values
+         (def_id, asset_id, value_text, value_number, value_date, value_bool)
+       VALUES ($1, $2, $3, $4, $5, $6)
+       ON CONFLICT (def_id, asset_id) DO UPDATE SET
+         value_text = EXCLUDED.value_text,
+         value_number = EXCLUDED.value_number,
+         value_date = EXCLUDED.value_date,
+         value_bool = EXCLUDED.value_bool,
+         updated_at = NOW()`,
+      [def.id, assetId, ...vals]
+    );
+  }
+}
+
+async function upsertAssets(sourceId, sourceSystem, endpoints, attributeMap = {}) {
   let upserted = 0;
   let skipped = 0;
   for (const ep of endpoints) {
     const mapped = mapEndpointToAsset(ep);
     if (!mapped) { skipped++; continue; }
+    // Attribute mapping: overrides take precedence over the standard
+    // field extraction so a tenant that puts Asset Tag in "Custom
+    // Attribute 1" can route it to .serial (or wherever they want).
+    const mappings = resolveAttributeMappings(ep, attributeMap);
+    for (const [col, val] of Object.entries(mappings.columnOverrides)) {
+      mapped[col] = val;
+    }
     try {
-      await pool.query(
+      const inserted = await pool.query(
         `INSERT INTO assets
           (source_system, source_external_id, source_alert_source_id,
            hostname, serial, mac, manufacturer, model, os, os_version,
@@ -242,7 +344,8 @@ async function upsertAssets(sourceId, sourceSystem, endpoints) {
            organization = EXCLUDED.organization,
            last_seen_at = EXCLUDED.last_seen_at,
            raw_data = EXCLUDED.raw_data,
-           updated_at = NOW()`,
+           updated_at = NOW()
+         RETURNING id`,
         [
           sourceSystem, mapped.source_external_id, sourceId,
           mapped.hostname, mapped.serial, mapped.mac, mapped.manufacturer,
@@ -252,6 +355,12 @@ async function upsertAssets(sourceId, sourceSystem, endpoints) {
           mapped.last_seen_at, JSON.stringify(ep),
         ]
       );
+      const assetId = inserted.rows[0]?.id;
+      if (assetId && mappings.customFieldValues.length) {
+        await applyCustomFieldValues(assetId, mappings.customFieldValues).catch((err) => {
+          console.error('asset custom field write error:', err.message);
+        });
+      }
       upserted++;
     } catch (err) {
       console.error('asset upsert error:', err.message);
@@ -404,7 +513,7 @@ async function pollSource(source) {
     try {
       const token = await oauthToken(baseUrl, clientId, clientSecret);
       const endpoints = await fetchAllEndpoints(baseUrl, token);
-      const inv = await upsertAssets(source.id, 'action1', endpoints);
+      const inv = await upsertAssets(source.id, 'action1', endpoints, source.attribute_map || {});
       summary.inventory = { fetched: endpoints.length, ...inv };
     } catch (err) {
       summary.inventory = { error: scrubSecrets(String(err.message), clientSecret).slice(0, 500) };

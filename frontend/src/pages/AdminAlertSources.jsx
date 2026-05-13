@@ -853,6 +853,10 @@ function SourceDetail({ source, projects, presets, onBack, onPatch, onRotate, on
         </div>
       )}
 
+      {source.preset === "action1" && source.affect_inventory && (
+        <AttributeMappingSection source={source} onReload={onReload} />
+      )}
+
       <div className="space-y-2 pt-3 border-t border-border">
         <div className="text-sm font-medium text-fg">Recent events</div>
         {(!source.recent_events || source.recent_events.length === 0) ? (
@@ -892,6 +896,144 @@ function SourceDetail({ source, projects, presets, onBack, onPatch, onRotate, on
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+// Maps Action1's per-endpoint custom attributes to either a built-in
+// asset column or a custom field def. Only renders when the source is
+// inventory-enabled — otherwise the data path doesn't exist.
+const MAPPABLE_COLUMNS = [
+  "hostname", "serial", "mac", "manufacturer", "model",
+  "os", "os_version", "cpu", "ip_address",
+];
+
+function AttributeMappingSection({ source, onReload }) {
+  const [attrs, setAttrs] = useState(null);
+  const [hint, setHint] = useState(null);
+  const [defs, setDefs] = useState([]);
+  const [edits, setEdits] = useState(() => ({ ...(source.attribute_map || {}) }));
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    async function load() {
+      try {
+        const [a, d] = await Promise.all([
+          api.get(`/api/alert-sources/${source.id}/attributes`),
+          api.get(`/api/custom-field-defs?entity_type=asset`),
+        ]);
+        setAttrs(a.attributes || []);
+        setHint(a.hint || null);
+        setDefs(d || []);
+      } catch (e) {
+        toast.error(e.message || "Failed to load attributes");
+        setAttrs([]);
+      }
+    }
+    load();
+  }, [source.id]);
+
+  useEffect(() => {
+    setEdits({ ...(source.attribute_map || {}) });
+  }, [source.id, source.attribute_map]);
+
+  function currentTargetValue(attrName) {
+    const m = edits[attrName];
+    if (!m) return "";
+    if (m.type === "asset_column") return `col:${m.target}`;
+    if (m.type === "custom_field") return `cf:${m.target}`;
+    return "";
+  }
+
+  function setTarget(attrName, raw) {
+    setEdits((prev) => {
+      const next = { ...prev };
+      if (!raw) { delete next[attrName]; return next; }
+      const [kind, target] = raw.split(":");
+      if (kind === "col") next[attrName] = { type: "asset_column", target };
+      else if (kind === "cf") next[attrName] = { type: "custom_field", target: Number(target) };
+      return next;
+    });
+  }
+
+  const initial = JSON.stringify(source.attribute_map || {});
+  const current = JSON.stringify(edits);
+  const dirty = initial !== current;
+
+  async function save() {
+    setSaving(true);
+    try {
+      await api.patch(`/api/alert-sources/${source.id}`, { attribute_map: edits });
+      toast.success("Mapping saved — applies on next Pull / poll");
+      if (onReload) await onReload();
+    } catch (e) {
+      toast.error(e.message || "Failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (attrs == null) return null;
+
+  return (
+    <div className="space-y-2 pt-3 border-t border-border">
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-medium text-fg">Custom attribute mapping</div>
+        {dirty && (
+          <button onClick={save} disabled={saving} className="text-xs px-2 py-1 bg-brand text-white rounded disabled:opacity-50">
+            {saving ? "Saving…" : "Save mapping"}
+          </button>
+        )}
+      </div>
+      <p className="text-xs text-fg-muted">
+        Action1's per-endpoint <code>custom</code> attributes (up to 30
+        per tenant) can be routed into a built-in asset column or any
+        asset custom field. Sample values shown are from the most-recent
+        synced endpoint. Mappings apply on the next Pull / scheduled poll.
+        Define custom fields under <b>Admin → Workflow → Custom fields</b>.
+      </p>
+      {attrs.length === 0 ? (
+        <div className="text-xs text-fg-dim italic">{hint || "No attributes seen yet."}</div>
+      ) : (
+        <table className="w-full text-xs">
+          <thead className="text-fg-muted">
+            <tr>
+              <th className="text-left py-1">Attribute</th>
+              <th className="text-left py-1">Sample value</th>
+              <th className="text-left py-1">Target</th>
+            </tr>
+          </thead>
+          <tbody>
+            {attrs.map((a) => (
+              <tr key={a.name} className="border-t border-border">
+                <td className="py-1.5 pr-3 font-mono">{a.name}</td>
+                <td className="py-1.5 pr-3 text-fg-muted truncate max-w-xs">
+                  {a.sample_value || <span className="text-fg-dim italic">empty</span>}
+                </td>
+                <td className="py-1.5">
+                  <select
+                    value={currentTargetValue(a.name)}
+                    onChange={(e) => setTarget(a.name, e.target.value)}
+                    className="border border-border-strong rounded px-2 py-1 text-xs w-full max-w-xs"
+                  >
+                    <option value="">— skip —</option>
+                    <optgroup label="Asset column">
+                      {MAPPABLE_COLUMNS.map((c) => <option key={c} value={`col:${c}`}>{c}</option>)}
+                    </optgroup>
+                    {defs.length > 0 && (
+                      <optgroup label="Custom field">
+                        {defs.map((d) => (
+                          <option key={d.id} value={`cf:${d.id}`}>{d.label} ({d.type})</option>
+                        ))}
+                      </optgroup>
+                    )}
+                  </select>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
     </div>
   );
 }
