@@ -15,17 +15,40 @@
 
 const { pool } = require('../db/pool');
 
+// Resolution rules with priority operators:
+//   1. Project-scoped row beats org-default. If a project row matches,
+//      org defaults are ignored entirely.
+//   2. Within the chosen scope, exact ('=') match beats range
+//      operators. Two range matches break ties by recency (created_at
+//      DESC) so an admin's latest edit wins.
+// The CASE expression below maps operators to a numeric specificity
+// rank so PostgreSQL's ORDER BY can pick deterministically.
 async function policyForTicket(client, priority, projectId) {
   const db = client || pool;
+  const opMatch = `(
+    (priority_op = '=' AND priority = $1) OR
+    (priority_op = '<' AND $1 < priority) OR
+    (priority_op = '>' AND $1 > priority) OR
+    (priority_op = '<=' AND $1 <= priority) OR
+    (priority_op = '>=' AND $1 >= priority)
+  )`;
+  const orderBy = `CASE priority_op WHEN '=' THEN 0 ELSE 1 END, created_at DESC`;
+
   if (projectId) {
     const r = await db.query(
-      `SELECT * FROM assignment_policies WHERE priority = $1 AND project_id = $2`,
+      `SELECT * FROM assignment_policies
+        WHERE project_id = $2 AND enabled = TRUE AND ${opMatch}
+        ORDER BY ${orderBy}
+        LIMIT 1`,
       [priority, projectId]
     );
     if (r.rows[0]) return r.rows[0];
   }
   const def = await db.query(
-    `SELECT * FROM assignment_policies WHERE priority = $1 AND project_id IS NULL`,
+    `SELECT * FROM assignment_policies
+      WHERE project_id IS NULL AND enabled = TRUE AND ${opMatch}
+      ORDER BY ${orderBy}
+      LIMIT 1`,
     [priority]
   );
   return def.rows[0] || null;

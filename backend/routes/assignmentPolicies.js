@@ -11,14 +11,18 @@ const { requireAuth, requireRole } = require('../middleware/auth');
 const router = express.Router();
 
 const STRATEGIES = ['round_robin', 'case_load', 'specific_user'];
+const PRIORITY_OPS = ['=', '<', '>', '<=', '>='];
 
 function validateBody(body, { requireScope = false } = {}) {
-  const { priority, project_id, strategy, agent_pool, specific_user_id, enabled } = body || {};
+  const { priority, priority_op, project_id, strategy, agent_pool, specific_user_id, enabled } = body || {};
   if (requireScope && (!Number.isInteger(priority) || priority < 1 || priority > 5)) {
     return 'priority must be 1–5';
   }
   if (requireScope && project_id != null && (!Number.isInteger(project_id) || project_id <= 0)) {
     return 'project_id must be positive integer or null';
+  }
+  if (priority_op !== undefined && !PRIORITY_OPS.includes(priority_op)) {
+    return `priority_op must be one of ${PRIORITY_OPS.join(', ')}`;
   }
   if (strategy !== undefined && !STRATEGIES.includes(strategy)) {
     return `strategy must be one of ${STRATEGIES.join(', ')}`;
@@ -59,14 +63,15 @@ router.post('/', requireAuth, requireRole('Admin'), async (req, res) => {
   const v = validateBody(req.body, { requireScope: true });
   if (v) return res.status(400).json({ error: v });
   try {
-    const { priority, project_id, strategy, agent_pool, specific_user_id, enabled } = req.body;
+    const { priority, priority_op, project_id, strategy, agent_pool, specific_user_id, enabled } = req.body;
     const r = await pool.query(
       `INSERT INTO assignment_policies
-         (priority, project_id, strategy, agent_pool, specific_user_id, enabled)
-       VALUES ($1, $2, $3, $4::int[], $5, COALESCE($6, TRUE))
+         (priority, priority_op, project_id, strategy, agent_pool, specific_user_id, enabled)
+       VALUES ($1, $2, $3, $4, $5::int[], $6, COALESCE($7, TRUE))
        RETURNING *`,
       [
         priority,
+        priority_op || '=',
         project_id || null,
         strategy || 'specific_user',
         agent_pool || [],
@@ -76,7 +81,6 @@ router.post('/', requireAuth, requireRole('Admin'), async (req, res) => {
     );
     res.status(201).json(r.rows[0]);
   } catch (e) {
-    if (e.code === '23505') return res.status(409).json({ error: 'policy already exists for that (priority, project)' });
     console.error('assignment policy create:', e);
     res.status(500).json({ error: 'Database error' });
   }
@@ -92,7 +96,7 @@ router.patch('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
     const sets = [];
     const values = [];
     let p = 1;
-    for (const k of ['strategy', 'specific_user_id', 'enabled']) {
+    for (const k of ['strategy', 'priority_op', 'specific_user_id', 'enabled']) {
       if (Object.prototype.hasOwnProperty.call(body, k)) {
         sets.push(`${k} = $${p++}`);
         values.push(body[k]);

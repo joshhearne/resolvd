@@ -22,6 +22,8 @@ const STRATEGIES = [
   { value: "specific_user", label: "Specific user" },
 ];
 
+const PRIORITY_OPS = ["=", "<=", ">=", "<", ">"];
+
 // Eligible assignees are project members with is_agent = TRUE. For
 // project-scoped policies we fetch agents on that specific project;
 // for org-default policies we use the global agent set (anyone who is
@@ -37,7 +39,7 @@ export default function AdminAssignmentPolicies() {
   // on demand and don't re-fetch each render.
   const [agentsByProject, setAgentsByProject] = useState({});
   const [loading, setLoading] = useState(true);
-  const [newRow, setNewRow] = useState({ priority: 3, project_id: "", strategy: "specific_user" });
+  const [newRow, setNewRow] = useState({ priority: 3, priority_op: "=", project_id: "", strategy: "specific_user" });
   const [edits, setEdits] = useState({});
 
   async function loadProjectAgents(projectId) {
@@ -101,6 +103,7 @@ export default function AdminAssignmentPolicies() {
     try {
       const body = {
         priority: Number(newRow.priority),
+        priority_op: newRow.priority_op,
         project_id: newRow.project_id ? Number(newRow.project_id) : null,
         strategy: newRow.strategy,
         agent_pool: [],
@@ -108,7 +111,7 @@ export default function AdminAssignmentPolicies() {
       };
       await api.post("/api/assignment-policies", body);
       toast.success("Policy added — set pool / user below");
-      setNewRow({ priority: 3, project_id: "", strategy: "specific_user" });
+      setNewRow({ priority: 3, priority_op: "=", project_id: "", strategy: "specific_user" });
       await load();
     } catch (err) {
       toast.error(err.message || "Failed");
@@ -139,7 +142,19 @@ export default function AdminAssignmentPolicies() {
             ? <span className="text-fg-dim italic">Org default</span>
             : `${p.project_prefix} · ${p.project_name}`}
         </td>
-        <td className="py-2 pr-3 font-medium whitespace-nowrap">{PRIORITY_LABELS[p.priority]}</td>
+        <td className="py-2 pr-3 whitespace-nowrap">
+          <div className="flex items-center gap-1">
+            <select
+              value={merged.priority_op || "="}
+              onChange={(ev) => setEdits((prev) => ({ ...prev, [p.id]: { ...prev[p.id], priority_op: ev.target.value } }))}
+              className="border border-border-strong rounded px-1.5 py-1 text-sm font-mono w-14"
+              title="Priority operator"
+            >
+              {PRIORITY_OPS.map((op) => <option key={op} value={op}>{op}</option>)}
+            </select>
+            <span className="font-medium">{PRIORITY_LABELS[p.priority]}</span>
+          </div>
+        </td>
         <td className="py-2 pr-3">
           <select
             value={merged.strategy}
@@ -225,6 +240,12 @@ export default function AdminAssignmentPolicies() {
           <li><b>Lowest case load</b> — pick whoever has fewest open tickets right now.</li>
           <li><b>Specific user</b> — always assign to this person.</li>
         </ul>
+        <p className="text-xs text-fg-muted mb-3">
+          The priority operator widens a rule across priorities — e.g.{" "}
+          <code>{"<= P2"}</code> covers P1 + P2. When multiple rules match,
+          project-scoped beats org-default, then exact <code>=</code> beats
+          range, then newest beats older.
+        </p>
 
         <div className="border border-border rounded p-3 mb-4 bg-surface-2/40">
           <h3 className="text-xs font-semibold text-fg-muted mb-2 uppercase">Add policy</h3>
@@ -240,6 +261,17 @@ export default function AdminAssignmentPolicies() {
                 {projects.filter((pj) => pj.status === "active").map((pj) => (
                   <option key={pj.id} value={pj.id}>{pj.prefix} · {pj.name}</option>
                 ))}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1">
+              <span className="text-xs text-fg-muted">Op</span>
+              <select
+                value={newRow.priority_op}
+                onChange={(e) => setNewRow((p) => ({ ...p, priority_op: e.target.value }))}
+                className="border border-border-strong rounded px-2 py-1 text-sm font-mono w-16"
+                title="Match operator vs ticket priority"
+              >
+                {PRIORITY_OPS.map((op) => <option key={op} value={op}>{op}</option>)}
               </select>
             </label>
             <label className="flex flex-col gap-1">
@@ -275,7 +307,7 @@ export default function AdminAssignmentPolicies() {
             <thead className="text-xs text-fg-muted">
               <tr>
                 <th className="text-left py-1">Scope</th>
-                <th className="text-left py-1">Priority</th>
+                <th className="text-left py-1">Match priority</th>
                 <th className="text-left py-1">Strategy</th>
                 <th className="text-left py-1">Assignment target</th>
                 <th className="text-left py-1">On</th>

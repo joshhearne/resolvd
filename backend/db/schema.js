@@ -1322,10 +1322,16 @@ async function initSchema() {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
-    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_assignment_policies_org_default
-      ON assignment_policies(priority) WHERE project_id IS NULL`);
-    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_assignment_policies_project
-      ON assignment_policies(priority, project_id) WHERE project_id IS NOT NULL`);
+    // priority_op lets one policy cover a priority range. With operators,
+    // multiple rows can match the same ticket priority — resolution
+    // picks the most specific (project-scoped beats org-default, '='
+    // beats range operators, newest beats older). The old unique
+    // indexes are dropped (idempotent: only drops if present).
+    await client.query(`ALTER TABLE assignment_policies ADD COLUMN IF NOT EXISTS priority_op TEXT NOT NULL DEFAULT '=' CHECK (priority_op IN ('=', '<', '>', '<=', '>='))`);
+    await client.query(`DROP INDEX IF EXISTS idx_assignment_policies_org_default`);
+    await client.query(`DROP INDEX IF EXISTS idx_assignment_policies_project`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_assignment_policies_lookup
+      ON assignment_policies(project_id, priority, priority_op) WHERE enabled = TRUE`);
 
     // Escalation chains. One row = one step. Steps grouped by
     // (priority, project_id, trigger); step_order drives execution.
