@@ -52,7 +52,7 @@ router.delete('/follow', requireAuth, async (req, res) => {
 
 // POST /api/tickets/:ticketId/followers — Admin/Manager add another user
 // Body: { user_id }
-router.post('/followers', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+router.post('/followers', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const userId = Number(req.body?.user_id);
     if (!Number.isInteger(userId) || userId <= 0) {
@@ -100,7 +100,7 @@ router.post('/followers', requireAuth, requireRole('Admin', 'Manager'), async (r
 });
 
 // DELETE /api/tickets/:ticketId/followers/:userId — Admin/Manager remove
-router.delete('/followers/:userId', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+router.delete('/followers/:userId', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const userId = Number(req.params.userId);
     await pool.query(

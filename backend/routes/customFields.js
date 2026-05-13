@@ -65,7 +65,7 @@ function coerceValue(value, def) {
 
 // ───────── Defs ──────────────────────────────────────────────────────
 
-router.get('/', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+router.get('/', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const entity = req.query.entity_type;
     const params = [];
@@ -184,7 +184,7 @@ router.delete('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
 
 // GET /api/custom-field-defs/values/asset/:id — list defs + the asset's
 // values joined for rendering the edit panel.
-router.get('/values/asset/:id', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+router.get('/values/asset/:id', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const assetId = Number(req.params.id);
     const r = await pool.query(
@@ -206,7 +206,7 @@ router.get('/values/asset/:id', requireAuth, requireRole('Admin', 'Manager'), as
 // PUT /api/custom-field-defs/values/asset/:id — bulk write. Body:
 // [{ def_id, value }]. Each value is coerced per def type; null/empty
 // removes the row.
-router.put('/values/asset/:id', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+router.put('/values/asset/:id', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const assetId = Number(req.params.id);
     const items = Array.isArray(req.body) ? req.body : [];
