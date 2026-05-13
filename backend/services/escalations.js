@@ -71,9 +71,19 @@ async function fireAction({ action, step, ticket }) {
 
   if (kind === 'notify_role') {
     if (!action.target_role) return { ok: false, reason: 'no target_role' };
+    if (!ticket.project_id) return { ok: false, reason: 'ticket has no project_id' };
+    // Project-scoped: only role members who are members of THIS ticket's
+    // project get paged. An org-wide step (project_id IS NULL) still
+    // narrows notify to the triggering ticket's project — so "Manager"
+    // means "this project's managers", not the entire org's.
     const r = await pool.query(
-      `SELECT id FROM users WHERE role = $1 AND status = 'active'`,
-      [action.target_role]
+      `SELECT DISTINCT u.id
+         FROM users u
+         JOIN project_members pm ON pm.user_id = u.id
+        WHERE u.role = $1
+          AND u.status = 'active'
+          AND pm.project_id = $2`,
+      [action.target_role, ticket.project_id]
     );
     for (const row of r.rows) {
       const u = await getUserById(row.id);
@@ -109,11 +119,22 @@ async function fireAction({ action, step, ticket }) {
 
   if (kind === 'reassign_role') {
     if (!action.target_role) return { ok: false, reason: 'no target_role' };
+    if (!ticket.project_id) return { ok: false, reason: 'ticket has no project_id' };
+    // Pick first active agent in this role who is a member of THIS
+    // ticket's project. is_agent filter prevents reassigning to a
+    // project member who isn't an agent (e.g. submitter-only).
     const r = await pool.query(
-      `SELECT id FROM users WHERE role = $1 AND status = 'active' ORDER BY id ASC LIMIT 1`,
-      [action.target_role]
+      `SELECT u.id
+         FROM users u
+         JOIN project_members pm ON pm.user_id = u.id
+        WHERE u.role = $1
+          AND u.status = 'active'
+          AND pm.project_id = $2
+          AND pm.is_agent = TRUE
+        ORDER BY u.id ASC LIMIT 1`,
+      [action.target_role, ticket.project_id]
     );
-    if (!r.rows[0]) return { ok: false, reason: 'no user in role' };
+    if (!r.rows[0]) return { ok: false, reason: 'no agent in role for project' };
     await pool.query(`UPDATE tickets SET assigned_to = $1 WHERE id = $2`, [r.rows[0].id, ticket.id]);
     await fanout.fanoutAssignment(null, {
       ticket: { ...ticket, assigned_to: r.rows[0].id },

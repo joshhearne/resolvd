@@ -1717,18 +1717,28 @@ async function initSchema() {
     // avoiding the ambiguity of notify_role when many users share a role.
     await client.query(`ALTER TABLE escalation_chain_steps ADD COLUMN IF NOT EXISTS actions JSONB NOT NULL DEFAULT '[]'::jsonb`);
     // Backfill from legacy single-action columns into the actions array
-    // for rows that haven't migrated yet.
+    // only when those columns still exist (first run after upgrade).
+    // Subsequent boots skip the UPDATE because the cols have been dropped.
     await client.query(`
-      UPDATE escalation_chain_steps
-         SET actions = jsonb_build_array(
-               jsonb_strip_nulls(jsonb_build_object(
-                 'kind', action,
-                 'target_user_id', target_user_id,
-                 'target_role', target_role
-               ))
-             )
-       WHERE jsonb_array_length(actions) = 0
-         AND action IS NOT NULL
+      DO $do$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM information_schema.columns
+           WHERE table_name='escalation_chain_steps' AND column_name='action'
+        ) THEN
+          UPDATE escalation_chain_steps
+             SET actions = jsonb_build_array(
+                   jsonb_strip_nulls(jsonb_build_object(
+                     'kind', action,
+                     'target_user_id', target_user_id,
+                     'target_role', target_role
+                   ))
+                 )
+           WHERE jsonb_array_length(actions) = 0
+             AND action IS NOT NULL;
+        END IF;
+      END
+      $do$;
     `);
     // Drop legacy single-action columns + their CHECK constraint. New
     // code reads/writes only the actions[] array. Safe because the
