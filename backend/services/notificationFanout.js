@@ -528,4 +528,8 @@ module.exports = {
   // Exported for tests / outbox flusher
   getFollowerRecipients,
   nextFlushBoundary,
+  // Exported for the escalations service so it can fire per-recipient
+  // and look up users without re-implementing the helpers.
+  dispatchPerRecipient,
+  getUserById,
 };

@@ -1319,6 +1319,43 @@ async function initSchema() {
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_assignment_policies_project
       ON assignment_policies(priority, project_id) WHERE project_id IS NOT NULL`);
 
+    // Escalation chains. One row = one step. Steps grouped by
+    // (priority, project_id, trigger); step_order drives execution.
+    // Trigger names mirror the four SLA milestones surfaced by
+    // tickWarnings + tickBreaches. delay_minutes = grace period after
+    // the trigger before this step fires (0 = immediately). Actions:
+    //   notify_user / notify_role  — fan out to user or all users in role
+    //   reassign_user / reassign_role — UPDATE assigned_to (role pick
+    //     uses the first active user with that role on the project;
+    //     refine in a later PR if round-robin among managers is needed)
+    // Tickets track which steps have fired via tickets.escalation_steps_fired
+    // so a single trigger doesn't re-fire a step on every scheduler tick.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS escalation_chain_steps (
+        id SERIAL PRIMARY KEY,
+        priority INTEGER NOT NULL CHECK (priority BETWEEN 1 AND 5),
+        project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+        trigger TEXT NOT NULL CHECK (trigger IN (
+          'warning_response', 'warning_resolve',
+          'breach_response',  'breach_resolve'
+        )),
+        step_order INTEGER NOT NULL DEFAULT 1,
+        delay_minutes INTEGER NOT NULL DEFAULT 0 CHECK (delay_minutes >= 0),
+        action TEXT NOT NULL CHECK (action IN (
+          'notify_user', 'notify_role', 'reassign_user', 'reassign_role'
+        )),
+        target_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        target_role TEXT,
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_escalation_lookup
+      ON escalation_chain_steps(priority, project_id, trigger, enabled)`);
+
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS escalation_steps_fired INTEGER[] NOT NULL DEFAULT '{}'::int[]`);
+
     // Sensible org-default targets per priority. Idempotent: only inserts
     // when the row doesn't already exist. Customers tune these in the
     // admin UI; these are starting values.
