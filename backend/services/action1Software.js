@@ -127,7 +127,7 @@ async function syncSoftwareForAsset(assetId) {
   if (!orgId) throw new Error('Cannot resolve Action1 organization for this asset');
 
   const sourceRow = await pool.query(
-    `SELECT api_url, api_client_id FROM external_alert_source WHERE id = $1`,
+    `SELECT * FROM external_alert_source WHERE id = $1`,
     [asset.source_alert_source_id]
   );
   const source = sourceRow.rows[0];
