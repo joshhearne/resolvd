@@ -1066,6 +1066,17 @@ async function initSchema() {
     // list for dedup. For now the latest write wins per (source_system,
     // source_external_id).
     await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS affect_inventory BOOLEAN NOT NULL DEFAULT FALSE`);
+    // Per-source attribute mapping. Format:
+    //   { "<source attribute name>": {
+    //       type:   'asset_column' | 'custom_field',
+    //       target: <asset column name> | <custom_field_defs.id> }
+    //   }
+    // Action1 returns a custom[] array of {name, value}; each entry can
+    // be routed via this map to either a built-in asset column or a
+    // custom field def. Empty {} = no mapping (current behavior). The
+    // asset_column whitelist lives in services/action1Poll.js to prevent
+    // writing arbitrary columns through user input.
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS attribute_map JSONB NOT NULL DEFAULT '{}'::jsonb`);
 
     // Inventory module — one row per managed machine, scoped per source
     // system. source_external_id is the RMM's stable id for the device
