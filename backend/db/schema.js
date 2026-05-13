@@ -1193,6 +1193,17 @@ async function initSchema() {
     // counts on the dashboard. Stays NULL for unbreached tickets.
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_response_breached_at TIMESTAMPTZ`);
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_resolve_breached_at TIMESTAMPTZ`);
+    // Pre-breach warnings. warn_at fires before due_at — driven by the
+    // policy's warning_threshold_percent (default 80). Same pause/resume
+    // semantics as due_at. Notification fanout uses fanoutSlaWarning;
+    // separate from breach so users can opt out of one without losing
+    // the other.
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_response_warn_at TIMESTAMPTZ`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_resolve_warn_at TIMESTAMPTZ`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_response_warned BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_resolve_warned BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_response_warned_at TIMESTAMPTZ`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_resolve_warned_at TIMESTAMPTZ`);
     // Backfill timestamps for any tickets that were already flagged
     // breached before this column existed. Use the due_at as the best
     // proxy. Only updates rows missing the timestamp — idempotent.
@@ -1216,6 +1227,66 @@ async function initSchema() {
       ON tickets(sla_response_due_at) WHERE sla_response_due_at IS NOT NULL AND sla_first_response_at IS NULL AND sla_response_breached = FALSE`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_sla_resolve_due
       ON tickets(sla_resolve_due_at) WHERE sla_resolve_due_at IS NOT NULL AND resolved_at IS NULL AND sla_resolve_breached = FALSE`);
+    // Warn-at partial indexes mirror the due-at ones so the scheduler
+    // sweep stays cheap as the ticket table grows.
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_sla_response_warn
+      ON tickets(sla_response_warn_at) WHERE sla_response_warn_at IS NOT NULL AND sla_first_response_at IS NULL AND sla_response_warned = FALSE`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_sla_resolve_warn
+      ON tickets(sla_resolve_warn_at) WHERE sla_resolve_warn_at IS NOT NULL AND resolved_at IS NULL AND sla_resolve_warned = FALSE`);
+
+    // Per-policy warning threshold (% of total window elapsed before
+    // the warning fires). 80 = warn at 80% of the window. 0 disables.
+    await client.query(`ALTER TABLE sla_policies ADD COLUMN IF NOT EXISTS warning_threshold_percent INTEGER NOT NULL DEFAULT 80 CHECK (warning_threshold_percent BETWEEN 0 AND 99)`);
+
+    // Business hours — used by SLA clock math so a Friday-5pm ticket
+    // doesn't burn through the weekend. One row per scope: project_id
+    // NULL = org default. tz is an IANA name; days is a 0–6 array
+    // (0=Sun..6=Sat). start/end are local clock times in tz.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS business_hours_policies (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+        tz TEXT NOT NULL DEFAULT 'America/Chicago',
+        days INTEGER[] NOT NULL DEFAULT ARRAY[1,2,3,4,5],
+        start_time TIME NOT NULL DEFAULT '09:00',
+        end_time TIME NOT NULL DEFAULT '17:00',
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_business_hours_org_default
+      ON business_hours_policies((project_id IS NULL)) WHERE project_id IS NULL`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_business_hours_project
+      ON business_hours_policies(project_id) WHERE project_id IS NOT NULL`);
+    // SLA policy can pin a business-hours policy. NULL = clock runs
+    // 24/7 (existing behavior pre-A3). Stays compatible with old rows.
+    await client.query(`ALTER TABLE sla_policies ADD COLUMN IF NOT EXISTS business_hours_id INTEGER REFERENCES business_hours_policies(id) ON DELETE SET NULL`);
+
+    // Seed an org default Mon-Fri 9-5 Central. Customers can edit or
+    // disable. Idempotent.
+    await client.query(`
+      INSERT INTO business_hours_policies (name, project_id, tz, days, start_time, end_time, enabled)
+      SELECT 'Org default — Mon–Fri 9–5 CT', NULL, 'America/Chicago', ARRAY[1,2,3,4,5], '09:00', '17:00', TRUE
+      WHERE NOT EXISTS (SELECT 1 FROM business_hours_policies WHERE project_id IS NULL)
+    `);
+
+    // Backfill warn_at on existing tickets: warn_at = created_at +
+    // ((due_at - created_at) * threshold / 100). Idempotent — only
+    // updates rows missing the warn_at column.
+    await client.query(`
+      UPDATE tickets t
+         SET sla_response_warn_at = t.created_at + ((t.sla_response_due_at - t.created_at) * COALESCE(sp.warning_threshold_percent, 80) / 100.0),
+             sla_resolve_warn_at  = t.created_at + ((t.sla_resolve_due_at  - t.created_at) * COALESCE(sp.warning_threshold_percent, 80) / 100.0)
+        FROM sla_policies sp
+       WHERE sp.project_id IS NULL
+         AND sp.priority = COALESCE(t.effective_priority, 3)
+         AND t.sla_response_warn_at IS NULL
+         AND t.sla_resolve_warn_at IS NULL
+         AND t.sla_response_due_at IS NOT NULL
+         AND t.sla_resolve_due_at IS NOT NULL
+    `);
 
     await client.query(`INSERT INTO system_jobs (name) VALUES ('sla_breach_check') ON CONFLICT DO NOTHING`);
 
