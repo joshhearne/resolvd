@@ -393,6 +393,13 @@ function SourceDetail({ source, projects, presets, onBack, onPatch, onRotate, on
     source.poll_interval_minutes != null ? String(source.poll_interval_minutes) : "0"
   );
   const [affectInventory, setAffectInventory] = useState(!!source.affect_inventory);
+  const [inventoryCompanyId, setInventoryCompanyId] = useState(
+    source.inventory_company_id ? String(source.inventory_company_id) : ""
+  );
+  const [companies, setCompanies] = useState([]);
+  useEffect(() => {
+    api.get('/api/companies').then(setCompanies).catch(() => setCompanies([]));
+  }, []);
   const [backfillOpen, setBackfillOpen] = useState(false);
   const [backfillBusy, setBackfillBusy] = useState(false);
   const [backfillResult, setBackfillResult] = useState(null);
@@ -412,6 +419,7 @@ function SourceDetail({ source, projects, presets, onBack, onPatch, onRotate, on
       source.poll_interval_minutes != null ? String(source.poll_interval_minutes) : "0"
     );
     setAffectInventory(!!source.affect_inventory);
+    setInventoryCompanyId(source.inventory_company_id ? String(source.inventory_company_id) : "");
     setBackfillResult(null);
   }, [source.id]);
 
@@ -436,6 +444,7 @@ function SourceDetail({ source, projects, presets, onBack, onPatch, onRotate, on
       api_client_id: apiClientId.trim() || null,
       poll_interval_minutes: Math.max(0, Math.min(60, Number(pollInterval) || 0)),
       affect_inventory: affectInventory,
+      inventory_company_id: inventoryCompanyId ? Number(inventoryCompanyId) : null,
     };
     // Only include api_token if the input has a value — empty string means
     // "leave alone". Set to null explicitly via the Clear button.
@@ -670,6 +679,30 @@ function SourceDetail({ source, projects, presets, onBack, onPatch, onRotate, on
             </label>
           )}
 
+          {source.preset === "action1" && affectInventory && (
+            <label className="text-xs text-fg-muted flex flex-col gap-1 max-w-md">
+              <span>Inventory company override</span>
+              <select
+                value={inventoryCompanyId}
+                onChange={(e) => setInventoryCompanyId(e.target.value)}
+                className="bg-surface-2 border border-border rounded px-2 py-1 text-sm"
+              >
+                <option value="">— resolve from Action1 organization —</option>
+                {companies.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+              <span className="text-[11px] text-fg-dim">
+                Pin every asset from this source to one Resolvd company
+                when the entire source belongs to one customer (single-
+                tenant integrations). Leave blank when Action1 ships
+                multiple orgs and you want per-asset resolution — see
+                the org → company mapping table further down for fine
+                control over exotic / multi-site names.
+              </span>
+            </label>
+          )}
+
           {source.preset === "action1" && (
             <label className="text-xs text-fg-muted flex flex-col gap-1 max-w-xs">
               Poll interval (minutes)
@@ -857,6 +890,10 @@ function SourceDetail({ source, projects, presets, onBack, onPatch, onRotate, on
         <AttributeMappingSection source={source} onReload={onReload} />
       )}
 
+      {source.preset === "action1" && source.affect_inventory && !source.inventory_company_id && (
+        <CompanyMapSection source={source} onReload={onReload} />
+      )}
+
       <div className="space-y-2 pt-3 border-t border-border">
         <div className="text-sm font-medium text-fg">Recent events</div>
         {(!source.recent_events || source.recent_events.length === 0) ? (
@@ -1027,6 +1064,126 @@ function AttributeMappingSection({ source, onReload }) {
                         ))}
                       </optgroup>
                     )}
+                  </select>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+// Hudu-style: list the distinct org names this source has shipped, let
+// admin map each exotic name (e.g. "Motorhomes of Texas — Site 1",
+// "Internal IT Infrastructure") to a Resolvd company. Used when the
+// source is multi-tenant (Action1 with N orgs, NinjaOne customers)
+// AND the integration's org names don't match Resolvd company names
+// verbatim. Hidden when inventory_company_id is set (whole-source
+// pin takes precedence).
+function CompanyMapSection({ source, onReload }) {
+  const [orgs, setOrgs] = useState(null);
+  const [companies, setCompanies] = useState([]);
+  const [edits, setEdits] = useState(() => ({ ...(source.company_map || {}) }));
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    async function load() {
+      try {
+        const [seen, cos] = await Promise.all([
+          api.get(`/api/alert-sources/${source.id}/seen-orgs`),
+          api.get(`/api/companies`),
+        ]);
+        setOrgs(seen.orgs || []);
+        setCompanies(cos || []);
+      } catch (e) {
+        toast.error(e.message || "Failed to load orgs");
+        setOrgs([]);
+      }
+    }
+    load();
+  }, [source.id]);
+
+  useEffect(() => {
+    setEdits({ ...(source.company_map || {}) });
+  }, [source.id, source.company_map]);
+
+  const initial = JSON.stringify(source.company_map || {});
+  const current = JSON.stringify(edits);
+  const dirty = initial !== current;
+
+  function setMap(orgName, val) {
+    setEdits((prev) => {
+      const next = { ...prev };
+      if (!val) delete next[orgName];
+      else next[orgName] = Number(val);
+      return next;
+    });
+  }
+
+  async function save() {
+    setSaving(true);
+    try {
+      await api.patch(`/api/alert-sources/${source.id}`, { company_map: edits });
+      toast.success("Mapping saved — applies on next Pull / poll");
+      if (onReload) await onReload();
+    } catch (e) {
+      toast.error(e.message || "Failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (orgs == null) return null;
+
+  return (
+    <div className="space-y-2 pt-3 border-t border-border">
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-medium text-fg">Source org → Resolvd company</div>
+        {dirty && (
+          <button onClick={save} disabled={saving}
+            className="text-xs px-2 py-1 bg-brand text-white rounded disabled:opacity-50">
+            {saving ? "Saving…" : "Save mapping"}
+          </button>
+        )}
+      </div>
+      <p className="text-xs text-fg-muted">
+        Routes exotic source-reported org names to a Resolvd company.
+        Useful for multi-site customers (e.g. "Motorhomes of Texas — HQ"
+        + "Motorhomes of Texas — Site 1" → one MOT company) and for
+        cases where the integration ships an org that doesn't have an
+        exact Resolvd company match (e.g. "Internal IT Infrastructure"
+        → map to the parent org). Falls back to auto-resolve by exact
+        name when an org isn't explicitly mapped. Sync the source at
+        least once to populate this list with real names.
+      </p>
+      {orgs.length === 0 ? (
+        <div className="text-xs text-fg-dim italic">
+          No orgs seen yet for this source — Pull now to populate.
+        </div>
+      ) : (
+        <table className="w-full text-xs">
+          <thead className="text-fg-muted">
+            <tr>
+              <th className="text-left py-1">Source org name</th>
+              <th className="text-left py-1">→ Resolvd company</th>
+            </tr>
+          </thead>
+          <tbody>
+            {orgs.map((name) => (
+              <tr key={name} className="border-t border-border">
+                <td className="py-1.5 pr-3 font-mono">{name}</td>
+                <td className="py-1.5">
+                  <select
+                    value={edits[name] || ""}
+                    onChange={(e) => setMap(name, e.target.value)}
+                    className="border border-border-strong rounded px-2 py-1 text-xs w-full max-w-xs"
+                  >
+                    <option value="">— auto (exact-name match) —</option>
+                    {companies.map((c) => (
+                      <option key={c.id} value={c.id}>{c.name}</option>
+                    ))}
                   </select>
                 </td>
               </tr>
