@@ -118,8 +118,17 @@ async function tickEscalations() {
   for (const trigger of Object.keys(TRIGGER_TS_COL)) {
     const tsCol = TRIGGER_TS_COL[trigger];
     const activeCond = TRIGGER_ACTIVE_COND[trigger];
-    // Find tickets currently in this trigger state with at least one
-    // matching step they haven't fired yet.
+    // priority_op-aware match: a step's row covers a range of priorities
+    // when its operator is <, >, <=, or >=. Combined with project
+    // scoping (project row OR org default) the additive semantics from
+    // PR 3 are preserved — both can fire on one ticket.
+    const opMatch = (col) => `(
+      (s.priority_op = '=' AND s.priority = ${col}) OR
+      (s.priority_op = '<' AND ${col} < s.priority) OR
+      (s.priority_op = '>' AND ${col} > s.priority) OR
+      (s.priority_op = '<=' AND ${col} <= s.priority) OR
+      (s.priority_op = '>=' AND ${col} >= s.priority)
+    )`;
     const candidates = await pool.query(
       `SELECT t.id, t.internal_ref, t.title, t.title_enc, t.project_id, t.assigned_to,
               t.effective_priority, t.escalation_steps_fired, t.${tsCol} AS triggered_at
@@ -130,7 +139,7 @@ async function tickEscalations() {
             SELECT 1 FROM escalation_chain_steps s
              WHERE s.trigger = $1
                AND s.enabled = TRUE
-               AND s.priority = COALESCE(t.effective_priority, 3)
+               AND ${opMatch('COALESCE(t.effective_priority, 3)')}
                AND (s.project_id = t.project_id OR s.project_id IS NULL)
                AND s.id <> ALL(t.escalation_steps_fired)
           )`,
@@ -138,14 +147,14 @@ async function tickEscalations() {
     );
     for (const ticket of candidates.rows) {
       const steps = await pool.query(
-        `SELECT * FROM escalation_chain_steps
-          WHERE trigger = $1
-            AND enabled = TRUE
-            AND priority = $2
-            AND (project_id = $3 OR project_id IS NULL)
-            AND id <> ALL($4::int[])
-            AND $5::timestamptz + (delay_minutes || ' minutes')::interval <= NOW()
-          ORDER BY step_order, id`,
+        `SELECT s.* FROM escalation_chain_steps s
+          WHERE s.trigger = $1
+            AND s.enabled = TRUE
+            AND ${opMatch('$2')}
+            AND (s.project_id = $3 OR s.project_id IS NULL)
+            AND s.id <> ALL($4::int[])
+            AND $5::timestamptz + (s.delay_minutes || ' minutes')::interval <= NOW()
+          ORDER BY s.step_order, s.id`,
         [trigger, ticket.effective_priority || 3, ticket.project_id, ticket.escalation_steps_fired, ticket.triggered_at]
       );
       for (const step of steps.rows) {

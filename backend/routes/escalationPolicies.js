@@ -10,6 +10,7 @@ const router = express.Router();
 const TRIGGERS = ['warning_response', 'warning_resolve', 'breach_response', 'breach_resolve'];
 const ACTIONS = ['notify_user', 'notify_role', 'reassign_user', 'reassign_role'];
 const ROLES = ['Admin', 'Manager', 'Tech'];
+const PRIORITY_OPS = ['=', '<', '>', '<=', '>='];
 
 function validate(body, { create = false } = {}) {
   const b = body || {};
@@ -21,6 +22,9 @@ function validate(body, { create = false } = {}) {
   } else {
     if (b.trigger !== undefined && !TRIGGERS.includes(b.trigger)) return `trigger must be one of ${TRIGGERS.join(', ')}`;
     if (b.action !== undefined && !ACTIONS.includes(b.action)) return `action must be one of ${ACTIONS.join(', ')}`;
+  }
+  if (b.priority_op !== undefined && !PRIORITY_OPS.includes(b.priority_op)) {
+    return `priority_op must be one of ${PRIORITY_OPS.join(', ')}`;
   }
   if (b.delay_minutes !== undefined && (!Number.isInteger(b.delay_minutes) || b.delay_minutes < 0)) {
     return 'delay_minutes must be non-negative integer';
@@ -62,12 +66,13 @@ router.post('/', requireAuth, requireRole('Admin'), async (req, res) => {
     const b = req.body;
     const r = await pool.query(
       `INSERT INTO escalation_chain_steps
-         (priority, project_id, trigger, step_order, delay_minutes,
+         (priority, priority_op, project_id, trigger, step_order, delay_minutes,
           action, target_user_id, target_role, enabled)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, COALESCE($9, TRUE))
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, TRUE))
        RETURNING *`,
       [
         b.priority,
+        b.priority_op || '=',
         b.project_id || null,
         b.trigger,
         b.step_order || 1,
@@ -94,7 +99,7 @@ router.patch('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
     const sets = [];
     const values = [];
     let p = 1;
-    for (const k of ['trigger', 'step_order', 'delay_minutes', 'action',
+    for (const k of ['trigger', 'priority_op', 'step_order', 'delay_minutes', 'action',
                      'target_user_id', 'target_role', 'enabled']) {
       if (Object.prototype.hasOwnProperty.call(b, k)) {
         sets.push(`${k} = $${p++}`);

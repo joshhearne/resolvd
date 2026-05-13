@@ -1365,8 +1365,10 @@ async function initSchema() {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
+    await client.query(`ALTER TABLE escalation_chain_steps ADD COLUMN IF NOT EXISTS priority_op TEXT NOT NULL DEFAULT '=' CHECK (priority_op IN ('=', '<', '>', '<=', '>='))`);
+    await client.query(`DROP INDEX IF EXISTS idx_escalation_lookup`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_escalation_lookup
-      ON escalation_chain_steps(priority, project_id, trigger, enabled)`);
+      ON escalation_chain_steps(priority, priority_op, project_id, trigger, enabled)`);
 
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS escalation_steps_fired INTEGER[] NOT NULL DEFAULT '{}'::int[]`);
 

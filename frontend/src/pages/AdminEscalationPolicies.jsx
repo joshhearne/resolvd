@@ -29,6 +29,7 @@ const ACTIONS = [
   { value: "reassign_role", label: "Reassign to role" },
 ];
 
+const PRIORITY_OPS = ["=", "<=", ">=", "<", ">"];
 const TARGETABLE_ROLES = ["Admin", "Manager", "Tech"];
 
 export default function AdminEscalationPolicies() {
@@ -40,6 +41,7 @@ export default function AdminEscalationPolicies() {
   const [edits, setEdits] = useState({});
   const [newRow, setNewRow] = useState({
     priority: 1,
+    priority_op: "=",
     project_id: "",
     trigger: "warning_response",
     step_order: 1,
@@ -94,8 +96,16 @@ export default function AdminEscalationPolicies() {
   const grouped = useMemo(() => {
     const map = new Map();
     for (const s of steps) {
-      const key = `${s.project_id ?? "org"}|${s.priority}|${s.trigger}`;
-      if (!map.has(key)) map.set(key, { key, project: s.project_id == null ? null : { id: s.project_id, name: s.project_name, prefix: s.project_prefix }, priority: s.priority, trigger: s.trigger, items: [] });
+      const op = s.priority_op || "=";
+      const key = `${s.project_id ?? "org"}|${op}${s.priority}|${s.trigger}`;
+      if (!map.has(key)) map.set(key, {
+        key,
+        project: s.project_id == null ? null : { id: s.project_id, name: s.project_name, prefix: s.project_prefix },
+        priority: s.priority,
+        priority_op: op,
+        trigger: s.trigger,
+        items: [],
+      });
       map.get(key).items.push(s);
     }
     return Array.from(map.values()).map((g) => ({
@@ -139,6 +149,7 @@ export default function AdminEscalationPolicies() {
     try {
       const body = {
         priority: Number(newRow.priority),
+        priority_op: newRow.priority_op,
         project_id: newRow.project_id ? Number(newRow.project_id) : null,
         trigger: newRow.trigger,
         step_order: Number(newRow.step_order) || 1,
@@ -260,6 +271,14 @@ export default function AdminEscalationPolicies() {
               </select>
             </label>
             <label className="flex flex-col gap-1">
+              <span className="text-xs text-fg-muted">Op</span>
+              <select value={newRow.priority_op} onChange={(e) => setNewRow((p) => ({ ...p, priority_op: e.target.value }))}
+                className="border border-border-strong rounded px-2 py-1 text-sm font-mono w-16"
+                title="Match operator vs ticket priority">
+                {PRIORITY_OPS.map((op) => <option key={op} value={op}>{op}</option>)}
+              </select>
+            </label>
+            <label className="flex flex-col gap-1">
               <span className="text-xs text-fg-muted">Priority</span>
               <select value={newRow.priority} onChange={(e) => setNewRow((p) => ({ ...p, priority: Number(e.target.value) }))}
                 className="border border-border-strong rounded px-2 py-1 text-sm">
@@ -328,7 +347,9 @@ export default function AdminEscalationPolicies() {
                 <div className="px-3 py-2 bg-surface-2/40 text-xs text-fg-muted flex items-center gap-3 flex-wrap">
                   <span>{g.project ? <b>{g.project.prefix} · {g.project.name}</b> : <b className="italic">Org default</b>}</span>
                   <span>·</span>
-                  <span>{PRIORITY_LABELS[g.priority]}</span>
+                  <span>
+                    <code className="font-mono">{g.priority_op}</code> {PRIORITY_LABELS[g.priority]}
+                  </span>
                   <span>·</span>
                   <span>{TRIGGER_LABELS[g.trigger]}</span>
                   <span className="ml-auto">{g.items.length} step{g.items.length === 1 ? "" : "s"}</span>
