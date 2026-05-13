@@ -8,6 +8,7 @@ const {
   fanoutAssignment,
 } = require('../services/notificationFanout');
 const sla = require('../services/sla');
+const assignmentPolicies = require('../services/assignmentPolicies');
 const { getMode, buildWritePatch, decryptRow, decryptRows } = require('../services/fields');
 const blindIndex = require('../services/blindIndex');
 const { logSupportRead } = require('../middleware/supportAccess');
@@ -254,11 +255,12 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Submitter'), asyn
       [project_id]
     );
     if (!proj.rows[0]) return res.status(404).json({ error: 'Project not found or archived' });
-    // If creator didn't pick an assignee, fall back to project default.
+    // Explicit assignee from the request always wins. Policy match and
+    // project default are tried inside the transaction post-INSERT so
+    // (a) round_robin cursor increments are atomic and (b) we know the
+    // committed priority + project_id.
     let effectiveAssignee = assigned_to ? Number(assigned_to) : null;
-    if (!effectiveAssignee && proj.rows[0].default_assignee_id) {
-      effectiveAssignee = proj.rows[0].default_assignee_id;
-    }
+    const projectDefaultAssigneeId = proj.rows[0].default_assignee_id || null;
 
     // Non-admins must be project members
     if (user.role !== 'Admin') {
@@ -362,6 +364,24 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Submitter'), asyn
         projectId: t.project_id,
         createdAt: t.created_at,
       });
+
+      // Auto-assignment: only runs when the requester didn't already
+      // pick an assignee. Policy match beats project default; if both
+      // miss, ticket stays unassigned.
+      if (!t.assigned_to) {
+        const policyPick = await assignmentPolicies.applyOnCreate(client, {
+          priority: t.effective_priority || computed,
+          projectId: t.project_id,
+        });
+        const finalAssignee = policyPick || projectDefaultAssigneeId;
+        if (finalAssignee) {
+          await client.query(
+            `UPDATE tickets SET assigned_to = $1 WHERE id = $2`,
+            [finalAssignee, t.id]
+          );
+          t.assigned_to = finalAssignee;
+        }
+      }
       await auditLog(client, { ticketId: t.id, userId: user.id, action: 'ticket_created', newValue: internalRef });
       if (effectiveSubmitterId !== user.id) {
         await auditLog(client, {
