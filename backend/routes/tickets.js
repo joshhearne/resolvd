@@ -520,12 +520,14 @@ router.get('/:id', requireAuth, async (req, res) => {
         proj.name as project_name, proj.prefix as project_prefix, proj.has_external_vendor as project_has_external_vendor,
         sub.display_name as submitted_by_name, sub.email as submitted_by_email,
         asgn.display_name as assigned_to_name,
-        bt.internal_ref as blocking_ticket_ref, bt.title as blocking_ticket_title, bt.title_enc as blocking_ticket_title_enc, bt.internal_status as blocking_ticket_status
+        bt.internal_ref as blocking_ticket_ref, bt.title as blocking_ticket_title, bt.title_enc as blocking_ticket_title_enc, bt.internal_status as blocking_ticket_status,
+        ast.hostname as asset_hostname, ast.serial as asset_serial
       FROM tickets t
       LEFT JOIN projects proj ON t.project_id = proj.id
       LEFT JOIN users sub ON t.submitted_by = sub.id
       LEFT JOIN users asgn ON t.assigned_to = asgn.id
       LEFT JOIN tickets bt ON t.blocked_by_ticket = bt.id
+      LEFT JOIN assets ast ON t.asset_id = ast.id
       WHERE t.id = $1
     `, [req.params.id]);
 
@@ -558,6 +560,29 @@ router.patch('/:id', requireAuth, async (req, res) => {
       if ((isAdmin || isSubmitter) && body.description !== undefined) updates.description = body.description;
       if ((isAdmin || isSubmitter) && body.assigned_to !== undefined) {
         updates.assigned_to = body.assigned_to ? Number(body.assigned_to) : null;
+      }
+      // Asset linking — anyone who can edit the ticket can update the
+      // link (admin/manager/submitter), gated by project setting +
+      // company filter so MSP project A can't link to customer B's
+      // assets even if a user knows the id.
+      if (body.asset_id !== undefined) {
+        const assetId = body.asset_id === null ? null : Number(body.asset_id);
+        if (assetId !== null) {
+          const proj = await client.query(
+            `SELECT allow_asset_linking, asset_company_ids FROM projects WHERE id = $1`,
+            [ticket.project_id]
+          );
+          if (!proj.rows[0]?.allow_asset_linking) {
+            return res.status(400).json({ error: 'Asset linking is disabled for this project' });
+          }
+          const assetRes = await client.query(`SELECT id, company_id FROM assets WHERE id = $1`, [assetId]);
+          if (!assetRes.rows[0]) return res.status(400).json({ error: 'Asset not found' });
+          const companyIds = proj.rows[0].asset_company_ids || [];
+          if (companyIds.length && !companyIds.includes(assetRes.rows[0].company_id)) {
+            return res.status(400).json({ error: 'Asset is not in an allowed company for this project' });
+          }
+        }
+        updates.asset_id = assetId;
       }
       // Admin/Manager can reassign the submitter (e.g. correcting an
       // import or filing-on-behalf metadata). Submitters cannot.
@@ -772,12 +797,14 @@ router.patch('/:id', requireAuth, async (req, res) => {
           sub.display_name as submitted_by_name,
           asgn.display_name as assigned_to_name,
           bt.internal_ref as blocking_ticket_ref, bt.title as blocking_ticket_title,
-          bt.title_enc as blocking_ticket_title_enc, bt.internal_status as blocking_ticket_status
+          bt.title_enc as blocking_ticket_title_enc, bt.internal_status as blocking_ticket_status,
+          ast.hostname as asset_hostname, ast.serial as asset_serial
         FROM tickets t
         LEFT JOIN projects proj ON t.project_id = proj.id
         LEFT JOIN users sub ON t.submitted_by = sub.id
         LEFT JOIN users asgn ON t.assigned_to = asgn.id
         LEFT JOIN tickets bt ON t.blocked_by_ticket = bt.id
+        LEFT JOIN assets ast ON t.asset_id = ast.id
         WHERE t.id = $1
       `, [ticket.id]);
 

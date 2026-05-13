@@ -123,7 +123,7 @@ router.get('/:id', requireAuth, async (req, res) => {
 // PATCH /api/projects/:id — Admin only
 router.patch('/:id', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
-    const { name, description, status, has_external_vendor, default_assignee_id, restrict_followers_to_members, restrict_mentions_to_members, auto_add_new_users, ai_context_md, ai_context_enabled } = req.body;
+    const { name, description, status, has_external_vendor, default_assignee_id, restrict_followers_to_members, restrict_mentions_to_members, auto_add_new_users, ai_context_md, ai_context_enabled, allow_asset_linking, asset_company_ids } = req.body;
     const updates = {};
     if (name !== undefined) updates.name = name.trim();
     if (description !== undefined) updates.description = description?.trim() || null;
@@ -157,6 +157,15 @@ router.patch('/:id', requireAuth, requireRole('Admin', 'Manager'), async (req, r
     }
     if (ai_context_enabled !== undefined) {
       updates.ai_context_enabled = ai_context_enabled !== false && ai_context_enabled !== 'false';
+    }
+    if (allow_asset_linking !== undefined) {
+      updates.allow_asset_linking = allow_asset_linking !== false && allow_asset_linking !== 'false';
+    }
+    if (asset_company_ids !== undefined) {
+      if (!Array.isArray(asset_company_ids) || asset_company_ids.some((id) => !Number.isInteger(id) || id <= 0)) {
+        return res.status(400).json({ error: 'asset_company_ids must be an array of positive integer ids' });
+      }
+      updates.asset_company_ids = asset_company_ids;
     }
     if (default_assignee_id !== undefined) {
       if (default_assignee_id === null || default_assignee_id === '') {

@@ -296,10 +296,12 @@ export default function TicketDetail() {
     api.get("/api/users").then(setAllUsers).catch(() => setAllUsers([]));
   }, [isAdmin]);
 
+  const [project, setProject] = useState(null);
   useEffect(() => {
     if (!isAdmin || !ticket?.project_id) return;
     api.get(`/api/projects/${ticket.project_id}`)
       .then((p) => {
+        setProject(p);
         setProjectMembers(p?.members || []);
         // Effective flag is computed server-side and combines per-project
         // override with the org default. Falls back to "restricted" if the
@@ -1766,6 +1768,24 @@ export default function TicketDetail() {
             </dl>
           </div>
 
+          {/* Linked asset (per-project gated) */}
+          {project?.allow_asset_linking && (
+            <AssetLinkCard
+              ticket={ticket}
+              projectId={ticket.project_id}
+              canEdit={canEdit}
+              onLink={async (assetId) => {
+                try {
+                  const updated = await api.patch(`/api/tickets/${id}`, { asset_id: assetId });
+                  setTicket(updated);
+                  toast.success(assetId ? "Asset linked" : "Asset unlinked");
+                } catch (e) {
+                  toast.error(e.message);
+                }
+              }}
+            />
+          )}
+
           {/* Status */}
           <div className="bg-surface rounded-lg border border-border shadow-sm p-4 space-y-3">
             <h2 className="text-sm font-semibold text-fg">Status</h2>
@@ -2482,3 +2502,106 @@ function MoveDialog({ open, currentRef, currentProjectId, userRole, onCancel, on
   );
 }
 
+
+function AssetLinkCard({ ticket, projectId, canEdit, onLink }) {
+  const [editing, setEditing] = useState(false);
+  const [q, setQ] = useState("");
+  const [results, setResults] = useState([]);
+  const [loading, setLoading] = useState(false);
+
+  React.useEffect(() => {
+    if (!editing) return;
+    const t = setTimeout(async () => {
+      setLoading(true);
+      try {
+        const r = await api.get(
+          `/api/assets?project_id=${projectId}&q=${encodeURIComponent(q)}&limit=20`
+        );
+        setResults(r.items || []);
+      } catch {
+        setResults([]);
+      } finally {
+        setLoading(false);
+      }
+    }, 250);
+    return () => clearTimeout(t);
+  }, [editing, q, projectId]);
+
+  return (
+    <div className="bg-surface rounded-lg border border-border shadow-sm p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-fg">Linked asset</h2>
+        {canEdit && !editing && (
+          <button
+            onClick={() => { setEditing(true); setQ(""); }}
+            className="text-xs text-brand hover:underline"
+          >
+            {ticket.asset_id ? "Change" : "Link"}
+          </button>
+        )}
+      </div>
+      {!editing && (
+        <div className="text-sm">
+          {ticket.asset_id ? (
+            <div className="flex items-center justify-between gap-2">
+              <a href={`/inventory`} className="text-brand hover:underline truncate">
+                {ticket.asset_hostname || `#${ticket.asset_id}`}
+              </a>
+              {canEdit && (
+                <button
+                  onClick={() => onLink(null)}
+                  className="text-xs text-red-600 hover:underline"
+                >
+                  Unlink
+                </button>
+              )}
+            </div>
+          ) : (
+            <span className="text-fg-dim italic">None</span>
+          )}
+        </div>
+      )}
+      {editing && (
+        <div className="space-y-2">
+          <input
+            value={q}
+            onChange={(e) => setQ(e.target.value)}
+            placeholder="hostname, serial, org…"
+            autoFocus
+            className="w-full border border-border-strong rounded px-2 py-1 text-sm"
+          />
+          <div className="max-h-56 overflow-y-auto border border-border rounded divide-y divide-border text-xs">
+            {loading ? (
+              <div className="p-2 text-fg-dim">Searching…</div>
+            ) : results.length === 0 ? (
+              <div className="p-2 text-fg-dim italic">No matches.</div>
+            ) : (
+              results.map((a) => (
+                <button
+                  key={a.id}
+                  onClick={async () => { await onLink(a.id); setEditing(false); }}
+                  className="w-full text-left px-2 py-1.5 hover:bg-surface-2"
+                >
+                  <div className="font-medium text-fg">
+                    {a.hostname || <span className="italic text-fg-dim">unnamed</span>}
+                  </div>
+                  <div className="text-fg-dim">
+                    {a.serial ? `${a.serial} · ` : ""}{a.organization || ""}
+                  </div>
+                </button>
+              ))
+            )}
+          </div>
+          <div className="flex justify-end">
+            <button
+              onClick={() => setEditing(false)}
+              className="text-xs text-fg-muted hover:text-fg"
+            >
+              Cancel
+            </button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
