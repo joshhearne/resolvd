@@ -53,6 +53,9 @@ router.get('/', requireAuth, async (req, res) => {
               a.manufacturer, a.model, a.os, a.os_version, a.organization,
               a.linked_user_id, a.company_id, a.asset_type_id,
               at.slug AS asset_type_slug, at.label AS asset_type_label,
+              a.missing_updates_critical, a.missing_updates_other,
+              a.vulnerabilities_critical, a.vulnerabilities_other,
+              a.update_status, a.vulnerability_status, a.reboot_required,
               a.last_seen_at, a.updated_at
          FROM assets a
          LEFT JOIN asset_types at ON at.id = a.asset_type_id

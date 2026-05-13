@@ -7,6 +7,31 @@ const SOURCE_LABELS = {
   action1: "Action1",
 };
 
+function PatchBadge({ crit, other }) {
+  const c = Number(crit) || 0;
+  const o = Number(other) || 0;
+  if (c === 0 && o === 0 && crit == null && other == null) {
+    return <span className="text-fg-dim text-xs">—</span>;
+  }
+  return (
+    <div className="flex items-center gap-1.5 text-xs">
+      <span
+        className={`px-1.5 py-0.5 rounded font-mono ${
+          c > 0
+            ? "bg-red-100 dark:bg-red-950/40 text-red-700 dark:text-red-300"
+            : "bg-surface-2 text-fg-muted"
+        }`}
+        title="Critical"
+      >
+        {c}
+      </span>
+      <span className="px-1.5 py-0.5 rounded font-mono bg-surface-2 text-fg-muted" title="Other">
+        {o}
+      </span>
+    </div>
+  );
+}
+
 function formatBytes(n) {
   if (n == null) return "—";
   const u = ["B", "KB", "MB", "GB", "TB"];
@@ -124,9 +149,9 @@ export default function Inventory() {
                     <th className="px-3 py-2 text-left font-medium">Hostname</th>
                     <th className="px-3 py-2 text-left font-medium">OS</th>
                     <th className="px-3 py-2 text-left font-medium">Model</th>
-                    <th className="px-3 py-2 text-left font-medium">Serial</th>
                     <th className="px-3 py-2 text-left font-medium">Org</th>
-                    <th className="px-3 py-2 text-left font-medium">Source</th>
+                    <th className="px-3 py-2 text-left font-medium" title="Missing updates (critical / other)">Patches</th>
+                    <th className="px-3 py-2 text-left font-medium" title="Vulnerabilities (critical / other)">Vulns</th>
                     <th className="px-3 py-2 text-left font-medium">Last seen</th>
                   </tr>
                 </thead>
@@ -144,11 +169,9 @@ export default function Inventory() {
                         {a.os || "—"}{a.os_version ? ` ${a.os_version}` : ""}
                       </td>
                       <td className="px-3 py-2 text-fg-muted">{a.model || "—"}</td>
-                      <td className="px-3 py-2 text-fg-muted font-mono text-xs">{a.serial || "—"}</td>
                       <td className="px-3 py-2 text-fg-muted">{a.organization || "—"}</td>
-                      <td className="px-3 py-2 text-fg-muted">
-                        {SOURCE_LABELS[a.source_system] || a.source_system}
-                      </td>
+                      <td className="px-3 py-2"><PatchBadge crit={a.missing_updates_critical} other={a.missing_updates_other} /></td>
+                      <td className="px-3 py-2"><PatchBadge crit={a.vulnerabilities_critical} other={a.vulnerabilities_other} /></td>
                       <td className="px-3 py-2 text-fg-muted whitespace-nowrap">
                         {a.last_seen_at ? <HybridTime value={a.last_seen_at} /> : "—"}
                       </td>
@@ -304,6 +327,7 @@ function AssetDetail({ detail, types, onBack, onReload }) {
           ))}
         </dl>
       )}
+      <SecurityPostureSection detail={detail} />
       <CustomFieldsPanel assetId={detail.id} />
       {Array.isArray(detail.tickets) && detail.tickets.length > 0 && (
         <div className="border-t border-border pt-3 space-y-2">
@@ -617,5 +641,60 @@ function NewAssetForm({ onCancel, onCreated, types }) {
         </button>
       </div>
     </form>
+  );
+}
+
+function SecurityPostureSection({ detail }) {
+  const muc = detail.missing_updates_critical;
+  const muo = detail.missing_updates_other;
+  const vc = detail.vulnerabilities_critical;
+  const vo = detail.vulnerabilities_other;
+  const has =
+    muc != null || muo != null || vc != null || vo != null ||
+    detail.update_status || detail.vulnerability_status ||
+    detail.reboot_required != null;
+  if (!has) return null;
+
+  function StatusPill({ value }) {
+    if (!value) return <span className="text-fg-dim">—</span>;
+    const v = String(value).toUpperCase();
+    const cls = v === 'SUCCESS'
+      ? 'bg-emerald-100 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300'
+      : v === 'WARNING'
+        ? 'bg-amber-100 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300'
+        : v === 'ERROR' || v === 'CRITICAL'
+          ? 'bg-red-100 dark:bg-red-950/40 text-red-700 dark:text-red-300'
+          : 'bg-surface-2 text-fg-muted';
+    return <span className={`px-1.5 py-0.5 rounded text-[10px] font-medium tracking-wide ${cls}`}>{v}</span>;
+  }
+
+  return (
+    <div className="border-t border-border pt-3 space-y-2">
+      <div className="text-xs font-semibold text-fg-muted uppercase tracking-wider">
+        Security posture
+      </div>
+      <dl className="grid grid-cols-[7rem_1fr] gap-y-1 text-xs items-center">
+        <dt className="text-fg-muted">Updates</dt>
+        <dd className="flex items-center gap-2">
+          <PatchBadge crit={muc} other={muo} />
+          <StatusPill value={detail.update_status} />
+        </dd>
+        <dt className="text-fg-muted">Vulns</dt>
+        <dd className="flex items-center gap-2">
+          <PatchBadge crit={vc} other={vo} />
+          <StatusPill value={detail.vulnerability_status} />
+        </dd>
+        <dt className="text-fg-muted">Reboot</dt>
+        <dd>
+          {detail.reboot_required == null ? (
+            <span className="text-fg-dim">—</span>
+          ) : detail.reboot_required ? (
+            <span className="px-1.5 py-0.5 rounded text-[10px] font-medium tracking-wide bg-amber-100 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300">REQUIRED</span>
+          ) : (
+            <span className="text-fg-muted">Not required</span>
+          )}
+        </dd>
+      </dl>
+    </div>
   );
 }
