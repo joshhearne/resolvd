@@ -1699,11 +1699,6 @@ async function initSchema() {
         )),
         step_order INTEGER NOT NULL DEFAULT 1,
         delay_minutes INTEGER NOT NULL DEFAULT 0 CHECK (delay_minutes >= 0),
-        action TEXT NOT NULL CHECK (action IN (
-          'notify_user', 'notify_role', 'reassign_user', 'reassign_role'
-        )),
-        target_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
-        target_role TEXT,
         enabled BOOLEAN NOT NULL DEFAULT TRUE,
         created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
@@ -1713,6 +1708,35 @@ async function initSchema() {
     await client.query(`DROP INDEX IF EXISTS idx_escalation_lookup`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_escalation_lookup
       ON escalation_chain_steps(priority, priority_op, project_id, trigger, enabled)`);
+
+    // Multi-action support: one step can fan out to multiple actions
+    // on the same (trigger, delay) without duplicating rows. Each entry
+    // is { kind, target_user_id?, target_role? } — kind ∈ notify_user /
+    // notify_role / notify_assignee / reassign_user / reassign_role.
+    // 'notify_assignee' targets the ticket's current assignee directly,
+    // avoiding the ambiguity of notify_role when many users share a role.
+    await client.query(`ALTER TABLE escalation_chain_steps ADD COLUMN IF NOT EXISTS actions JSONB NOT NULL DEFAULT '[]'::jsonb`);
+    // Backfill from legacy single-action columns into the actions array
+    // for rows that haven't migrated yet.
+    await client.query(`
+      UPDATE escalation_chain_steps
+         SET actions = jsonb_build_array(
+               jsonb_strip_nulls(jsonb_build_object(
+                 'kind', action,
+                 'target_user_id', target_user_id,
+                 'target_role', target_role
+               ))
+             )
+       WHERE jsonb_array_length(actions) = 0
+         AND action IS NOT NULL
+    `);
+    // Drop legacy single-action columns + their CHECK constraint. New
+    // code reads/writes only the actions[] array. Safe because the
+    // module shipped in the current (held) v0.7.0 work — no prior
+    // release depended on this shape.
+    await client.query(`ALTER TABLE escalation_chain_steps DROP COLUMN IF EXISTS action`);
+    await client.query(`ALTER TABLE escalation_chain_steps DROP COLUMN IF EXISTS target_user_id`);
+    await client.query(`ALTER TABLE escalation_chain_steps DROP COLUMN IF EXISTS target_role`);
 
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS escalation_steps_fired INTEGER[] NOT NULL DEFAULT '{}'::int[]`);
 

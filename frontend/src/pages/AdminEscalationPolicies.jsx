@@ -2,10 +2,10 @@ import { useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
 
-// Escalation chain admin. Step rows are grouped by (priority, project,
-// trigger) for readability; each row's step_order drives execution
-// order inside its group. delay_minutes is the grace period after the
-// trigger fires before this step runs.
+// Escalation chain admin. Step rows grouped by (priority, project,
+// trigger). delay_minutes = grace period after the trigger fires.
+// Each step now carries an actions[] array — fan out to multiple
+// targets on the same (trigger, delay) without duplicating rows.
 
 const PRIORITY_LABELS = {
   1: "P1 (Critical)",
@@ -22,7 +22,8 @@ const TRIGGER_LABELS = {
   breach_resolve: "Breach — resolve",
 };
 
-const ACTIONS = [
+const ACTION_KINDS = [
+  { value: "notify_assignee", label: "Notify assignee" },
   { value: "notify_user", label: "Notify user" },
   { value: "notify_role", label: "Notify role" },
   { value: "reassign_user", label: "Reassign to user" },
@@ -31,6 +32,25 @@ const ACTIONS = [
 
 const PRIORITY_OPS = ["=", "<=", ">=", "<", ">"];
 const TARGETABLE_ROLES = ["Admin", "Manager", "Tech"];
+
+function needsUser(kind) {
+  return kind === "notify_user" || kind === "reassign_user";
+}
+function needsRole(kind) {
+  return kind === "notify_role" || kind === "reassign_role";
+}
+function defaultAction() {
+  return { kind: "notify_assignee" };
+}
+function actionSummary(a) {
+  if (!a?.kind) return "(empty)";
+  if (a.kind === "notify_assignee") return "Notify assignee";
+  if (a.kind === "notify_user") return `Notify user #${a.target_user_id ?? "?"}`;
+  if (a.kind === "notify_role") return `Notify ${a.target_role ?? "?"}`;
+  if (a.kind === "reassign_user") return `Reassign → user #${a.target_user_id ?? "?"}`;
+  if (a.kind === "reassign_role") return `Reassign → first ${a.target_role ?? "?"}`;
+  return a.kind;
+}
 
 export default function AdminEscalationPolicies() {
   const [steps, setSteps] = useState([]);
@@ -46,9 +66,7 @@ export default function AdminEscalationPolicies() {
     trigger: "warning_response",
     step_order: 1,
     delay_minutes: 0,
-    action: "notify_role",
-    target_user_id: "",
-    target_role: "Manager",
+    actions: [defaultAction()],
   });
 
   async function loadProjectAgents(projectId) {
@@ -75,7 +93,7 @@ export default function AdminEscalationPolicies() {
       const ids = Array.from(new Set(list.filter((s) => s.project_id).map((s) => s.project_id)));
       for (const pid of ids) {
         api.get(`/api/agents/project/${pid}`)
-          .then((agents) => setAgentsByProject((prev) => ({ ...prev, [pid]: agents })))
+          .then((a) => setAgentsByProject((prev) => ({ ...prev, [pid]: a })))
           .catch(() => {});
       }
     } catch (e) {
@@ -118,12 +136,20 @@ export default function AdminEscalationPolicies() {
     const e = edits[s.id];
     if (!e) return;
     const body = { ...e };
-    // Normalize select-empty-string → null for the optional fields.
-    if (body.target_user_id === "") body.target_user_id = null;
-    else if (body.target_user_id !== undefined) body.target_user_id = Number(body.target_user_id);
-    if (body.target_role === "") body.target_role = null;
     if (body.delay_minutes !== undefined) body.delay_minutes = Number(body.delay_minutes);
     if (body.step_order !== undefined) body.step_order = Number(body.step_order);
+    // Validate every action target before sending.
+    const actions = body.actions ?? s.actions ?? [];
+    for (const a of actions) {
+      if (needsUser(a.kind) && !a.target_user_id) {
+        toast.error(`${a.kind}: pick a user`);
+        return;
+      }
+      if (needsRole(a.kind) && !a.target_role) {
+        toast.error(`${a.kind}: pick a role`);
+        return;
+      }
+    }
     try {
       await api.patch(`/api/escalation-policies/${s.id}`, body);
       toast.success("Saved");
@@ -146,6 +172,10 @@ export default function AdminEscalationPolicies() {
   }
 
   async function addStep() {
+    for (const a of newRow.actions) {
+      if (needsUser(a.kind) && !a.target_user_id) { toast.error(`${a.kind}: pick a user`); return; }
+      if (needsRole(a.kind) && !a.target_role) { toast.error(`${a.kind}: pick a role`); return; }
+    }
     try {
       const body = {
         priority: Number(newRow.priority),
@@ -154,25 +184,87 @@ export default function AdminEscalationPolicies() {
         trigger: newRow.trigger,
         step_order: Number(newRow.step_order) || 1,
         delay_minutes: Number(newRow.delay_minutes) || 0,
-        action: newRow.action,
-        target_user_id: newRow.target_user_id ? Number(newRow.target_user_id) : null,
-        target_role: newRow.target_role || null,
+        actions: newRow.actions.map((a) => ({
+          kind: a.kind,
+          ...(a.target_user_id ? { target_user_id: Number(a.target_user_id) } : {}),
+          ...(a.target_role ? { target_role: a.target_role } : {}),
+        })),
         enabled: true,
       };
       await api.post("/api/escalation-policies", body);
       toast.success("Step added");
-      setNewRow((p) => ({ ...p, step_order: p.step_order + 1 }));
+      setNewRow((p) => ({
+        ...p,
+        step_order: p.step_order + 1,
+        actions: [defaultAction()],
+      }));
       await load();
     } catch (err) {
       toast.error(err.message || "Failed");
     }
   }
 
-  function targetNeedsUser(action) {
-    return action === "notify_user" || action === "reassign_user";
-  }
-  function targetNeedsRole(action) {
-    return action === "notify_role" || action === "reassign_role";
+  // Action-list editor — shared between StepRow edit + Add-step form.
+  function ActionList({ actions, onChange, users }) {
+    function setAction(i, patch) {
+      const next = actions.map((a, idx) => idx === i ? { ...a, ...patch } : a);
+      onChange(next);
+    }
+    function removeAction(i) {
+      if (actions.length === 1) return; // keep at least one row
+      onChange(actions.filter((_, idx) => idx !== i));
+    }
+    function addAction() {
+      onChange([...actions, defaultAction()]);
+    }
+    return (
+      <div className="space-y-1.5">
+        {actions.map((a, i) => (
+          <div key={i} className="flex flex-wrap items-center gap-1.5">
+            <select
+              value={a.kind}
+              onChange={(e) => {
+                const k = e.target.value;
+                setAction(i, {
+                  kind: k,
+                  target_user_id: needsUser(k) ? a.target_user_id : undefined,
+                  target_role: needsRole(k) ? a.target_role : undefined,
+                });
+              }}
+              className="border border-border-strong rounded px-2 py-1 text-sm"
+            >
+              {ACTION_KINDS.map((opt) => <option key={opt.value} value={opt.value}>{opt.label}</option>)}
+            </select>
+            {needsUser(a.kind) && (
+              <select
+                value={a.target_user_id || ""}
+                onChange={(e) => setAction(i, { target_user_id: e.target.value })}
+                className="border border-border-strong rounded px-2 py-1 text-sm min-w-[10rem]"
+              >
+                <option value="">— pick user —</option>
+                {users.map((u) => <option key={u.id} value={u.id}>{u.display_name} ({u.role})</option>)}
+              </select>
+            )}
+            {needsRole(a.kind) && (
+              <select
+                value={a.target_role || ""}
+                onChange={(e) => setAction(i, { target_role: e.target.value })}
+                className="border border-border-strong rounded px-2 py-1 text-sm"
+              >
+                <option value="">— pick role —</option>
+                {TARGETABLE_ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
+              </select>
+            )}
+            {actions.length > 1 && (
+              <button type="button" onClick={() => removeAction(i)}
+                className="text-xs text-red-600 hover:underline px-1">×</button>
+            )}
+          </div>
+        ))}
+        <button type="button" onClick={addAction}
+          className="text-xs text-brand hover:underline">+ Add action</button>
+      </div>
+    );
   }
 
   function StepRow({ s }) {
@@ -180,13 +272,21 @@ export default function AdminEscalationPolicies() {
     const merged = { ...s, ...e };
     const dirty = !!Object.keys(e).length;
     const users = usersForStep(s);
+    const actions = Array.isArray(merged.actions) && merged.actions.length
+      ? merged.actions
+      : [defaultAction()];
+
+    function setEdit(patch) {
+      setEdits((prev) => ({ ...prev, [s.id]: { ...prev[s.id], ...patch } }));
+    }
+
     return (
       <tr className="border-t border-border align-top">
         <td className="py-2 pr-3">
           <input
             type="number" min="1"
             value={merged.step_order}
-            onChange={(ev) => setEdits((prev) => ({ ...prev, [s.id]: { ...prev[s.id], step_order: ev.target.value } }))}
+            onChange={(ev) => setEdit({ step_order: ev.target.value })}
             className="border border-border-strong rounded px-2 py-1 text-sm font-mono w-16"
           />
         </td>
@@ -194,46 +294,22 @@ export default function AdminEscalationPolicies() {
           <input
             type="number" min="0"
             value={merged.delay_minutes}
-            onChange={(ev) => setEdits((prev) => ({ ...prev, [s.id]: { ...prev[s.id], delay_minutes: ev.target.value } }))}
+            onChange={(ev) => setEdit({ delay_minutes: ev.target.value })}
             className="border border-border-strong rounded px-2 py-1 text-sm font-mono w-20"
           />
           <span className="ml-1 text-xs text-fg-muted">min</span>
         </td>
-        <td className="py-2 pr-3">
-          <select
-            value={merged.action}
-            onChange={(ev) => setEdits((prev) => ({ ...prev, [s.id]: { ...prev[s.id], action: ev.target.value } }))}
-            className="border border-border-strong rounded px-2 py-1 text-sm"
-          >
-            {ACTIONS.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}
-          </select>
-        </td>
-        <td className="py-2 pr-3 min-w-[12rem]">
-          {targetNeedsUser(merged.action) && (
-            <select
-              value={merged.target_user_id || ""}
-              onChange={(ev) => setEdits((prev) => ({ ...prev, [s.id]: { ...prev[s.id], target_user_id: ev.target.value } }))}
-              className="border border-border-strong rounded px-2 py-1 text-sm w-full"
-            >
-              <option value="">— pick user —</option>
-              {users.map((u) => <option key={u.id} value={u.id}>{u.display_name} ({u.role})</option>)}
-            </select>
-          )}
-          {targetNeedsRole(merged.action) && (
-            <select
-              value={merged.target_role || ""}
-              onChange={(ev) => setEdits((prev) => ({ ...prev, [s.id]: { ...prev[s.id], target_role: ev.target.value } }))}
-              className="border border-border-strong rounded px-2 py-1 text-sm w-full"
-            >
-              <option value="">— pick role —</option>
-              {TARGETABLE_ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
-            </select>
-          )}
+        <td className="py-2 pr-3 min-w-[18rem]">
+          <ActionList
+            actions={actions}
+            users={users}
+            onChange={(next) => setEdit({ actions: next })}
+          />
         </td>
         <td className="py-2 pr-3">
           <input
             type="checkbox" checked={!!merged.enabled}
-            onChange={(ev) => setEdits((prev) => ({ ...prev, [s.id]: { ...prev[s.id], enabled: ev.target.checked } }))}
+            onChange={(ev) => setEdit({ enabled: ev.target.checked })}
           />
         </td>
         <td className="py-2 flex gap-2">
@@ -244,6 +320,10 @@ export default function AdminEscalationPolicies() {
     );
   }
 
+  const newRowUsers = newRow.project_id
+    ? (agentsByProject[newRow.project_id] || [])
+    : globalAgents;
+
   return (
     <div className="space-y-5">
       <div className="bg-surface border border-border rounded-lg p-4">
@@ -253,13 +333,13 @@ export default function AdminEscalationPolicies() {
           (priority + project). Project-scoped steps run alongside org
           defaults additively — both apply. <code>delay_minutes</code>{" "}
           is the grace period after the trigger before the step fires.
-          Steps within a group execute by <code>step_order</code> and
-          only fire once per ticket.
+          Each step can run <b>multiple actions</b> (notify + reassign +
+          notify) on the same firing.
         </p>
 
         <div className="border border-border rounded p-3 mb-4 bg-surface-2/40">
           <h3 className="text-xs font-semibold text-fg-muted mb-2 uppercase">Add step</h3>
-          <div className="flex flex-wrap items-end gap-2">
+          <div className="flex flex-wrap items-end gap-2 mb-3">
             <label className="flex flex-col gap-1">
               <span className="text-xs text-fg-muted">Scope</span>
               <select value={newRow.project_id} onChange={(e) => setNewRow((p) => ({ ...p, project_id: e.target.value }))}
@@ -273,8 +353,7 @@ export default function AdminEscalationPolicies() {
             <label className="flex flex-col gap-1">
               <span className="text-xs text-fg-muted">Op</span>
               <select value={newRow.priority_op} onChange={(e) => setNewRow((p) => ({ ...p, priority_op: e.target.value }))}
-                className="border border-border-strong rounded px-2 py-1 text-sm font-mono w-16"
-                title="Match operator vs ticket priority">
+                className="border border-border-strong rounded px-2 py-1 text-sm font-mono w-16">
                 {PRIORITY_OPS.map((op) => <option key={op} value={op}>{op}</option>)}
               </select>
             </label>
@@ -304,35 +383,17 @@ export default function AdminEscalationPolicies() {
                 onChange={(e) => setNewRow((p) => ({ ...p, delay_minutes: e.target.value }))}
                 className="border border-border-strong rounded px-2 py-1 text-sm font-mono w-20" />
             </label>
-            <label className="flex flex-col gap-1">
-              <span className="text-xs text-fg-muted">Action</span>
-              <select value={newRow.action} onChange={(e) => setNewRow((p) => ({ ...p, action: e.target.value }))}
-                className="border border-border-strong rounded px-2 py-1 text-sm">
-                {ACTIONS.map((a) => <option key={a.value} value={a.value}>{a.label}</option>)}
-              </select>
-            </label>
-            {targetNeedsUser(newRow.action) && (
-              <label className="flex flex-col gap-1">
-                <span className="text-xs text-fg-muted">User</span>
-                <select value={newRow.target_user_id} onChange={(e) => setNewRow((p) => ({ ...p, target_user_id: e.target.value }))}
-                  className="border border-border-strong rounded px-2 py-1 text-sm">
-                  <option value="">— pick —</option>
-                  {(newRow.project_id ? (agentsByProject[newRow.project_id] || []) : globalAgents).map((u) => (
-                    <option key={u.id} value={u.id}>{u.display_name} ({u.role})</option>
-                  ))}
-                </select>
-              </label>
-            )}
-            {targetNeedsRole(newRow.action) && (
-              <label className="flex flex-col gap-1">
-                <span className="text-xs text-fg-muted">Role</span>
-                <select value={newRow.target_role} onChange={(e) => setNewRow((p) => ({ ...p, target_role: e.target.value }))}
-                  className="border border-border-strong rounded px-2 py-1 text-sm">
-                  {TARGETABLE_ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
-                </select>
-              </label>
-            )}
-            <button onClick={addStep} className="px-3 py-1.5 text-sm bg-brand text-white rounded">Add</button>
+          </div>
+          <div className="space-y-1">
+            <span className="text-xs text-fg-muted">Actions (fire all on each trigger)</span>
+            <ActionList
+              actions={newRow.actions}
+              users={newRowUsers}
+              onChange={(next) => setNewRow((p) => ({ ...p, actions: next }))}
+            />
+          </div>
+          <div className="mt-3">
+            <button onClick={addStep} className="px-3 py-1.5 text-sm bg-brand text-white rounded">Add step</button>
           </div>
         </div>
 
@@ -359,8 +420,7 @@ export default function AdminEscalationPolicies() {
                     <tr>
                       <th className="text-left py-1 pl-3">Order</th>
                       <th className="text-left py-1">Delay</th>
-                      <th className="text-left py-1">Action</th>
-                      <th className="text-left py-1">Target</th>
+                      <th className="text-left py-1">Actions</th>
                       <th className="text-left py-1">On</th>
                       <th></th>
                     </tr>
