@@ -101,34 +101,93 @@ router.get('/:id', requireAuth, async (req, res) => {
   }
 });
 
-// PATCH /api/assets/:id — manual edits. Admin/Manager can fix matcher
-// abstentions or re-assign company. Only fields useful to override
-// manually are mutable here; structural fields come from sync.
+// Fields editable on RMM-managed assets — sync overrides these on every
+// pull, so only the cross-reference cols are useful to override here.
+const RMM_EDITABLE = ['linked_user_id', 'company_id'];
+
+// Fields editable on manual assets — admin owns the data, so the full
+// structural set is fair game.
+const MANUAL_EDITABLE = [
+  'hostname', 'serial', 'mac', 'manufacturer', 'model', 'os', 'os_version',
+  'cpu', 'ip_address', 'organization', 'linked_user_id', 'company_id',
+  'ram_bytes', 'storage_bytes',
+];
+
+const TEXT_FIELDS = new Set([
+  'hostname', 'serial', 'mac', 'manufacturer', 'model',
+  'os', 'os_version', 'cpu', 'ip_address', 'organization',
+]);
+const INT_FIELDS = new Set(['linked_user_id', 'company_id', 'ram_bytes', 'storage_bytes']);
+
+// POST /api/assets — manual asset create. Generates a UUID for the
+// stable source_external_id so admin can decommission + reuse names
+// freely. source_system = 'manual' distinguishes from RMM-managed rows.
+router.post('/', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+  try {
+    const body = req.body || {};
+    if (!body.hostname || typeof body.hostname !== 'string' || !body.hostname.trim()) {
+      return res.status(400).json({ error: 'hostname required' });
+    }
+    const externalId = require('crypto').randomUUID();
+    const cols = ['source_system', 'source_external_id'];
+    const vals = ['manual', externalId];
+    for (const f of MANUAL_EDITABLE) {
+      if (!Object.prototype.hasOwnProperty.call(body, f)) continue;
+      const v = body[f];
+      if (TEXT_FIELDS.has(f)) {
+        cols.push(f);
+        vals.push(typeof v === 'string' ? v.trim() || null : null);
+      } else if (INT_FIELDS.has(f)) {
+        if (v !== null && (!Number.isInteger(v) || v < 0)) {
+          return res.status(400).json({ error: `${f} must be non-negative integer or null` });
+        }
+        cols.push(f);
+        vals.push(v);
+      }
+    }
+    const placeholders = cols.map((_, i) => `$${i + 1}`).join(', ');
+    const r = await pool.query(
+      `INSERT INTO assets (${cols.join(', ')}) VALUES (${placeholders}) RETURNING id`,
+      vals
+    );
+    res.status(201).json({ id: r.rows[0].id });
+  } catch (err) {
+    console.error('asset create error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// PATCH /api/assets/:id — manual assets get the full editable set,
+// RMM-managed assets keep the narrow override set (sync clobbers
+// structural fields on every pull anyway).
 router.patch('/:id', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
+    const id = Number(req.params.id);
+    const existing = await pool.query(`SELECT source_system FROM assets WHERE id = $1`, [id]);
+    if (!existing.rows[0]) return res.status(404).json({ error: 'not found' });
+    const isManual = existing.rows[0].source_system === 'manual';
+    const editable = isManual ? MANUAL_EDITABLE : RMM_EDITABLE;
+
     const body = req.body || {};
     const sets = [];
     const values = [];
     let p = 1;
-    if (Object.prototype.hasOwnProperty.call(body, 'linked_user_id')) {
-      if (body.linked_user_id !== null
-          && (!Number.isInteger(body.linked_user_id) || body.linked_user_id <= 0)) {
-        return res.status(400).json({ error: 'linked_user_id must be positive integer or null' });
+    for (const f of editable) {
+      if (!Object.prototype.hasOwnProperty.call(body, f)) continue;
+      let v = body[f];
+      if (TEXT_FIELDS.has(f)) {
+        v = typeof v === 'string' ? v.trim() || null : (v === null ? null : null);
+      } else if (INT_FIELDS.has(f)) {
+        if (v !== null && (!Number.isInteger(v) || v < 0)) {
+          return res.status(400).json({ error: `${f} must be non-negative integer or null` });
+        }
       }
-      sets.push(`linked_user_id = $${p++}`);
-      values.push(body.linked_user_id);
-    }
-    if (Object.prototype.hasOwnProperty.call(body, 'company_id')) {
-      if (body.company_id !== null
-          && (!Number.isInteger(body.company_id) || body.company_id <= 0)) {
-        return res.status(400).json({ error: 'company_id must be positive integer or null' });
-      }
-      sets.push(`company_id = $${p++}`);
-      values.push(body.company_id);
+      sets.push(`${f} = $${p++}`);
+      values.push(v);
     }
     if (!sets.length) return res.status(400).json({ error: 'no updatable fields supplied' });
     sets.push('updated_at = NOW()');
-    values.push(Number(req.params.id));
+    values.push(id);
     const r = await pool.query(
       `UPDATE assets SET ${sets.join(', ')} WHERE id = $${p} RETURNING id`,
       values
@@ -137,6 +196,25 @@ router.patch('/:id', requireAuth, requireRole('Admin', 'Manager'), async (req, r
     res.json({ ok: true });
   } catch (err) {
     console.error('asset patch error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// DELETE /api/assets/:id — only manual assets are deletable; RMM-
+// managed ones should disappear via their source's lifecycle. Tickets
+// linked to a deleted asset get asset_id = NULL (FK ON DELETE SET NULL).
+router.delete('/:id', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const r = await pool.query(`SELECT source_system FROM assets WHERE id = $1`, [id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (r.rows[0].source_system !== 'manual') {
+      return res.status(400).json({ error: 'Only manual assets can be deleted directly' });
+    }
+    await pool.query(`DELETE FROM assets WHERE id = $1`, [id]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('asset delete error:', err);
     res.status(500).json({ error: 'Database error' });
   }
 });

@@ -26,6 +26,7 @@ export default function Inventory() {
   const [q, setQ] = useState("");
   const [selected, setSelected] = useState(null);
   const [detail, setDetail] = useState(null);
+  const [creating, setCreating] = useState(false);
 
   async function load(searchQ = q) {
     setLoading(true);
@@ -79,8 +80,25 @@ export default function Inventory() {
             className="bg-surface-2 text-fg placeholder:text-fg-dim text-sm rounded-md border border-border px-3 py-1.5 w-64 focus:outline-none focus:ring-2 focus:ring-brand/40"
           />
           <button type="submit" className="btn btn-secondary btn-sm">Search</button>
+          <button
+            type="button"
+            onClick={() => setCreating(true)}
+            className="btn btn-primary btn-sm"
+          >
+            + New asset
+          </button>
         </form>
       </div>
+      {creating && (
+        <NewAssetForm
+          onCancel={() => setCreating(false)}
+          onCreated={(id) => {
+            setCreating(false);
+            setSelected(id);
+            load(q);
+          }}
+        />
+      )}
 
       <div className="flex flex-col lg:flex-row gap-4 items-stretch">
         <section
@@ -144,6 +162,12 @@ export default function Inventory() {
             <AssetDetail
               detail={detail}
               onBack={() => setSelected(null)}
+              onReload={async () => {
+                if (selected) {
+                  try { setDetail(await api.get(`/api/assets/${selected}`)); } catch {}
+                }
+                load(q);
+              }}
             />
           </section>
         )}
@@ -152,7 +176,52 @@ export default function Inventory() {
   );
 }
 
-function AssetDetail({ detail, onBack }) {
+function AssetDetail({ detail, onBack, onReload }) {
+  const [editing, setEditing] = useState(false);
+  const [edits, setEdits] = useState({});
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setEditing(false);
+    setEdits({});
+  }, [detail?.id]);
+
+  const isManual = detail?.source_system === "manual";
+
+  function setField(k, v) {
+    setEdits((prev) => ({ ...prev, [k]: v }));
+  }
+
+  async function save() {
+    setSaving(true);
+    try {
+      const payload = {};
+      for (const [k, v] of Object.entries(edits)) {
+        payload[k] = v === "" ? null : v;
+      }
+      await api.patch(`/api/assets/${detail.id}`, payload);
+      toast.success("Saved");
+      setEditing(false);
+      setEdits({});
+      if (onReload) await onReload();
+    } catch (e) {
+      toast.error(e.message || "Failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function del() {
+    if (!confirm("Delete this manual asset? Linked tickets will keep their history (asset reference cleared).")) return;
+    try {
+      await api.delete(`/api/assets/${detail.id}`);
+      toast.success("Deleted");
+      if (onReload) await onReload();
+    } catch (e) {
+      toast.error(e.message || "Failed");
+    }
+  }
+
   if (!detail) {
     return (
       <div className="bg-surface border border-border rounded-lg p-6 text-sm text-fg-dim">
@@ -184,23 +253,49 @@ function AssetDetail({ detail, onBack }) {
       >
         ← Back to list
       </button>
-      <div>
-        <h2 className="text-base font-semibold text-fg">
-          {detail.hostname || <span className="text-fg-dim italic">unnamed</span>}
-        </h2>
-        <div className="text-xs text-fg-muted mt-0.5">
-          Last seen{" "}
-          {detail.last_seen_at ? <HybridTime value={detail.last_seen_at} /> : <span className="italic">never</span>}
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <h2 className="text-base font-semibold text-fg">
+            {detail.hostname || <span className="text-fg-dim italic">unnamed</span>}
+          </h2>
+          <div className="text-xs text-fg-muted mt-0.5">
+            Last seen{" "}
+            {detail.last_seen_at ? <HybridTime value={detail.last_seen_at} /> : <span className="italic">never</span>}
+          </div>
+        </div>
+        <div className="flex gap-2">
+          {!editing && (
+            <button onClick={() => setEditing(true)} className="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2">
+              Edit
+            </button>
+          )}
+          {editing && (
+            <>
+              <button onClick={save} disabled={saving} className="text-xs px-2 py-1 bg-brand text-white rounded disabled:opacity-50">
+                {saving ? "Saving…" : "Save"}
+              </button>
+              <button onClick={() => { setEditing(false); setEdits({}); }} className="text-xs px-2 py-1 text-fg-muted hover:text-fg">
+                Cancel
+              </button>
+            </>
+          )}
+          {isManual && !editing && (
+            <button onClick={del} className="text-xs px-2 py-1 text-red-600 hover:underline">Delete</button>
+          )}
         </div>
       </div>
-      <dl className="grid grid-cols-[7rem_1fr] gap-y-1 text-xs">
-        {rows.map(([k, v]) => (
-          <React.Fragment key={k}>
-            <dt className="text-fg-muted">{k}</dt>
-            <dd className="text-fg font-mono break-all">{v || <span className="text-fg-dim">—</span>}</dd>
-          </React.Fragment>
-        ))}
-      </dl>
+      {editing ? (
+        <AssetEditForm detail={detail} edits={edits} setField={setField} isManual={isManual} />
+      ) : (
+        <dl className="grid grid-cols-[7rem_1fr] gap-y-1 text-xs">
+          {rows.map(([k, v]) => (
+            <React.Fragment key={k}>
+              <dt className="text-fg-muted">{k}</dt>
+              <dd className="text-fg font-mono break-all">{v || <span className="text-fg-dim">—</span>}</dd>
+            </React.Fragment>
+          ))}
+        </dl>
+      )}
       <CustomFieldsPanel assetId={detail.id} />
       {Array.isArray(detail.tickets) && detail.tickets.length > 0 && (
         <div className="border-t border-border pt-3 space-y-2">
@@ -339,5 +434,112 @@ function CustomFieldsPanel({ assetId }) {
         })}
       </dl>
     </div>
+  );
+}
+
+const MANUAL_FIELDS = [
+  { key: "hostname", label: "Hostname", type: "text", required: true },
+  { key: "serial", label: "Serial", type: "text" },
+  { key: "mac", label: "MAC", type: "text" },
+  { key: "ip_address", label: "IP", type: "text" },
+  { key: "manufacturer", label: "Manufacturer", type: "text" },
+  { key: "model", label: "Model", type: "text" },
+  { key: "os", label: "OS", type: "text" },
+  { key: "os_version", label: "OS version", type: "text" },
+  { key: "cpu", label: "CPU", type: "text" },
+  { key: "organization", label: "Organization", type: "text" },
+];
+
+function AssetEditForm({ detail, edits, setField, isManual }) {
+  const cur = (k) => (Object.prototype.hasOwnProperty.call(edits, k) ? edits[k] : (detail[k] ?? ""));
+
+  if (!isManual) {
+    return (
+      <div className="text-xs text-fg-muted italic">
+        Structural fields on RMM-managed assets are read-only (sync overwrites
+        them on each pull). Edit linked user / company on the asset's source
+        in Admin → Alert sources, or manually below.
+      </div>
+    );
+  }
+  return (
+    <dl className="grid grid-cols-[7rem_1fr] gap-y-1.5 text-xs items-center">
+      {MANUAL_FIELDS.map(({ key, label, required }) => (
+        <React.Fragment key={key}>
+          <dt className="text-fg-muted">
+            {label}{required ? <span className="text-red-500 ml-0.5">*</span> : null}
+          </dt>
+          <dd>
+            <input
+              value={cur(key) || ""}
+              onChange={(e) => setField(key, e.target.value)}
+              className="w-full border border-border-strong rounded px-2 py-1 text-xs"
+            />
+          </dd>
+        </React.Fragment>
+      ))}
+    </dl>
+  );
+}
+
+function NewAssetForm({ onCancel, onCreated }) {
+  const [form, setForm] = useState({});
+  const [saving, setSaving] = useState(false);
+
+  async function submit(e) {
+    e.preventDefault();
+    if (!form.hostname?.trim()) {
+      toast.error("Hostname required");
+      return;
+    }
+    setSaving(true);
+    try {
+      const r = await api.post("/api/assets", form);
+      toast.success("Asset created");
+      onCreated(r.id);
+    } catch (err) {
+      toast.error(err.message || "Failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <form
+      onSubmit={submit}
+      className="bg-surface border border-border rounded-lg p-4 space-y-3"
+    >
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-fg">New manual asset</h2>
+        <button type="button" onClick={onCancel}
+          className="text-xs text-fg-muted hover:text-fg">Cancel</button>
+      </div>
+      <p className="text-xs text-fg-muted">
+        For assets not in any RMM (printer, deskphone, modem, NVR, etc.).
+        Hostname is the only required field. Custom fields can be filled in
+        after create.
+      </p>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+        {MANUAL_FIELDS.map(({ key, label, required }) => (
+          <label key={key} className="text-xs text-fg-muted flex flex-col gap-1">
+            {label}{required ? <span className="text-red-500 ml-0.5">*</span> : null}
+            <input
+              value={form[key] || ""}
+              onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))}
+              className="bg-surface-2 border border-border rounded px-2 py-1 text-sm"
+              required={required}
+            />
+          </label>
+        ))}
+      </div>
+      <div className="flex justify-end gap-2">
+        <button type="button" onClick={onCancel}
+          className="btn btn-secondary btn-sm">Cancel</button>
+        <button type="submit" disabled={saving}
+          className="btn btn-primary btn-sm disabled:opacity-50">
+          {saving ? "Creating…" : "Create asset"}
+        </button>
+      </div>
+    </form>
   );
 }
