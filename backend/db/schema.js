@@ -1179,6 +1179,41 @@ async function initSchema() {
     await client.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS asset_type_id INTEGER REFERENCES asset_types(id) ON DELETE SET NULL`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_assets_type ON assets(asset_type_id) WHERE asset_type_id IS NOT NULL`);
 
+    // Security posture — pulled from RMM payloads each sync. Critical
+    // counts get their own column so the list view can render a red
+    // badge cheaply without parsing raw_data. status fields hold the
+    // RMM's own classification ('SUCCESS' / 'WARNING' / 'ERROR' for
+    // Action1) for display + sort.
+    await client.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS missing_updates_critical INTEGER`);
+    await client.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS missing_updates_other INTEGER`);
+    await client.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS vulnerabilities_critical INTEGER`);
+    await client.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS vulnerabilities_other INTEGER`);
+    await client.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS update_status TEXT`);
+    await client.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS vulnerability_status TEXT`);
+    await client.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS reboot_required BOOLEAN`);
+    // One-time backfill from raw_data for existing Action1 rows. Cheap
+    // — single UPDATE, only touches rows where the columns are still
+    // null. Subsequent syncs keep these fresh.
+    await client.query(`
+      UPDATE assets
+         SET missing_updates_critical = COALESCE(missing_updates_critical, NULLIF((raw_data->'missing_updates'->>'critical')::int, NULL)),
+             missing_updates_other = COALESCE(missing_updates_other, NULLIF((raw_data->'missing_updates'->>'other')::int, NULL)),
+             vulnerabilities_critical = COALESCE(vulnerabilities_critical, NULLIF((raw_data->'vulnerabilities'->>'critical')::int, NULL)),
+             vulnerabilities_other = COALESCE(vulnerabilities_other, NULLIF((raw_data->'vulnerabilities'->>'other')::int, NULL)),
+             update_status = COALESCE(update_status, raw_data->>'update_status'),
+             vulnerability_status = COALESCE(vulnerability_status, raw_data->>'vulnerability_status'),
+             reboot_required = COALESCE(reboot_required,
+               CASE LOWER(COALESCE(raw_data->>'reboot_required', ''))
+                 WHEN 'yes' THEN TRUE
+                 WHEN 'no' THEN FALSE
+                 ELSE NULL END)
+       WHERE source_system = 'action1'
+         AND (missing_updates_critical IS NULL
+              OR missing_updates_other IS NULL
+              OR vulnerabilities_critical IS NULL
+              OR vulnerabilities_other IS NULL)
+    `);
+
     // Seed default types (idempotent via slug UNIQUE). Order matches
     // sort_order so the picker has a sensible default ordering.
     // Each type's field list is seeded right after.

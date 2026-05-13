@@ -205,7 +205,30 @@ function mapEndpointToAsset(ep) {
     ip_address: String(pick('ip', 'IP', 'ip_address', 'network.ip') || '').trim() || null,
     organization: String(ep._org_name || ep._org_id || '').trim() || null,
     last_seen_at: parseAction1Timestamp(pick('last_seen', 'last_seen_at', 'last_checkin_at', 'last_checkin')),
+    // Security posture — Action1 returns the counts as { critical, other }
+    // objects and the status fields as 'SUCCESS' | 'WARNING' | 'ERROR'.
+    missing_updates_critical: parseIntOrNull(ep?.missing_updates?.critical),
+    missing_updates_other: parseIntOrNull(ep?.missing_updates?.other),
+    vulnerabilities_critical: parseIntOrNull(ep?.vulnerabilities?.critical),
+    vulnerabilities_other: parseIntOrNull(ep?.vulnerabilities?.other),
+    update_status: String(ep?.update_status || '').trim() || null,
+    vulnerability_status: String(ep?.vulnerability_status || '').trim() || null,
+    reboot_required: parseYesNo(ep?.reboot_required),
   };
+}
+
+function parseIntOrNull(v) {
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  return Number.isFinite(n) ? Math.trunc(n) : null;
+}
+
+function parseYesNo(v) {
+  if (v == null || v === '') return null;
+  const s = String(v).toLowerCase();
+  if (['yes', 'true', '1'].includes(s)) return true;
+  if (['no', 'false', '0'].includes(s)) return false;
+  return null;
 }
 
 // Asset columns the attribute_map is allowed to overwrite. Whitelist
@@ -361,12 +384,18 @@ async function upsertAssets(sourceId, sourceSystem, endpoints, attributeMap = {}
            hostname, serial, mac, manufacturer, model, os, os_version,
            cpu, ram_bytes, storage_bytes, ip_address, organization,
            last_seen_at, raw_data, linked_user_id, company_id,
-           asset_type_id, updated_at)
+           asset_type_id,
+           missing_updates_critical, missing_updates_other,
+           vulnerabilities_critical, vulnerabilities_other,
+           update_status, vulnerability_status, reboot_required,
+           updated_at)
          VALUES
           ($1, $2, $3,
            $4, $5, $6, $7, $8, $9, $10,
            $11, $12, $13, $14, $15,
-           $16, $17::jsonb, $18, $19, $20, NOW())
+           $16, $17::jsonb, $18, $19, $20,
+           $21, $22, $23, $24, $25, $26, $27,
+           NOW())
          ON CONFLICT (source_system, source_external_id) DO UPDATE SET
            source_alert_source_id = EXCLUDED.source_alert_source_id,
            hostname = EXCLUDED.hostname,
@@ -386,6 +415,13 @@ async function upsertAssets(sourceId, sourceSystem, endpoints, attributeMap = {}
            linked_user_id = COALESCE(EXCLUDED.linked_user_id, assets.linked_user_id),
            company_id = COALESCE(EXCLUDED.company_id, assets.company_id),
            asset_type_id = COALESCE(assets.asset_type_id, EXCLUDED.asset_type_id),
+           missing_updates_critical = EXCLUDED.missing_updates_critical,
+           missing_updates_other = EXCLUDED.missing_updates_other,
+           vulnerabilities_critical = EXCLUDED.vulnerabilities_critical,
+           vulnerabilities_other = EXCLUDED.vulnerabilities_other,
+           update_status = EXCLUDED.update_status,
+           vulnerability_status = EXCLUDED.vulnerability_status,
+           reboot_required = EXCLUDED.reboot_required,
            updated_at = NOW()
          RETURNING id`,
         [
@@ -397,6 +433,10 @@ async function upsertAssets(sourceId, sourceSystem, endpoints, attributeMap = {}
           mapped.last_seen_at, JSON.stringify(ep),
           mapped.linked_user_id || null, mapped.company_id || null,
           mapped.asset_type_id || null,
+          mapped.missing_updates_critical, mapped.missing_updates_other,
+          mapped.vulnerabilities_critical, mapped.vulnerabilities_other,
+          mapped.update_status, mapped.vulnerability_status,
+          mapped.reboot_required,
         ]
       );
       const assetId = inserted.rows[0]?.id;
