@@ -1290,6 +1290,35 @@ async function initSchema() {
 
     await client.query(`INSERT INTO system_jobs (name) VALUES ('sla_breach_check') ON CONFLICT DO NOTHING`);
 
+    // Auto-assignment policies. Same (priority, project_id) scoping as
+    // sla_policies — project-specific row beats org default. Strategy
+    // controls how an agent is picked from agent_pool:
+    //   round_robin  — cycle through agent_pool by index; cursor stored
+    //                  on the row, incremented atomically per pick.
+    //   case_load    — pick the agent with the fewest currently open
+    //                  tickets (resolved_at IS NULL + status not closed).
+    //   specific_user — return specific_user_id (pool ignored).
+    // enabled=FALSE leaves tickets falling through to project default.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS assignment_policies (
+        id SERIAL PRIMARY KEY,
+        priority INTEGER NOT NULL CHECK (priority BETWEEN 1 AND 5),
+        project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+        strategy TEXT NOT NULL DEFAULT 'specific_user'
+          CHECK (strategy IN ('round_robin', 'case_load', 'specific_user')),
+        agent_pool INTEGER[] NOT NULL DEFAULT '{}'::int[],
+        specific_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        round_robin_cursor INTEGER NOT NULL DEFAULT 0,
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_assignment_policies_org_default
+      ON assignment_policies(priority) WHERE project_id IS NULL`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_assignment_policies_project
+      ON assignment_policies(priority, project_id) WHERE project_id IS NOT NULL`);
+
     // Sensible org-default targets per priority. Idempotent: only inserts
     // when the row doesn't already exist. Customers tune these in the
     // admin UI; these are starting values.
