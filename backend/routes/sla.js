@@ -285,13 +285,28 @@ router.get('/dashboard', requireAuth, async (req, res) => {
       scopeWhere = `AND project_id = ANY($1)`;
     }
 
-    // Live state across in-scope tickets.
+    // Live state across in-scope tickets. Pause-time breakdown joins
+    // the live in-progress pause (NOW - sla_paused_at) onto the
+    // accumulated totals so an active pause is reflected immediately
+    // without waiting for the next status change.
     const counts = await pool.query(`
       SELECT
         SUM(CASE WHEN sla_response_breached = TRUE AND sla_first_response_at IS NULL THEN 1 ELSE 0 END)::int AS breached_response,
         SUM(CASE WHEN sla_resolve_breached = TRUE AND resolved_at IS NULL THEN 1 ELSE 0 END)::int AS breached_resolve,
         SUM(CASE WHEN sla_response_due_at IS NOT NULL AND sla_first_response_at IS NULL AND sla_response_breached = FALSE THEN 1 ELSE 0 END)::int AS open_response,
-        SUM(CASE WHEN sla_resolve_due_at  IS NOT NULL AND resolved_at IS NULL              AND sla_resolve_breached  = FALSE THEN 1 ELSE 0 END)::int AS open_resolve
+        SUM(CASE WHEN sla_resolve_due_at  IS NOT NULL AND resolved_at IS NULL              AND sla_resolve_breached  = FALSE THEN 1 ELSE 0 END)::int AS open_resolve,
+        SUM(
+          sla_vendor_wait_seconds
+          + CASE WHEN sla_pause_kind = 'vendor' AND sla_paused_at IS NOT NULL
+                 THEN GREATEST(0, EXTRACT(EPOCH FROM (NOW() - sla_paused_at))::int)
+                 ELSE 0 END
+        )::bigint AS vendor_wait_seconds,
+        SUM(
+          sla_internal_hold_seconds
+          + CASE WHEN sla_pause_kind = 'internal' AND sla_paused_at IS NOT NULL
+                 THEN GREATEST(0, EXTRACT(EPOCH FROM (NOW() - sla_paused_at))::int)
+                 ELSE 0 END
+        )::bigint AS internal_hold_seconds
       FROM tickets
       WHERE 1=1 ${scopeWhere}
     `, scopeParams);
@@ -370,6 +385,79 @@ router.get('/dashboard', requireAuth, async (req, res) => {
     });
   } catch (err) {
     console.error('sla dashboard:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// GET /api/sla/time-in-status — aggregated time tickets have spent in
+// each status, derived from audit_log status_change rows. Spans are
+// (entered_at, next status_change OR resolved_at OR NOW()). Initial
+// status (before any change) isn't counted — keeps the SQL simple and
+// the signal is still meaningful for chokepoint detection.
+//
+// Query params:
+//   project_id — restrict to one project (optional). Otherwise scoped
+//                by member visibility same as /dashboard.
+//   since      — ISO8601 lower bound for entered_at (optional).
+//   until      — ISO8601 upper bound for entered_at (optional).
+router.get('/time-in-status', requireAuth, async (req, res) => {
+  try {
+    const accessible = await getAccessibleProjectIds(req.session.user);
+    if (accessible !== null && accessible.length === 0) {
+      return res.json({ scope: 'project_member', rows: [] });
+    }
+
+    const params = [];
+    const where = [`al.action = 'status_change'`];
+    if (req.query.project_id) {
+      params.push(Number(req.query.project_id));
+      where.push(`t.project_id = $${params.length}`);
+    }
+    if (accessible !== null) {
+      params.push(accessible);
+      where.push(`t.project_id = ANY($${params.length})`);
+    }
+    if (req.query.since) {
+      params.push(req.query.since);
+      where.push(`al.created_at >= $${params.length}`);
+    }
+    if (req.query.until) {
+      params.push(req.query.until);
+      where.push(`al.created_at < $${params.length}`);
+    }
+
+    const r = await pool.query(
+      `WITH status_history AS (
+         SELECT
+           al.ticket_id,
+           al.new_value AS status,
+           al.created_at AS entered_at,
+           LEAST(
+             LEAD(al.created_at) OVER (PARTITION BY al.ticket_id ORDER BY al.created_at),
+             t.resolved_at,
+             NOW()
+           ) AS left_at
+         FROM audit_log al
+         JOIN tickets t ON t.id = al.ticket_id
+         WHERE ${where.join(' AND ')}
+       )
+       SELECT
+         status,
+         SUM(EXTRACT(EPOCH FROM (left_at - entered_at)))::bigint AS total_seconds,
+         AVG(EXTRACT(EPOCH FROM (left_at - entered_at)))::bigint AS avg_seconds,
+         COUNT(*)::int AS entries
+       FROM status_history
+       WHERE left_at IS NOT NULL AND left_at > entered_at
+       GROUP BY status
+       ORDER BY total_seconds DESC`,
+      params
+    );
+    res.json({
+      scope: accessible === null ? 'all' : 'project_member',
+      rows: r.rows,
+    });
+  } catch (err) {
+    console.error('sla time-in-status:', err);
     res.status(500).json({ error: 'Database error' });
   }
 });
