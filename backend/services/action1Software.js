@@ -141,7 +141,10 @@ async function syncSoftwareForAsset(assetId) {
   const syncStartedAt = new Date();
   const baseUrl = normalizeBaseUrl(source.api_url);
   const accessToken = await oauthToken(baseUrl, source.api_client_id, clientSecret);
-  const startUrl = `${baseUrl}/api/3.0/endpoints/managed/${encodeURIComponent(orgId)}/${encodeURIComponent(asset.source_external_id)}/software`;
+  // Path per PSAction1's R_InstalledSoftware / G_EndpointApps:
+  //   /api/3.0/apps/{org_id}/data/{endpoint_id}
+  // returns the installed-software list for a single endpoint.
+  const startUrl = `${baseUrl}/api/3.0/apps/${encodeURIComponent(orgId)}/data/${encodeURIComponent(asset.source_external_id)}`;
   const list = await fetchPaged(baseUrl, accessToken, startUrl);
 
   let upserted = 0;
