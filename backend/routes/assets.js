@@ -20,10 +20,10 @@ router.get('/', requireAuth, async (req, res) => {
     const conds = [];
     if (q) {
       params.push(`%${q.toLowerCase()}%`);
-      conds.push(`(LOWER(hostname) LIKE $${params.length}
-                   OR LOWER(serial) LIKE $${params.length}
-                   OR LOWER(organization) LIKE $${params.length}
-                   OR LOWER(model) LIKE $${params.length})`);
+      conds.push(`(LOWER(a.hostname) LIKE $${params.length}
+                   OR LOWER(a.serial) LIKE $${params.length}
+                   OR LOWER(a.organization) LIKE $${params.length}
+                   OR LOWER(a.model) LIKE $${params.length})`);
     }
     if (projectId) {
       // Project-scoped: respects allow_asset_linking + asset_company_ids
@@ -40,7 +40,7 @@ router.get('/', requireAuth, async (req, res) => {
       const companyIds = projRes.rows[0].asset_company_ids || [];
       if (companyIds.length) {
         params.push(companyIds);
-        conds.push(`company_id = ANY($${params.length}::int[])`);
+        conds.push(`a.company_id = ANY($${params.length}::int[])`);
       }
     }
     const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
@@ -49,18 +49,20 @@ router.get('/', requireAuth, async (req, res) => {
     const offsetIdx = params.length;
 
     const r = await pool.query(
-      `SELECT id, source_system, source_external_id, hostname, serial,
-              manufacturer, model, os, os_version, organization,
-              linked_user_id, company_id,
-              last_seen_at, updated_at
-         FROM assets
+      `SELECT a.id, a.source_system, a.source_external_id, a.hostname, a.serial,
+              a.manufacturer, a.model, a.os, a.os_version, a.organization,
+              a.linked_user_id, a.company_id, a.asset_type_id,
+              at.slug AS asset_type_slug, at.label AS asset_type_label,
+              a.last_seen_at, a.updated_at
+         FROM assets a
+         LEFT JOIN asset_types at ON at.id = a.asset_type_id
          ${where}
-         ORDER BY last_seen_at DESC NULLS LAST, hostname
+         ORDER BY a.last_seen_at DESC NULLS LAST, a.hostname
          LIMIT $${limitIdx} OFFSET $${offsetIdx}`,
       params
     );
     const countParams = params.slice(0, params.length - 2);
-    const total = await pool.query(`SELECT COUNT(*)::int AS n FROM assets ${where}`, countParams);
+    const total = await pool.query(`SELECT COUNT(*)::int AS n FROM assets a ${where}`, countParams);
     res.json({ items: r.rows, total: total.rows[0].n, limit, offset });
   } catch (err) {
     console.error('assets list error:', err);
@@ -74,10 +76,12 @@ router.get('/:id', requireAuth, async (req, res) => {
   try {
     const r = await pool.query(
       `SELECT a.*, u.display_name AS linked_user_name, u.email AS linked_user_email,
-              c.name AS company_name
+              c.name AS company_name,
+              at.slug AS asset_type_slug, at.label AS asset_type_label
          FROM assets a
          LEFT JOIN users u ON u.id = a.linked_user_id
          LEFT JOIN companies c ON c.id = a.company_id
+         LEFT JOIN asset_types at ON at.id = a.asset_type_id
         WHERE a.id = $1`,
       [Number(req.params.id)]
     );
@@ -101,34 +105,114 @@ router.get('/:id', requireAuth, async (req, res) => {
   }
 });
 
-// PATCH /api/assets/:id — manual edits. Admin/Manager can fix matcher
-// abstentions or re-assign company. Only fields useful to override
-// manually are mutable here; structural fields come from sync.
+// Fields editable on RMM-managed assets — sync overrides these on every
+// pull, so only the cross-reference cols are useful to override here.
+const RMM_EDITABLE = ['linked_user_id', 'company_id', 'asset_type_id'];
+
+// Fields editable on manual assets — admin owns the data, so the full
+// structural set is fair game.
+const MANUAL_EDITABLE = [
+  'hostname', 'serial', 'mac', 'manufacturer', 'model', 'os', 'os_version',
+  'cpu', 'ip_address', 'organization', 'linked_user_id', 'company_id',
+  'ram_bytes', 'storage_bytes', 'asset_type_id',
+];
+
+const TEXT_FIELDS = new Set([
+  'hostname', 'serial', 'mac', 'manufacturer', 'model',
+  'os', 'os_version', 'cpu', 'ip_address', 'organization',
+]);
+const INT_FIELDS = new Set(['linked_user_id', 'company_id', 'ram_bytes', 'storage_bytes', 'asset_type_id']);
+
+// POST /api/assets — manual asset create. Generates a UUID for the
+// stable source_external_id so admin can decommission + reuse names
+// freely. source_system = 'manual' distinguishes from RMM-managed rows.
+//
+// Validation: requires *something* identifying — hostname OR serial OR
+// MAC. Monitors don't need a hostname; printers may not have a serial;
+// floor is "we know what we're looking at by at least one identifier."
+// If asset_type_id is set, also enforces that type's required field
+// list.
+router.post('/', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+  try {
+    const body = req.body || {};
+    const ident = [body.hostname, body.serial, body.mac].some(
+      (v) => typeof v === 'string' && v.trim()
+    );
+    if (!ident) {
+      return res.status(400).json({ error: 'At least one of hostname, serial, MAC required' });
+    }
+    if (body.asset_type_id) {
+      const tf = await pool.query(
+        `SELECT builtin_key FROM asset_type_fields WHERE type_id = $1 AND required = TRUE`,
+        [Number(body.asset_type_id)]
+      );
+      for (const row of tf.rows) {
+        const v = body[row.builtin_key];
+        if (v == null || (typeof v === 'string' && !v.trim())) {
+          return res.status(400).json({ error: `${row.builtin_key} required for this asset type` });
+        }
+      }
+    }
+    const externalId = require('crypto').randomUUID();
+    const cols = ['source_system', 'source_external_id'];
+    const vals = ['manual', externalId];
+    for (const f of MANUAL_EDITABLE) {
+      if (!Object.prototype.hasOwnProperty.call(body, f)) continue;
+      const v = body[f];
+      if (TEXT_FIELDS.has(f)) {
+        cols.push(f);
+        vals.push(typeof v === 'string' ? v.trim() || null : null);
+      } else if (INT_FIELDS.has(f)) {
+        if (v !== null && (!Number.isInteger(v) || v < 0)) {
+          return res.status(400).json({ error: `${f} must be non-negative integer or null` });
+        }
+        cols.push(f);
+        vals.push(v);
+      }
+    }
+    const placeholders = cols.map((_, i) => `$${i + 1}`).join(', ');
+    const r = await pool.query(
+      `INSERT INTO assets (${cols.join(', ')}) VALUES (${placeholders}) RETURNING id`,
+      vals
+    );
+    res.status(201).json({ id: r.rows[0].id });
+  } catch (err) {
+    console.error('asset create error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// PATCH /api/assets/:id — manual assets get the full editable set,
+// RMM-managed assets keep the narrow override set (sync clobbers
+// structural fields on every pull anyway).
 router.patch('/:id', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
+    const id = Number(req.params.id);
+    const existing = await pool.query(`SELECT source_system FROM assets WHERE id = $1`, [id]);
+    if (!existing.rows[0]) return res.status(404).json({ error: 'not found' });
+    const isManual = existing.rows[0].source_system === 'manual';
+    const editable = isManual ? MANUAL_EDITABLE : RMM_EDITABLE;
+
     const body = req.body || {};
     const sets = [];
     const values = [];
     let p = 1;
-    if (Object.prototype.hasOwnProperty.call(body, 'linked_user_id')) {
-      if (body.linked_user_id !== null
-          && (!Number.isInteger(body.linked_user_id) || body.linked_user_id <= 0)) {
-        return res.status(400).json({ error: 'linked_user_id must be positive integer or null' });
+    for (const f of editable) {
+      if (!Object.prototype.hasOwnProperty.call(body, f)) continue;
+      let v = body[f];
+      if (TEXT_FIELDS.has(f)) {
+        v = typeof v === 'string' ? v.trim() || null : (v === null ? null : null);
+      } else if (INT_FIELDS.has(f)) {
+        if (v !== null && (!Number.isInteger(v) || v < 0)) {
+          return res.status(400).json({ error: `${f} must be non-negative integer or null` });
+        }
       }
-      sets.push(`linked_user_id = $${p++}`);
-      values.push(body.linked_user_id);
-    }
-    if (Object.prototype.hasOwnProperty.call(body, 'company_id')) {
-      if (body.company_id !== null
-          && (!Number.isInteger(body.company_id) || body.company_id <= 0)) {
-        return res.status(400).json({ error: 'company_id must be positive integer or null' });
-      }
-      sets.push(`company_id = $${p++}`);
-      values.push(body.company_id);
+      sets.push(`${f} = $${p++}`);
+      values.push(v);
     }
     if (!sets.length) return res.status(400).json({ error: 'no updatable fields supplied' });
     sets.push('updated_at = NOW()');
-    values.push(Number(req.params.id));
+    values.push(id);
     const r = await pool.query(
       `UPDATE assets SET ${sets.join(', ')} WHERE id = $${p} RETURNING id`,
       values
@@ -137,6 +221,25 @@ router.patch('/:id', requireAuth, requireRole('Admin', 'Manager'), async (req, r
     res.json({ ok: true });
   } catch (err) {
     console.error('asset patch error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// DELETE /api/assets/:id — only manual assets are deletable; RMM-
+// managed ones should disappear via their source's lifecycle. Tickets
+// linked to a deleted asset get asset_id = NULL (FK ON DELETE SET NULL).
+router.delete('/:id', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const r = await pool.query(`SELECT source_system FROM assets WHERE id = $1`, [id]);
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    if (r.rows[0].source_system !== 'manual') {
+      return res.status(400).json({ error: 'Only manual assets can be deleted directly' });
+    }
+    await pool.query(`DELETE FROM assets WHERE id = $1`, [id]);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('asset delete error:', err);
     res.status(500).json({ error: 'Database error' });
   }
 });
