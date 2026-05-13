@@ -247,4 +247,43 @@ router.delete('/:id', requireAuth, requireRole('Admin', 'Manager'), async (req, 
   }
 });
 
+// GET /api/assets/:id/software — installed software for the asset.
+// Supports ?q= text filter on name / vendor for the typeahead.
+router.get('/:id/software', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const q = (req.query.q || '').trim().toLowerCase();
+    const params = [id];
+    let where = `WHERE asset_id = $1`;
+    if (q) {
+      params.push(`%${q}%`);
+      where += ` AND (LOWER(name) LIKE $2 OR LOWER(COALESCE(vendor,'')) LIKE $2)`;
+    }
+    const r = await pool.query(
+      `SELECT id, name, version, vendor, install_date, size_bytes, updated_at
+         FROM asset_software ${where}
+         ORDER BY LOWER(name), version
+         LIMIT 1000`,
+      params
+    );
+    res.json({ items: r.rows, total: r.rows.length });
+  } catch (err) {
+    console.error('asset software list error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// POST /api/assets/:id/sync-software — on-demand pull from the asset's
+// upstream RMM source.
+router.post('/:id/sync-software', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+  try {
+    const { syncSoftwareForAsset } = require('../services/action1Software');
+    const result = await syncSoftwareForAsset(Number(req.params.id));
+    res.json(result);
+  } catch (err) {
+    console.error('asset software sync error:', err.message);
+    res.status(400).json({ error: err.message });
+  }
+});
+
 module.exports = router;
