@@ -330,11 +330,14 @@ export default function AdminEscalationPolicies() {
         <h2 className="text-base font-semibold text-fg mb-1">Escalation chains</h2>
         <p className="text-xs text-fg-muted mb-3">
           Steps fire when an SLA trigger occurs on a matching ticket
-          (priority + project). Project-scoped steps run alongside org
-          defaults additively — both apply. <code>delay_minutes</code>{" "}
-          is the grace period after the trigger before the step fires.
-          Each step can run <b>multiple actions</b> (notify + reassign +
-          notify) on the same firing.
+          (priority + project). Project-scoped steps run alongside
+          Org-Wide steps additively — both apply.{" "}
+          <code>delay_minutes</code> is the grace period after the
+          trigger before the step fires. Each step can run{" "}
+          <b>multiple actions</b> (notify + reassign + notify) on the
+          same firing. <b>Role targets</b> (Notify role / Reassign role)
+          always resolve to <i>the triggering ticket's</i> project
+          members — Org-Wide steps don't broadcast across every project.
         </p>
 
         <div className="border border-border rounded p-3 mb-4 bg-surface-2/40">
@@ -344,7 +347,7 @@ export default function AdminEscalationPolicies() {
               <span className="text-xs text-fg-muted">Scope</span>
               <select value={newRow.project_id} onChange={(e) => setNewRow((p) => ({ ...p, project_id: e.target.value }))}
                 className="border border-border-strong rounded px-2 py-1 text-sm">
-                <option value="">Org default</option>
+                <option value="">Org-Wide</option>
                 {projects.filter((pj) => pj.status === "active").map((pj) => (
                   <option key={pj.id} value={pj.id}>{pj.prefix} · {pj.name}</option>
                 ))}
@@ -406,7 +409,7 @@ export default function AdminEscalationPolicies() {
             {grouped.map((g) => (
               <div key={g.key} className="border border-border rounded">
                 <div className="px-3 py-2 bg-surface-2/40 text-xs text-fg-muted flex items-center gap-3 flex-wrap">
-                  <span>{g.project ? <b>{g.project.prefix} · {g.project.name}</b> : <b className="italic">Org default</b>}</span>
+                  <span>{g.project ? <b>{g.project.prefix} · {g.project.name}</b> : <b className="italic">Org-Wide</b>}</span>
                   <span>·</span>
                   <span>
                     <code className="font-mono">{g.priority_op}</code> {PRIORITY_LABELS[g.priority]}
