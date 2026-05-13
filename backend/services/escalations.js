@@ -13,6 +13,7 @@
 //   notify_assignee  — current ticket assignee (NULL-safe)
 //   reassign_user    — set assigned_to to a specific user
 //   reassign_role    — set assigned_to to first active user in that role
+//   reassign_agent   — set assigned_to to any other project agent (not current assignee)
 //
 // Resolution rules:
 //   - Project-scoped step (project_id = ticket.project_id) AND
@@ -142,6 +143,35 @@ async function fireAction({ action, step, ticket }) {
       actorId: null,
       actorName: 'SLA escalation (role)',
     }).catch((err) => console.error('escalation reassign_role fanout failed:', err.message));
+    ticket.assigned_to = r.rows[0].id;
+    return { ok: true };
+  }
+
+  if (kind === 'reassign_agent') {
+    if (!ticket.project_id) return { ok: false, reason: 'ticket has no project_id' };
+    // Pick any active project agent that isn't the current assignee.
+    // Tie-break by id. Future: wire to assignment_policies for load-aware
+    // pick, but the simple form covers the >1-agent case the user asked
+    // for. If no other agent exists, skip.
+    const r = await pool.query(
+      `SELECT u.id
+         FROM users u
+         JOIN project_members pm ON pm.user_id = u.id
+        WHERE u.status = 'active'
+          AND pm.project_id = $1
+          AND pm.is_agent = TRUE
+          AND ($2::int IS NULL OR u.id <> $2::int)
+        ORDER BY u.id ASC LIMIT 1`,
+      [ticket.project_id, ticket.assigned_to || null]
+    );
+    if (!r.rows[0]) return { ok: false, reason: 'no other agent on project' };
+    await pool.query(`UPDATE tickets SET assigned_to = $1 WHERE id = $2`, [r.rows[0].id, ticket.id]);
+    await fanout.fanoutAssignment(null, {
+      ticket: { ...ticket, assigned_to: r.rows[0].id },
+      assigneeId: r.rows[0].id,
+      actorId: null,
+      actorName: 'SLA escalation (agent)',
+    }).catch((err) => console.error('escalation reassign_agent fanout failed:', err.message));
     ticket.assigned_to = r.rows[0].id;
     return { ok: true };
   }

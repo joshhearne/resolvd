@@ -10,7 +10,7 @@ const { requireAuth, requireRole } = require('../middleware/auth');
 const router = express.Router();
 
 const TRIGGERS = ['warning_response', 'warning_resolve', 'breach_response', 'breach_resolve'];
-const ACTION_KINDS = ['notify_user', 'notify_role', 'notify_assignee', 'reassign_user', 'reassign_role'];
+const ACTION_KINDS = ['notify_user', 'notify_role', 'notify_assignee', 'reassign_user', 'reassign_role', 'reassign_agent'];
 const ROLES = ['Admin', 'Manager', 'Tech'];
 const PRIORITY_OPS = ['=', '<', '>', '<=', '>='];
 
@@ -18,7 +18,9 @@ const PRIORITY_OPS = ['=', '<', '>', '<=', '>='];
 function validateAction(a) {
   if (!a || typeof a !== 'object') return 'action entry must be an object';
   if (!ACTION_KINDS.includes(a.kind)) return `action.kind must be one of ${ACTION_KINDS.join(', ')}`;
-  // notify_assignee needs neither target — uses ticket.assigned_to at fire time.
+  // notify_assignee + reassign_agent need neither target. notify_assignee
+  // uses ticket.assigned_to. reassign_agent picks any project agent that
+  // isn't the current assignee at fire time.
   if (a.kind === 'notify_user' || a.kind === 'reassign_user') {
     if (!Number.isInteger(a.target_user_id) || a.target_user_id <= 0) {
       return `${a.kind} requires target_user_id (positive integer)`;
