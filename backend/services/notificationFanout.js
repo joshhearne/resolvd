@@ -468,6 +468,54 @@ async function fanoutSlaBreach(_unusedPool, { ticket, kind }) {
   }
 }
 
+// Pre-breach warning. Same shape as fanoutSlaBreach but with a softer
+// title and a separate matrix event so users can opt out of warnings
+// without losing the actual breach signal.
+async function fanoutSlaWarning(_unusedPool, { ticket, kind }) {
+  const recipients = await getFollowerRecipients(null, ticket.id, null);
+  const assigneeId = ticket.assigned_to;
+  if (assigneeId && !recipients.find(u => u.id === assigneeId)) {
+    const u = await getUserById(assigneeId);
+    if (u) recipients.push(u);
+  }
+  if (!recipients.length) return;
+  const ticketRef = ticket.internal_ref;
+  const ticketTitle = ticket.title || '';
+  const titleVerb = kind === 'response' ? 'Response SLA at warning threshold' : 'Resolve SLA at warning threshold';
+  const dueAt = kind === 'response' ? ticket.sla_response_due_at : ticket.sla_resolve_due_at;
+  const bodyText = kind === 'response'
+    ? `Response window closing on ${ticketRef}${ticketTitle ? ` — ${ticketTitle}` : ''}${dueAt ? ` (due ${new Date(dueAt).toISOString()})` : ''}.`
+    : `Resolve window closing on ${ticketRef}${ticketTitle ? ` — ${ticketTitle}` : ''}${dueAt ? ` (due ${new Date(dueAt).toISOString()})` : ''}.`;
+  const payload = {
+    ticket_id: ticket.id,
+    ticket_ref: ticketRef,
+    ticket_title: ticketTitle,
+    warning_kind: kind,
+    due_at: dueAt || null,
+  };
+  for (const user of recipients) {
+    await dispatchPerRecipient({
+      user,
+      eventType: 'pending_review',
+      ticketId: ticket.id,
+      ticketRef,
+      inApp: { title: `${titleVerb}: ${ticketRef}`, body: bodyText, extraData: { warning_kind: kind } },
+      push: null,
+      payload,
+    });
+    // Email immediately — warnings are pre-breach and want to land while
+    // there's still time to act.
+    await routeEmail({
+      user,
+      eventType: 'pending_review',
+      payload: { ticket_id: ticket.id, ticket_ref: ticketRef, ticket_title: ticketTitle },
+      ticketId: ticket.id,
+      projectId: ticket.project_id,
+      bypassDigest: true,
+    });
+  }
+}
+
 module.exports = {
   fanoutAssignment,
   fanoutStatusChange,
@@ -476,6 +524,7 @@ module.exports = {
   fanoutPendingReview,
   fanoutFollowUp,
   fanoutSlaBreach,
+  fanoutSlaWarning,
   // Exported for tests / outbox flusher
   getFollowerRecipients,
   nextFlushBoundary,

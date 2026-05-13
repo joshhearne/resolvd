@@ -4,8 +4,8 @@ import { api } from "../utils/api";
 import { useAuth } from "../context/AuthContext";
 import HybridTime from "../components/HybridTime";
 
-const ALL_ROLES = ["Admin", "Manager", "Submitter", "Viewer"];
-const MANAGER_ROLES = ["Manager", "Submitter", "Viewer"];
+const ALL_ROLES = ["Admin", "Manager", "Tech", "Submitter", "Viewer"];
+const MANAGER_ROLES = ["Manager", "Tech", "Submitter", "Viewer"];
 const PROVIDERS = [
   ["local", "Local password"],
   ["entra", "Microsoft Entra / M365"],
