@@ -2,9 +2,15 @@ const express = require('express');
 const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { generateToken, hashToken } = require('../auth/tokens');
-const { PRESETS, DEFAULT_ZABBIX_SEVERITY_MAP, getPreset } = require('../services/alertMappers');
+const {
+  PRESETS,
+  DEFAULT_ZABBIX_SEVERITY_MAP,
+  DEFAULT_ACTION1_SEVERITY_MAP,
+  getPreset,
+} = require('../services/alertMappers');
 const { buildWritePatch, decryptRow } = require('../services/fields');
 const { ingestAlertEvent } = require('../services/alertIngest');
+const action1Poll = require('../services/action1Poll');
 
 const router = express.Router();
 
@@ -12,6 +18,7 @@ const PRESET_NAMES = Object.keys(PRESETS);
 
 const PRESET_DEFAULT_SEVERITY_MAPS = {
   zabbix: DEFAULT_ZABBIX_SEVERITY_MAP,
+  action1: DEFAULT_ACTION1_SEVERITY_MAP,
 };
 
 // Strip secrets before returning. token_hash + api_token_enc are bytea
@@ -142,7 +149,8 @@ router.patch('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
 
     // Plain fields
     const plain = ['name', 'default_project_id', 'default_assignee_id',
-      'auto_resolve_on_recovery', 'enabled', 'api_url'];
+      'auto_resolve_on_recovery', 'enabled', 'api_url', 'api_client_id',
+      'poll_interval_minutes', 'affect_inventory'];
     for (const k of plain) {
       if (Object.prototype.hasOwnProperty.call(body, k)) {
         sets.push(`${k} = $${p++}`);
@@ -193,16 +201,15 @@ router.patch('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
 // live webhook. Idempotent: events already seen (by event_id+type) are
 // skipped (the dedup index does the work).
 //
-// Currently Zabbix-only. Other presets get added when their API maps to
-// a similar "list open problems" call.
+// Supports Zabbix (API token) and Action1 (OAuth2 client_credentials).
 router.post('/:id/backfill', requireAuth, requireRole('Admin'), async (req, res) => {
   try {
     const id = Number(req.params.id);
     const r = await pool.query(`SELECT * FROM external_alert_source WHERE id = $1`, [id]);
     const source = r.rows[0];
     if (!source) return res.status(404).json({ error: 'Not found' });
-    if (source.preset !== 'zabbix') {
-      return res.status(400).json({ error: 'Backfill only supported for Zabbix today' });
+    if (!['zabbix', 'action1'].includes(source.preset)) {
+      return res.status(400).json({ error: `Backfill not supported for preset: ${source.preset}` });
     }
     if (!source.default_project_id) {
       return res.status(400).json({ error: 'Source has no default project configured' });
@@ -212,7 +219,11 @@ router.post('/:id/backfill', requireAuth, requireRole('Admin'), async (req, res)
     }
     await decryptRow('external_alert_source', source);
     const apiToken = source.api_token;
-    if (!apiToken) return res.status(400).json({ error: 'API token not configured on source' });
+    if (!apiToken) return res.status(400).json({ error: 'API credential not configured on source' });
+
+    if (source.preset === 'action1') {
+      return await backfillAction1(req, res, id, source);
+    }
 
     const { host_group, severities } = req.body || {};
 
@@ -373,6 +384,21 @@ function mapZabbixSeverity(n) {
     4: 'High',
     5: 'Disaster',
   })[Number(n)] || 'Information';
+}
+
+// Action1 polling lives in services/action1Poll.js. This handler is a
+// thin wrapper so the on-demand "Pull now" button and the scheduled
+// poll share the same code path.
+async function backfillAction1(req, res, id, source) {
+  try {
+    const summary = await action1Poll.pollSource(source);
+    return res.json(summary);
+  } catch (err) {
+    if (err.upstream) {
+      return res.status(502).json({ error: `Action1 API error: ${err.message}` });
+    }
+    return res.status(400).json({ error: err.message });
+  }
 }
 
 // POST /api/alert-sources/:id/rotate-token — regenerate, return raw once
