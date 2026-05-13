@@ -30,6 +30,7 @@ import AdminCannedResponses from "./pages/AdminCannedResponses";
 import AdminSlaPolicies from "./pages/AdminSlaPolicies";
 import AdminAssignmentPolicies from "./pages/AdminAssignmentPolicies";
 import AdminEscalationPolicies from "./pages/AdminEscalationPolicies";
+import AdminCustomFields from "./pages/AdminCustomFields";
 import PrintExport from "./pages/PrintExport";
 import Projects from "./pages/Projects";
 import ProjectDetail from "./pages/ProjectDetail";
@@ -176,6 +177,7 @@ function AppRoutes() {
           <Route path="sla" element={<AdminSlaPolicies />} />
           <Route path="assignment" element={<AdminAssignmentPolicies />} />
           <Route path="escalations" element={<AdminEscalationPolicies />} />
+          <Route path="custom-fields" element={<AdminCustomFields />} />
         </Route>
       </Route>
     </Routes>
