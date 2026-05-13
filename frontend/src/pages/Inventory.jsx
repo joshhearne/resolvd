@@ -172,6 +172,8 @@ function AssetDetail({ detail, onBack }) {
     ["RAM", detail.ram_bytes ? formatBytes(detail.ram_bytes) : null],
     ["Storage", detail.storage_bytes ? formatBytes(detail.storage_bytes) : null],
     ["Organization", detail.organization],
+    ["Company", detail.company_name || null],
+    ["Linked user", detail.linked_user_name ? `${detail.linked_user_name} (${detail.linked_user_email})` : null],
     ["Source", `${SOURCE_LABELS[detail.source_system] || detail.source_system} (${detail.source_external_id})`],
   ];
   return (
@@ -200,6 +202,28 @@ function AssetDetail({ detail, onBack }) {
         ))}
       </dl>
       <CustomFieldsPanel assetId={detail.id} />
+      {Array.isArray(detail.tickets) && detail.tickets.length > 0 && (
+        <div className="border-t border-border pt-3 space-y-2">
+          <div className="text-xs font-semibold text-fg-muted uppercase tracking-wider">
+            Tickets ({detail.tickets.length})
+          </div>
+          <div className="space-y-1 max-h-64 overflow-y-auto">
+            {detail.tickets.map((t) => (
+              <a key={t.id} href={`/tickets/${t.id}`}
+                className="block text-xs hover:bg-surface-2 rounded px-2 py-1 -mx-2">
+                <div className="flex items-center gap-2">
+                  <span className="font-mono text-fg-muted">{t.internal_ref}</span>
+                  <span className="text-fg truncate">{t.title || "(no title)"}</span>
+                </div>
+                <div className="text-fg-dim text-[11px]">
+                  {t.internal_status}{" · "}
+                  <HybridTime value={t.updated_at} />
+                </div>
+              </a>
+            ))}
+          </div>
+        </div>
+      )}
       <details className="text-xs">
         <summary className="cursor-pointer text-fg-muted hover:text-fg">Raw payload</summary>
         <pre className="mt-2 bg-surface-2 border border-border rounded p-2 overflow-x-auto text-[10px] font-mono max-h-80 overflow-y-auto">

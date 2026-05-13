@@ -259,6 +259,12 @@ async function initSchema() {
     // the authored content.
     await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS ai_context_md TEXT`);
     await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS ai_context_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
+
+    // Ticket-asset linking. Off by default — admins opt in per project.
+    // asset_company_ids = empty array means "any asset", non-empty
+    // restricts pickable assets to those companies (MSP isolation).
+    await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS allow_asset_linking BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS asset_company_ids INTEGER[] NOT NULL DEFAULT '{}'::int[]`);
     // Global defaults (admin panel). Apply when a project hasn't set its
     // own value. Defaults TRUE so a fresh install is locked down.
     await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS default_restrict_followers BOOLEAN NOT NULL DEFAULT TRUE`);
@@ -1110,6 +1116,15 @@ async function initSchema() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_assets_hostname ON assets(hostname)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_assets_serial ON assets(serial) WHERE serial IS NOT NULL`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_assets_last_seen ON assets(last_seen_at DESC NULLS LAST)`);
+    // Cross-references — asset → user (auto-resolved from RMM's reported
+    // username via the UPN matcher) and asset → company (auto-resolved
+    // from the source system's organization label when names match).
+    // Both nullable; matcher leaves them NULL when ambiguous so the
+    // admin can correct manually later.
+    await client.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS linked_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL`);
+    await client.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS company_id INTEGER REFERENCES companies(id) ON DELETE SET NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_assets_linked_user ON assets(linked_user_id) WHERE linked_user_id IS NOT NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_assets_company ON assets(company_id) WHERE company_id IS NOT NULL`);
 
     // Custom field definitions. entity_type lets one table cover assets,
     // tickets, companies, etc. as the system grows. slug is a stable
@@ -1186,6 +1201,11 @@ async function initSchema() {
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS external_ref TEXT`);
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS external_source TEXT`);
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS external_alert_source_id INTEGER REFERENCES external_alert_source(id) ON DELETE SET NULL`);
+    // Ticket → asset link. Optional; gated per-project by
+    // projects.allow_asset_linking. SET NULL on asset deletion keeps
+    // ticket history intact when an asset is decommissioned.
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS asset_id INTEGER REFERENCES assets(id) ON DELETE SET NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_asset ON tickets(asset_id) WHERE asset_id IS NOT NULL`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_external_ref ON tickets(external_ref) WHERE external_ref IS NOT NULL`);
 
     // Canned responses — reusable comment text. scope='global' rows are

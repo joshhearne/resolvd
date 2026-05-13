@@ -306,6 +306,22 @@ async function applyCustomFieldValues(assetId, items) {
 async function upsertAssets(sourceId, sourceSystem, endpoints, attributeMap = {}) {
   let upserted = 0;
   let skipped = 0;
+  // Build the username→user_id index once per sync. Cheap (a single
+  // SELECT) and avoids stale matches if users were renamed since the
+  // last poll.
+  const upnMatch = require('./upnMatch');
+  const userIndex = await upnMatch.buildIndex(pool);
+  // Cache org-name → company_id lookups so we don't re-query for every
+  // endpoint in the same org.
+  const companyCache = new Map();
+  async function resolveCompany(name) {
+    if (!name) return null;
+    if (companyCache.has(name)) return companyCache.get(name);
+    const id = await upnMatch.resolveCompanyByName(pool, name);
+    companyCache.set(name, id);
+    return id;
+  }
+
   for (const ep of endpoints) {
     const mapped = mapEndpointToAsset(ep);
     if (!mapped) { skipped++; continue; }
@@ -316,18 +332,23 @@ async function upsertAssets(sourceId, sourceSystem, endpoints, attributeMap = {}
     for (const [col, val] of Object.entries(mappings.columnOverrides)) {
       mapped[col] = val;
     }
+    // Best-effort user link from Action1's reported "user" field.
+    const rawUser = ep.user || ep.User || ep.last_logged_user || null;
+    mapped.linked_user_id = rawUser ? upnMatch.matchUsername(rawUser, userIndex) : null;
+    // Best-effort company link from the org label.
+    mapped.company_id = await resolveCompany(ep._org_name);
     try {
       const inserted = await pool.query(
         `INSERT INTO assets
           (source_system, source_external_id, source_alert_source_id,
            hostname, serial, mac, manufacturer, model, os, os_version,
            cpu, ram_bytes, storage_bytes, ip_address, organization,
-           last_seen_at, raw_data, updated_at)
+           last_seen_at, raw_data, linked_user_id, company_id, updated_at)
          VALUES
           ($1, $2, $3,
            $4, $5, $6, $7, $8, $9, $10,
            $11, $12, $13, $14, $15,
-           $16, $17::jsonb, NOW())
+           $16, $17::jsonb, $18, $19, NOW())
          ON CONFLICT (source_system, source_external_id) DO UPDATE SET
            source_alert_source_id = EXCLUDED.source_alert_source_id,
            hostname = EXCLUDED.hostname,
@@ -344,6 +365,8 @@ async function upsertAssets(sourceId, sourceSystem, endpoints, attributeMap = {}
            organization = EXCLUDED.organization,
            last_seen_at = EXCLUDED.last_seen_at,
            raw_data = EXCLUDED.raw_data,
+           linked_user_id = COALESCE(EXCLUDED.linked_user_id, assets.linked_user_id),
+           company_id = COALESCE(EXCLUDED.company_id, assets.company_id),
            updated_at = NOW()
          RETURNING id`,
         [
@@ -353,6 +376,7 @@ async function upsertAssets(sourceId, sourceSystem, endpoints, attributeMap = {}
           mapped.cpu, mapped.ram_bytes, mapped.storage_bytes,
           mapped.ip_address, mapped.organization,
           mapped.last_seen_at, JSON.stringify(ep),
+          mapped.linked_user_id || null, mapped.company_id || null,
         ]
       );
       const assetId = inserted.rows[0]?.id;

@@ -48,7 +48,10 @@ export default function ProjectDetail() {
     auto_add_new_users: false,
     ai_context_md: "",
     ai_context_enabled: true,
+    allow_asset_linking: false,
+    asset_company_ids: [],
   });
+  const [companies, setCompanies] = useState([]);
   const [savingSettings, setSavingSettings] = useState(false);
 
   // Add member state — bulk-capable: multi-select user picker, role
@@ -92,7 +95,10 @@ export default function ProjectDetail() {
           auto_add_new_users: proj.auto_add_new_users === true,
           ai_context_md: proj.ai_context_md || "",
           ai_context_enabled: proj.ai_context_enabled !== false,
+          allow_asset_linking: proj.allow_asset_linking === true,
+          asset_company_ids: proj.asset_company_ids || [],
         });
+        api.get('/api/companies').then(setCompanies).catch(() => setCompanies([]));
         setAllUsers(users);
       })
       .catch(() => toast.error("Failed to load project"))
@@ -125,6 +131,8 @@ export default function ProjectDetail() {
         auto_add_new_users: editForm.auto_add_new_users,
         ai_context_md: editForm.ai_context_md || null,
         ai_context_enabled: editForm.ai_context_enabled,
+        allow_asset_linking: editForm.allow_asset_linking,
+        asset_company_ids: editForm.asset_company_ids,
       });
       setProject((p) => ({ ...p, ...updated }));
       setEditing(false);
@@ -369,6 +377,56 @@ export default function ProjectDetail() {
                   org-wide queues like the helpdesk / incident project.
                 </p>
               </div>
+            </div>
+            <div className="border-t border-border pt-3">
+              <div className="flex items-start gap-2 mb-2">
+                <input
+                  type="checkbox"
+                  id="edit_allow_asset_linking"
+                  checked={editForm.allow_asset_linking}
+                  onChange={(e) =>
+                    setEditForm((f) => ({
+                      ...f,
+                      allow_asset_linking: e.target.checked,
+                    }))
+                  }
+                  className="h-4 w-4 mt-0.5 rounded border-border-strong text-brand focus:ring-brand/40"
+                />
+                <div>
+                  <label htmlFor="edit_allow_asset_linking" className="text-sm text-fg">
+                    Allow tickets to link to assets
+                  </label>
+                  <p className="text-[11px] text-fg-muted mt-0.5">
+                    When on, tickets in this project get an asset picker.
+                    Restrict pickable assets by company below (empty = all
+                    assets are eligible).
+                  </p>
+                </div>
+              </div>
+              {editForm.allow_asset_linking && companies.length > 0 && (
+                <div className="pl-6 mb-3">
+                  <div className="text-xs text-fg-muted mb-1">Allowed companies (empty = all)</div>
+                  <div className="flex flex-wrap gap-1.5">
+                    {companies.map((c) => {
+                      const on = editForm.asset_company_ids.includes(c.id);
+                      return (
+                        <button
+                          key={c.id}
+                          type="button"
+                          onClick={() => {
+                            const next = new Set(editForm.asset_company_ids);
+                            if (on) next.delete(c.id); else next.add(c.id);
+                            setEditForm((f) => ({ ...f, asset_company_ids: Array.from(next) }));
+                          }}
+                          className={`px-2 py-0.5 text-xs rounded border ${on ? "bg-brand text-white border-brand" : "border-border hover:bg-surface-2"}`}
+                        >
+                          {c.name}
+                        </button>
+                      );
+                    })}
+                  </div>
+                </div>
+              )}
             </div>
             <div className="border-t border-border pt-3">
               <h3 className="text-xs font-semibold text-fg mb-1">AI rewrite context</h3>

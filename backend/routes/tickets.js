@@ -559,6 +559,29 @@ router.patch('/:id', requireAuth, async (req, res) => {
       if ((isAdmin || isSubmitter) && body.assigned_to !== undefined) {
         updates.assigned_to = body.assigned_to ? Number(body.assigned_to) : null;
       }
+      // Asset linking — anyone who can edit the ticket can update the
+      // link (admin/manager/submitter), gated by project setting +
+      // company filter so MSP project A can't link to customer B's
+      // assets even if a user knows the id.
+      if (body.asset_id !== undefined) {
+        const assetId = body.asset_id === null ? null : Number(body.asset_id);
+        if (assetId !== null) {
+          const proj = await client.query(
+            `SELECT allow_asset_linking, asset_company_ids FROM projects WHERE id = $1`,
+            [ticket.project_id]
+          );
+          if (!proj.rows[0]?.allow_asset_linking) {
+            return res.status(400).json({ error: 'Asset linking is disabled for this project' });
+          }
+          const assetRes = await client.query(`SELECT id, company_id FROM assets WHERE id = $1`, [assetId]);
+          if (!assetRes.rows[0]) return res.status(400).json({ error: 'Asset not found' });
+          const companyIds = proj.rows[0].asset_company_ids || [];
+          if (companyIds.length && !companyIds.includes(assetRes.rows[0].company_id)) {
+            return res.status(400).json({ error: 'Asset is not in an allowed company for this project' });
+          }
+        }
+        updates.asset_id = assetId;
+      }
       // Admin/Manager can reassign the submitter (e.g. correcting an
       // import or filing-on-behalf metadata). Submitters cannot.
       if (isAdmin && body.submitted_by !== undefined && body.submitted_by !== null) {
