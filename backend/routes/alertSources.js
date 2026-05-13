@@ -150,7 +150,7 @@ router.patch('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
     // Plain fields
     const plain = ['name', 'default_project_id', 'default_assignee_id',
       'auto_resolve_on_recovery', 'enabled', 'api_url', 'api_client_id',
-      'poll_interval_minutes', 'affect_inventory'];
+      'poll_interval_minutes', 'affect_inventory', 'inventory_company_id'];
     for (const k of plain) {
       if (Object.prototype.hasOwnProperty.call(body, k)) {
         sets.push(`${k} = $${p++}`);

@@ -303,7 +303,7 @@ async function applyCustomFieldValues(assetId, items) {
   }
 }
 
-async function upsertAssets(sourceId, sourceSystem, endpoints, attributeMap = {}) {
+async function upsertAssets(sourceId, sourceSystem, endpoints, attributeMap = {}, inventoryCompanyId = null) {
   let upserted = 0;
   let skipped = 0;
   // Build the username→user_id index once per sync. Cheap (a single
@@ -335,8 +335,10 @@ async function upsertAssets(sourceId, sourceSystem, endpoints, attributeMap = {}
     // Best-effort user link from Action1's reported "user" field.
     const rawUser = ep.user || ep.User || ep.last_logged_user || null;
     mapped.linked_user_id = rawUser ? upnMatch.matchUsername(rawUser, userIndex) : null;
-    // Best-effort company link from the org label.
-    mapped.company_id = await resolveCompany(ep._org_name);
+    // Company resolution: the source's inventory_company_id override
+    // wins when set (admin pinned this source to one customer). Falls
+    // back to org-name matching when not set (multi-tenant sources).
+    mapped.company_id = inventoryCompanyId || await resolveCompany(ep._org_name);
     try {
       const inserted = await pool.query(
         `INSERT INTO assets
@@ -537,7 +539,13 @@ async function pollSource(source) {
     try {
       const token = await oauthToken(baseUrl, clientId, clientSecret);
       const endpoints = await fetchAllEndpoints(baseUrl, token);
-      const inv = await upsertAssets(source.id, 'action1', endpoints, source.attribute_map || {});
+      const inv = await upsertAssets(
+        source.id,
+        'action1',
+        endpoints,
+        source.attribute_map || {},
+        source.inventory_company_id || null
+      );
       summary.inventory = { fetched: endpoints.length, ...inv };
     } catch (err) {
       summary.inventory = { error: scrubSecrets(String(err.message), clientSecret).slice(0, 500) };

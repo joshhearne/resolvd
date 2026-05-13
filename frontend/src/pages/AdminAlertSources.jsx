@@ -393,6 +393,13 @@ function SourceDetail({ source, projects, presets, onBack, onPatch, onRotate, on
     source.poll_interval_minutes != null ? String(source.poll_interval_minutes) : "0"
   );
   const [affectInventory, setAffectInventory] = useState(!!source.affect_inventory);
+  const [inventoryCompanyId, setInventoryCompanyId] = useState(
+    source.inventory_company_id ? String(source.inventory_company_id) : ""
+  );
+  const [companies, setCompanies] = useState([]);
+  useEffect(() => {
+    api.get('/api/companies').then(setCompanies).catch(() => setCompanies([]));
+  }, []);
   const [backfillOpen, setBackfillOpen] = useState(false);
   const [backfillBusy, setBackfillBusy] = useState(false);
   const [backfillResult, setBackfillResult] = useState(null);
@@ -412,6 +419,7 @@ function SourceDetail({ source, projects, presets, onBack, onPatch, onRotate, on
       source.poll_interval_minutes != null ? String(source.poll_interval_minutes) : "0"
     );
     setAffectInventory(!!source.affect_inventory);
+    setInventoryCompanyId(source.inventory_company_id ? String(source.inventory_company_id) : "");
     setBackfillResult(null);
   }, [source.id]);
 
@@ -436,6 +444,7 @@ function SourceDetail({ source, projects, presets, onBack, onPatch, onRotate, on
       api_client_id: apiClientId.trim() || null,
       poll_interval_minutes: Math.max(0, Math.min(60, Number(pollInterval) || 0)),
       affect_inventory: affectInventory,
+      inventory_company_id: inventoryCompanyId ? Number(inventoryCompanyId) : null,
     };
     // Only include api_token if the input has a value — empty string means
     // "leave alone". Set to null explicitly via the Clear button.
@@ -667,6 +676,28 @@ function SourceDetail({ source, projects, presets, onBack, onPatch, onRotate, on
                 onChange={(e) => setAffectInventory(e.target.checked)}
               />
               Feed inventory module (sync managed endpoints as assets on each poll)
+            </label>
+          )}
+
+          {source.preset === "action1" && affectInventory && (
+            <label className="text-xs text-fg-muted flex flex-col gap-1 max-w-md">
+              <span>Inventory company override</span>
+              <select
+                value={inventoryCompanyId}
+                onChange={(e) => setInventoryCompanyId(e.target.value)}
+                className="bg-surface-2 border border-border rounded px-2 py-1 text-sm"
+              >
+                <option value="">— resolve from Action1 org name —</option>
+                {companies.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}</option>
+                ))}
+              </select>
+              <span className="text-[11px] text-fg-dim">
+                Pin every asset from this source to one Resolvd company.
+                Useful for per-customer sources (e.g. a Zabbix instance
+                dedicated to one customer's network). Leave blank to
+                resolve per-asset from the Action1 organization name.
+              </span>
             </label>
           )}
 

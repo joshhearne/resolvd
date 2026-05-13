@@ -1083,6 +1083,12 @@ async function initSchema() {
     // asset_column whitelist lives in services/action1Poll.js to prevent
     // writing arbitrary columns through user input.
     await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS attribute_map JSONB NOT NULL DEFAULT '{}'::jsonb`);
+    // Inventory company override — pins every asset from this source to
+    // one Resolvd company. Useful for per-customer sources (Zabbix
+    // instance dedicated to customer A's network). Multi-tenant sources
+    // (Action1 with multiple orgs) leave this NULL and let the org-name
+    // matcher in services/upnMatch.js resolve per-asset.
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS inventory_company_id INTEGER REFERENCES companies(id) ON DELETE SET NULL`);
 
     // Inventory module — one row per managed machine, scoped per source
     // system. source_external_id is the RMM's stable id for the device
