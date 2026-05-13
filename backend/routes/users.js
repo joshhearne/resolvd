@@ -24,7 +24,11 @@ const avatarUpload = multer({
   },
 });
 
-const VALID_ROLES = ['Admin', 'Manager', 'Submitter', 'Viewer', 'Support'];
+// Tech sits between Manager and Submitter — internal IT staff who can
+// handle tickets (assignment target, status changes, internal comments)
+// without admin-level config access. Permission gates added per-route;
+// the role string itself is opt-in by including 'Tech' in requireRole(...).
+const VALID_ROLES = ['Admin', 'Manager', 'Tech', 'Submitter', 'Viewer', 'Support'];
 
 // GET /api/users (Admin + Manager)
 router.get('/', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {

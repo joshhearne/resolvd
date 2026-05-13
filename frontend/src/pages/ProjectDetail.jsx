@@ -6,7 +6,7 @@ import { useAuth } from "../context/AuthContext";
 import PageShell from "../components/PageShell";
 import AiRewriteButton from "../components/AiRewriteButton";
 
-const ROLES = ["Admin", "Manager", "Submitter", "Viewer"];
+const ROLES = ["Admin", "Manager", "Tech", "Submitter", "Viewer"];
 
 function RolePill({ role }) {
   const colors = {
