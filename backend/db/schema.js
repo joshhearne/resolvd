@@ -287,6 +287,14 @@ async function initSchema() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_saved_views_user ON saved_views(user_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_project_members_user ON project_members(user_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_project_members_project ON project_members(project_id)`);
+    // is_agent marks a member as eligible for ticket assignment within
+    // this project. Replaces the previous role-based filter (which
+    // assumed Admin/Manager/Tech == assignable everywhere). A user can
+    // be an agent on one project but not another. Org-default policies
+    // (project_id IS NULL) treat anyone who is an agent on ANY project
+    // as a candidate.
+    await client.query(`ALTER TABLE project_members ADD COLUMN IF NOT EXISTS is_agent BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_project_members_agent ON project_members(project_id) WHERE is_agent = TRUE`);
 
     // Status configuration tables (advisory transitions, suggested mappings).
     await client.query(`

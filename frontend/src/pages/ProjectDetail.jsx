@@ -213,6 +213,20 @@ export default function ProjectDetail() {
     }
   }
 
+  async function toggleAgent(userId, next) {
+    try {
+      await api.patch(`/api/projects/${id}/members/${userId}`, { is_agent: next });
+      setProject((p) => ({
+        ...p,
+        members: p.members.map((m) =>
+          m.user_id === userId ? { ...m, is_agent: next } : m,
+        ),
+      }));
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }
+
   if (loading)
     return <div className="text-center text-fg-dim py-12">Loading…</div>;
   if (!project)
@@ -664,6 +678,12 @@ export default function ProjectDetail() {
                 <th className="px-5 py-2 text-left text-xs font-medium text-fg-muted uppercase tracking-wide">
                   Effective
                 </th>
+                <th
+                  className="px-5 py-2 text-left text-xs font-medium text-fg-muted uppercase tracking-wide"
+                  title="Eligible for ticket assignment within this project"
+                >
+                  Agent
+                </th>
                 <th className="px-5 py-2"></th>
               </tr>
             </thead>
@@ -727,6 +747,15 @@ export default function ProjectDetail() {
                   </td>
                   <td className="px-5 py-3">
                     <RolePill role={m.role_override || m.global_role} />
+                  </td>
+                  <td className="px-5 py-3">
+                    <input
+                      type="checkbox"
+                      checked={!!m.is_agent}
+                      onChange={(e) => toggleAgent(m.user_id, e.target.checked)}
+                      aria-label="Agent"
+                      title="Eligible for ticket assignment within this project"
+                    />
                   </td>
                   <td className="px-5 py-3 text-right">
                     <button

@@ -30,12 +30,12 @@ const ACTIONS = [
 ];
 
 const TARGETABLE_ROLES = ["Admin", "Manager", "Tech"];
-const ASSIGNABLE_ROLES = new Set(TARGETABLE_ROLES);
 
 export default function AdminEscalationPolicies() {
   const [steps, setSteps] = useState([]);
   const [projects, setProjects] = useState([]);
-  const [users, setUsers] = useState([]);
+  const [globalAgents, setGlobalAgents] = useState([]);
+  const [agentsByProject, setAgentsByProject] = useState({});
   const [loading, setLoading] = useState(true);
   const [edits, setEdits] = useState({});
   const [newRow, setNewRow] = useState({
@@ -49,17 +49,33 @@ export default function AdminEscalationPolicies() {
     target_role: "Manager",
   });
 
+  async function loadProjectAgents(projectId) {
+    if (!projectId || agentsByProject[projectId]) return;
+    try {
+      const list = await api.get(`/api/agents/project/${projectId}`);
+      setAgentsByProject((prev) => ({ ...prev, [projectId]: list }));
+    } catch (e) {
+      toast.error(e.message || "Failed to load agents");
+    }
+  }
+
   async function load() {
     setLoading(true);
     try {
-      const [list, pjs, us] = await Promise.all([
+      const [list, pjs, agents] = await Promise.all([
         api.get("/api/escalation-policies"),
         api.get("/api/projects"),
-        api.get("/api/users"),
+        api.get("/api/agents"),
       ]);
       setSteps(list);
       setProjects(pjs);
-      setUsers(us.filter((u) => u.status === "active" && ASSIGNABLE_ROLES.has(u.role)));
+      setGlobalAgents(agents);
+      const ids = Array.from(new Set(list.filter((s) => s.project_id).map((s) => s.project_id)));
+      for (const pid of ids) {
+        api.get(`/api/agents/project/${pid}`)
+          .then((agents) => setAgentsByProject((prev) => ({ ...prev, [pid]: agents })))
+          .catch(() => {});
+      }
     } catch (e) {
       toast.error(e.message || "Failed to load");
     } finally {
@@ -67,6 +83,13 @@ export default function AdminEscalationPolicies() {
     }
   }
   useEffect(() => { load(); }, []);
+  useEffect(() => {
+    if (newRow.project_id) loadProjectAgents(newRow.project_id);
+  }, [newRow.project_id]);
+
+  function usersForStep(s) {
+    return s.project_id ? (agentsByProject[s.project_id] || []) : globalAgents;
+  }
 
   const grouped = useMemo(() => {
     const map = new Map();
@@ -145,6 +168,7 @@ export default function AdminEscalationPolicies() {
     const e = edits[s.id] || {};
     const merged = { ...s, ...e };
     const dirty = !!Object.keys(e).length;
+    const users = usersForStep(s);
     return (
       <tr className="border-t border-border align-top">
         <td className="py-2 pr-3">
@@ -274,7 +298,9 @@ export default function AdminEscalationPolicies() {
                 <select value={newRow.target_user_id} onChange={(e) => setNewRow((p) => ({ ...p, target_user_id: e.target.value }))}
                   className="border border-border-strong rounded px-2 py-1 text-sm">
                   <option value="">— pick —</option>
-                  {users.map((u) => <option key={u.id} value={u.id}>{u.display_name} ({u.role})</option>)}
+                  {(newRow.project_id ? (agentsByProject[newRow.project_id] || []) : globalAgents).map((u) => (
+                    <option key={u.id} value={u.id}>{u.display_name} ({u.role})</option>
+                  ))}
                 </select>
               </label>
             )}

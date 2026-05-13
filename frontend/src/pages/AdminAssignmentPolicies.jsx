@@ -22,29 +22,52 @@ const STRATEGIES = [
   { value: "specific_user", label: "Specific user" },
 ];
 
-// Roles eligible to handle tickets. Submitter/Viewer/Support intentionally
-// excluded — they file or read tickets, not work them.
-const ASSIGNABLE_ROLES = new Set(["Admin", "Manager", "Tech"]);
+// Eligible assignees are project members with is_agent = TRUE. For
+// project-scoped policies we fetch agents on that specific project;
+// for org-default policies we use the global agent set (anyone who is
+// an agent on at least one project). The previous role-based filter
+// (Admin/Manager/Tech) is replaced by this opt-in flag so admins can
+// fine-tune assignability without changing a user's global role.
 
 export default function AdminAssignmentPolicies() {
   const [policies, setPolicies] = useState([]);
   const [projects, setProjects] = useState([]);
-  const [users, setUsers] = useState([]);
+  const [globalAgents, setGlobalAgents] = useState([]);
+  // Cache of project_id → agents[] so we only fetch per-project lists
+  // on demand and don't re-fetch each render.
+  const [agentsByProject, setAgentsByProject] = useState({});
   const [loading, setLoading] = useState(true);
   const [newRow, setNewRow] = useState({ priority: 3, project_id: "", strategy: "specific_user" });
   const [edits, setEdits] = useState({});
 
+  async function loadProjectAgents(projectId) {
+    if (!projectId || agentsByProject[projectId]) return;
+    try {
+      const list = await api.get(`/api/agents/project/${projectId}`);
+      setAgentsByProject((prev) => ({ ...prev, [projectId]: list }));
+    } catch (e) {
+      toast.error(e.message || "Failed to load agents");
+    }
+  }
+
   async function load() {
     setLoading(true);
     try {
-      const [pList, pjList, uList] = await Promise.all([
+      const [pList, pjList, agents] = await Promise.all([
         api.get("/api/assignment-policies"),
         api.get("/api/projects"),
-        api.get("/api/users"),
+        api.get("/api/agents"),
       ]);
       setPolicies(pList);
       setProjects(pjList);
-      setUsers(uList.filter((u) => u.status === "active" && ASSIGNABLE_ROLES.has(u.role)));
+      setGlobalAgents(agents);
+      // Pre-warm cache for projects already referenced by existing policies.
+      const projectIds = Array.from(new Set(pList.filter((p) => p.project_id).map((p) => p.project_id)));
+      for (const pid of projectIds) {
+        api.get(`/api/agents/project/${pid}`)
+          .then((list) => setAgentsByProject((prev) => ({ ...prev, [pid]: list })))
+          .catch(() => {});
+      }
     } catch (e) {
       toast.error(e.message || "Failed to load");
     } finally {
@@ -52,6 +75,14 @@ export default function AdminAssignmentPolicies() {
     }
   }
   useEffect(() => { load(); }, []);
+  // Prefetch agents when the user picks a project for the "add policy" form.
+  useEffect(() => {
+    if (newRow.project_id) loadProjectAgents(newRow.project_id);
+  }, [newRow.project_id]);
+
+  function usersForPolicy(p) {
+    return p.project_id ? (agentsByProject[p.project_id] || []) : globalAgents;
+  }
 
   async function saveRow(p) {
     const e = edits[p.id];
@@ -100,6 +131,7 @@ export default function AdminAssignmentPolicies() {
     const merged = { ...p, ...e };
     const dirty = !!Object.keys(e).length;
     const pool = merged.agent_pool || [];
+    const users = usersForPolicy(p);
     return (
       <tr className="border-t border-border align-top">
         <td className="py-2 pr-3">

@@ -96,7 +96,7 @@ router.get('/:id', requireAuth, async (req, res) => {
     }
 
     const membersResult = await pool.query(`
-      SELECT pm.id, pm.user_id, pm.role_override, pm.added_at,
+      SELECT pm.id, pm.user_id, pm.role_override, pm.is_agent, pm.added_at,
         u.display_name, u.email, u.role as global_role, u.status,
         adder.display_name as added_by_name
       FROM project_members pm
@@ -292,16 +292,34 @@ router.post('/:id/members/bulk', requireAuth, requireRole('Admin', 'Manager'), a
   }
 });
 
-// PATCH /api/projects/:id/members/:uid — update role override
+// PATCH /api/projects/:id/members/:uid — update role override and/or
+// agent flag. Either or both can be patched in one call; omitted fields
+// are left untouched.
 router.patch('/:id/members/:uid', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
-    const { role_override } = req.body;
-    if (role_override && !VALID_ROLES.includes(role_override)) {
-      return res.status(400).json({ error: 'Invalid role_override' });
+    const body = req.body || {};
+    const sets = [];
+    const values = [];
+    let p = 1;
+    if (Object.prototype.hasOwnProperty.call(body, 'role_override')) {
+      if (body.role_override && !VALID_ROLES.includes(body.role_override)) {
+        return res.status(400).json({ error: 'Invalid role_override' });
+      }
+      sets.push(`role_override = $${p++}`);
+      values.push(body.role_override || null);
     }
+    if (Object.prototype.hasOwnProperty.call(body, 'is_agent')) {
+      if (typeof body.is_agent !== 'boolean') {
+        return res.status(400).json({ error: 'is_agent must be boolean' });
+      }
+      sets.push(`is_agent = $${p++}`);
+      values.push(body.is_agent);
+    }
+    if (!sets.length) return res.status(400).json({ error: 'no updatable fields supplied' });
+    values.push(req.params.id, req.params.uid);
     const result = await pool.query(
-      'UPDATE project_members SET role_override = $1 WHERE project_id = $2 AND user_id = $3 RETURNING *',
-      [role_override || null, req.params.id, req.params.uid]
+      `UPDATE project_members SET ${sets.join(', ')} WHERE project_id = $${p++} AND user_id = $${p} RETURNING *`,
+      values
     );
     if (!result.rows[0]) return res.status(404).json({ error: 'Member not found' });
     res.json(result.rows[0]);
