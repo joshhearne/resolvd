@@ -132,7 +132,7 @@ const INT_FIELDS = new Set(['linked_user_id', 'company_id', 'ram_bytes', 'storag
 // floor is "we know what we're looking at by at least one identifier."
 // If asset_type_id is set, also enforces that type's required field
 // list.
-router.post('/', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const body = req.body || {};
     const ident = [body.hostname, body.serial, body.mac].some(
@@ -185,7 +185,7 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager'), async (req, res) 
 // PATCH /api/assets/:id — manual assets get the full editable set,
 // RMM-managed assets keep the narrow override set (sync clobbers
 // structural fields on every pull anyway).
-router.patch('/:id', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+router.patch('/:id', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const id = Number(req.params.id);
     const existing = await pool.query(`SELECT source_system FROM assets WHERE id = $1`, [id]);

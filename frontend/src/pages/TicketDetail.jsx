@@ -252,7 +252,9 @@ export default function TicketDetail() {
     location.state?.highlightComment ?? null
   );
   const statusCfg = useStatuses();
-  const isAdmin = ["Admin", "Manager"].includes(user?.role);
+  // "isAdmin" here = elevated ticket handler. Tech is in this group
+  // (internal IT staff). Variable name kept for blast-radius reasons.
+  const isAdmin = ["Admin", "Manager", "Tech"].includes(user?.role);
   const isSubmitter = user?.role === "Submitter";
   const canEdit = isAdmin || isSubmitter;
 

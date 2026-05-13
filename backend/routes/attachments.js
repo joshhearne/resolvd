@@ -48,7 +48,7 @@ router.get('/tickets/:ticketId/attachments', requireAuth, async (req, res) => {
 });
 
 // POST /api/tickets/:ticketId/attachments
-router.post('/tickets/:ticketId/attachments', requireAuth, requireRole('Admin', 'Manager', 'Submitter'),
+router.post('/tickets/:ticketId/attachments', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter'),
   upload.array('files', 20), async (req, res) => {
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({ error: 'No files uploaded' });

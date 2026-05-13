@@ -241,7 +241,7 @@ router.get('/', requireAuth, async (req, res) => {
 });
 
 // POST /api/tickets
-router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Submitter'), async (req, res) => {
+router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter'), async (req, res) => {
   try {
     const user = req.session.user;
     const { project_id, title, description, impact = 2, urgency = 2, external_ticket_ref, assigned_to, contact_ids, submitted_by } = req.body;
@@ -550,7 +550,12 @@ router.patch('/:id', requireAuth, async (req, res) => {
     const ticket = ticketResult.rows[0];
     if (!ticket) return res.status(404).json({ error: 'Ticket not found' });
 
-    const isAdmin = ['Admin','Manager'].includes(user.role);
+    // Local `isAdmin` here means "elevated handler" — anyone who can
+    // manage the ticket beyond what a Submitter can do. Tech sits in
+    // this group (internal IT staff). Keep variable name for blast-
+    // radius reasons; the true-Admin-only paths key off the body
+    // intent rather than this flag.
+    const isAdmin = ['Admin', 'Manager', 'Tech'].includes(user.role);
     const isSubmitter = user.role === 'Submitter';
     const updates = {};
     const body = req.body;
@@ -862,7 +867,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
 // reminder N days from now. Admin/Manager only. Only meaningful while
 // ticket sits in a resolved_pending_close state; cleared automatically
 // on status change. DELETE clears it.
-router.post('/:id/followup', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+router.post('/:id/followup', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const days = Math.max(1, Math.floor(Number(req.body?.days || 0)));
     if (!days || !Number.isFinite(days)) return res.status(400).json({ error: 'days must be a positive integer' });
@@ -886,7 +891,7 @@ router.post('/:id/followup', requireAuth, requireRole('Admin', 'Manager'), async
   }
 });
 
-router.delete('/:id/followup', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+router.delete('/:id/followup', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     await pool.query(
       `UPDATE tickets SET followup_at = NULL, followup_user_id = NULL, updated_at = NOW() WHERE id = $1`,
@@ -1162,7 +1167,7 @@ router.post('/:id/move', requireAuth, async (req, res) => {
 });
 
 // POST /api/tickets/:id/notify-vendor — manually fire new_ticket vendor email
-router.post('/:id/notify-vendor', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+router.post('/:id/notify-vendor', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const ticket = await pool.query('SELECT id, submitted_by FROM tickets WHERE id = $1', [req.params.id]);
     if (!ticket.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
@@ -1299,7 +1304,7 @@ router.get('/:id/contacts', requireAuth, async (req, res) => {
 });
 
 // POST /api/tickets/:id/contacts — link a contact to a ticket
-router.post('/:id/contacts', requireAuth, requireRole('Admin', 'Manager', 'Submitter'), async (req, res) => {
+router.post('/:id/contacts', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter'), async (req, res) => {
   try {
     const { contact_id } = req.body || {};
     if (!contact_id) return res.status(400).json({ error: 'contact_id required' });
@@ -1323,7 +1328,7 @@ router.post('/:id/contacts', requireAuth, requireRole('Admin', 'Manager', 'Submi
 });
 
 // DELETE /api/tickets/:id/contacts/:contactId — unlink a contact
-router.delete('/:id/contacts/:contactId', requireAuth, requireRole('Admin', 'Manager', 'Submitter'),
+router.delete('/:id/contacts/:contactId', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter'),
   async (req, res) => {
     try {
       const result = await pool.query(
