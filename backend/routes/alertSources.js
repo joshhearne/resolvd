@@ -169,6 +169,14 @@ router.patch('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
       sets.push(`attribute_map = $${p++}::jsonb`);
       values.push(JSON.stringify(body.attribute_map || {}));
     }
+    if (Object.prototype.hasOwnProperty.call(body, 'company_map')) {
+      if (typeof body.company_map !== 'object' || Array.isArray(body.company_map)) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'company_map must be an object' });
+      }
+      sets.push(`company_map = $${p++}::jsonb`);
+      values.push(JSON.stringify(body.company_map || {}));
+    }
 
     // api_token is sensitive — route through buildWritePatch which writes
     // to api_token_enc (standard mode) or api_token (off mode).
@@ -483,6 +491,27 @@ router.get('/:id/attributes', requireAuth, requireRole('Admin'), async (req, res
     res.json({ attributes: attrs, sample_source: 'most_recent_asset' });
   } catch (err) {
     console.error('attributes list error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// GET /api/alert-sources/:id/seen-orgs — distinct organization names
+// observed in this source's recent assets. Powers the Hudu-style
+// company-mapping UI ("here's what the source ships; map each one").
+router.get('/:id/seen-orgs', requireAuth, requireRole('Admin'), async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT DISTINCT organization
+         FROM assets
+        WHERE source_alert_source_id = $1
+          AND organization IS NOT NULL
+          AND organization <> ''
+        ORDER BY organization`,
+      [Number(req.params.id)]
+    );
+    res.json({ orgs: r.rows.map((row) => row.organization) });
+  } catch (err) {
+    console.error('seen-orgs error:', err);
     res.status(500).json({ error: 'Database error' });
   }
 });

@@ -303,7 +303,7 @@ async function applyCustomFieldValues(assetId, items) {
   }
 }
 
-async function upsertAssets(sourceId, sourceSystem, endpoints, attributeMap = {}, inventoryCompanyId = null) {
+async function upsertAssets(sourceId, sourceSystem, endpoints, attributeMap = {}, inventoryCompanyId = null, companyMap = {}) {
   let upserted = 0;
   let skipped = 0;
   // Build the username→user_id index once per sync. Cheap (a single
@@ -335,10 +335,20 @@ async function upsertAssets(sourceId, sourceSystem, endpoints, attributeMap = {}
     // Best-effort user link from Action1's reported "user" field.
     const rawUser = ep.user || ep.User || ep.last_logged_user || null;
     mapped.linked_user_id = rawUser ? upnMatch.matchUsername(rawUser, userIndex) : null;
-    // Company resolution: the source's inventory_company_id override
-    // wins when set (admin pinned this source to one customer). Falls
-    // back to org-name matching when not set (multi-tenant sources).
-    mapped.company_id = inventoryCompanyId || await resolveCompany(ep._org_name);
+    // Company resolution priority:
+    //   1. inventory_company_id (whole-source pin — single-tenant case)
+    //   2. company_map[org name] (explicit Hudu-style mapping for the
+    //      multi-tenant case when source-reported names don't match
+    //      Resolvd company names verbatim)
+    //   3. per-asset name matcher (resolveCompanyByName, exact match)
+    //   4. NULL if nothing matches — admin can fix-up later
+    let companyId = inventoryCompanyId || null;
+    if (!companyId && ep._org_name && companyMap && Object.prototype.hasOwnProperty.call(companyMap, ep._org_name)) {
+      const mappedId = companyMap[ep._org_name];
+      if (Number.isInteger(mappedId) && mappedId > 0) companyId = mappedId;
+    }
+    if (!companyId) companyId = await resolveCompany(ep._org_name);
+    mapped.company_id = companyId;
     try {
       const inserted = await pool.query(
         `INSERT INTO assets
@@ -544,7 +554,8 @@ async function pollSource(source) {
         'action1',
         endpoints,
         source.attribute_map || {},
-        source.inventory_company_id || null
+        source.inventory_company_id || null,
+        source.company_map || {}
       );
       summary.inventory = { fetched: endpoints.length, ...inv };
     } catch (err) {
