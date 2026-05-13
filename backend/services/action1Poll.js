@@ -129,8 +129,47 @@ async function fetchAllEndpoints(baseUrl, accessToken) {
   return out;
 }
 
+// Parse Action1 size strings like "7.99 GB RAM" or "/dev/xvda 80 GB SSD".
+// Returns bytes (integer) or null if no number+unit pair is found.
+function parseSizeToBytes(s) {
+  if (!s) return null;
+  const m = String(s).match(/(\d+(?:\.\d+)?)\s*(KB|MB|GB|TB|PB)\b/i);
+  if (!m) return null;
+  const n = parseFloat(m[1]);
+  if (!Number.isFinite(n)) return null;
+  const mult = { KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3, TB: 1024 ** 4, PB: 1024 ** 5 }[m[2].toUpperCase()];
+  return Math.round(n * mult);
+}
+
+// Action1 timestamps come as "YYYY-MM-DD_HH-MM-SS" (UTC). Normalize.
+function parseAction1Timestamp(s) {
+  if (!s) return null;
+  const m = String(s).match(/^(\d{4})-(\d{2})-(\d{2})_(\d{2})-(\d{2})-(\d{2})$/);
+  if (m) {
+    const iso = `${m[1]}-${m[2]}-${m[3]}T${m[4]}:${m[5]}:${m[6]}Z`;
+    const d = new Date(iso);
+    return isNaN(d.getTime()) ? null : d.toISOString();
+  }
+  const d = new Date(s);
+  return isNaN(d.getTime()) ? null : d.toISOString();
+}
+
+// Split a combined OS string like "Ubuntu 24.04.4 LTS (Noble Numbat)" into
+// (name, version). Loose heuristic: name = leading word(s) before the
+// first digit; version = the rest. Whole string lands in `os` when the
+// split fails.
+function splitOsString(s) {
+  if (!s) return { os: null, version: null };
+  const str = String(s).trim();
+  const m = str.match(/^([A-Za-z][A-Za-z .]*?)\s+(\d.*)$/);
+  if (m) return { os: m[1].trim(), version: m[2].trim() };
+  return { os: str, version: null };
+}
+
 // Map an Action1 endpoint payload to the columns assets exposes. Action1
-// field names shift across product revisions, so accept a few aliases.
+// uses a mix of UPPERCASE (OS, MAC, RAM) and lowercase (name, manufacturer,
+// last_seen) keys — we accept the documented names plus a few historical
+// aliases. Duplicate alias entries are cheap and harmless.
 function mapEndpointToAsset(ep) {
   const pick = (...keys) => {
     for (const k of keys) {
@@ -144,27 +183,28 @@ function mapEndpointToAsset(ep) {
 
   const ramRaw = pick('ram_bytes', 'memory_bytes', 'ram_total_bytes', 'hardware.ram_bytes');
   const storageRaw = pick('storage_bytes', 'disk_bytes', 'disk_total_bytes', 'hardware.storage_bytes');
+  const ram_bytes = (ramRaw != null && Number(ramRaw)) || parseSizeToBytes(pick('RAM', 'ram'));
+  const storage_bytes = (storageRaw != null && Number(storageRaw)) || parseSizeToBytes(pick('disk', 'Disk'));
+
+  const osRaw = pick('OS', 'os', 'os_name', 'operating_system');
+  const osParts = splitOsString(osRaw);
+  const explicitVersion = pick('os_version', 'os_build', 'operating_system_version');
 
   return {
     source_external_id: externalId,
-    hostname: String(pick('name', 'hostname', 'computer_name') || '').trim() || null,
-    serial: String(pick('serial', 'serial_number', 'hardware.serial') || '').trim() || null,
-    mac: String(pick('mac', 'mac_address', 'network.mac') || '').trim() || null,
+    hostname: String(pick('name', 'device_name', 'hostname', 'computer_name') || '').trim() || null,
+    serial: String(pick('serial', 'serial_number', 'hardware.serial', 'system_serial') || '').trim() || null,
+    mac: String(pick('MAC', 'mac', 'mac_address', 'network.mac') || '').trim() || null,
     manufacturer: String(pick('manufacturer', 'vendor', 'hardware.manufacturer') || '').trim() || null,
-    model: String(pick('model', 'hardware.model') || '').trim() || null,
-    os: String(pick('os', 'os_name', 'operating_system') || '').trim() || null,
-    os_version: String(pick('os_version', 'os_build', 'operating_system_version') || '').trim() || null,
-    cpu: String(pick('cpu', 'processor', 'hardware.cpu') || '').trim() || null,
-    ram_bytes: ramRaw != null ? Number(ramRaw) || null : null,
-    storage_bytes: storageRaw != null ? Number(storageRaw) || null : null,
-    ip_address: String(pick('ip', 'ip_address', 'network.ip') || '').trim() || null,
+    model: String(pick('model', 'system_model', 'hardware.model', 'product_name') || '').trim() || null,
+    os: osParts.os,
+    os_version: String(explicitVersion || osParts.version || '').trim() || null,
+    cpu: String(pick('cpu', 'processor', 'hardware.cpu', 'architecture') || '').trim() || null,
+    ram_bytes: ram_bytes || null,
+    storage_bytes: storage_bytes || null,
+    ip_address: String(pick('ip', 'IP', 'ip_address', 'network.ip') || '').trim() || null,
     organization: String(ep._org_name || ep._org_id || '').trim() || null,
-    last_seen_at: (() => {
-      const v = pick('last_seen', 'last_seen_at', 'last_checkin_at', 'last_checkin');
-      if (!v) return null;
-      const d = new Date(v);
-      return isNaN(d.getTime()) ? null : d.toISOString();
-    })(),
+    last_seen_at: parseAction1Timestamp(pick('last_seen', 'last_seen_at', 'last_checkin_at', 'last_checkin')),
   };
 }
 
