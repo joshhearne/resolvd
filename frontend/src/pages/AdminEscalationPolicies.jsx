@@ -29,6 +29,7 @@ const ACTION_KINDS = [
   { value: "reassign_agent", label: "Reassign via assignment policy" },
   { value: "reassign_user", label: "Reassign to user" },
   { value: "reassign_role", label: "Reassign to role" },
+  { value: "bump_priority", label: "Bump priority (surface ticket)" },
 ];
 
 const PRIORITY_OPS = ["=", "<=", ">=", "<", ">"];
@@ -39,6 +40,9 @@ function needsUser(kind) {
 }
 function needsRole(kind) {
   return kind === "notify_role" || kind === "reassign_role";
+}
+function needsBump(kind) {
+  return kind === "bump_priority";
 }
 function defaultAction() {
   return { kind: "notify_assignee" };
@@ -51,6 +55,11 @@ function actionSummary(a) {
   if (a.kind === "reassign_agent") return "Reassign → via assignment policy";
   if (a.kind === "reassign_user") return `Reassign → user #${a.target_user_id ?? "?"}`;
   if (a.kind === "reassign_role") return `Reassign → first ${a.target_role ?? "?"}`;
+  if (a.kind === "bump_priority") {
+    const lvl = a.levels || 1;
+    const fl = a.floor ? ` (floor P${a.floor})` : "";
+    return `Bump priority ${lvl} level${lvl === 1 ? "" : "s"}${fl}`;
+  }
   return a.kind;
 }
 
@@ -151,6 +160,13 @@ export default function AdminEscalationPolicies() {
         toast.error(`${a.kind}: pick a role`);
         return;
       }
+      if (needsBump(a.kind)) {
+        const lv = Number(a.levels);
+        if (!Number.isInteger(lv) || lv < 1 || lv > 4) {
+          toast.error("bump_priority: levels must be 1–4");
+          return;
+        }
+      }
     }
     try {
       await api.patch(`/api/escalation-policies/${s.id}`, body);
@@ -177,6 +193,10 @@ export default function AdminEscalationPolicies() {
     for (const a of newRow.actions) {
       if (needsUser(a.kind) && !a.target_user_id) { toast.error(`${a.kind}: pick a user`); return; }
       if (needsRole(a.kind) && !a.target_role) { toast.error(`${a.kind}: pick a role`); return; }
+      if (needsBump(a.kind)) {
+        const lv = Number(a.levels);
+        if (!Number.isInteger(lv) || lv < 1 || lv > 4) { toast.error("bump_priority: levels must be 1–4"); return; }
+      }
     }
     try {
       const body = {
@@ -190,6 +210,10 @@ export default function AdminEscalationPolicies() {
           kind: a.kind,
           ...(a.target_user_id ? { target_user_id: Number(a.target_user_id) } : {}),
           ...(a.target_role ? { target_role: a.target_role } : {}),
+          ...(needsBump(a.kind) ? {
+            levels: Number(a.levels),
+            ...(a.floor ? { floor: Number(a.floor) } : {}),
+          } : {}),
         })),
         enabled: true,
       };
@@ -231,6 +255,8 @@ export default function AdminEscalationPolicies() {
                   kind: k,
                   target_user_id: needsUser(k) ? a.target_user_id : undefined,
                   target_role: needsRole(k) ? a.target_role : undefined,
+                  levels: needsBump(k) ? (a.levels || 1) : undefined,
+                  floor: needsBump(k) ? a.floor : undefined,
                 });
               }}
               className="border border-border-strong rounded px-2 py-1 text-sm"
@@ -256,6 +282,30 @@ export default function AdminEscalationPolicies() {
                 <option value="">— pick role —</option>
                 {TARGETABLE_ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
               </select>
+            )}
+            {needsBump(a.kind) && (
+              <>
+                <label className="flex items-center gap-1 text-xs text-fg-muted">
+                  Levels
+                  <input
+                    type="number" min="1" max="4"
+                    value={a.levels ?? 1}
+                    onChange={(e) => setAction(i, { levels: Number(e.target.value) })}
+                    className="border border-border-strong rounded px-2 py-1 text-sm font-mono w-14"
+                  />
+                </label>
+                <label className="flex items-center gap-1 text-xs text-fg-muted">
+                  Floor
+                  <select
+                    value={a.floor ?? ""}
+                    onChange={(e) => setAction(i, { floor: e.target.value ? Number(e.target.value) : undefined })}
+                    className="border border-border-strong rounded px-2 py-1 text-sm font-mono w-20"
+                  >
+                    <option value="">P1</option>
+                    {[1, 2, 3, 4, 5].map((p) => <option key={p} value={p}>P{p}</option>)}
+                  </select>
+                </label>
+              </>
             )}
             {actions.length > 1 && (
               <button type="button" onClick={() => removeAction(i)}
@@ -342,7 +392,11 @@ export default function AdminEscalationPolicies() {
           members — Org-Wide steps don't broadcast across every project.
           {" "}<b>Reassign via assignment policy</b> defers to the
           project's auto-assignment policy (round-robin or
-          lowest-case-load), skipping the current assignee.
+          lowest-case-load), skipping the current assignee.{" "}
+          <b>Bump priority</b> raises the ticket's urgency (e.g. P3 →
+          P2) so it surfaces on boards / queues — the chain matcher
+          locks to the pre-bump tier so escalations don't cascade into
+          the new priority's chain.
         </p>
 
         <div className="border border-border rounded p-3 mb-4 bg-surface-2/40">

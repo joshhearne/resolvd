@@ -1749,6 +1749,16 @@ async function initSchema() {
     await client.query(`ALTER TABLE escalation_chain_steps DROP COLUMN IF EXISTS target_role`);
 
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS escalation_steps_fired INTEGER[] NOT NULL DEFAULT '{}'::int[]`);
+    // Snapshot of the priority the chain first matched against on this
+    // ticket. Written the first time a `bump_priority` action fires.
+    // After that, the chain matcher uses this column instead of
+    // effective_priority so bumping doesn't re-enter the chain at the
+    // newly elevated tier (would cascade indefinitely). NULL = never
+    // bumped; matcher falls back to effective_priority. Reset only on
+    // ticket delete; admin re-priority does NOT clear it (intentional —
+    // an admin overriding priority on a previously-escalated ticket
+    // shouldn't re-arm the chain at a different tier).
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS escalation_priority_snapshot INTEGER CHECK (escalation_priority_snapshot BETWEEN 1 AND 5)`);
 
     // Sensible org-default targets per priority. Idempotent: only inserts
     // when the row doesn't already exist. Customers tune these in the

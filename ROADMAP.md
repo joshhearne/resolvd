@@ -77,7 +77,7 @@ Site explicitly tags these as "launching soon" or part of paid hosted tiers. Bui
 
 ### SLA follow-ups
 - **Business hours awareness** — per-policy calendar. Clocks only count working hours, skip weekends + holidays. Required before SLAs work for teams that don't run 24/7. Schema: `sla_policies.business_hours_calendar_id` → new `business_hours_calendars` table (weekly schedule + holiday exception dates, timezone-bound). Pause/resume + due-at math both need to clamp to working windows.
-- **Escalations** — on breach, auto-bump priority by 1 and reassign to a per-policy escalation chain (Manager → next-level Manager → org Admin pool). Configurable per-policy. Re-uses the existing breach scheduler tick.
+- ~~**Escalations** — on breach, auto-bump priority by 1 and reassign to a per-policy escalation chain (Manager → next-level Manager → org Admin pool). Configurable per-policy. Re-uses the existing breach scheduler tick.~~ Shipped: `escalation_chain_steps` with multi-action steps (`notify_*`, `reassign_*`, `bump_priority`), 4 SLA triggers (warning/breach × response/resolve), per-priority + per-project rows with `priority_op` ranges + Org-Wide additive matching, `delay_minutes` grace per step. `bump_priority` locks `tickets.escalation_priority_snapshot` to prevent cascade into the new tier's chain. Admin UI at **Admin → Escalation policies**. See README → *Escalation chains* for the action-kind reference.
 - **Pre-breach warnings** — fire a softer in-app + email notification at 80% of the clock so the assignee can engage before the formal breach pings everyone.
 - **Custom breach destinations** — webhook out on breach for Slack / Teams / PagerDuty. Today only the in-app + email fanout fires.
 

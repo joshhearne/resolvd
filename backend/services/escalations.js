@@ -18,6 +18,24 @@
 //                      excluding current assignee. Falls back to any
 //                      other active project agent by id when policy is
 //                      specific_user or unset.
+//   bump_priority    — raise the ticket's urgency to surface it on
+//                      boards / lists. `levels` is how many tiers to
+//                      escalate toward more urgent (P3 with levels=1
+//                      becomes P2; numerically subtracts from
+//                      effective_priority). `floor` is the most urgent
+//                      tier the action is allowed to reach (default 1).
+//                      Writes BOTH effective_priority and
+//                      priority_override so a subsequent impact/urgency
+//                      edit recomputes against the new floor instead of
+//                      reverting the bump. Audit log row recorded.
+//
+//                      Cascade prevention: the chain matcher pins to
+//                      `tickets.escalation_priority_snapshot` once any
+//                      bump fires. The snapshot stores the priority the
+//                      chain originally matched on, so a bumped ticket
+//                      doesn't fall into the new tier's chain on the
+//                      next tick. Per-step dedup (escalation_steps_fired)
+//                      still prevents a single step from re-running.
 //
 // Resolution rules:
 //   - Project-scoped step (project_id = ticket.project_id) AND
@@ -29,6 +47,16 @@
 
 const { pool } = require('../db/pool');
 const { getUserById } = require('./notificationFanout');
+const { auditLog } = require('./ticketHelpers');
+
+const PRIORITY_MIN = 1;
+const PRIORITY_MAX = 5;
+function clampPriority(p) {
+  if (!Number.isFinite(p)) return 3;
+  if (p < PRIORITY_MIN) return PRIORITY_MIN;
+  if (p > PRIORITY_MAX) return PRIORITY_MAX;
+  return Math.trunc(p);
+}
 
 const TRIGGER_TS_COL = {
   warning_response: 'sla_response_warned_at',
@@ -195,6 +223,51 @@ async function fireAction({ action, step, ticket }) {
     return { ok: true };
   }
 
+  if (kind === 'bump_priority') {
+    const levels = Number(action.levels);
+    if (!Number.isInteger(levels) || levels < 1) {
+      return { ok: false, reason: 'bump_priority requires levels (positive integer)' };
+    }
+    const floor = Number.isInteger(action.floor) ? clampPriority(action.floor) : PRIORITY_MIN;
+    const current = clampPriority(ticket.effective_priority ?? 3);
+    const next = Math.max(floor, current - levels);
+    if (next === current) {
+      return { ok: false, reason: `already at floor P${current}` };
+    }
+    // Same transaction: lock snapshot (first bump only), write override
+    // + effective, audit. Writing priority_override (not just
+    // effective_priority) means later impact/urgency edits recompute
+    // against the bump instead of reverting it.
+    const client = await pool.connect();
+    try {
+      await client.query('BEGIN');
+      await client.query(
+        `UPDATE tickets
+            SET escalation_priority_snapshot = COALESCE(escalation_priority_snapshot, $1),
+                priority_override = $2,
+                effective_priority = $2
+          WHERE id = $3`,
+        [current, next, ticket.id]
+      );
+      await auditLog(client, {
+        ticketId: ticket.id,
+        userId: null,
+        action: 'priority_bump_escalation',
+        oldValue: `P${current}`,
+        newValue: `P${next}`,
+        note: `SLA escalation (${step.trigger}, step ${step.id})`,
+      });
+      await client.query('COMMIT');
+    } catch (err) {
+      await client.query('ROLLBACK').catch(() => {});
+      return { ok: false, reason: err.message };
+    } finally {
+      client.release();
+    }
+    ticket.effective_priority = next; // sibling actions in same step see the bumped value
+    return { ok: true, from: current, to: next };
+  }
+
   return { ok: false, reason: `unknown action kind: ${kind}` };
 }
 
@@ -232,9 +305,15 @@ async function tickEscalations() {
       (s.priority_op = '<=' AND ${col} <= s.priority) OR
       (s.priority_op = '>=' AND ${col} >= s.priority)
     )`;
+    // Chain priority = snapshot if set (locked at first bump_priority),
+    // else current effective_priority. Locking prevents a bumped ticket
+    // from cascading into the new tier's chain on the next tick.
+    const chainPriExpr = 'COALESCE(t.escalation_priority_snapshot, t.effective_priority, 3)';
     const candidates = await pool.query(
       `SELECT t.id, t.internal_ref, t.title, t.title_enc, t.project_id, t.assigned_to,
-              t.effective_priority, t.escalation_steps_fired, t.${tsCol} AS triggered_at
+              t.effective_priority, t.escalation_priority_snapshot,
+              ${chainPriExpr} AS chain_priority,
+              t.escalation_steps_fired, t.${tsCol} AS triggered_at
          FROM tickets t
         WHERE ${activeCond}
           AND t.${tsCol} IS NOT NULL
@@ -242,7 +321,7 @@ async function tickEscalations() {
             SELECT 1 FROM escalation_chain_steps s
              WHERE s.trigger = $1
                AND s.enabled = TRUE
-               AND ${opMatch('COALESCE(t.effective_priority, 3)')}
+               AND ${opMatch(chainPriExpr)}
                AND (s.project_id = t.project_id OR s.project_id IS NULL)
                AND s.id <> ALL(t.escalation_steps_fired)
           )`,
@@ -258,7 +337,7 @@ async function tickEscalations() {
             AND s.id <> ALL($4::int[])
             AND $5::timestamptz + (s.delay_minutes || ' minutes')::interval <= NOW()
           ORDER BY s.step_order, s.id`,
-        [trigger, ticket.effective_priority || 3, ticket.project_id, ticket.escalation_steps_fired, ticket.triggered_at]
+        [trigger, ticket.chain_priority || 3, ticket.project_id, ticket.escalation_steps_fired, ticket.triggered_at]
       );
       for (const step of steps.rows) {
         const result = await fireStep({ step, ticket }).catch((err) => {

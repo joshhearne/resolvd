@@ -10,7 +10,7 @@ const { requireAuth, requireRole } = require('../middleware/auth');
 const router = express.Router();
 
 const TRIGGERS = ['warning_response', 'warning_resolve', 'breach_response', 'breach_resolve'];
-const ACTION_KINDS = ['notify_user', 'notify_role', 'notify_assignee', 'reassign_user', 'reassign_role', 'reassign_agent'];
+const ACTION_KINDS = ['notify_user', 'notify_role', 'notify_assignee', 'reassign_user', 'reassign_role', 'reassign_agent', 'bump_priority'];
 const ROLES = ['Admin', 'Manager', 'Tech'];
 const PRIORITY_OPS = ['=', '<', '>', '<=', '>='];
 
@@ -29,6 +29,18 @@ function validateAction(a) {
   if (a.kind === 'notify_role' || a.kind === 'reassign_role') {
     if (!ROLES.includes(a.target_role)) {
       return `${a.kind} requires target_role ∈ ${ROLES.join(', ')}`;
+    }
+  }
+  if (a.kind === 'bump_priority') {
+    // levels: how many tiers to escalate toward more urgent (subtract from
+    // numeric priority). Max 4 — P5 → P1 is the longest possible bump.
+    if (!Number.isInteger(a.levels) || a.levels < 1 || a.levels > 4) {
+      return 'bump_priority requires levels (integer 1–4)';
+    }
+    if (a.floor !== undefined && a.floor !== null) {
+      if (!Number.isInteger(a.floor) || a.floor < 1 || a.floor > 5) {
+        return 'bump_priority floor must be 1–5';
+      }
     }
   }
   return null;
@@ -70,6 +82,10 @@ function normalizeActions(actions) {
     const out = { kind: a.kind };
     if (a.target_user_id) out.target_user_id = Number(a.target_user_id);
     if (a.target_role) out.target_role = a.target_role;
+    if (a.kind === 'bump_priority') {
+      out.levels = Number(a.levels);
+      if (a.floor !== undefined && a.floor !== null) out.floor = Number(a.floor);
+    }
     return out;
   });
 }

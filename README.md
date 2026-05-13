@@ -244,6 +244,22 @@ Both clocks **pause** when the ticket transitions into a status tagged `awaiting
 
 The dashboard gets a **SLA — Month to date** card: stat tiles for MTD response/resolve breach counts, currently-breached count (clickable to a filtered ticket list), open-with-SLA-clock count, plus a per-project breakdown table when MTD breaches exist. Admin / Manager see "All projects"; Submitter / Viewer see only their `project_members` rows. Empty-state collapses to a single line.
 
+### Escalation chains
+
+Per-priority + per-project step chains that fire on the four SLA triggers (`warning_response`, `warning_resolve`, `breach_response`, `breach_resolve`). Configured at **Admin → Escalation policies**. Each step carries a non-empty `actions[]` array — multiple actions on the same step fan out together. Action kinds:
+
+- `notify_assignee` — DM the current owner. NULL-safe (no-op if unassigned).
+- `notify_user` — DM a specific user.
+- `notify_role` — DM every active user in a role (`Admin`/`Manager`/`Tech`) **scoped to the triggering ticket's project** — Org-Wide steps don't broadcast across every project.
+- `reassign_user` — set `assigned_to` to a specific user.
+- `reassign_role` — set `assigned_to` to the first active agent in a role on the ticket's project (`is_agent = TRUE`).
+- `reassign_agent` — defer to the project's assignment policy (round-robin / lowest-case-load), excluding the current assignee. Falls back to any other active project agent if no policy or the pool is empty.
+- `bump_priority` — raise the ticket's urgency to surface it on boards / queues. `levels` (1–4) is how many tiers to escalate toward more urgent (P3 with `levels: 1` becomes P2). `floor` (1–5, default 1) is the most urgent tier the action is allowed to reach. Writes both `effective_priority` and `priority_override` so a later impact/urgency edit recomputes against the bumped tier instead of reverting it. Audit row recorded with action `priority_bump_escalation`.
+
+  *Cascade prevention:* the first time a bump fires on a ticket, `tickets.escalation_priority_snapshot` is locked to the original priority. The chain matcher uses `COALESCE(escalation_priority_snapshot, effective_priority, 3)` thereafter — a bumped P3 → P2 ticket still matches P3 chain rows, so it doesn't fall into P2's chain on the next tick. Per-step dedup (`escalation_steps_fired`) still prevents a single step from re-running. The snapshot is *not* cleared by admin re-priority; once a ticket has been escalated, its chain identity is its original tier.
+
+Matching is additive: an Org-Wide step (project_id NULL) and a project-scoped step both apply if both exist — this differs deliberately from `sla_policies` / `assignment_policies` (which pick one or the other). The `priority_op` column on steps (`=`, `<`, `>`, `<=`, `>=`) lets one row cover a range of priorities. `delay_minutes` is the grace period after the trigger timestamp before the step fires.
+
 ### Other ticket admin tools
 
 - **Submit on behalf**: Admin/Manager can pick a different submitter at creation time, or change the submitter on an existing ticket.
