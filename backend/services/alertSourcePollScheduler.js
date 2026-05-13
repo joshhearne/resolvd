@@ -47,7 +47,47 @@ async function tickOnce() {
       results.push({ id: source.id, ok: false, error: err.message });
     }
   }
+  // Software auto-sync sweep: each tick picks up to 2 computer-type
+  // assets per inventory-enabled source whose software list is stale
+  // (NULL or > 7 days). Spread across many ticks so a 30s tick window
+  // doesn't hammer the upstream API. Daily-ish coverage per asset
+  // emerges naturally from poll_interval_minutes × ticks.
+  await sweepStaleSoftware().catch((err) => console.error('software sweep error:', err.message));
   return results;
+}
+
+const SOFTWARE_STALE_DAYS = 7;
+const SOFTWARE_PER_TICK_PER_SOURCE = 2;
+const COMPUTER_TYPE_SLUGS = ['workstation', 'server', 'laptop'];
+
+async function sweepStaleSoftware() {
+  // Find inventory-enabled Action1 sources first; for each, grab a
+  // few stale computer-type assets and sync them. One sync per asset
+  // costs an OAuth + paged GET — acceptable load when capped per tick.
+  const inv = await pool.query(`
+    SELECT id FROM external_alert_source
+     WHERE enabled = TRUE AND preset = 'action1' AND affect_inventory = TRUE
+  `);
+  if (!inv.rows.length) return;
+  const action1Software = require('./action1Software');
+  for (const src of inv.rows) {
+    const stale = await pool.query(
+      `SELECT a.id FROM assets a
+         JOIN asset_types at ON at.id = a.asset_type_id
+        WHERE a.source_alert_source_id = $1
+          AND at.slug = ANY($2::text[])
+          AND (a.last_software_sync_at IS NULL
+               OR a.last_software_sync_at < NOW() - INTERVAL '${SOFTWARE_STALE_DAYS} days')
+        ORDER BY a.last_software_sync_at NULLS FIRST, a.id
+        LIMIT $3`,
+      [src.id, COMPUTER_TYPE_SLUGS, SOFTWARE_PER_TICK_PER_SOURCE]
+    );
+    for (const row of stale.rows) {
+      await action1Software.syncSoftwareForAsset(row.id).catch((err) =>
+        console.error(`auto software sync asset ${row.id}:`, err.message)
+      );
+    }
+  }
 }
 
 let _interval = null;
