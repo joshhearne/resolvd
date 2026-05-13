@@ -81,7 +81,7 @@ router.get('/', requireAuth, async (req, res) => {
 
 // GET /api/assets/:id — single asset incl. raw_data + linked user
 // details + tickets[]. Tickets decrypted via the standard helper.
-router.get('/:id', requireAuth, async (req, res) => {
+router.get('/:id(\\d+)', requireAuth, async (req, res) => {
   try {
     const r = await pool.query(
       `SELECT a.*, u.display_name AS linked_user_name, u.email AS linked_user_email,
@@ -194,7 +194,7 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (re
 // PATCH /api/assets/:id — manual assets get the full editable set,
 // RMM-managed assets keep the narrow override set (sync clobbers
 // structural fields on every pull anyway).
-router.patch('/:id', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+router.patch('/:id(\\d+)', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const id = Number(req.params.id);
     const existing = await pool.query(`SELECT source_system FROM assets WHERE id = $1`, [id]);
@@ -237,7 +237,7 @@ router.patch('/:id', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async
 // DELETE /api/assets/:id — only manual assets are deletable; RMM-
 // managed ones should disappear via their source's lifecycle. Tickets
 // linked to a deleted asset get asset_id = NULL (FK ON DELETE SET NULL).
-router.delete('/:id', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+router.delete('/:id(\\d+)', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
     const id = Number(req.params.id);
     const r = await pool.query(`SELECT source_system FROM assets WHERE id = $1`, [id]);
@@ -320,7 +320,7 @@ router.get('/export.csv', requireAuth, async (req, res) => {
 
 // GET /api/assets/:id/software — installed software for the asset.
 // Supports ?q= text filter on name / vendor for the typeahead.
-router.get('/:id/software', requireAuth, async (req, res) => {
+router.get('/:id(\\d+)/software', requireAuth, async (req, res) => {
   try {
     const id = Number(req.params.id);
     const q = (req.query.q || '').trim().toLowerCase();
@@ -346,7 +346,7 @@ router.get('/:id/software', requireAuth, async (req, res) => {
 
 // POST /api/assets/:id/sync-software — on-demand pull from the asset's
 // upstream RMM source.
-router.post('/:id/sync-software', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+router.post('/:id(\\d+)/sync-software', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const { syncSoftwareForAsset } = require('../services/action1Software');
     const result = await syncSoftwareForAsset(Number(req.params.id));
