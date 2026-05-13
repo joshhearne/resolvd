@@ -26,7 +26,7 @@ const ACTION_KINDS = [
   { value: "notify_assignee", label: "Notify assignee" },
   { value: "notify_user", label: "Notify user" },
   { value: "notify_role", label: "Notify role" },
-  { value: "reassign_agent", label: "Reassign to other agent" },
+  { value: "reassign_agent", label: "Reassign via assignment policy" },
   { value: "reassign_user", label: "Reassign to user" },
   { value: "reassign_role", label: "Reassign to role" },
 ];
@@ -48,7 +48,7 @@ function actionSummary(a) {
   if (a.kind === "notify_assignee") return "Notify assignee";
   if (a.kind === "notify_user") return `Notify user #${a.target_user_id ?? "?"}`;
   if (a.kind === "notify_role") return `Notify ${a.target_role ?? "?"}`;
-  if (a.kind === "reassign_agent") return "Reassign → other project agent";
+  if (a.kind === "reassign_agent") return "Reassign → via assignment policy";
   if (a.kind === "reassign_user") return `Reassign → user #${a.target_user_id ?? "?"}`;
   if (a.kind === "reassign_role") return `Reassign → first ${a.target_role ?? "?"}`;
   return a.kind;
@@ -340,6 +340,9 @@ export default function AdminEscalationPolicies() {
           same firing. <b>Role targets</b> (Notify role / Reassign role)
           always resolve to <i>the triggering ticket's</i> project
           members — Org-Wide steps don't broadcast across every project.
+          {" "}<b>Reassign via assignment policy</b> defers to the
+          project's auto-assignment policy (round-robin or
+          lowest-case-load), skipping the current assignee.
         </p>
 
         <div className="border border-border rounded p-3 mb-4 bg-surface-2/40">
