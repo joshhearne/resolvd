@@ -1141,6 +1141,131 @@ async function initSchema() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_assets_linked_user ON assets(linked_user_id) WHERE linked_user_id IS NOT NULL`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_assets_company ON assets(company_id) WHERE company_id IS NOT NULL`);
 
+    // Asset types — drives which fields apply per asset. Seeded with a
+    // handful of common kinds (workstation, server, printer, monitor,
+    // voip phone, etc.). is_system marks the shipped defaults so the
+    // UI can prevent accidental deletion. Admin can add custom types
+    // for anything else (door reader, sensor, signage display, etc.).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS asset_types (
+        id SERIAL PRIMARY KEY,
+        slug TEXT NOT NULL UNIQUE,
+        label TEXT NOT NULL,
+        icon TEXT,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        is_system BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    // Per-type field list. Each row says "this builtin column on
+    // assets applies to this type". Required + sort_order control
+    // form rendering + validation. Phase 1B-2 keeps this to builtin
+    // columns only; custom-field-defs continue to apply globally
+    // (per asset entity, not per type). Per-type custom slots can
+    // come later if real usage demands.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS asset_type_fields (
+        id SERIAL PRIMARY KEY,
+        type_id INTEGER NOT NULL REFERENCES asset_types(id) ON DELETE CASCADE,
+        builtin_key TEXT NOT NULL,
+        required BOOLEAN NOT NULL DEFAULT FALSE,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(type_id, builtin_key)
+      )
+    `);
+
+    await client.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS asset_type_id INTEGER REFERENCES asset_types(id) ON DELETE SET NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_assets_type ON assets(asset_type_id) WHERE asset_type_id IS NOT NULL`);
+
+    // Seed default types (idempotent via slug UNIQUE). Order matches
+    // sort_order so the picker has a sensible default ordering.
+    // Each type's field list is seeded right after.
+    const DEFAULT_TYPES = [
+      { slug: 'workstation', label: 'Workstation', sort: 10, fields: [
+        ['hostname', true], ['serial', false], ['mac', false], ['ip_address', false],
+        ['manufacturer', false], ['model', false], ['os', false], ['os_version', false],
+        ['cpu', false], ['ram_bytes', false], ['storage_bytes', false],
+      ]},
+      { slug: 'laptop', label: 'Laptop', sort: 20, fields: [
+        ['hostname', true], ['serial', false], ['mac', false], ['ip_address', false],
+        ['manufacturer', false], ['model', false], ['os', false], ['os_version', false],
+        ['cpu', false], ['ram_bytes', false], ['storage_bytes', false],
+      ]},
+      { slug: 'server', label: 'Server', sort: 30, fields: [
+        ['hostname', true], ['serial', false], ['mac', false], ['ip_address', false],
+        ['manufacturer', false], ['model', false], ['os', false], ['os_version', false],
+        ['cpu', false], ['ram_bytes', false], ['storage_bytes', false],
+      ]},
+      { slug: 'printer', label: 'Printer', sort: 40, fields: [
+        ['hostname', false], ['serial', false], ['manufacturer', false],
+        ['model', false], ['ip_address', false], ['mac', false],
+      ]},
+      { slug: 'monitor', label: 'Monitor', sort: 50, fields: [
+        ['serial', false], ['manufacturer', false], ['model', false],
+      ]},
+      { slug: 'voip_phone', label: 'VoIP phone', sort: 60, fields: [
+        ['hostname', false], ['serial', false], ['manufacturer', false],
+        ['model', false], ['ip_address', false], ['mac', false],
+      ]},
+      { slug: 'network_switch', label: 'Network switch', sort: 70, fields: [
+        ['hostname', false], ['serial', false], ['manufacturer', false],
+        ['model', false], ['ip_address', false], ['mac', false],
+      ]},
+      { slug: 'wireless_ap', label: 'Wireless AP', sort: 80, fields: [
+        ['hostname', false], ['serial', false], ['manufacturer', false],
+        ['model', false], ['ip_address', false], ['mac', false],
+      ]},
+      { slug: 'mobile', label: 'Mobile device', sort: 90, fields: [
+        ['serial', false], ['manufacturer', false], ['model', false],
+      ]},
+      { slug: 'ups', label: 'UPS', sort: 100, fields: [
+        ['hostname', false], ['serial', false], ['manufacturer', false],
+        ['model', false], ['ip_address', false], ['mac', false],
+      ]},
+      { slug: 'nvr_dvr', label: 'NVR / DVR', sort: 110, fields: [
+        ['hostname', false], ['serial', false], ['manufacturer', false],
+        ['model', false], ['ip_address', false], ['mac', false],
+      ]},
+      { slug: 'other', label: 'Other', sort: 999, fields: [
+        ['hostname', false], ['serial', false], ['mac', false], ['ip_address', false],
+        ['manufacturer', false], ['model', false], ['os', false], ['os_version', false],
+        ['cpu', false], ['ram_bytes', false], ['storage_bytes', false],
+      ]},
+    ];
+    for (const t of DEFAULT_TYPES) {
+      const ins = await client.query(
+        `INSERT INTO asset_types (slug, label, sort_order, is_system)
+         VALUES ($1, $2, $3, TRUE)
+         ON CONFLICT (slug) DO NOTHING
+         RETURNING id`,
+        [t.slug, t.label, t.sort]
+      );
+      let typeId = ins.rows[0]?.id;
+      if (!typeId) {
+        const r = await client.query(`SELECT id FROM asset_types WHERE slug = $1`, [t.slug]);
+        typeId = r.rows[0]?.id;
+      }
+      if (!typeId) continue;
+      for (let i = 0; i < t.fields.length; i++) {
+        const [key, required] = t.fields[i];
+        await client.query(
+          `INSERT INTO asset_type_fields (type_id, builtin_key, required, sort_order)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (type_id, builtin_key) DO NOTHING`,
+          [typeId, key, required, i]
+        );
+      }
+    }
+    // Stamp existing Action1-sourced assets with the Workstation type
+    // so the inventory list shows a sane default. New Action1 syncs
+    // pick it up via the resolver in services/action1Poll.js.
+    await client.query(`
+      UPDATE assets SET asset_type_id = (SELECT id FROM asset_types WHERE slug = 'workstation')
+       WHERE asset_type_id IS NULL AND source_system = 'action1'
+    `);
+
     // Custom field definitions. entity_type lets one table cover assets,
     // tickets, companies, etc. as the system grows. slug is a stable
     // machine-readable handle (lowercase, no spaces); label is the

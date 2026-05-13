@@ -311,6 +311,10 @@ async function upsertAssets(sourceId, sourceSystem, endpoints, attributeMap = {}
   // last poll.
   const upnMatch = require('./upnMatch');
   const userIndex = await upnMatch.buildIndex(pool);
+  // Look up the Workstation type id once. New Action1 assets default
+  // to that; admin can re-classify in the UI per device.
+  const wsType = await pool.query(`SELECT id FROM asset_types WHERE slug = 'workstation'`);
+  const workstationTypeId = wsType.rows[0]?.id || null;
   // Cache org-name → company_id lookups so we don't re-query for every
   // endpoint in the same org.
   const companyCache = new Map();
@@ -349,18 +353,20 @@ async function upsertAssets(sourceId, sourceSystem, endpoints, attributeMap = {}
     }
     if (!companyId) companyId = await resolveCompany(ep._org_name);
     mapped.company_id = companyId;
+    mapped.asset_type_id = workstationTypeId;
     try {
       const inserted = await pool.query(
         `INSERT INTO assets
           (source_system, source_external_id, source_alert_source_id,
            hostname, serial, mac, manufacturer, model, os, os_version,
            cpu, ram_bytes, storage_bytes, ip_address, organization,
-           last_seen_at, raw_data, linked_user_id, company_id, updated_at)
+           last_seen_at, raw_data, linked_user_id, company_id,
+           asset_type_id, updated_at)
          VALUES
           ($1, $2, $3,
            $4, $5, $6, $7, $8, $9, $10,
            $11, $12, $13, $14, $15,
-           $16, $17::jsonb, $18, $19, NOW())
+           $16, $17::jsonb, $18, $19, $20, NOW())
          ON CONFLICT (source_system, source_external_id) DO UPDATE SET
            source_alert_source_id = EXCLUDED.source_alert_source_id,
            hostname = EXCLUDED.hostname,
@@ -379,6 +385,7 @@ async function upsertAssets(sourceId, sourceSystem, endpoints, attributeMap = {}
            raw_data = EXCLUDED.raw_data,
            linked_user_id = COALESCE(EXCLUDED.linked_user_id, assets.linked_user_id),
            company_id = COALESCE(EXCLUDED.company_id, assets.company_id),
+           asset_type_id = COALESCE(assets.asset_type_id, EXCLUDED.asset_type_id),
            updated_at = NOW()
          RETURNING id`,
         [
@@ -389,6 +396,7 @@ async function upsertAssets(sourceId, sourceSystem, endpoints, attributeMap = {}
           mapped.ip_address, mapped.organization,
           mapped.last_seen_at, JSON.stringify(ep),
           mapped.linked_user_id || null, mapped.company_id || null,
+          mapped.asset_type_id || null,
         ]
       );
       const assetId = inserted.rows[0]?.id;

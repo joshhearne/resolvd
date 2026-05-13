@@ -27,6 +27,11 @@ export default function Inventory() {
   const [selected, setSelected] = useState(null);
   const [detail, setDetail] = useState(null);
   const [creating, setCreating] = useState(false);
+  const [types, setTypes] = useState([]);
+
+  useEffect(() => {
+    api.get("/api/asset-types").then(setTypes).catch(() => setTypes([]));
+  }, []);
 
   async function load(searchQ = q) {
     setLoading(true);
@@ -91,6 +96,7 @@ export default function Inventory() {
       </div>
       {creating && (
         <NewAssetForm
+          types={types}
           onCancel={() => setCreating(false)}
           onCreated={(id) => {
             setCreating(false);
@@ -161,6 +167,7 @@ export default function Inventory() {
           <section className="flex-1 min-w-0 lg:max-w-md">
             <AssetDetail
               detail={detail}
+              types={types}
               onBack={() => setSelected(null)}
               onReload={async () => {
                 if (selected) {
@@ -176,7 +183,7 @@ export default function Inventory() {
   );
 }
 
-function AssetDetail({ detail, onBack, onReload }) {
+function AssetDetail({ detail, types, onBack, onReload }) {
   const [editing, setEditing] = useState(false);
   const [edits, setEdits] = useState({});
   const [saving, setSaving] = useState(false);
@@ -230,6 +237,7 @@ function AssetDetail({ detail, onBack, onReload }) {
     );
   }
   const rows = [
+    ["Type", detail.asset_type_label || null],
     ["Hostname", detail.hostname],
     ["Serial", detail.serial],
     ["MAC", detail.mac],
@@ -285,7 +293,7 @@ function AssetDetail({ detail, onBack, onReload }) {
         </div>
       </div>
       {editing ? (
-        <AssetEditForm detail={detail} edits={edits} setField={setField} isManual={isManual} />
+        <AssetEditForm detail={detail} edits={edits} setField={setField} isManual={isManual} types={types} />
       ) : (
         <dl className="grid grid-cols-[7rem_1fr] gap-y-1 text-xs">
           {rows.map(([k, v]) => (
@@ -437,64 +445,114 @@ function CustomFieldsPanel({ assetId }) {
   );
 }
 
-const MANUAL_FIELDS = [
-  { key: "hostname", label: "Hostname", type: "text", required: true },
-  { key: "serial", label: "Serial", type: "text" },
-  { key: "mac", label: "MAC", type: "text" },
-  { key: "ip_address", label: "IP", type: "text" },
-  { key: "manufacturer", label: "Manufacturer", type: "text" },
-  { key: "model", label: "Model", type: "text" },
-  { key: "os", label: "OS", type: "text" },
-  { key: "os_version", label: "OS version", type: "text" },
-  { key: "cpu", label: "CPU", type: "text" },
-  { key: "organization", label: "Organization", type: "text" },
-];
+const FIELD_LABELS = {
+  hostname: "Hostname",
+  serial: "Serial",
+  mac: "MAC",
+  ip_address: "IP",
+  manufacturer: "Manufacturer",
+  model: "Model",
+  os: "OS",
+  os_version: "OS version",
+  cpu: "CPU",
+  ram_bytes: "RAM (bytes)",
+  storage_bytes: "Storage (bytes)",
+  organization: "Organization",
+};
 
-function AssetEditForm({ detail, edits, setField, isManual }) {
+function AssetEditForm({ detail, edits, setField, isManual, types }) {
   const cur = (k) => (Object.prototype.hasOwnProperty.call(edits, k) ? edits[k] : (detail[k] ?? ""));
+  const typeId = Object.prototype.hasOwnProperty.call(edits, "asset_type_id")
+    ? edits.asset_type_id
+    : detail.asset_type_id;
+  const activeType = types.find((t) => t.id === Number(typeId));
+  const fieldList = activeType?.fields || [];
+
+  // Type picker is always editable, even on RMM-managed assets — admin
+  // owns classification regardless of source.
+  const typePicker = (
+    <>
+      <dt className="text-fg-muted">Type</dt>
+      <dd>
+        <select
+          value={typeId || ""}
+          onChange={(e) => setField("asset_type_id", e.target.value ? Number(e.target.value) : null)}
+          className="w-full border border-border-strong rounded px-2 py-1 text-xs"
+        >
+          <option value="">— pick type —</option>
+          {types.map((t) => (
+            <option key={t.id} value={t.id}>{t.label}</option>
+          ))}
+        </select>
+      </dd>
+    </>
+  );
 
   if (!isManual) {
     return (
-      <div className="text-xs text-fg-muted italic">
-        Structural fields on RMM-managed assets are read-only (sync overwrites
-        them on each pull). Edit linked user / company on the asset's source
-        in Admin → Alert sources, or manually below.
-      </div>
+      <dl className="grid grid-cols-[7rem_1fr] gap-y-1.5 text-xs items-center">
+        {typePicker}
+        <dt className="text-fg-muted">Note</dt>
+        <dd className="text-fg-muted italic text-[11px]">
+          Structural fields on RMM-managed assets sync from the source on
+          every pull — only type, linked user, and company are mutable here.
+          Edit hostname / serial / etc. in the source system or change the
+          source's mapping under Admin → Alert sources.
+        </dd>
+      </dl>
     );
   }
+
   return (
     <dl className="grid grid-cols-[7rem_1fr] gap-y-1.5 text-xs items-center">
-      {MANUAL_FIELDS.map(({ key, label, required }) => (
-        <React.Fragment key={key}>
+      {typePicker}
+      {fieldList.map((f) => (
+        <React.Fragment key={f.builtin_key}>
           <dt className="text-fg-muted">
-            {label}{required ? <span className="text-red-500 ml-0.5">*</span> : null}
+            {FIELD_LABELS[f.builtin_key] || f.builtin_key}
+            {f.required ? <span className="text-red-500 ml-0.5">*</span> : null}
           </dt>
           <dd>
             <input
-              value={cur(key) || ""}
-              onChange={(e) => setField(key, e.target.value)}
+              value={cur(f.builtin_key) || ""}
+              onChange={(e) => setField(f.builtin_key, e.target.value)}
               className="w-full border border-border-strong rounded px-2 py-1 text-xs"
             />
           </dd>
         </React.Fragment>
       ))}
+      {fieldList.length === 0 && (
+        <>
+          <dt className="text-fg-muted italic">No fields</dt>
+          <dd className="text-fg-muted italic text-[11px]">Pick a type to see fields.</dd>
+        </>
+      )}
     </dl>
   );
 }
 
-function NewAssetForm({ onCancel, onCreated }) {
+function NewAssetForm({ onCancel, onCreated, types }) {
   const [form, setForm] = useState({});
+  const [typeId, setTypeId] = useState("");
   const [saving, setSaving] = useState(false);
+
+  const activeType = types.find((t) => t.id === Number(typeId));
+  const fieldList = activeType?.fields || [];
 
   async function submit(e) {
     e.preventDefault();
-    if (!form.hostname?.trim()) {
-      toast.error("Hostname required");
+    // Floor: at least one identifying field (server enforces too).
+    if (![form.hostname, form.serial, form.mac].some((v) => typeof v === "string" && v.trim())) {
+      toast.error("At least one of hostname, serial, MAC required");
+      return;
+    }
+    if (!typeId) {
+      toast.error("Pick an asset type");
       return;
     }
     setSaving(true);
     try {
-      const r = await api.post("/api/assets", form);
+      const r = await api.post("/api/assets", { ...form, asset_type_id: Number(typeId) });
       toast.success("Asset created");
       onCreated(r.id);
     } catch (err) {
@@ -516,26 +574,44 @@ function NewAssetForm({ onCancel, onCreated }) {
       </div>
       <p className="text-xs text-fg-muted">
         For assets not in any RMM (printer, deskphone, modem, NVR, etc.).
-        Hostname is the only required field. Custom fields can be filled in
-        after create.
+        Pick the type first — the form below adapts to the fields that
+        type uses. At least one of hostname / serial / MAC is required
+        (use whichever identifier makes sense for the device).
       </p>
-      <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-        {MANUAL_FIELDS.map(({ key, label, required }) => (
-          <label key={key} className="text-xs text-fg-muted flex flex-col gap-1">
-            {label}{required ? <span className="text-red-500 ml-0.5">*</span> : null}
-            <input
-              value={form[key] || ""}
-              onChange={(e) => setForm((f) => ({ ...f, [key]: e.target.value }))}
-              className="bg-surface-2 border border-border rounded px-2 py-1 text-sm"
-              required={required}
-            />
-          </label>
-        ))}
-      </div>
+      <label className="text-xs text-fg-muted flex flex-col gap-1 max-w-sm">
+        Asset type <span className="text-red-500">*</span>
+        <select
+          value={typeId}
+          onChange={(e) => setTypeId(e.target.value)}
+          className="bg-surface-2 border border-border rounded px-2 py-1 text-sm"
+          required
+        >
+          <option value="">— pick type —</option>
+          {types.map((t) => (
+            <option key={t.id} value={t.id}>{t.label}</option>
+          ))}
+        </select>
+      </label>
+      {fieldList.length > 0 && (
+        <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+          {fieldList.map((f) => (
+            <label key={f.builtin_key} className="text-xs text-fg-muted flex flex-col gap-1">
+              {FIELD_LABELS[f.builtin_key] || f.builtin_key}
+              {f.required ? <span className="text-red-500 ml-0.5">*</span> : null}
+              <input
+                value={form[f.builtin_key] || ""}
+                onChange={(e) => setForm((fm) => ({ ...fm, [f.builtin_key]: e.target.value }))}
+                className="bg-surface-2 border border-border rounded px-2 py-1 text-sm"
+                required={f.required}
+              />
+            </label>
+          ))}
+        </div>
+      )}
       <div className="flex justify-end gap-2">
         <button type="button" onClick={onCancel}
           className="btn btn-secondary btn-sm">Cancel</button>
-        <button type="submit" disabled={saving}
+        <button type="submit" disabled={saving || !typeId}
           className="btn btn-primary btn-sm disabled:opacity-50">
           {saving ? "Creating…" : "Create asset"}
         </button>
