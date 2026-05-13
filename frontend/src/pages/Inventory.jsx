@@ -328,6 +328,7 @@ function AssetDetail({ detail, types, onBack, onReload }) {
         </dl>
       )}
       <SecurityPostureSection detail={detail} />
+      <SoftwareSection detail={detail} onReload={onReload} />
       <CustomFieldsPanel assetId={detail.id} />
       {Array.isArray(detail.tickets) && detail.tickets.length > 0 && (
         <div className="border-t border-border pt-3 space-y-2">
@@ -695,6 +696,114 @@ function SecurityPostureSection({ detail }) {
           )}
         </dd>
       </dl>
+    </div>
+  );
+}
+
+const SOFTWARE_TYPES = new Set(['workstation', 'server', 'laptop']);
+
+function SoftwareSection({ detail, onReload }) {
+  const [items, setItems] = useState(null);
+  const [q, setQ] = useState("");
+  const [syncing, setSyncing] = useState(false);
+  const [expanded, setExpanded] = useState(false);
+
+  const eligible = SOFTWARE_TYPES.has(detail.asset_type_slug)
+    && detail.source_alert_source_id != null;
+
+  async function load(query = q) {
+    try {
+      const r = await api.get(
+        `/api/assets/${detail.id}/software${query ? `?q=${encodeURIComponent(query)}` : ""}`
+      );
+      setItems(r.items || []);
+    } catch (e) {
+      setItems([]);
+    }
+  }
+
+  useEffect(() => {
+    if (expanded && items == null) load("");
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [expanded]);
+
+  async function sync() {
+    setSyncing(true);
+    try {
+      const r = await api.post(`/api/assets/${detail.id}/sync-software`, {});
+      toast.success(`${r.upserted} packages synced`);
+      await load("");
+      if (onReload) await onReload();
+    } catch (e) {
+      toast.error(e.message || "Sync failed");
+    } finally {
+      setSyncing(false);
+    }
+  }
+
+  if (!eligible) return null;
+
+  return (
+    <div className="border-t border-border pt-3 space-y-2">
+      <div className="flex items-center justify-between">
+        <button
+          onClick={() => setExpanded((x) => !x)}
+          className="text-xs font-semibold text-fg-muted uppercase tracking-wider hover:text-fg flex items-center gap-1"
+        >
+          {expanded ? "▾" : "▸"} Software
+          {detail.last_software_sync_at && (
+            <span className="text-fg-dim normal-case tracking-normal font-normal ml-1">
+              · synced <HybridTime value={detail.last_software_sync_at} />
+            </span>
+          )}
+        </button>
+        <button
+          onClick={sync}
+          disabled={syncing}
+          className="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2 disabled:opacity-50"
+        >
+          {syncing ? "Syncing…" : detail.last_software_sync_at ? "Re-sync" : "Sync now"}
+        </button>
+      </div>
+      {expanded && (
+        <>
+          <input
+            type="text"
+            value={q}
+            onChange={(e) => { setQ(e.target.value); load(e.target.value); }}
+            placeholder="filter by name / vendor…"
+            className="w-full bg-surface-2 border border-border rounded px-2 py-1 text-xs"
+          />
+          {items == null ? (
+            <div className="text-xs text-fg-dim">Loading…</div>
+          ) : items.length === 0 ? (
+            <div className="text-xs text-fg-dim italic">
+              {detail.last_software_sync_at ? "No matches." : "No software synced yet — click Sync now."}
+            </div>
+          ) : (
+            <div className="max-h-80 overflow-y-auto border border-border rounded">
+              <table className="w-full text-xs">
+                <thead className="bg-surface-2 sticky top-0 text-fg-muted">
+                  <tr>
+                    <th className="text-left px-2 py-1 font-medium">Name</th>
+                    <th className="text-left px-2 py-1 font-medium">Version</th>
+                    <th className="text-left px-2 py-1 font-medium">Vendor</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-border">
+                  {items.map((s) => (
+                    <tr key={s.id}>
+                      <td className="px-2 py-1 font-medium text-fg break-all">{s.name}</td>
+                      <td className="px-2 py-1 text-fg-muted font-mono">{s.version || "—"}</td>
+                      <td className="px-2 py-1 text-fg-muted">{s.vendor || "—"}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            </div>
+          )}
+        </>
+      )}
     </div>
   );
 }

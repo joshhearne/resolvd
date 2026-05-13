@@ -1191,6 +1191,29 @@ async function initSchema() {
     await client.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS update_status TEXT`);
     await client.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS vulnerability_status TEXT`);
     await client.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS reboot_required BOOLEAN`);
+
+    // Installed software per asset. Sourced from the RMM's software
+    // inventory endpoint (Action1 today; others when they're wired).
+    // last_software_sync_at on the parent asset lets the UI show how
+    // fresh the list is + drives the on-demand "Sync now" button.
+    await client.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS last_software_sync_at TIMESTAMPTZ`);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS asset_software (
+        id SERIAL PRIMARY KEY,
+        asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        version TEXT,
+        vendor TEXT,
+        install_date TIMESTAMPTZ,
+        size_bytes BIGINT,
+        raw JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(asset_id, name, version)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_asset_software_asset ON asset_software(asset_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_asset_software_name ON asset_software(LOWER(name))`);
     // One-time backfill from raw_data for existing Action1 rows. Cheap
     // — single UPDATE, only touches rows where the columns are still
     // null. Subsequent syncs keep these fresh.
