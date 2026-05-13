@@ -5,6 +5,7 @@ import HybridTime from "../components/HybridTime";
 
 const PRESET_LABELS = {
   zabbix: "Zabbix",
+  action1: "Action1",
 };
 
 function CopyButton({ value, label = "Copy" }) {
@@ -103,11 +104,17 @@ export default function AdminAlertSources() {
   async function createSource(form) {
     try {
       const r = await api.post("/api/alert-sources", form);
-      setNewToken({ id: r.id, token: r.token });
+      // Action1 has no webhook channel, so the token is irrelevant — skip
+      // the "copy now" banner to avoid implying webhooks exist there.
+      if (form.preset !== "action1") {
+        setNewToken({ id: r.id, token: r.token });
+        toast.success("Source created — copy the token now");
+      } else {
+        toast.success("Source created — configure API credentials below");
+      }
       setShowCreate(false);
       await loadList();
       setSelectedId(r.id);
-      toast.success("Source created — copy the token now");
     } catch (e) {
       toast.error(e.message);
     }
@@ -381,6 +388,11 @@ function SourceDetail({ source, projects, presets, onBack, onPatch, onRotate, on
   const [sevText, setSevText] = useState(JSON.stringify(source.severity_map || {}, null, 2));
   const [apiUrl, setApiUrl] = useState(source.api_url || "");
   const [apiTokenInput, setApiTokenInput] = useState("");
+  const [apiClientId, setApiClientId] = useState(source.api_client_id || "");
+  const [pollInterval, setPollInterval] = useState(
+    source.poll_interval_minutes != null ? String(source.poll_interval_minutes) : "0"
+  );
+  const [affectInventory, setAffectInventory] = useState(!!source.affect_inventory);
   const [backfillOpen, setBackfillOpen] = useState(false);
   const [backfillBusy, setBackfillBusy] = useState(false);
   const [backfillResult, setBackfillResult] = useState(null);
@@ -395,6 +407,11 @@ function SourceDetail({ source, projects, presets, onBack, onPatch, onRotate, on
     setSevText(JSON.stringify(source.severity_map || {}, null, 2));
     setApiUrl(source.api_url || "");
     setApiTokenInput("");
+    setApiClientId(source.api_client_id || "");
+    setPollInterval(
+      source.poll_interval_minutes != null ? String(source.poll_interval_minutes) : "0"
+    );
+    setAffectInventory(!!source.affect_inventory);
     setBackfillResult(null);
   }, [source.id]);
 
@@ -416,6 +433,9 @@ function SourceDetail({ source, projects, presets, onBack, onPatch, onRotate, on
       enabled,
       severity_map: parsedSev,
       api_url: apiUrl.trim() || null,
+      api_client_id: apiClientId.trim() || null,
+      poll_interval_minutes: Math.max(0, Math.min(60, Number(pollInterval) || 0)),
+      affect_inventory: affectInventory,
     };
     // Only include api_token if the input has a value — empty string means
     // "leave alone". Set to null explicitly via the Clear button.
@@ -472,9 +492,11 @@ function SourceDetail({ source, projects, presets, onBack, onPatch, onRotate, on
           </div>
         </div>
         <div className="flex flex-wrap gap-1.5">
-          <button onClick={onRotate} className="btn btn-secondary btn-sm">
-            Rotate token
-          </button>
+          {source.preset !== "action1" && (
+            <button onClick={onRotate} className="btn btn-secondary btn-sm">
+              Rotate token
+            </button>
+          )}
           <button onClick={onDelete} className="text-xs text-red-600 hover:underline px-2 py-1">
             Delete
           </button>
@@ -547,46 +569,82 @@ function SourceDetail({ source, projects, presets, onBack, onPatch, onRotate, on
         </button>
       </div>
 
-      <div className="space-y-2 pt-3 border-t border-border">
-        <div className="text-sm font-medium text-fg">Webhook URL template</div>
-        <p className="text-xs text-fg-muted">
-          Append the source token to this URL. Token is shown only once — use
-          "Rotate token" if you've lost it.
-        </p>
-        <div className="flex items-center gap-2">
-          <code className="flex-1 text-xs bg-surface-2 rounded border border-border px-2 py-1.5 font-mono break-all">
-            {webhookUrlBase}/&lt;your-token&gt;
-          </code>
-          <CopyButton value={`${webhookUrlBase}/<your-token>`} />
-        </div>
-      </div>
-
-      {source.preset === "zabbix" && (
-        <div className="space-y-3 pt-3 border-t border-border">
-          <div className="text-sm font-medium text-fg">API connection (optional)</div>
+      {source.preset !== "action1" && (
+        <div className="space-y-2 pt-3 border-t border-border">
+          <div className="text-sm font-medium text-fg">Webhook URL template</div>
           <p className="text-xs text-fg-muted">
-            Lets Resolvd pull from Zabbix (currently: backfill open problems).
-            Use a dedicated API token, scoped read-only where possible. Token
-            stored encrypted under the workspace key.
+            Append the source token to this URL. Token is shown only once — use
+            "Rotate token" if you've lost it.
+          </p>
+          <div className="flex items-center gap-2">
+            <code className="flex-1 text-xs bg-surface-2 rounded border border-border px-2 py-1.5 font-mono break-all">
+              {webhookUrlBase}/&lt;your-token&gt;
+            </code>
+            <CopyButton value={`${webhookUrlBase}/<your-token>`} />
+          </div>
+        </div>
+      )}
+
+      {(source.preset === "zabbix" || source.preset === "action1") && (
+        <div className="space-y-3 pt-3 border-t border-border">
+          <div className="text-sm font-medium text-fg">
+            API connection {source.preset === "action1" ? "(pull alerts from Action1)" : "(optional)"}
+          </div>
+          <p className="text-xs text-fg-muted">
+            {source.preset === "action1" ? (
+              <>
+                Action1 has no outbound webhook channel and no alerts REST
+                endpoint — alerts in their UI are email-only. What's available
+                via API is <b>policy execution results</b> per endpoint, and
+                failed results are what Resolvd ingests as tickets. Create an
+                API client in Action1 (Settings → API → New) with role{" "}
+                <b>Enterprise Viewer</b> (or Manager if you want remediation
+                actions later). Paste only the base URL below
+                (e.g. <code>https://app.action1.com</code>), <b>not</b> the
+                full curl example. Client Secret stored encrypted under the
+                workspace key.
+              </>
+            ) : (
+              <>
+                Lets Resolvd pull from Zabbix (currently: backfill open problems).
+                Use a dedicated API token, scoped read-only where possible. Token
+                stored encrypted under the workspace key.
+              </>
+            )}
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <label className="text-xs text-fg-muted flex flex-col gap-1">
-              API URL
+              {source.preset === "action1" ? "API base URL" : "API URL"}
               <input
                 value={apiUrl}
                 onChange={(e) => setApiUrl(e.target.value)}
-                placeholder="https://zabbix.example.com/api_jsonrpc.php"
+                placeholder={
+                  source.preset === "action1"
+                    ? "https://app.action1.com"
+                    : "https://zabbix.example.com/api_jsonrpc.php"
+                }
                 className="bg-surface-2 border border-border rounded px-2 py-1 text-sm font-mono"
               />
             </label>
+            {source.preset === "action1" && (
+              <label className="text-xs text-fg-muted flex flex-col gap-1">
+                Client ID
+                <input
+                  value={apiClientId}
+                  onChange={(e) => setApiClientId(e.target.value)}
+                  placeholder="from Action1 → API client"
+                  className="bg-surface-2 border border-border rounded px-2 py-1 text-sm font-mono"
+                />
+              </label>
+            )}
             <label className="text-xs text-fg-muted flex flex-col gap-1">
-              API token
+              {source.preset === "action1" ? "Client Secret" : "API token"}
               <div className="flex items-center gap-1.5">
                 <input
                   type="password"
                   value={apiTokenInput}
                   onChange={(e) => setApiTokenInput(e.target.value)}
-                  placeholder={source.api_token_set ? "•••••• (set)" : "paste token"}
+                  placeholder={source.api_token_set ? "•••••• (set)" : "paste secret"}
                   className="flex-1 bg-surface-2 border border-border rounded px-2 py-1 text-sm font-mono"
                 />
                 {source.api_token_set && (
@@ -601,6 +659,40 @@ function SourceDetail({ source, projects, presets, onBack, onPatch, onRotate, on
               </div>
             </label>
           </div>
+          {source.preset === "action1" && (
+            <label className="text-xs text-fg-muted inline-flex items-center gap-2">
+              <input
+                type="checkbox"
+                checked={affectInventory}
+                onChange={(e) => setAffectInventory(e.target.checked)}
+              />
+              Feed inventory module (sync managed endpoints as assets on each poll)
+            </label>
+          )}
+
+          {source.preset === "action1" && (
+            <label className="text-xs text-fg-muted flex flex-col gap-1 max-w-xs">
+              Poll interval (minutes)
+              <input
+                type="number"
+                min="0"
+                max="60"
+                value={pollInterval}
+                onChange={(e) => setPollInterval(e.target.value)}
+                className="bg-surface-2 border border-border rounded px-2 py-1 text-sm font-mono w-24"
+              />
+              <span className="text-[11px] text-fg-dim">
+                0 disables auto-poll. 1–60 min cadence. The "Pull now" button
+                still works regardless.
+              </span>
+              {source.last_poll_at && (
+                <span className="text-[11px] text-fg-dim">
+                  Last poll: <HybridTime value={source.last_poll_at} />
+                </span>
+              )}
+            </label>
+          )}
+
           {source.api_last_error && (
             <div className="text-xs text-red-600 dark:text-red-400">
               Last API error: {source.api_last_error}
@@ -614,7 +706,9 @@ function SourceDetail({ source, projects, presets, onBack, onPatch, onRotate, on
 
           <div className="border-t border-border pt-3">
             <div className="flex items-center justify-between">
-              <div className="text-sm font-medium text-fg">Backfill open problems</div>
+              <div className="text-sm font-medium text-fg">
+                {source.preset === "action1" ? "Pull failed policy results now" : "Backfill open problems"}
+              </div>
               <button
                 type="button"
                 onClick={() => setBackfillOpen((v) => !v)}
@@ -626,39 +720,101 @@ function SourceDetail({ source, projects, presets, onBack, onPatch, onRotate, on
             {backfillOpen && (
               <div className="mt-2 space-y-2">
                 <p className="text-xs text-fg-muted">
-                  Pulls currently-open problems from Zabbix and ingests each
-                  via the same pipeline as a live webhook fire. Already-seen
-                  events skip cleanly. Save your API URL + token first.
+                  {source.preset === "action1" ? (
+                    <>
+                      Pulls failed policy results across every org the API
+                      client can see and creates one ticket per failure.
+                      Dedup keyed on policy+endpoint+run-timestamp, so re-runs
+                      spawn fresh tickets but a single failed run only opens
+                      one ticket. Save the API URL, Client ID, and Client
+                      Secret first.
+                    </>
+                  ) : (
+                    <>
+                      Pulls currently-open problems from Zabbix and ingests each
+                      via the same pipeline as a live webhook fire. Already-seen
+                      events skip cleanly. Save your API URL + token first.
+                    </>
+                  )}
                 </p>
                 <div className="flex items-end gap-2 flex-wrap">
-                  <label className="text-xs text-fg-muted flex flex-col gap-1">
-                    Host group filter (optional)
-                    <input
-                      value={backfillHostGroup}
-                      onChange={(e) => setBackfillHostGroup(e.target.value)}
-                      placeholder="Printers"
-                      className="bg-surface-2 border border-border rounded px-2 py-1 text-sm w-56"
-                    />
-                  </label>
+                  {source.preset === "zabbix" && (
+                    <label className="text-xs text-fg-muted flex flex-col gap-1">
+                      Host group filter (optional)
+                      <input
+                        value={backfillHostGroup}
+                        onChange={(e) => setBackfillHostGroup(e.target.value)}
+                        placeholder="Printers"
+                        className="bg-surface-2 border border-border rounded px-2 py-1 text-sm w-56"
+                      />
+                    </label>
+                  )}
                   <button
                     type="button"
                     onClick={runBackfill}
-                    disabled={backfillBusy || !source.api_token_set || !source.api_url}
+                    disabled={
+                      backfillBusy ||
+                      !source.api_token_set ||
+                      !source.api_url ||
+                      (source.preset === "action1" && !source.api_client_id)
+                    }
                     className="btn btn-primary btn-sm disabled:opacity-50"
-                    title={!source.api_token_set ? "Save an API token first" : ""}
+                    title={
+                      !source.api_token_set
+                        ? "Save credentials first"
+                        : source.preset === "action1" && !source.api_client_id
+                          ? "Save Client ID first"
+                          : ""
+                    }
                   >
-                    {backfillBusy ? "Running…" : "Run backfill"}
+                    {backfillBusy
+                      ? "Running…"
+                      : source.preset === "action1"
+                        ? "Pull now"
+                        : "Run backfill"}
                   </button>
                 </div>
                 {backfillResult && (
                   <div className="text-xs bg-surface-2 border border-border rounded p-2 space-y-0.5">
-                    <div>Fetched: {backfillResult.fetched}</div>
+                    {backfillResult.scan && (
+                      <>
+                        <div className="text-fg-muted">
+                          Walked: {backfillResult.scan.orgCount} org(s),{" "}
+                          {backfillResult.scan.policyCount} polic(ies),{" "}
+                          {backfillResult.scan.resultCount} endpoint result(s)
+                        </div>
+                        {backfillResult.scan.statusCounts &&
+                          Object.keys(backfillResult.scan.statusCounts).length > 0 && (
+                            <div className="text-fg-dim">
+                              Status breakdown:{" "}
+                              {Object.entries(backfillResult.scan.statusCounts)
+                                .map(([k, v]) => `${k}=${v}`)
+                                .join(", ")}
+                            </div>
+                          )}
+                      </>
+                    )}
+                    <div>Matched (failed): {backfillResult.fetched}</div>
                     <div className="text-emerald-700 dark:text-emerald-400">
                       Created: {backfillResult.created}
                     </div>
                     <div className="text-fg-muted">Skipped (already seen): {backfillResult.deduped}</div>
                     {backfillResult.failed > 0 && (
                       <div className="text-red-600">Failed: {backfillResult.failed}</div>
+                    )}
+                    {backfillResult.inventory && (
+                      <div className="pt-1 border-t border-border mt-1">
+                        <span className="text-fg-muted">Inventory: </span>
+                        {backfillResult.inventory.error ? (
+                          <span className="text-red-600">{backfillResult.inventory.error}</span>
+                        ) : (
+                          <span>
+                            {backfillResult.inventory.upserted} upserted,{" "}
+                            {backfillResult.inventory.skipped} skipped (
+                            {backfillResult.inventory.fetched} endpoints fetched)
+                          </span>
+                        )}
+                      </div>
                     )}
                   </div>
                 )}
@@ -681,6 +837,19 @@ function SourceDetail({ source, projects, presets, onBack, onPatch, onRotate, on
           <pre className="text-[11px] font-mono bg-surface-2 border border-border rounded p-2 overflow-x-auto whitespace-pre">
 {zabbixSnippet(`${webhookUrlBase}/<your-token>`)}
           </pre>
+        </div>
+      )}
+
+      {source.preset === "action1" && (
+        <div className="space-y-2 pt-3 border-t border-border">
+          <div className="text-sm font-medium text-fg">Severity mapping</div>
+          <p className="text-xs text-fg-muted">
+            Failed policy results come in as <code>High</code> by default. Add
+            other Action1 severity strings (<code>Critical</code>,{" "}
+            <code>Warning</code>, <code>Medium</code>, <code>Low</code>,{" "}
+            <code>Information</code>) to the map above to override priority
+            per rule.
+          </p>
         </div>
       )}
 

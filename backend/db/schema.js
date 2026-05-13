@@ -1050,8 +1050,55 @@ async function initSchema() {
     await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS api_url TEXT`);
     await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS api_token TEXT`);
     await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS api_token_enc BYTEA`);
+    // api_client_id holds the OAuth2 client identifier for presets that use
+    // client_credentials (Action1). Not secret — pairs with api_token (which
+    // holds the client_secret under encryption).
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS api_client_id TEXT`);
     await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS api_last_ok_at TIMESTAMPTZ`);
     await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS api_last_error TEXT`);
+    // Periodic poll (Action1: no webhook channel, so the scheduler pulls
+    // policy results on this cadence). 0 = disabled, else minutes between
+    // ticks. last_poll_at marks the most recent attempt (success or fail).
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS poll_interval_minutes INTEGER NOT NULL DEFAULT 0`);
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS last_poll_at TIMESTAMPTZ`);
+    // When enabled, the source also feeds the inventory module. Multiple
+    // sources can feed inventory simultaneously; phase 2 adds a priority
+    // list for dedup. For now the latest write wins per (source_system,
+    // source_external_id).
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS affect_inventory BOOLEAN NOT NULL DEFAULT FALSE`);
+
+    // Inventory module — one row per managed machine, scoped per source
+    // system. source_external_id is the RMM's stable id for the device
+    // (Action1 endpoint id, ConnectWise asset id, etc.). raw_data holds
+    // the upstream payload verbatim for fields we don't surface yet.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS assets (
+        id SERIAL PRIMARY KEY,
+        source_system TEXT NOT NULL,
+        source_external_id TEXT NOT NULL,
+        source_alert_source_id INTEGER REFERENCES external_alert_source(id) ON DELETE SET NULL,
+        hostname TEXT,
+        serial TEXT,
+        mac TEXT,
+        manufacturer TEXT,
+        model TEXT,
+        os TEXT,
+        os_version TEXT,
+        cpu TEXT,
+        ram_bytes BIGINT,
+        storage_bytes BIGINT,
+        ip_address TEXT,
+        organization TEXT,
+        last_seen_at TIMESTAMPTZ,
+        raw_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(source_system, source_external_id)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_assets_hostname ON assets(hostname)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_assets_serial ON assets(serial) WHERE serial IS NOT NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_assets_last_seen ON assets(last_seen_at DESC NULLS LAST)`);
 
     // Audit + dedup log. UNIQUE(source_id, external_event_id) blocks Zabbix
     // resends from spawning duplicate tickets even if the mapper logic

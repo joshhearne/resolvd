@@ -34,6 +34,7 @@ const pushRoutes = require('./routes/push');
 const systemHealthRoutes = require('./routes/systemHealth');
 const webhookRoutes = require('./routes/webhooks');
 const alertSourceRoutes = require('./routes/alertSources');
+const assetRoutes = require('./routes/assets');
 const cannedResponseRoutes = require('./routes/cannedResponses');
 const slaRoutes = require('./routes/sla');
 const assignmentPolicyRoutes = require('./routes/assignmentPolicies');
@@ -118,6 +119,7 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/push', pushRoutes);
 app.use('/api/system-health', systemHealthRoutes);
 app.use('/api/alert-sources', alertSourceRoutes);
+app.use('/api/assets', assetRoutes);
 app.use('/api/canned-responses', cannedResponseRoutes);
 app.use('/api/sla', slaRoutes);
 app.use('/api/assignment-policies', assignmentPolicyRoutes);
@@ -149,6 +151,10 @@ initSchema()
     // sla_response_due_at / sla_resolve_due_at without being responded
     // / resolved, mark breached, fan out to assignee + followers.
     require('./services/sla').startScheduler();
+    // External alert source poller: pulls policy results from Action1 on
+    // each source's configured cadence (Action1 has no webhook channel).
+    // 30-second tick; each source fires per its poll_interval_minutes.
+    require('./services/alertSourcePollScheduler').startScheduler();
     app.listen(PORT, () => {
       console.log(`Resolvd backend running on port ${PORT}`);
     });

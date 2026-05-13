@@ -534,8 +534,8 @@ export default function TicketList() {
       {/* ── Sidebar ── */}
       <aside
         className={`
- space-y-4 p-4 md:p-0
- md:block md:relative md:w-52 md:flex-shrink-0 md:sticky md:top-4 md:shadow-none md:overflow-visible md:bg-transparent
+ space-y-4 p-4 md:p-0 md:pr-2
+ md:block md:relative md:w-52 md:flex-shrink-0 md:self-start md:sticky md:top-14 md:max-h-[calc(100vh-6.5rem)] md:overflow-y-auto md:shadow-none md:bg-transparent
  ${
    sidebarOpen
      ? "fixed inset-y-0 left-0 z-50 w-72 bg-surface shadow-xl overflow-y-auto"
@@ -742,7 +742,7 @@ export default function TicketList() {
       </aside>
 
       {/* ── Main content ── */}
-      <div className="flex-1 min-w-0 space-y-4">
+      <div className="flex-1 min-w-0 space-y-4 md:self-start md:max-h-[calc(100vh-6.5rem)] md:overflow-y-auto md:pr-1">
         {/* Header row */}
         <div className="flex items-center justify-between gap-3 flex-wrap">
           <div className="flex items-center gap-2">

@@ -33,6 +33,7 @@ import AdminEscalationPolicies from "./pages/AdminEscalationPolicies";
 import PrintExport from "./pages/PrintExport";
 import Projects from "./pages/Projects";
 import ProjectDetail from "./pages/ProjectDetail";
+import Inventory from "./pages/Inventory";
 import Login from "./pages/Login";
 import MfaChallenge from "./pages/MfaChallenge";
 import MfaSetup from "./pages/MfaSetup";
@@ -136,6 +137,14 @@ function AppRoutes() {
           element={
             <ProtectedRoute adminOnly>
               <ProjectDetail />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="inventory"
+          element={
+            <ProtectedRoute>
+              <Inventory />
             </ProtectedRoute>
           }
         />
