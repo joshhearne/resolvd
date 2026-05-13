@@ -1,5 +1,7 @@
 // Escalation chain admin. Each row = one step. Group in the UI by
 // (priority, project_id, trigger); step_order drives execution order.
+// Each step carries an actions[] array — fan out to multiple targets
+// on the same (trigger, delay) without duplicating rows.
 
 const express = require('express');
 const { pool } = require('../db/pool');
@@ -8,9 +10,27 @@ const { requireAuth, requireRole } = require('../middleware/auth');
 const router = express.Router();
 
 const TRIGGERS = ['warning_response', 'warning_resolve', 'breach_response', 'breach_resolve'];
-const ACTIONS = ['notify_user', 'notify_role', 'reassign_user', 'reassign_role'];
+const ACTION_KINDS = ['notify_user', 'notify_role', 'notify_assignee', 'reassign_user', 'reassign_role'];
 const ROLES = ['Admin', 'Manager', 'Tech'];
 const PRIORITY_OPS = ['=', '<', '>', '<=', '>='];
+
+// Validate one action object. Returns error string or null.
+function validateAction(a) {
+  if (!a || typeof a !== 'object') return 'action entry must be an object';
+  if (!ACTION_KINDS.includes(a.kind)) return `action.kind must be one of ${ACTION_KINDS.join(', ')}`;
+  // notify_assignee needs neither target — uses ticket.assigned_to at fire time.
+  if (a.kind === 'notify_user' || a.kind === 'reassign_user') {
+    if (!Number.isInteger(a.target_user_id) || a.target_user_id <= 0) {
+      return `${a.kind} requires target_user_id (positive integer)`;
+    }
+  }
+  if (a.kind === 'notify_role' || a.kind === 'reassign_role') {
+    if (!ROLES.includes(a.target_role)) {
+      return `${a.kind} requires target_role ∈ ${ROLES.join(', ')}`;
+    }
+  }
+  return null;
+}
 
 function validate(body, { create = false } = {}) {
   const b = body || {};
@@ -18,10 +38,16 @@ function validate(body, { create = false } = {}) {
     if (!Number.isInteger(b.priority) || b.priority < 1 || b.priority > 5) return 'priority must be 1–5';
     if (b.project_id != null && (!Number.isInteger(b.project_id) || b.project_id <= 0)) return 'project_id must be positive integer or null';
     if (!TRIGGERS.includes(b.trigger)) return `trigger must be one of ${TRIGGERS.join(', ')}`;
-    if (!ACTIONS.includes(b.action)) return `action must be one of ${ACTIONS.join(', ')}`;
+    if (!Array.isArray(b.actions) || b.actions.length === 0) return 'actions must be a non-empty array';
   } else {
     if (b.trigger !== undefined && !TRIGGERS.includes(b.trigger)) return `trigger must be one of ${TRIGGERS.join(', ')}`;
-    if (b.action !== undefined && !ACTIONS.includes(b.action)) return `action must be one of ${ACTIONS.join(', ')}`;
+  }
+  if (b.actions !== undefined) {
+    if (!Array.isArray(b.actions) || b.actions.length === 0) return 'actions must be a non-empty array';
+    for (const a of b.actions) {
+      const err = validateAction(a);
+      if (err) return err;
+    }
   }
   if (b.priority_op !== undefined && !PRIORITY_OPS.includes(b.priority_op)) {
     return `priority_op must be one of ${PRIORITY_OPS.join(', ')}`;
@@ -32,24 +58,26 @@ function validate(body, { create = false } = {}) {
   if (b.step_order !== undefined && (!Number.isInteger(b.step_order) || b.step_order < 1)) {
     return 'step_order must be positive integer';
   }
-  if (b.target_user_id !== undefined && b.target_user_id !== null
-      && (!Number.isInteger(b.target_user_id) || b.target_user_id <= 0)) {
-    return 'target_user_id must be positive integer or null';
-  }
-  if (b.target_role !== undefined && b.target_role !== null && !ROLES.includes(b.target_role)) {
-    return `target_role must be one of ${ROLES.join(', ')} or null`;
-  }
   return null;
+}
+
+// Strip nulls from action entries before persisting so the JSONB blob
+// stays compact (e.g. notify_assignee carries no targets).
+function normalizeActions(actions) {
+  return actions.map((a) => {
+    const out = { kind: a.kind };
+    if (a.target_user_id) out.target_user_id = Number(a.target_user_id);
+    if (a.target_role) out.target_role = a.target_role;
+    return out;
+  });
 }
 
 router.get('/', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
     const r = await pool.query(`
-      SELECT e.*, p.name AS project_name, p.prefix AS project_prefix,
-             u.display_name AS target_user_name
+      SELECT e.*, p.name AS project_name, p.prefix AS project_prefix
         FROM escalation_chain_steps e
         LEFT JOIN projects p ON p.id = e.project_id
-        LEFT JOIN users u ON u.id = e.target_user_id
        ORDER BY e.project_id NULLS FIRST, e.priority, e.trigger, e.step_order, e.id
     `);
     res.json(r.rows);
@@ -67,8 +95,8 @@ router.post('/', requireAuth, requireRole('Admin'), async (req, res) => {
     const r = await pool.query(
       `INSERT INTO escalation_chain_steps
          (priority, priority_op, project_id, trigger, step_order, delay_minutes,
-          action, target_user_id, target_role, enabled)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, COALESCE($10, TRUE))
+          actions, enabled)
+       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, COALESCE($8, TRUE))
        RETURNING *`,
       [
         b.priority,
@@ -77,9 +105,7 @@ router.post('/', requireAuth, requireRole('Admin'), async (req, res) => {
         b.trigger,
         b.step_order || 1,
         b.delay_minutes || 0,
-        b.action,
-        b.target_user_id || null,
-        b.target_role || null,
+        JSON.stringify(normalizeActions(b.actions)),
         b.enabled,
       ]
     );
@@ -99,12 +125,15 @@ router.patch('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
     const sets = [];
     const values = [];
     let p = 1;
-    for (const k of ['trigger', 'priority_op', 'step_order', 'delay_minutes', 'action',
-                     'target_user_id', 'target_role', 'enabled']) {
+    for (const k of ['trigger', 'priority_op', 'step_order', 'delay_minutes', 'enabled']) {
       if (Object.prototype.hasOwnProperty.call(b, k)) {
         sets.push(`${k} = $${p++}`);
         values.push(b[k]);
       }
+    }
+    if (Object.prototype.hasOwnProperty.call(b, 'actions')) {
+      sets.push(`actions = $${p++}::jsonb`);
+      values.push(JSON.stringify(normalizeActions(b.actions)));
     }
     if (!sets.length) return res.status(400).json({ error: 'no updatable fields supplied' });
     sets.push('updated_at = NOW()');

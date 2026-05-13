@@ -6,6 +6,14 @@
 // in step_order, and appends the step id to tickets.escalation_steps_fired
 // so subsequent ticks skip it.
 //
+// Each step carries an actions[] array — fan out to multiple targets
+// on the same (trigger, delay) without duplicating rows. Action kinds:
+//   notify_user      — specific user
+//   notify_role      — every active user with that role
+//   notify_assignee  — current ticket assignee (NULL-safe)
+//   reassign_user    — set assigned_to to a specific user
+//   reassign_role    — set assigned_to to first active user in that role
+//
 // Resolution rules:
 //   - Project-scoped step (project_id = ticket.project_id) AND
 //     org-default step (project_id IS NULL) both apply if present.
@@ -31,55 +39,62 @@ const TRIGGER_ACTIVE_COND = {
   breach_resolve: 'sla_resolve_breached = TRUE AND resolved_at IS NULL',
 };
 
-async function fireStep({ step, ticket }) {
+// Notification payload helper — same shape for every notify_* action.
+function notifyBody(step, ticket) {
+  return {
+    eventType: 'pending_review',
+    ticketId: ticket.id,
+    ticketRef: ticket.internal_ref,
+    inApp: {
+      title: `SLA escalation: ${ticket.internal_ref}`,
+      body: `${step.trigger.replace('_', ' / ')} on ${ticket.internal_ref}${ticket.title ? ` — ${ticket.title}` : ''}.`,
+      extraData: { trigger: step.trigger, step_id: step.id },
+    },
+    push: null,
+    payload: { ticket_id: ticket.id, ticket_ref: ticket.internal_ref, trigger: step.trigger },
+  };
+}
+
+// Fire one action. Returns { ok, reason? } — caller logs reasons but
+// keeps iterating sibling actions; one failure shouldn't block others.
+async function fireAction({ action, step, ticket }) {
   const fanout = require('./notificationFanout');
-  if (step.action === 'notify_user') {
-    if (!step.target_user_id) return { ok: false, reason: 'no target_user_id' };
-    const u = await getUserById(step.target_user_id);
+  const kind = action?.kind;
+
+  if (kind === 'notify_user') {
+    if (!action.target_user_id) return { ok: false, reason: 'no target_user_id' };
+    const u = await getUserById(action.target_user_id);
     if (!u) return { ok: false, reason: 'user not found' };
-    await fanout.dispatchPerRecipient({
-      user: u,
-      eventType: 'pending_review',
-      ticketId: ticket.id,
-      ticketRef: ticket.internal_ref,
-      inApp: {
-        title: `SLA escalation: ${ticket.internal_ref}`,
-        body: `${step.trigger.replace('_', ' / ')} on ${ticket.internal_ref}${ticket.title ? ` — ${ticket.title}` : ''}.`,
-        extraData: { trigger: step.trigger, step_id: step.id },
-      },
-      push: null,
-      payload: { ticket_id: ticket.id, ticket_ref: ticket.internal_ref, trigger: step.trigger },
-    });
+    await fanout.dispatchPerRecipient({ user: u, ...notifyBody(step, ticket) });
     return { ok: true };
   }
-  if (step.action === 'notify_role') {
-    if (!step.target_role) return { ok: false, reason: 'no target_role' };
+
+  if (kind === 'notify_role') {
+    if (!action.target_role) return { ok: false, reason: 'no target_role' };
     const r = await pool.query(
       `SELECT id FROM users WHERE role = $1 AND status = 'active'`,
-      [step.target_role]
+      [action.target_role]
     );
     for (const row of r.rows) {
       const u = await getUserById(row.id);
       if (!u) continue;
-      await fanout.dispatchPerRecipient({
-        user: u,
-        eventType: 'pending_review',
-        ticketId: ticket.id,
-        ticketRef: ticket.internal_ref,
-        inApp: {
-          title: `SLA escalation: ${ticket.internal_ref}`,
-          body: `${step.trigger.replace('_', ' / ')} on ${ticket.internal_ref}${ticket.title ? ` — ${ticket.title}` : ''}.`,
-          extraData: { trigger: step.trigger, step_id: step.id },
-        },
-        push: null,
-        payload: { ticket_id: ticket.id, ticket_ref: ticket.internal_ref, trigger: step.trigger },
-      }).catch((err) => console.error('escalation notify_role recipient failed:', err.message));
+      await fanout.dispatchPerRecipient({ user: u, ...notifyBody(step, ticket) })
+        .catch((err) => console.error('escalation notify_role recipient failed:', err.message));
     }
     return { ok: true, recipients: r.rows.length };
   }
-  if (step.action === 'reassign_user') {
-    if (!step.target_user_id) return { ok: false, reason: 'no target_user_id' };
-    const u = await getUserById(step.target_user_id);
+
+  if (kind === 'notify_assignee') {
+    if (!ticket.assigned_to) return { ok: false, reason: 'ticket has no assignee' };
+    const u = await getUserById(ticket.assigned_to);
+    if (!u) return { ok: false, reason: 'assignee user not found' };
+    await fanout.dispatchPerRecipient({ user: u, ...notifyBody(step, ticket) });
+    return { ok: true };
+  }
+
+  if (kind === 'reassign_user') {
+    if (!action.target_user_id) return { ok: false, reason: 'no target_user_id' };
+    const u = await getUserById(action.target_user_id);
     if (!u) return { ok: false, reason: 'user not found' };
     await pool.query(`UPDATE tickets SET assigned_to = $1 WHERE id = $2`, [u.id, ticket.id]);
     await fanout.fanoutAssignment(null, {
@@ -88,16 +103,15 @@ async function fireStep({ step, ticket }) {
       actorId: null,
       actorName: 'SLA escalation',
     }).catch((err) => console.error('escalation reassign fanout failed:', err.message));
+    ticket.assigned_to = u.id; // mutate so a later notify_assignee in the same step hits the new owner
     return { ok: true };
   }
-  if (step.action === 'reassign_role') {
-    if (!step.target_role) return { ok: false, reason: 'no target_role' };
-    // Pick the first active user with that role. Refinement (round-
-    // robin / project-scoped / case load) lives in a later PR if real
-    // usage demands it.
+
+  if (kind === 'reassign_role') {
+    if (!action.target_role) return { ok: false, reason: 'no target_role' };
     const r = await pool.query(
       `SELECT id FROM users WHERE role = $1 AND status = 'active' ORDER BY id ASC LIMIT 1`,
-      [step.target_role]
+      [action.target_role]
     );
     if (!r.rows[0]) return { ok: false, reason: 'no user in role' };
     await pool.query(`UPDATE tickets SET assigned_to = $1 WHERE id = $2`, [r.rows[0].id, ticket.id]);
@@ -105,14 +119,33 @@ async function fireStep({ step, ticket }) {
       ticket: { ...ticket, assigned_to: r.rows[0].id },
       assigneeId: r.rows[0].id,
       actorId: null,
-      note,
+      actorName: 'SLA escalation (role)',
     }).catch((err) => console.error('escalation reassign_role fanout failed:', err.message));
+    ticket.assigned_to = r.rows[0].id;
     return { ok: true };
   }
-  return { ok: false, reason: 'unknown action' };
+
+  return { ok: false, reason: `unknown action kind: ${kind}` };
 }
 
-// Single sweep. Walks one trigger at a time so SQL stays simple.
+// Fire every action on a step. A step counts as "fired" as long as at
+// least one of its actions succeeded — partial success still updates
+// tickets.escalation_steps_fired so the step won't re-fire next tick.
+async function fireStep({ step, ticket }) {
+  const actions = Array.isArray(step.actions) ? step.actions : [];
+  if (!actions.length) return { ok: false, reason: 'no actions' };
+  let okCount = 0;
+  const reasons = [];
+  for (const action of actions) {
+    const r = await fireAction({ action, step, ticket }).catch((err) => ({
+      ok: false, reason: err?.message || String(err),
+    }));
+    if (r?.ok) okCount++;
+    else if (r?.reason) reasons.push(`${action?.kind || 'unknown'}: ${r.reason}`);
+  }
+  return { ok: okCount > 0, fired: okCount, reasons };
+}
+
 async function tickEscalations() {
   let total = 0;
   for (const trigger of Object.keys(TRIGGER_TS_COL)) {
@@ -168,6 +201,8 @@ async function tickEscalations() {
             [step.id, ticket.id]
           );
           total++;
+        } else if (result?.reasons?.length) {
+          console.warn(`escalation step ${step.id} actions all failed:`, result.reasons.join('; '));
         }
       }
     }
