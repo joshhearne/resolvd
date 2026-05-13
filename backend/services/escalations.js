@@ -13,7 +13,11 @@
 //   notify_assignee  — current ticket assignee (NULL-safe)
 //   reassign_user    — set assigned_to to a specific user
 //   reassign_role    — set assigned_to to first active user in that role
-//   reassign_agent   — set assigned_to to any other project agent (not current assignee)
+//   reassign_agent   — defer to project's assignment policy
+//                      (round_robin or case_load) when one is set,
+//                      excluding current assignee. Falls back to any
+//                      other active project agent by id when policy is
+//                      specific_user or unset.
 //
 // Resolution rules:
 //   - Project-scoped step (project_id = ticket.project_id) AND
@@ -149,30 +153,45 @@ async function fireAction({ action, step, ticket }) {
 
   if (kind === 'reassign_agent') {
     if (!ticket.project_id) return { ok: false, reason: 'ticket has no project_id' };
-    // Pick any active project agent that isn't the current assignee.
-    // Tie-break by id. Future: wire to assignment_policies for load-aware
-    // pick, but the simple form covers the >1-agent case the user asked
-    // for. If no other agent exists, skip.
-    const r = await pool.query(
-      `SELECT u.id
-         FROM users u
-         JOIN project_members pm ON pm.user_id = u.id
-        WHERE u.status = 'active'
-          AND pm.project_id = $1
-          AND pm.is_agent = TRUE
-          AND ($2::int IS NULL OR u.id <> $2::int)
-        ORDER BY u.id ASC LIMIT 1`,
-      [ticket.project_id, ticket.assigned_to || null]
+    // First try the project's assignment policy (round_robin /
+    // case_load) — same engine that placed the ticket on create, so
+    // escalations rotate per the admin's chosen strategy. The exclude
+    // param keeps us from re-picking the current owner.
+    const assignmentPolicies = require('./assignmentPolicies');
+    const policy = await assignmentPolicies.policyForTicket(
+      null, ticket.effective_priority || 3, ticket.project_id
     );
-    if (!r.rows[0]) return { ok: false, reason: 'no other agent on project' };
-    await pool.query(`UPDATE tickets SET assigned_to = $1 WHERE id = $2`, [r.rows[0].id, ticket.id]);
+    let pickedId = null;
+    if (policy && (policy.strategy === 'round_robin' || policy.strategy === 'case_load')) {
+      pickedId = await assignmentPolicies.pickAssignee(null, policy, {
+        excludeUserId: ticket.assigned_to || null,
+      });
+    }
+    // Fallback when no policy / specific_user policy / pool empty:
+    // pick any other active project agent by id.
+    if (!pickedId) {
+      const r = await pool.query(
+        `SELECT u.id
+           FROM users u
+           JOIN project_members pm ON pm.user_id = u.id
+          WHERE u.status = 'active'
+            AND pm.project_id = $1
+            AND pm.is_agent = TRUE
+            AND ($2::int IS NULL OR u.id <> $2::int)
+          ORDER BY u.id ASC LIMIT 1`,
+        [ticket.project_id, ticket.assigned_to || null]
+      );
+      pickedId = r.rows[0]?.id || null;
+    }
+    if (!pickedId) return { ok: false, reason: 'no other agent on project' };
+    await pool.query(`UPDATE tickets SET assigned_to = $1 WHERE id = $2`, [pickedId, ticket.id]);
     await fanout.fanoutAssignment(null, {
-      ticket: { ...ticket, assigned_to: r.rows[0].id },
-      assigneeId: r.rows[0].id,
+      ticket: { ...ticket, assigned_to: pickedId },
+      assigneeId: pickedId,
       actorId: null,
       actorName: 'SLA escalation (agent)',
     }).catch((err) => console.error('escalation reassign_agent fanout failed:', err.message));
-    ticket.assigned_to = r.rows[0].id;
+    ticket.assigned_to = pickedId;
     return { ok: true };
   }
 
