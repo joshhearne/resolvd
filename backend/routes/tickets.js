@@ -520,12 +520,14 @@ router.get('/:id', requireAuth, async (req, res) => {
         proj.name as project_name, proj.prefix as project_prefix, proj.has_external_vendor as project_has_external_vendor,
         sub.display_name as submitted_by_name, sub.email as submitted_by_email,
         asgn.display_name as assigned_to_name,
-        bt.internal_ref as blocking_ticket_ref, bt.title as blocking_ticket_title, bt.title_enc as blocking_ticket_title_enc, bt.internal_status as blocking_ticket_status
+        bt.internal_ref as blocking_ticket_ref, bt.title as blocking_ticket_title, bt.title_enc as blocking_ticket_title_enc, bt.internal_status as blocking_ticket_status,
+        ast.hostname as asset_hostname, ast.serial as asset_serial
       FROM tickets t
       LEFT JOIN projects proj ON t.project_id = proj.id
       LEFT JOIN users sub ON t.submitted_by = sub.id
       LEFT JOIN users asgn ON t.assigned_to = asgn.id
       LEFT JOIN tickets bt ON t.blocked_by_ticket = bt.id
+      LEFT JOIN assets ast ON t.asset_id = ast.id
       WHERE t.id = $1
     `, [req.params.id]);
 
@@ -795,12 +797,14 @@ router.patch('/:id', requireAuth, async (req, res) => {
           sub.display_name as submitted_by_name,
           asgn.display_name as assigned_to_name,
           bt.internal_ref as blocking_ticket_ref, bt.title as blocking_ticket_title,
-          bt.title_enc as blocking_ticket_title_enc, bt.internal_status as blocking_ticket_status
+          bt.title_enc as blocking_ticket_title_enc, bt.internal_status as blocking_ticket_status,
+          ast.hostname as asset_hostname, ast.serial as asset_serial
         FROM tickets t
         LEFT JOIN projects proj ON t.project_id = proj.id
         LEFT JOIN users sub ON t.submitted_by = sub.id
         LEFT JOIN users asgn ON t.assigned_to = asgn.id
         LEFT JOIN tickets bt ON t.blocked_by_ticket = bt.id
+        LEFT JOIN assets ast ON t.asset_id = ast.id
         WHERE t.id = $1
       `, [ticket.id]);
 
