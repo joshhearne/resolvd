@@ -903,6 +903,13 @@ async function initSchema() {
     // row in the users table.
     await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS vendor_contact_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL`);
     await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS source_inbound_email_id INTEGER REFERENCES inbound_email_queue(id) ON DELETE SET NULL`);
+    // Resolved vendor-outbound actor for this comment. Stamped at comment
+    // create time when the client signals attachments are coming
+    // (defer_vendor_email=true), so the attachment-upload handler can
+    // fire sendVendorEmail with the original send_as identity once files
+    // are linked — avoids the race where vendor email leaves before the
+    // attachments land. NULL when the comment fired vendor email inline.
+    await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS vendor_actor_id INTEGER REFERENCES users(id) ON DELETE SET NULL`);
     await client.query(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS notification_prefs JSONB NOT NULL DEFAULT '{}'`);
 
     // Seed default templates the first time the table is created.

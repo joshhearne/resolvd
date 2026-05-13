@@ -529,19 +529,29 @@ export default function TicketDetail() {
     setSubmittingComment(true);
     try {
       let c = null;
+      // Defer the vendor outbound when files are queued — the comment
+      // POST and the attachment POST are separate round trips, and the
+      // race used to fire vendor email before files were linked. With
+      // defer_vendor_email=true the comment row stashes the resolved
+      // send_as actor; the attachments POST then fires sendVendorEmail
+      // once the files are persisted (notify_vendor flag below).
+      const hasFiles = commentFiles.length > 0;
+      const deferVendorEmail = shareWithVendor && hasFiles;
       if (commentBody.trim()) {
         c = await api.post(`/api/tickets/${id}/comments`, {
           body: commentBody.trim(),
           is_external_visible: shareWithVendor,
           ...(shareWithVendor && send_as ? { send_as } : {}),
           ...(commentAiLogId ? { ai_rewrite_log_id: commentAiLogId } : {}),
+          ...(deferVendorEmail ? { defer_vendor_email: true } : {}),
         });
         setComments((prev) => [...prev, c]);
       }
-      if (commentFiles.length > 0) {
+      if (hasFiles) {
         const fd = new FormData();
         commentFiles.forEach((f) => fd.append("files", f));
         if (c?.id) fd.append("comment_id", String(c.id));
+        if (deferVendorEmail && c?.id) fd.append("notify_vendor", "true");
         const res = await fetch(`/api/tickets/${id}/attachments`, {
           method: "POST",
           credentials: "include",

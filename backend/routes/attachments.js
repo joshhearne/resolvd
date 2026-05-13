@@ -9,6 +9,7 @@ const { requireAuth, requireRole } = require('../middleware/auth');
 const { buildWritePatch, decryptRow, decryptRows, getMode } = require('../services/fields');
 const { encrypt, decrypt } = require('../services/crypto');
 const { logSupportRead } = require('../middleware/supportAccess');
+const { sendVendorEmail } = require('../services/vendorOutbound');
 
 const UPLOADS_DIR = process.env.UPLOADS_DIR || '/data/uploads';
 
@@ -112,6 +113,30 @@ router.post('/tickets/:ticketId/attachments', requireAuth, requireRole('Admin', 
 
       // Touch ticket updated_at
       await pool.query('UPDATE tickets SET updated_at = NOW() WHERE id = $1', [req.params.ticketId]);
+
+      // Deferred vendor outbound: when uploads belong to a comment that
+      // requested vendor visibility but had its email deferred
+      // (defer_vendor_email=true on the comment POST), fire the vendor
+      // email now that files are linked. The comment row stashed the
+      // resolved send-as actor so the original send_as identity is
+      // preserved. notify_vendor is the client-side opt-in; we still
+      // double-check is_external_visible on the comment row server-side.
+      if (commentId && req.body.notify_vendor) {
+        const c = await pool.query(
+          `SELECT id, is_external_visible, vendor_actor_id
+             FROM comments WHERE id = $1`,
+          [commentId]
+        );
+        const row = c.rows[0];
+        if (row?.is_external_visible) {
+          sendVendorEmail({
+            eventType: 'new_comment',
+            ticketId: Number(req.params.ticketId),
+            actorId: row.vendor_actor_id || req.session.user.id,
+            commentId,
+          }).catch(err => console.error('deferred vendor outbound failed:', err.message));
+        }
+      }
 
       res.status(201).json(inserted);
     } catch (err) {
