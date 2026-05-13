@@ -234,15 +234,24 @@ async function tickBreaches() {
   return { response_breached: respondedBreached, resolve_breached: resolveBreached };
 }
 
-// Single combined tick: warnings first, then breaches. Errors in
-// warnings don't block the breach sweep.
+// Single combined tick: warnings first, then breaches, then
+// escalations. Each phase isolates errors so a downstream failure
+// doesn't block the upstream sweep.
 async function tickSla() {
   const warnSummary = await tickWarnings().catch(err => {
     console.error('sla warning tick error:', err.message);
     return null;
   });
-  const breachSummary = await tickBreaches();
-  return { warnings: warnSummary, breaches: breachSummary };
+  const breachSummary = await tickBreaches().catch(err => {
+    console.error('sla breach tick error:', err.message);
+    return null;
+  });
+  const escalations = require('./escalations');
+  const escalationSummary = await escalations.tickEscalations().catch(err => {
+    console.error('sla escalation tick error:', err.message);
+    return null;
+  });
+  return { warnings: warnSummary, breaches: breachSummary, escalations: escalationSummary };
 }
 
 let _interval = null;

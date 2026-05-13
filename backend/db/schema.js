@@ -287,6 +287,14 @@ async function initSchema() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_saved_views_user ON saved_views(user_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_project_members_user ON project_members(user_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_project_members_project ON project_members(project_id)`);
+    // is_agent marks a member as eligible for ticket assignment within
+    // this project. Replaces the previous role-based filter (which
+    // assumed Admin/Manager/Tech == assignable everywhere). A user can
+    // be an agent on one project but not another. Org-default policies
+    // (project_id IS NULL) treat anyone who is an agent on ANY project
+    // as a candidate.
+    await client.query(`ALTER TABLE project_members ADD COLUMN IF NOT EXISTS is_agent BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_project_members_agent ON project_members(project_id) WHERE is_agent = TRUE`);
 
     // Status configuration tables (advisory transitions, suggested mappings).
     await client.query(`
@@ -1314,10 +1322,55 @@ async function initSchema() {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
-    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_assignment_policies_org_default
-      ON assignment_policies(priority) WHERE project_id IS NULL`);
-    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_assignment_policies_project
-      ON assignment_policies(priority, project_id) WHERE project_id IS NOT NULL`);
+    // priority_op lets one policy cover a priority range. With operators,
+    // multiple rows can match the same ticket priority — resolution
+    // picks the most specific (project-scoped beats org-default, '='
+    // beats range operators, newest beats older). The old unique
+    // indexes are dropped (idempotent: only drops if present).
+    await client.query(`ALTER TABLE assignment_policies ADD COLUMN IF NOT EXISTS priority_op TEXT NOT NULL DEFAULT '=' CHECK (priority_op IN ('=', '<', '>', '<=', '>='))`);
+    await client.query(`DROP INDEX IF EXISTS idx_assignment_policies_org_default`);
+    await client.query(`DROP INDEX IF EXISTS idx_assignment_policies_project`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_assignment_policies_lookup
+      ON assignment_policies(project_id, priority, priority_op) WHERE enabled = TRUE`);
+
+    // Escalation chains. One row = one step. Steps grouped by
+    // (priority, project_id, trigger); step_order drives execution.
+    // Trigger names mirror the four SLA milestones surfaced by
+    // tickWarnings + tickBreaches. delay_minutes = grace period after
+    // the trigger before this step fires (0 = immediately). Actions:
+    //   notify_user / notify_role  — fan out to user or all users in role
+    //   reassign_user / reassign_role — UPDATE assigned_to (role pick
+    //     uses the first active user with that role on the project;
+    //     refine in a later PR if round-robin among managers is needed)
+    // Tickets track which steps have fired via tickets.escalation_steps_fired
+    // so a single trigger doesn't re-fire a step on every scheduler tick.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS escalation_chain_steps (
+        id SERIAL PRIMARY KEY,
+        priority INTEGER NOT NULL CHECK (priority BETWEEN 1 AND 5),
+        project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+        trigger TEXT NOT NULL CHECK (trigger IN (
+          'warning_response', 'warning_resolve',
+          'breach_response',  'breach_resolve'
+        )),
+        step_order INTEGER NOT NULL DEFAULT 1,
+        delay_minutes INTEGER NOT NULL DEFAULT 0 CHECK (delay_minutes >= 0),
+        action TEXT NOT NULL CHECK (action IN (
+          'notify_user', 'notify_role', 'reassign_user', 'reassign_role'
+        )),
+        target_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        target_role TEXT,
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`ALTER TABLE escalation_chain_steps ADD COLUMN IF NOT EXISTS priority_op TEXT NOT NULL DEFAULT '=' CHECK (priority_op IN ('=', '<', '>', '<=', '>='))`);
+    await client.query(`DROP INDEX IF EXISTS idx_escalation_lookup`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_escalation_lookup
+      ON escalation_chain_steps(priority, priority_op, project_id, trigger, enabled)`);
+
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS escalation_steps_fired INTEGER[] NOT NULL DEFAULT '{}'::int[]`);
 
     // Sensible org-default targets per priority. Idempotent: only inserts
     // when the row doesn't already exist. Customers tune these in the
