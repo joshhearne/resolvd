@@ -1,6 +1,6 @@
 import React, { useEffect, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
-import { useParams, useNavigate, useLocation } from "react-router-dom";
+import { Link, useParams, useNavigate, useLocation } from "react-router-dom";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
 import { useAuth } from "../context/AuthContext";
@@ -700,6 +700,29 @@ export default function TicketDetail() {
 
   return (
     <PageShell variant="standard" className="space-y-6">
+      {/* Breadcrumb — Tickets > [Project prefix · Name] > REF. The
+          project segment only renders once the /api/projects fetch
+          lands (loaded right after the ticket itself); falls back to
+          just Tickets > REF if project isn't visible yet. */}
+      <nav aria-label="Breadcrumb" className="text-xs text-fg-dim">
+        <Link to="/tickets" className="hover:text-brand">Tickets</Link>
+        {project && (
+          <>
+            <span className="mx-1.5">›</span>
+            <Link
+              to={`/tickets?project_id=${project.id}`}
+              className="hover:text-brand"
+              title={project.name}
+            >
+              {project.prefix ? <span className="font-mono">{project.prefix}</span> : null}
+              {project.prefix && project.name ? <span className="ml-1">· {project.name}</span> : project.name}
+            </Link>
+          </>
+        )}
+        <span className="mx-1.5">›</span>
+        <span className="font-mono text-fg">{ticket.internal_ref}</span>
+      </nav>
+
       {/* Header */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
         <div className="flex-1 min-w-0">
