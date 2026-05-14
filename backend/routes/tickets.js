@@ -1263,7 +1263,7 @@ router.post('/:id/merge', requireAuth, requireRole('Admin'), async (req, res) =>
     }
     const merged = await transaction(async (client) => {
       const both = await client.query(
-        `SELECT id, internal_ref, project_id, internal_status FROM tickets WHERE id = ANY($1::int[])`,
+        `SELECT id, internal_ref, project_id, internal_status, external_ticket_ref FROM tickets WHERE id = ANY($1::int[])`,
         [[loserId, winnerId]]
       );
       const loser  = both.rows.find(r => r.id === loserId);
@@ -1271,6 +1271,29 @@ router.post('/:id/merge', requireAuth, requireRole('Admin'), async (req, res) =>
       if (!loser || !winner) throw Object.assign(new Error('Ticket not found'), { http: 404 });
       if (loser.project_id !== winner.project_id) {
         throw Object.assign(new Error('Tickets must be in the same project'), { http: 400 });
+      }
+
+      // Preserve loser's external_ticket_ref by folding into winner's as
+      // CSV. Winner's existing value (possibly already CSV from a prior
+      // merge) keeps its slot; each loser token gets a `*old` suffix
+      // unless already tagged. If only one side has a ref, copy/keep it.
+      const winnerRef = (winner.external_ticket_ref || '').trim();
+      const loserRef  = (loser.external_ticket_ref  || '').trim();
+      if (winnerRef && loserRef) {
+        const loserTokens = loserRef.split(',')
+          .map(s => s.trim())
+          .filter(Boolean)
+          .map(t => t.endsWith('*old') ? t : `${t}*old`);
+        const combined = [winnerRef, ...loserTokens].join(', ');
+        await client.query(
+          `UPDATE tickets SET external_ticket_ref = $1 WHERE id = $2`,
+          [combined, winnerId]
+        );
+      } else if (!winnerRef && loserRef) {
+        await client.query(
+          `UPDATE tickets SET external_ticket_ref = $1 WHERE id = $2`,
+          [loserRef, winnerId]
+        );
       }
 
       // Reassign children. Followers and contacts use ON CONFLICT to
