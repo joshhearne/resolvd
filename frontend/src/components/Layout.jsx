@@ -93,6 +93,13 @@ const Icon = {
       <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3M12 17h.01" />
     </svg>
   ),
+  Book: (p) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+      <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z" />
+    </svg>
+  ),
   Sun: (p) => (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
       strokeLinecap="round" strokeLinejoin="round" {...p}>
@@ -281,6 +288,7 @@ function Sidebar({ collapsed, onToggle, user, onItemClick }) {
       show: ["Admin", "Manager"].includes(user?.role),
     },
     { to: "/inventory", label: "Inventory", icon: Icon.Boxes, show: true },
+    { to: "/kb", label: "Knowledge Base", icon: Icon.Book, show: true },
     {
       to: "/admin",
       label: "Admin",

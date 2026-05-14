@@ -45,6 +45,7 @@ const customFieldRoutes = require('./routes/customFields');
 const aiAssistRoutes = require('./routes/aiAssist');
 const aiSettingsRoutes = require('./routes/aiSettings');
 const securityRoutes = require('./routes/security');
+const kbRoutes = require('./routes/kb');
 const { requireSupportAccessIfSupport } = require('./middleware/supportAccess');
 const { securityHeaders } = require('./middleware/securityHeaders');
 
@@ -132,6 +133,7 @@ app.use('/api/custom-field-defs', customFieldRoutes);
 app.use('/api/ai', aiAssistRoutes);
 app.use('/api/ai-settings', aiSettingsRoutes);
 app.use('/api/security', securityRoutes);
+app.use('/api/kb', kbRoutes);
 
 // Health check
 app.get('/health', (req, res) => res.json({ ok: true }));

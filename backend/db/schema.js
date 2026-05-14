@@ -1944,6 +1944,52 @@ async function initSchema() {
       ON CONFLICT DO NOTHING
     `);
 
+    // ── Knowledge Base — per-project articles with version history ───────
+    // BlockNote editor stores rich content as JSON; content_text is the
+    // plain-text extraction kept in sync for FTS + summaries. Slug is
+    // unique per project so different projects can use the same slug.
+    // Soft delete via status='archived'.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS kb_articles (
+        id SERIAL PRIMARY KEY,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        slug TEXT NOT NULL,
+        title TEXT NOT NULL,
+        content_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        content_text TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'draft'
+          CHECK (status IN ('draft','published','archived')),
+        author_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        last_edited_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        published_at TIMESTAMPTZ,
+        view_count INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(project_id, slug)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_kb_articles_project ON kb_articles(project_id, status, updated_at DESC)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_kb_articles_fts ON kb_articles USING GIN (to_tsvector('english', coalesce(title,'') || ' ' || coalesce(content_text,'')))`);
+
+    // Version snapshots — written on every save. Lets editors revert
+    // and shows a change history surface. version_no monotonic per
+    // article (computed at insert time).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS kb_article_versions (
+        id SERIAL PRIMARY KEY,
+        article_id INTEGER NOT NULL REFERENCES kb_articles(id) ON DELETE CASCADE,
+        version_no INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        content_json JSONB NOT NULL,
+        content_text TEXT NOT NULL,
+        author_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        change_summary TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(article_id, version_no)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_kb_versions_article ON kb_article_versions(article_id, version_no DESC)`);
+
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');
