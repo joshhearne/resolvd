@@ -364,6 +364,23 @@ export default function TicketDetail() {
 
   // Lazy-load every active contact for the project (only when admin/manager
   // is on the page) so the "Add contact to ticket" picker has options.
+  // Global Escape handler — close whichever overlay is on top. A native
+  // <select> dropdown inside the followers popover consumes Esc itself
+  // (browser-native), so the user gets the natural "1-2 punch": first
+  // Esc collapses the user-picker dropdown, second Esc lands here and
+  // closes the popover. Same hook covers the mobile actions sheet and
+  // the confirm dialog so every transient overlay obeys Esc.
+  useEffect(() => {
+    function onKey(e) {
+      if (e.key !== "Escape") return;
+      if (showFollowerMgr) { setShowFollowerMgr(false); return; }
+      if (showMobileActions) { setShowMobileActions(false); return; }
+      if (confirm) { setConfirm(null); return; }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [showFollowerMgr, showMobileActions, confirm]);
+
   useEffect(() => {
     if (!isAdmin || !ticket?.project_id) return;
     let cancelled = false;

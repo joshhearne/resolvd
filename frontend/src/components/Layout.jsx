@@ -277,7 +277,28 @@ function UserMenu({ user, logout }) {
 // Persisted between sessions so the user doesn't get reset on every reload.
 const SIDEBAR_STORAGE_KEY = "resolvd.sidebarCollapsed";
 
-function Sidebar({ collapsed, onToggle, user, onItemClick }) {
+// HOVER_DWELL_MS: how long a fine-pointer cursor must sit on the
+// collapsed sidebar before it auto-expands, AND how long after leaving
+// the expanded transient sidebar before it auto-collapses. Symmetric
+// 2s in/out feels intentional without being sluggish. Touch / coarse
+// pointers don't have a real hover, so the listener is gated with a
+// matchMedia check.
+const HOVER_DWELL_MS = 2000;
+
+// Sidebar receives both states so it can compute effective width AND
+// know whether timers should run:
+//   collapsed       — persisted user pref (set by header button / empty
+//                     click). When false, the sidebar is "pinned wide"
+//                     and hover/leave timers are inert.
+//   transientOpen   — ephemeral hover state. Only meaningful while
+//                     collapsed=true. Hover-2s sets it true; mouse-leave-
+//                     2s clears it.
+//   onSetCollapsed  — set the persisted pref (sticky open / close).
+//   onSetTransient  — set the hover state.
+function Sidebar({ collapsed, transientOpen, onSetCollapsed, onSetTransient, user, onItemClick }) {
+  // Effective collapsed: narrow only when the user has pinned narrow
+  // AND there is no active hover-open. All visual sizing keys off this.
+  const effectiveCollapsed = collapsed && !transientOpen;
   const items = [
     { to: "/dashboard", label: "Dashboard", icon: Icon.LayoutDashboard, show: true },
     { to: "/tickets", label: "Tickets", icon: Icon.Ticket, show: true },
@@ -299,19 +320,83 @@ function Sidebar({ collapsed, onToggle, user, onItemClick }) {
   ];
 
   const linkClass = ({ isActive }) =>
-    `relative flex items-center gap-3 ${collapsed ? "px-2.5 justify-center" : "px-3"} py-2 rounded-md text-sm font-medium transition-colors ${
+    `relative flex items-center gap-3 ${effectiveCollapsed ? "px-2.5 justify-center" : "px-3"} py-2 rounded-md text-sm font-medium transition-colors ${
       isActive
         ? "bg-surface-2 text-fg"
         : "text-fg-muted hover:bg-surface-2 hover:text-fg"
     }`;
 
+  // Hover-dwell expand: only arms when persisted-collapsed AND the
+  // device has a hover-capable fine pointer (skip touch / coarse
+  // pointers — sustained hover doesn't really exist there). Mouse-out
+  // leave-timer reciprocally collapses the transient open. Re-entry
+  // cancels the leave timer so the user can "stop the decay" by
+  // moving back onto the sidebar.
+  const dwellTimerRef = useRef(null);
+  const leaveTimerRef = useRef(null);
+  function clearTimers() {
+    if (dwellTimerRef.current) { clearTimeout(dwellTimerRef.current); dwellTimerRef.current = null; }
+    if (leaveTimerRef.current) { clearTimeout(leaveTimerRef.current); leaveTimerRef.current = null; }
+  }
+  function hasHover() {
+    return typeof window !== "undefined"
+      && window.matchMedia
+      && window.matchMedia("(hover: hover) and (pointer: fine)").matches;
+  }
+  function onSidebarMouseEnter() {
+    // Always cancel a pending leave-collapse — re-entry stops decay.
+    if (leaveTimerRef.current) { clearTimeout(leaveTimerRef.current); leaveTimerRef.current = null; }
+    if (!collapsed) return; // pinned wide — nothing to do
+    if (transientOpen) return; // already transient-open
+    if (!hasHover()) return;
+    if (dwellTimerRef.current) clearTimeout(dwellTimerRef.current);
+    dwellTimerRef.current = setTimeout(() => {
+      onSetTransient(true);
+      dwellTimerRef.current = null;
+    }, HOVER_DWELL_MS);
+  }
+  function onSidebarMouseLeave() {
+    // Cancel pending dwell-open (user left before dwell completed).
+    if (dwellTimerRef.current) { clearTimeout(dwellTimerRef.current); dwellTimerRef.current = null; }
+    if (!collapsed || !transientOpen) return; // not in transient state
+    if (!hasHover()) return;
+    if (leaveTimerRef.current) clearTimeout(leaveTimerRef.current);
+    leaveTimerRef.current = setTimeout(() => {
+      onSetTransient(false);
+      leaveTimerRef.current = null;
+    }, HOVER_DWELL_MS);
+  }
+  useEffect(() => () => clearTimers(), []);
+
+  // Click on the empty space below the icon list toggles the persisted
+  // pref (sticky, same as the header button). e.target === e.currentTarget
+  // filters so clicks on nav links / icons still navigate normally.
+  // Cancels any pending hover timers so click semantics win.
+  function onEmptyClick(e) {
+    if (e.target !== e.currentTarget) return;
+    clearTimers();
+    if (effectiveCollapsed) {
+      onSetCollapsed(false);
+      onSetTransient(false); // clear hover state so future hover/leave still works
+    } else {
+      onSetCollapsed(true);
+      onSetTransient(false);
+    }
+  }
+
   return (
     <aside
       className={`bg-surface border-r border-border fixed left-0 top-14 bottom-0 z-20 transition-[width] duration-150 ${
-        collapsed ? "w-14" : "w-56"
+        effectiveCollapsed ? "w-14 cursor-pointer" : "w-56"
       }`}
+      onMouseEnter={onSidebarMouseEnter}
+      onMouseLeave={onSidebarMouseLeave}
+      onClick={onEmptyClick}
     >
-      <nav className="flex flex-col gap-0.5 p-2">
+      <nav
+        className="flex flex-col gap-0.5 p-2 h-full"
+        onClick={onEmptyClick}
+      >
         {items.filter((i) => i.show).map((item) => {
           const Ico = item.icon;
           return (
@@ -320,10 +405,10 @@ function Sidebar({ collapsed, onToggle, user, onItemClick }) {
               to={item.to}
               className={linkClass}
               onClick={onItemClick}
-              title={collapsed ? item.label : undefined}
+              title={effectiveCollapsed ? item.label : undefined}
             >
               <Ico className="w-4 h-4 flex-shrink-0" />
-              {!collapsed && <span className="truncate">{item.label}</span>}
+              {!effectiveCollapsed && <span className="truncate">{item.label}</span>}
             </NavLink>
           );
         })}
@@ -344,7 +429,15 @@ export default function Layout() {
     }
   });
   const [mobileOpen, setMobileOpen] = useState(false);
+  // Ephemeral hover-open state. Not persisted — every page load starts
+  // in the user's pinned mode. Only meaningful while collapsed=true.
+  const [transientOpen, setTransientOpen] = useState(false);
   const logoFilter = brandingLogoFilter(branding, resolved);
+
+  // Effective collapsed for layout sizing (main margin). Mirrors the
+  // Sidebar's internal computation so the content shifts in lockstep
+  // with the hover-expand.
+  const effectiveCollapsed = collapsed && !transientOpen;
 
   function toggleCollapsed() {
     setCollapsed((c) => {
@@ -352,6 +445,13 @@ export default function Layout() {
       try { localStorage.setItem(SIDEBAR_STORAGE_KEY, next ? "1" : "0"); } catch {}
       return next;
     });
+    // Header button is sticky intent — clear any in-flight hover state
+    // so the visible width matches the new persisted pref immediately.
+    setTransientOpen(false);
+  }
+  function setCollapsedPersist(v) {
+    setCollapsed(v);
+    try { localStorage.setItem(SIDEBAR_STORAGE_KEY, v ? "1" : "0"); } catch {}
   }
 
   useEffect(() => {
@@ -422,7 +522,13 @@ export default function Layout() {
 
       <div className="flex-1 flex min-h-0">
         <div className="hidden md:block">
-          <Sidebar collapsed={collapsed} onToggle={toggleCollapsed} user={user} />
+          <Sidebar
+            collapsed={collapsed}
+            transientOpen={transientOpen}
+            onSetCollapsed={setCollapsedPersist}
+            onSetTransient={setTransientOpen}
+            user={user}
+          />
         </div>
 
         {mobileOpen && (
@@ -443,7 +549,7 @@ export default function Layout() {
 
         <main
           className={`flex-1 min-w-0 px-4 sm:px-6 py-6 transition-[margin] duration-150 ${
-            collapsed ? "md:ml-14" : "md:ml-56"
+            effectiveCollapsed ? "md:ml-14" : "md:ml-56"
           }`}
         >
           <Outlet />
