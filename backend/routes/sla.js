@@ -391,9 +391,17 @@ router.get('/dashboard', requireAuth, async (req, res) => {
 
 // GET /api/sla/time-in-status — aggregated time tickets have spent in
 // each status, derived from audit_log status_change rows. Spans are
-// (entered_at, next status_change OR resolved_at OR NOW()). Initial
-// status (before any change) isn't counted — keeps the SQL simple and
-// the signal is still meaningful for chokepoint detection.
+// (entered_at, next status_change OR NOW()). Initial status (before
+// any change) isn't counted — keeps the SQL simple and the signal is
+// still meaningful for chokepoint detection.
+//
+// Resolved-pending-close statuses (semantic_tag='resolved_pending_close')
+// are excluded: tickets are *supposed* to sit there for the auto-close
+// grace window, so counting that time as time-in-status would tag a
+// healthy queue as a chokepoint. (Previously we tried to cap spans by
+// joining t.resolved_at, but that column gets rewritten on reopens, so
+// prior Resolved spans went uncapped and the bucket dominated the
+// chart.)
 //
 // Query params:
 //   project_id — restrict to one project (optional). Otherwise scoped
@@ -408,7 +416,17 @@ router.get('/time-in-status', requireAuth, async (req, res) => {
     }
 
     const params = [];
-    const where = [`al.action = 'status_change'`];
+    const where = [
+      `al.action = 'status_change'`,
+      // Exclude resolved-pending-close statuses (Resolved sits 3 days
+      // by design) and terminal statuses (Closed sits forever). Both
+      // would dominate the chart for non-chokepoint reasons.
+      `al.new_value NOT IN (
+         SELECT name FROM statuses
+         WHERE kind = 'internal'
+           AND (semantic_tag = 'resolved_pending_close' OR is_terminal = TRUE)
+       )`,
+    ];
     if (req.query.project_id) {
       params.push(Number(req.query.project_id));
       where.push(`t.project_id = $${params.length}`);
@@ -434,7 +452,6 @@ router.get('/time-in-status', requireAuth, async (req, res) => {
            al.created_at AS entered_at,
            LEAST(
              LEAD(al.created_at) OVER (PARTITION BY al.ticket_id ORDER BY al.created_at),
-             t.resolved_at,
              NOW()
            ) AS left_at
          FROM audit_log al

@@ -78,7 +78,8 @@ function TimeInStatusCard() {
       <p className="text-xs text-fg-muted mb-3">
         Total time tickets have spent in each status over the last{" "}
         {days} days. Derived from status-change history; initial status
-        (before any change) isn't counted.
+        (before any change) isn't counted. Resolved and Closed are
+        excluded — tickets sit there by design, not as chokepoints.
       </p>
       <table className="w-full text-sm">
         <thead className="text-xs text-fg-muted">
