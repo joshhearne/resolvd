@@ -68,21 +68,27 @@ async function uniqueSlug(projectId, base, excludeId = null) {
 router.get('/projects', requireAuth, async (req, res) => {
   try {
     const user = req.session.user;
+    // Same starred join as /api/projects so the KB index honors the same
+    // per-user pins. Starred projects sort first, then alpha.
     const sql = user.role === 'Admin'
       ? `SELECT p.id, p.name, p.prefix,
                 (SELECT COUNT(*) FROM kb_articles a
-                  WHERE a.project_id = p.id AND a.status <> 'archived')::int AS article_count
+                  WHERE a.project_id = p.id AND a.status <> 'archived')::int AS article_count,
+                (sp.user_id IS NOT NULL) AS starred
            FROM projects p
+           LEFT JOIN user_starred_projects sp ON sp.project_id = p.id AND sp.user_id = $1
           WHERE p.status = 'active'
-          ORDER BY p.name`
+          ORDER BY starred DESC, p.name`
       : `SELECT p.id, p.name, p.prefix,
                 (SELECT COUNT(*) FROM kb_articles a
-                  WHERE a.project_id = p.id AND a.status <> 'archived')::int AS article_count
+                  WHERE a.project_id = p.id AND a.status <> 'archived')::int AS article_count,
+                (sp.user_id IS NOT NULL) AS starred
            FROM projects p
            JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = $1
+           LEFT JOIN user_starred_projects sp ON sp.project_id = p.id AND sp.user_id = $1
           WHERE p.status = 'active'
-          ORDER BY p.name`;
-    const r = await pool.query(sql, user.role === 'Admin' ? [] : [user.id]);
+          ORDER BY starred DESC, p.name`;
+    const r = await pool.query(sql, [user.id]);
     res.json(r.rows);
   } catch (err) {
     console.error('kb projects list:', err);

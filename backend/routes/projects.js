@@ -18,23 +18,27 @@ router.get('/', requireAuth, async (req, res) => {
         SELECT p.*,
           u.display_name as created_by_name,
           (SELECT COUNT(*) FROM tickets t WHERE t.project_id = p.id)::int as ticket_count,
-          (SELECT COUNT(*) FROM project_members pm WHERE pm.project_id = p.id)::int as member_count
+          (SELECT COUNT(*) FROM project_members pm WHERE pm.project_id = p.id)::int as member_count,
+          (sp.user_id IS NOT NULL) AS starred
         FROM projects p
         LEFT JOIN users u ON p.created_by = u.id
-        ORDER BY p.status ASC, p.name ASC
-      `);
+        LEFT JOIN user_starred_projects sp ON sp.project_id = p.id AND sp.user_id = $1
+        ORDER BY p.status ASC, starred DESC, p.name ASC
+      `, [user.id]);
     } else {
       result = await pool.query(`
         SELECT p.*,
           u.display_name as created_by_name,
           (SELECT COUNT(*) FROM tickets t WHERE t.project_id = p.id)::int as ticket_count,
           (SELECT COUNT(*) FROM project_members pm2 WHERE pm2.project_id = p.id)::int as member_count,
-          pm.role_override
+          pm.role_override,
+          (sp.user_id IS NOT NULL) AS starred
         FROM projects p
         JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = $1
         LEFT JOIN users u ON p.created_by = u.id
+        LEFT JOIN user_starred_projects sp ON sp.project_id = p.id AND sp.user_id = $1
         WHERE p.status = 'active'
-        ORDER BY p.name ASC
+        ORDER BY starred DESC, p.name ASC
       `, [user.id]);
     }
 

@@ -230,6 +230,45 @@ router.patch('/me/prefs', requireAuth, async (req, res) => {
   }
 });
 
+// Star / unstar a project for the calling user. Used by Projects +
+// KB index pages to float favored projects to the top. Multiple
+// projects can be starred. Membership is not enforced server-side —
+// the list endpoints already filter to projects the user can see, so
+// a starred-but-unreachable row simply doesn't appear (and the
+// user_starred_projects FK CASCADE cleans up on project delete).
+router.put('/me/starred-projects/:projectId', requireAuth, async (req, res) => {
+  const projectId = Number(req.params.projectId);
+  if (!Number.isInteger(projectId) || projectId <= 0) return res.status(400).json({ error: 'Bad project id' });
+  try {
+    const p = await pool.query('SELECT id FROM projects WHERE id = $1', [projectId]);
+    if (!p.rows[0]) return res.status(404).json({ error: 'Project not found' });
+    await pool.query(
+      `INSERT INTO user_starred_projects (user_id, project_id) VALUES ($1, $2)
+       ON CONFLICT DO NOTHING`,
+      [req.session.user.id, projectId]
+    );
+    res.json({ ok: true, starred: true });
+  } catch (err) {
+    console.error('star project:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+router.delete('/me/starred-projects/:projectId', requireAuth, async (req, res) => {
+  const projectId = Number(req.params.projectId);
+  if (!Number.isInteger(projectId) || projectId <= 0) return res.status(400).json({ error: 'Bad project id' });
+  try {
+    await pool.query(
+      'DELETE FROM user_starred_projects WHERE user_id = $1 AND project_id = $2',
+      [req.session.user.id, projectId]
+    );
+    res.json({ ok: true, starred: false });
+  } catch (err) {
+    console.error('unstar project:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
 // PATCH /api/users/me/profile — update own display name
 router.patch('/me/profile', requireAuth, async (req, res) => {
   try {

@@ -302,6 +302,24 @@ async function initSchema() {
     await client.query(`ALTER TABLE project_members ADD COLUMN IF NOT EXISTS is_agent BOOLEAN NOT NULL DEFAULT FALSE`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_project_members_agent ON project_members(project_id) WHERE is_agent = TRUE`);
 
+    // Per-user starred projects. Used by Projects + KB index pages to
+    // float favored projects to the top and (eventually) by anywhere
+    // else that lists projects. Composite PK + cascade keeps the table
+    // self-cleaning: deleting the user or project removes the row.
+    // Membership is NOT enforced here — admins can star projects they
+    // aren't members of (they see all projects); per-page list queries
+    // already filter to accessible projects so unreachable stars become
+    // dead rows harmlessly until the user re-stars somewhere visible.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS user_starred_projects (
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (user_id, project_id)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_starred_user ON user_starred_projects(user_id)`);
+
     // Status configuration tables (advisory transitions, suggested mappings).
     await client.query(`
       CREATE TABLE IF NOT EXISTS statuses (

@@ -103,6 +103,27 @@ export default function Projects() {
     }
   }
 
+  async function toggleStar(proj) {
+    const next = !proj.starred;
+    // Optimistic flip + re-sort so starred float up immediately.
+    setProjects((prev) => {
+      const flipped = prev.map((p) => (p.id === proj.id ? { ...p, starred: next } : p));
+      return [...flipped].sort((a, b) => {
+        if (a.status !== b.status) return a.status === "active" ? -1 : 1;
+        if (!!a.starred !== !!b.starred) return a.starred ? -1 : 1;
+        return a.name.localeCompare(b.name);
+      });
+    });
+    try {
+      if (next) await api.put(`/api/users/me/starred-projects/${proj.id}`, {});
+      else await api.delete(`/api/users/me/starred-projects/${proj.id}`);
+    } catch (err) {
+      toast.error(err.message || "Star toggle failed");
+      // Roll back on failure.
+      setProjects((prev) => prev.map((p) => (p.id === proj.id ? { ...p, starred: !next } : p)));
+    }
+  }
+
   const active = projects.filter((p) => p.status === "active");
   const archived = projects.filter((p) => p.status === "archived");
 
@@ -204,7 +225,7 @@ export default function Projects() {
         <div className="text-center text-fg-dim py-12">Loading…</div>
       ) : (
         <>
-          <ProjectTable projects={active} onToggleArchive={toggleArchive} />
+          <ProjectTable projects={active} onToggleArchive={toggleArchive} onToggleStar={toggleStar} />
           {archived.length > 0 && (
             <div>
               <h2 className="text-sm font-semibold text-fg-dim uppercase tracking-wide mb-2">
@@ -213,6 +234,7 @@ export default function Projects() {
               <ProjectTable
                 projects={archived}
                 onToggleArchive={toggleArchive}
+                onToggleStar={toggleStar}
               />
             </div>
           )}
@@ -227,13 +249,33 @@ export default function Projects() {
   );
 }
 
-function ProjectTable({ projects, onToggleArchive }) {
+function StarButton({ starred, onClick, title }) {
+  // Inline SVG keeps us off any icon-pack dependency. Filled gold when
+  // starred, outline-only when not. Click stops propagation so the row
+  // link / archive button next to it don't fire too.
+  return (
+    <button
+      type="button"
+      onClick={(e) => { e.preventDefault(); e.stopPropagation(); onClick(); }}
+      className={`p-1 rounded hover:bg-surface-2 transition-colors ${starred ? "text-amber-400" : "text-fg-dim hover:text-fg-muted"}`}
+      title={title || (starred ? "Unstar" : "Star")}
+      aria-label={title || (starred ? "Unstar" : "Star")}
+    >
+      <svg viewBox="0 0 24 24" fill={starred ? "currentColor" : "none"} stroke="currentColor" strokeWidth="1.6" className="w-4 h-4">
+        <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2"/>
+      </svg>
+    </button>
+  );
+}
+
+function ProjectTable({ projects, onToggleArchive, onToggleStar }) {
   if (projects.length === 0) return null;
   return (
     <div className="bg-surface border border-border rounded-lg shadow-sm overflow-hidden">
       <table className="min-w-full divide-y divide-border">
         <thead className="bg-surface-2">
           <tr>
+            <th className="w-8 px-2 py-2.5"></th>
             <th className="px-4 py-2.5 text-left text-xs font-medium text-fg-muted uppercase tracking-wide">
               Project
             </th>
@@ -255,6 +297,9 @@ function ProjectTable({ projects, onToggleArchive }) {
         <tbody className="divide-y divide-border">
           {projects.map((p) => (
             <tr key={p.id} className="hover:bg-surface-2 transition-colors">
+              <td className="px-2 py-3">
+                <StarButton starred={!!p.starred} onClick={() => onToggleStar(p)} />
+              </td>
               <td className="px-4 py-3">
                 <Link
                   to={`/projects/${p.id}`}
