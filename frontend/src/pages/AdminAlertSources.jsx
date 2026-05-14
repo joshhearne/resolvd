@@ -108,13 +108,15 @@ export default function AdminAlertSources() {
   async function createSource(form) {
     try {
       const r = await api.post("/api/alert-sources", form);
-      // Action1 has no webhook channel, so the token is irrelevant — skip
-      // the "copy now" banner to avoid implying webhooks exist there.
-      if (form.preset !== "action1") {
+      // Action1 (and any future pull-only RMM) has no webhook channel,
+      // so the token is irrelevant — skip the "copy now" banner.
+      const vendor = form.vendor || form.preset;
+      const isPullOnly = vendor === "action1";
+      if (!isPullOnly) {
         setNewToken({ id: r.id, token: r.token });
-        toast.success("Source created — copy the token now");
+        toast.success("Integration created — copy the token now");
       } else {
-        toast.success("Source created — configure API credentials below");
+        toast.success("Integration created — configure API credentials below");
       }
       setShowCreate(false);
       await loadList();
@@ -151,6 +153,10 @@ export default function AdminAlertSources() {
     try {
       await api.delete(`/api/alert-sources/${id}`);
       if (selectedId === id) setSelectedId(null);
+      // If the newly-created token banner belongs to this source,
+      // clear it — otherwise it sticks around pointing at a row that
+      // no longer exists.
+      if (newToken?.id === id) setNewToken(null);
       await loadList();
     } catch (e) {
       toast.error(e.message);
@@ -189,6 +195,7 @@ export default function AdminAlertSources() {
       {showCreate && (
         <CreateForm
           presets={presets}
+          adapters={adapters}
           projects={projects}
           onCancel={() => setShowCreate(false)}
           onSubmit={createSource}
@@ -283,22 +290,85 @@ export default function AdminAlertSources() {
   );
 }
 
-function CreateForm({ presets, projects, onCancel, onSubmit }) {
-  const [form, setForm] = useState({
-    name: "",
-    preset: presets[0]?.name || "zabbix",
-    default_project_id: projects[0]?.id || "",
-    auto_resolve_on_recovery: false,
-  });
+// Registry-driven Add-integration form. Renders the credentialsSchema
+// fields the adapter declares (so adding NinjaOne / Datto / Action1
+// asks for the right inputs without code changes here). For
+// "Generic webhook" (no adapter), only name + project + the token are
+// needed — credentials live nowhere; the user maps payloads via the
+// field-map editor on the detail page after create.
+const GENERIC_VENDOR_OPT = {
+  vendor: "__generic__",
+  label: "Generic webhook (no adapter)",
+  kind: "webhook_only",
+  capabilities: ["alerts"],
+  credentialsSchema: [],
+};
+
+function CreateForm({ presets, adapters, projects, onCancel, onSubmit }) {
+  // Build a single dropdown list = registry adapters + the synthetic
+  // "generic webhook" option so users can onboard any vendor that can
+  // POST JSON without waiting for a code-side adapter.
+  const vendorOpts = [...adapters, GENERIC_VENDOR_OPT];
+  const [vendor, setVendor] = useState(vendorOpts[0]?.vendor || "");
+  const [name, setName] = useState("");
+  const [projectId, setProjectId] = useState(projects[0]?.id || "");
+  const [autoResolve, setAutoResolve] = useState(false);
+  const [creds, setCreds] = useState({});         // credentialsSchema fields keyed by name
+  const [picked, setPicked] = useState([]);       // capabilities[]
+
+  const adapter = vendorOpts.find((a) => a.vendor === vendor) || GENERIC_VENDOR_OPT;
+  const isGeneric = adapter.vendor === GENERIC_VENDOR_OPT.vendor;
+  const schema = adapter.credentialsSchema || [];
+  const allowedCaps = adapter.capabilities || ["alerts"];
+
+  // Reset creds + picked when vendor changes — different adapters
+  // expose different fields.
+  useEffect(() => {
+    const fresh = {};
+    for (const f of schema) fresh[f.name] = "";
+    setCreds(fresh);
+    setPicked(allowedCaps);
+  }, [vendor]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function handleSubmit(e) {
     e.preventDefault();
-    if (!form.name.trim()) return toast.error("Name required");
-    if (!form.default_project_id) return toast.error("Project required");
-    onSubmit({
-      ...form,
-      default_project_id: Number(form.default_project_id),
-    });
+    if (!name.trim()) return toast.error("Name required");
+    if (!projectId) return toast.error("Project required");
+    if (!picked.length) return toast.error("Pick at least one capability");
+    // Validate required credential fields per the schema.
+    for (const f of schema) {
+      if (f.required && !(creds[f.name] || "").trim()) {
+        return toast.error(`${f.label || f.name} required`);
+      }
+    }
+    const body = {
+      name: name.trim(),
+      default_project_id: Number(projectId),
+      auto_resolve_on_recovery: autoResolve,
+      capabilities: picked,
+    };
+    if (isGeneric) {
+      // Generic vendor maps to webhook-only kind. Backend stamps preset
+      // = vendor when missing; pick a stable string so the row doesn't
+      // collide with the named adapter slot.
+      body.vendor = "webhook";
+      body.kind = "webhook_only";
+    } else {
+      body.vendor = adapter.vendor;
+      body.kind = adapter.kind;
+    }
+    // Credential fields land at their declared column name. Backend
+    // route accepts api_url / api_client_id / api_token explicitly;
+    // unknown extras are ignored.
+    for (const f of schema) {
+      const v = (creds[f.name] || "").trim();
+      if (v) body[f.name] = v;
+    }
+    onSubmit(body);
+  }
+
+  function toggleCap(c) {
+    setPicked((prev) => prev.includes(c) ? prev.filter((x) => x !== c) : [...prev, c]);
   }
 
   return (
@@ -306,36 +376,45 @@ function CreateForm({ presets, projects, onCancel, onSubmit }) {
       onSubmit={handleSubmit}
       className="bg-surface border border-border rounded-lg p-4 grid grid-cols-1 sm:grid-cols-2 gap-3"
     >
-      <div className="sm:col-span-2 text-sm font-semibold text-fg">New alert source</div>
+      <div className="sm:col-span-2 text-sm font-semibold text-fg">New integration</div>
+
+      <label className="text-xs text-fg-muted flex flex-col gap-1">
+        Vendor
+        <select
+          value={vendor}
+          onChange={(e) => setVendor(e.target.value)}
+          className="bg-surface-2 border border-border rounded px-2 py-1 text-sm"
+        >
+          {vendorOpts.map((a) => (
+            <option key={a.vendor} value={a.vendor}>
+              {a.label} {a.kind ? `· ${a.kind}` : ""}
+            </option>
+          ))}
+        </select>
+        {isGeneric && (
+          <span className="text-[11px] text-fg-dim mt-0.5">
+            Use for any tool that can POST JSON. Map payloads via the
+            field-map editor after creating.
+          </span>
+        )}
+      </label>
+
       <label className="text-xs text-fg-muted flex flex-col gap-1">
         Name
         <input
-          value={form.name}
-          onChange={(e) => setForm((f) => ({ ...f, name: e.target.value }))}
-          placeholder="Production Zabbix"
+          value={name}
+          onChange={(e) => setName(e.target.value)}
+          placeholder={isGeneric ? "Datto RMM (webhook)" : `Production ${adapter.label}`}
           className="bg-surface-2 border border-border rounded px-2 py-1 text-sm"
           required
         />
       </label>
-      <label className="text-xs text-fg-muted flex flex-col gap-1">
-        Preset
-        <select
-          value={form.preset}
-          onChange={(e) => setForm((f) => ({ ...f, preset: e.target.value }))}
-          className="bg-surface-2 border border-border rounded px-2 py-1 text-sm"
-        >
-          {presets.map((p) => (
-            <option key={p.name} value={p.name}>
-              {PRESET_LABELS[p.name] || p.name}
-            </option>
-          ))}
-        </select>
-      </label>
+
       <label className="text-xs text-fg-muted flex flex-col gap-1 sm:col-span-2">
         Default project
         <select
-          value={form.default_project_id}
-          onChange={(e) => setForm((f) => ({ ...f, default_project_id: e.target.value }))}
+          value={projectId}
+          onChange={(e) => setProjectId(e.target.value)}
           className="bg-surface-2 border border-border rounded px-2 py-1 text-sm"
           required
         >
@@ -347,11 +426,54 @@ function CreateForm({ presets, projects, onCancel, onSubmit }) {
           ))}
         </select>
       </label>
+
+      {/* Adapter-declared credential fields. Renders 0 inputs for
+          webhook-only vendors; the token comes from the create
+          response and is shown in the NewTokenBanner. */}
+      {schema.length > 0 && (
+        <>
+          <div className="sm:col-span-2 text-xs font-medium text-fg pt-1">
+            Credentials
+          </div>
+          {schema.map((f) => (
+            <label key={f.name} className="text-xs text-fg-muted flex flex-col gap-1 sm:col-span-2">
+              {f.label || f.name}
+              {f.required && <span className="text-red-500 inline ml-0.5">*</span>}
+              <input
+                type={f.kind === "secret" ? "password" : (f.kind === "url" ? "url" : "text")}
+                value={creds[f.name] || ""}
+                onChange={(e) => setCreds((prev) => ({ ...prev, [f.name]: e.target.value }))}
+                placeholder={f.kind === "url" ? "https://…" : ""}
+                className="bg-surface-2 border border-border rounded px-2 py-1 text-sm font-mono"
+                autoComplete={f.kind === "secret" ? "new-password" : "off"}
+              />
+              {f.encrypted && (
+                <span className="text-[11px] text-fg-dim">Encrypted at rest.</span>
+              )}
+            </label>
+          ))}
+        </>
+      )}
+
+      <div className="sm:col-span-2 text-xs font-medium text-fg pt-1">Capabilities</div>
+      <div className="sm:col-span-2 grid grid-cols-2 sm:grid-cols-3 gap-2">
+        {allowedCaps.map((c) => (
+          <label key={c} className="flex items-center gap-2 text-xs text-fg-muted">
+            <input
+              type="checkbox"
+              checked={picked.includes(c)}
+              onChange={() => toggleCap(c)}
+            />
+            {c}
+          </label>
+        ))}
+      </div>
+
       <label className="text-xs text-fg-muted inline-flex items-center gap-2 sm:col-span-2">
         <input
           type="checkbox"
-          checked={form.auto_resolve_on_recovery}
-          onChange={(e) => setForm((f) => ({ ...f, auto_resolve_on_recovery: e.target.checked }))}
+          checked={autoResolve}
+          onChange={(e) => setAutoResolve(e.target.checked)}
         />
         Auto-resolve ticket when alert recovers
       </label>

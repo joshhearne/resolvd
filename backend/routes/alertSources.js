@@ -79,59 +79,163 @@ router.get('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
 });
 
 // POST /api/alert-sources — create. Returns the raw token ONCE.
+//
+// Two creation modes:
+//   * Legacy preset path: { preset: 'action1'|'zabbix', ... }. Backfills
+//     vendor + kind + capabilities from the preset (keeps every existing
+//     client working without changes).
+//   * Registry path: { vendor: 'ninjaone'|'datto'|'whatever',
+//                      capabilities?: [...], api_url?, api_client_id?,
+//                      api_token? }. Vendor must match a registered
+//                      adapter OR be flagged as a webhook-only generic
+//                      integration (kind='webhook_only', caps=['alerts']
+//                      default) for unsupported vendors.
+//
+// preset stays in the row for back-compat (legacy mappers / route URL
+// /api/webhooks/:preset/:token still resolve through it). vendor +
+// capabilities are the new source of truth for behavior.
 router.post('/', requireAuth, requireRole('Admin'), async (req, res) => {
+  const client = await pool.connect();
   try {
+    await client.query('BEGIN');
     const {
       name,
-      preset,
+      preset: presetIn,
+      vendor: vendorIn,
+      kind: kindIn,
+      capabilities: capsIn,
       default_project_id,
       default_assignee_id,
       severity_map,
       auto_resolve_on_recovery,
       enabled,
+      api_url,
+      api_client_id,
+      api_token,
     } = req.body || {};
 
-    if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name required' });
-    if (!PRESET_NAMES.includes(preset)) {
-      return res.status(400).json({ error: `Unknown preset. Choose: ${PRESET_NAMES.join(', ')}` });
+    if (!name || typeof name !== 'string') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'name required' });
     }
-    if (!default_project_id) return res.status(400).json({ error: 'default_project_id required' });
+    if (!default_project_id) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'default_project_id required' });
+    }
 
-    const proj = await pool.query(
+    // Resolve vendor + preset + kind + caps. Caller can pass any of
+    // (vendor, preset) — we normalize to both columns so legacy
+    // readers and the new registry path stay happy.
+    const registry = require('../services/integrations/registry');
+    let vendor = vendorIn ? String(vendorIn).trim() : null;
+    let preset = presetIn ? String(presetIn).trim() : null;
+    if (!vendor && preset) vendor = preset;
+    if (!preset && vendor) preset = vendor;
+    if (!vendor) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'vendor or preset required' });
+    }
+
+    const adapter = registry.get(vendor);
+    let kind = kindIn || adapter?.kind || 'webhook_only';
+    if (!['rmm', 'monitor', 'webhook_only'].includes(kind)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'kind must be rmm | monitor | webhook_only' });
+    }
+
+    const ALLOWED_CAPS = ['alerts', 'inventory', 'software', 'vulnerabilities', 'companies'];
+    let capabilities;
+    if (Array.isArray(capsIn) && capsIn.length) {
+      const bad = capsIn.find((c) => !ALLOWED_CAPS.includes(c));
+      if (bad) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: `capabilities: unknown value '${bad}'` });
+      }
+      // Adapter declares the upper bound — narrowing is fine, widening
+      // beyond what the adapter supports is not (would have no effect
+      // anyway but better to fail loud than silent).
+      if (adapter && Array.isArray(adapter.capabilities)) {
+        const overReach = capsIn.find((c) => !adapter.capabilities.includes(c));
+        if (overReach) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: `capabilities: '${overReach}' not supported by ${vendor} adapter` });
+        }
+      }
+      capabilities = capsIn;
+    } else if (adapter && Array.isArray(adapter.capabilities)) {
+      capabilities = adapter.capabilities;
+    } else {
+      capabilities = ['alerts'];
+    }
+
+    const proj = await client.query(
       `SELECT id FROM projects WHERE id = $1 AND status = 'active'`,
       [Number(default_project_id)]
     );
-    if (!proj.rows[0]) return res.status(404).json({ error: 'Project not found or archived' });
+    if (!proj.rows[0]) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Project not found or archived' });
+    }
 
     const token = generateToken();
     const tokenHash = hashToken(token);
+    const defaultSevMap = adapter?.defaultSeverityMap
+      || PRESET_DEFAULT_SEVERITY_MAPS[preset]
+      || {};
     const sevMap = severity_map && typeof severity_map === 'object' && !Array.isArray(severity_map)
       ? severity_map
-      : (PRESET_DEFAULT_SEVERITY_MAPS[preset] || {});
+      : defaultSevMap;
 
-    const r = await pool.query(
+    const r = await client.query(
       `INSERT INTO external_alert_source
-         (name, preset, token_hash, default_project_id, default_assignee_id,
-          severity_map, auto_resolve_on_recovery, enabled, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9)
+         (name, preset, vendor, kind, capabilities, token_hash,
+          default_project_id, default_assignee_id, severity_map,
+          auto_resolve_on_recovery, enabled, api_url, api_client_id,
+          created_by)
+       VALUES ($1,$2,$3,$4,$5::text[],$6,$7,$8,$9::jsonb,$10,$11,$12,$13,$14)
        RETURNING *`,
       [
         name.trim(),
         preset,
+        vendor,
+        kind,
+        capabilities,
         tokenHash,
         Number(default_project_id),
         default_assignee_id ? Number(default_assignee_id) : null,
         JSON.stringify(sevMap),
         !!auto_resolve_on_recovery,
         enabled !== false,
+        api_url ? String(api_url).trim() : null,
+        api_client_id ? String(api_client_id).trim() : null,
         req.session.user.id,
       ]
     );
+    const row = r.rows[0];
 
-    res.status(201).json({ ...publicRow(r.rows[0]), token });
+    // api_token rides through buildWritePatch so it lands in the
+    // encrypted-at-rest column under standard mode.
+    if (api_token && String(api_token).trim()) {
+      const patch = await buildWritePatch(client, 'external_alert_source', {
+        api_token: String(api_token).trim(),
+      });
+      if (patch.cols.length) {
+        const sets = patch.cols.map((c, i) => `${c} = $${i + 1}`).join(', ');
+        await client.query(
+          `UPDATE external_alert_source SET ${sets} WHERE id = $${patch.cols.length + 1}`,
+          [...patch.values, row.id]
+        );
+      }
+    }
+
+    await client.query('COMMIT');
+    res.status(201).json({ ...publicRow(row), token });
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
     console.error('alert-source create error:', err);
     res.status(500).json({ error: 'Database error' });
+  } finally {
+    client.release();
   }
 });
 
