@@ -723,24 +723,6 @@ export default function TicketDetail() {
         <span className="font-mono text-fg">{ticket.internal_ref}</span>
       </nav>
 
-      <KnowledgePanel
-        ticketId={ticket.id}
-        projectId={ticket.project_id}
-        canEdit={canEdit}
-        isAdmin={isAdmin}
-        ticketResolved={!!ticket.resolved_at}
-        ticketRef={ticket.internal_ref}
-        resolutionSummary={ticket.resolution_summary}
-        onResolutionChange={async (next) => {
-          try {
-            await api.patch(`/api/tickets/${ticket.id}`, { resolution_summary: next });
-            const refreshed = await api.get(`/api/tickets/${ticket.id}`);
-            setTicket(refreshed);
-            toast.success(next ? "Resolution saved" : "Resolution cleared");
-          } catch (e) { toast.error(e.message); }
-        }}
-      />
-
       {/* Header */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
         <div className="flex-1 min-w-0">
@@ -1267,7 +1249,7 @@ export default function TicketDetail() {
             )}
           </div>
 
-          {/* Comments + Audit + Attachments tabs */}
+          {/* Comments + Attachments + Resolution + Audit tabs */}
           <div className="bg-surface rounded-lg border border-border shadow-sm">
             <div className="flex border-b border-border">
               <button
@@ -1282,6 +1264,19 @@ export default function TicketDetail() {
               >
                 Attachments{" "}
                 {attachments.length > 0 && `(${attachments.length})`}
+              </button>
+              <button
+                onClick={() => setActiveTab("resolution")}
+                className={`relative px-4 py-3 text-sm font-medium transition-colors ${activeTab === "resolution" ? "border-b-2 border-brand text-brand" : "text-fg-muted hover:text-fg"}`}
+                title="Record how this was fixed and link KB articles"
+              >
+                Resolution
+                {canEdit && !!ticket.resolved_at && !ticket.resolution_summary && (
+                  <span
+                    className="ml-1.5 inline-flex h-2 w-2 rounded-full bg-amber-500 animate-pulse align-middle"
+                    aria-label="Fix not yet recorded"
+                  />
+                )}
               </button>
               <button
                 onClick={() => setActiveTab("audit")}
@@ -1620,6 +1615,29 @@ export default function TicketDetail() {
                     ))}
                   </ul>
                 )}
+              </div>
+            )}
+
+            {activeTab === "resolution" && (
+              <div className="p-4">
+                <KnowledgePanel
+                  ticketId={ticket.id}
+                  projectId={ticket.project_id}
+                  canEdit={canEdit}
+                  isAdmin={isAdmin}
+                  ticketResolved={!!ticket.resolved_at}
+                  ticketRef={ticket.internal_ref}
+                  ticketExternalStatus={ticket.external_status}
+                  resolutionSummary={ticket.resolution_summary}
+                  onResolutionChange={async (next) => {
+                    try {
+                      await api.patch(`/api/tickets/${ticket.id}`, { resolution_summary: next });
+                      const refreshed = await api.get(`/api/tickets/${ticket.id}`);
+                      setTicket(refreshed);
+                      toast.success(next ? "Resolution saved" : "Resolution cleared");
+                    } catch (e) { toast.error(e.message); }
+                  }}
+                />
               </div>
             )}
 
@@ -2685,7 +2703,7 @@ function AssetLinkCard({ ticket, projectId, canEdit, onLink }) {
 //   DELETE /api/kb/tickets/:id/links/:articleId
 //   PATCH  /api/tickets/:id { resolution_summary }
 // Read-only for non-Admin/Manager/Tech (canEdit gates writes).
-function KnowledgePanel({ ticketId, projectId, canEdit, isAdmin, ticketResolved, ticketRef, resolutionSummary, onResolutionChange }) {
+function KnowledgePanel({ ticketId, projectId, canEdit, isAdmin, ticketResolved, ticketRef, ticketExternalStatus, resolutionSummary, onResolutionChange }) {
   const [links, setLinks] = useState([]);
   const [suggestions, setSuggestions] = useState([]);
   const [picker, setPicker] = useState("");
@@ -2763,6 +2781,15 @@ function KnowledgePanel({ ticketId, projectId, canEdit, isAdmin, ticketResolved,
   // record the fix. Opt-in, not a forced modal.
   const showNudge = canEdit && ticketResolved && !resolutionSummary && links.length === 0;
 
+  // One-click escape hatch for tickets the vendor fixed for us — no
+  // internal write-up needed, but we still want the field populated so
+  // the nudge stops nagging and audits show why nothing was logged.
+  async function markVendorResolved() {
+    try {
+      await onResolutionChange("Resolved externally by vendor — no internal fix required.");
+    } catch (e) { /* onResolutionChange toasts on failure */ }
+  }
+
   async function promoteToKb() {
     if (!resolutionSummary || resolutionSummary.trim().length < 20) {
       toast.error("Add a resolution summary first (20+ chars).");
@@ -2778,9 +2805,9 @@ function KnowledgePanel({ ticketId, projectId, canEdit, isAdmin, ticketResolved,
   return (
     <div className="bg-surface border border-border rounded-lg p-3 space-y-3">
       {showNudge && (
-        <div className="bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 rounded p-2 text-xs flex items-start gap-2">
+        <div className="bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 rounded p-2 text-xs flex flex-wrap items-start gap-2">
           <span className="text-amber-700 dark:text-amber-300 font-medium">Record how this was fixed?</span>
-          <span className="text-amber-800 dark:text-amber-200 flex-1">
+          <span className="text-amber-800 dark:text-amber-200 flex-1 min-w-[180px]">
             Adding a resolution summary or linking a KB article helps the next person hit the same issue.
           </span>
           <button
@@ -2788,6 +2815,13 @@ function KnowledgePanel({ ticketId, projectId, canEdit, isAdmin, ticketResolved,
             className="text-amber-900 dark:text-amber-200 hover:underline font-medium whitespace-nowrap"
           >
             Add summary →
+          </button>
+          <button
+            onClick={markVendorResolved}
+            className="text-amber-900 dark:text-amber-200 hover:underline font-medium whitespace-nowrap"
+            title="Vendor handled it — skip logging an internal fix"
+          >
+            Resolved by vendor →
           </button>
         </div>
       )}
