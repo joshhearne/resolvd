@@ -170,6 +170,18 @@ async function tickWarnings() {
   let responseWarned = 0;
   let resolveWarned = 0;
 
+  // Terminal-status guard: a ticket in a status flagged is_terminal=true
+  // (Closed, etc.) is done — its SLA clocks should never fire warn /
+  // breach notifications even if resolved_at somehow got skipped. This
+  // is defense-in-depth on top of routes/tickets.js stamping resolved_at
+  // on terminal transitions.
+  const NOT_TERMINAL = `NOT EXISTS (
+    SELECT 1 FROM statuses s
+     WHERE s.kind = 'internal'
+       AND s.name = tickets.internal_status
+       AND s.is_terminal = TRUE
+  )`;
+
   const respWarn = await pool.query(
     `UPDATE tickets
         SET sla_response_warned = TRUE,
@@ -180,6 +192,7 @@ async function tickWarnings() {
         AND sla_response_breached = FALSE
         AND sla_paused_at IS NULL
         AND sla_response_warned = FALSE
+        AND ${NOT_TERMINAL}
       RETURNING id, internal_ref, title, title_enc, project_id, assigned_to, sla_response_due_at`
   );
   responseWarned = respWarn.rowCount;
@@ -194,6 +207,7 @@ async function tickWarnings() {
         AND sla_resolve_breached = FALSE
         AND sla_paused_at IS NULL
         AND sla_resolve_warned = FALSE
+        AND ${NOT_TERMINAL}
       RETURNING id, internal_ref, title, title_enc, project_id, assigned_to, sla_resolve_due_at`
   );
   resolveWarned = resWarn.rowCount;
@@ -217,6 +231,13 @@ async function tickWarnings() {
 async function tickBreaches() {
   let respondedBreached = 0;
   let resolveBreached = 0;
+  // See tickWarnings for the NOT_TERMINAL rationale.
+  const NOT_TERMINAL = `NOT EXISTS (
+    SELECT 1 FROM statuses s
+     WHERE s.kind = 'internal'
+       AND s.name = tickets.internal_status
+       AND s.is_terminal = TRUE
+  )`;
   const respDue = await pool.query(
     `UPDATE tickets
         SET sla_response_breached = TRUE,
@@ -226,6 +247,7 @@ async function tickBreaches() {
         AND sla_first_response_at IS NULL
         AND sla_paused_at IS NULL
         AND sla_response_breached = FALSE
+        AND ${NOT_TERMINAL}
       RETURNING id, internal_ref, title, title_enc, project_id, assigned_to`
   );
   respondedBreached = respDue.rowCount;
@@ -238,6 +260,7 @@ async function tickBreaches() {
         AND resolved_at IS NULL
         AND sla_paused_at IS NULL
         AND sla_resolve_breached = FALSE
+        AND ${NOT_TERMINAL}
       RETURNING id, internal_ref, title, title_enc, project_id, assigned_to`
   );
   resolveBreached = resDue.rowCount;

@@ -647,15 +647,27 @@ router.patch('/:id', requireAuth, async (req, res) => {
         if (body.internal_status === 'Reopened') {
           await auditLog(client, { ticketId: ticket.id, userId: user.id, action: 'reopened', note: 'Ticket reopened' });
         }
-        // Track resolved_at for auto-close grace window. Set when entering
-        // a resolved_pending_close-tagged status; clear on any other move.
+        // Track resolved_at — drives the auto-close grace window AND
+        // stops the SLA resolve clock. Stamp on entering either a
+        // resolved_pending_close-tagged status OR any terminal status
+        // (direct Open -> Closed without going through Resolved must
+        // still close the resolve clock, otherwise tickWarnings keeps
+        // firing on a closed ticket — see INC-0002 incident).
+        // Reopening / moving back to a non-resolved non-terminal
+        // status clears resolved_at so the clock resumes.
         const tagRow = await client.query(
-          `SELECT semantic_tag FROM statuses WHERE kind='internal' AND name=$1`,
+          `SELECT semantic_tag, is_terminal FROM statuses WHERE kind='internal' AND name=$1`,
           [body.internal_status]
         );
         const tag = tagRow.rows[0]?.semantic_tag || null;
+        const isTerminal = !!tagRow.rows[0]?.is_terminal;
         if (tag === 'resolved_pending_close') {
           updates.resolved_at = new Date().toISOString();
+        } else if (isTerminal) {
+          // Preserve prior resolved_at if one exists (closing a previously
+          // Resolved ticket shouldn't reset the resolve timestamp);
+          // otherwise stamp NOW so the resolve clock stops here.
+          updates.resolved_at = ticket.resolved_at || new Date().toISOString();
         } else {
           updates.resolved_at = null;
         }

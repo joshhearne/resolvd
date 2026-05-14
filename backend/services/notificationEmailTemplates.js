@@ -82,14 +82,42 @@ const RENDERERS = {
   },
 
   pending_review(payload) {
-    const { ticket_id, ticket_ref, ticket_title } = payload;
-    const subject = `[${ticket_ref}] Needs review — action required`;
+    const { ticket_id, ticket_ref, ticket_title, breach_kind, warning_kind } = payload;
+    // pending_review is reused by SLA breach + SLA warning fanouts (see
+    // notificationFanout.fanoutSlaBreach / fanoutSlaWarning). When the
+    // payload carries breach_kind / warning_kind, branch the subject +
+    // body so recipients can distinguish them from a real
+    // flagged-for-review notification. Without this branch every SLA
+    // event looked like a "Needs review — action required" email,
+    // which is misleading (the ticket might not be in Pending Review
+    // at all — see INC-0002 incident).
+    let subject;
+    let leadline;
+    let buttonLabel = 'Review Ticket';
+    if (breach_kind === 'response') {
+      subject = `[${ticket_ref}] SLA breach: response window missed`;
+      leadline = `No response was logged on <strong>${esc(ticket_ref)}</strong> before the response SLA expired.`;
+      buttonLabel = 'Open Ticket';
+    } else if (breach_kind === 'resolve') {
+      subject = `[${ticket_ref}] SLA breach: resolve window missed`;
+      leadline = `<strong>${esc(ticket_ref)}</strong> passed its resolve SLA target without being resolved.`;
+      buttonLabel = 'Open Ticket';
+    } else if (warning_kind === 'response') {
+      subject = `[${ticket_ref}] SLA warning: response window closing`;
+      leadline = `The response SLA on <strong>${esc(ticket_ref)}</strong> is about to expire.`;
+      buttonLabel = 'Open Ticket';
+    } else if (warning_kind === 'resolve') {
+      subject = `[${ticket_ref}] SLA warning: resolve window closing`;
+      leadline = `The resolve SLA on <strong>${esc(ticket_ref)}</strong> is about to expire.`;
+      buttonLabel = 'Open Ticket';
+    } else {
+      subject = `[${ticket_ref}] Needs review — action required`;
+      leadline = `Ticket <strong>${esc(ticket_ref)}</strong> has been flagged for review and requires your attention.`;
+    }
     const body = `
-      <p style="color:#374151;font-size:14px;margin:0 0 12px">
-        Ticket <strong>${esc(ticket_ref)}</strong> has been flagged for review and requires your attention.
-      </p>
+      <p style="color:#374151;font-size:14px;margin:0 0 12px">${leadline}</p>
       <p style="color:#374151;font-size:14px;margin:0 0 16px"><strong>${esc(ticket_title || '')}</strong></p>
-      ${viewButton(ticketUrl(ticket_id), 'Review Ticket', '#7c3aed')}`;
+      ${viewButton(ticketUrl(ticket_id), buttonLabel, '#7c3aed')}`;
     return { subject, body };
   },
 

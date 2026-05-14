@@ -460,7 +460,11 @@ async function fanoutSlaBreach(_unusedPool, { ticket, kind }) {
     await routeEmail({
       user,
       eventType: 'pending_review',
-      payload: { ticket_id: ticket.id, ticket_ref: ticketRef, ticket_title: ticketTitle },
+      // Include breach_kind so the email renderer branches the subject /
+      // body to "SLA breach: response/resolve window missed" instead of
+      // the generic "Needs review — action required" — recipients get a
+      // clearer signal of what actually fired.
+      payload: { ticket_id: ticket.id, ticket_ref: ticketRef, ticket_title: ticketTitle, breach_kind: kind },
       ticketId: ticket.id,
       projectId: ticket.project_id,
       bypassDigest: true,
@@ -504,11 +508,12 @@ async function fanoutSlaWarning(_unusedPool, { ticket, kind }) {
       payload,
     });
     // Email immediately — warnings are pre-breach and want to land while
-    // there's still time to act.
+    // there's still time to act. Carry warning_kind so the email
+    // renderer can branch the subject to a warning-specific line.
     await routeEmail({
       user,
       eventType: 'pending_review',
-      payload: { ticket_id: ticket.id, ticket_ref: ticketRef, ticket_title: ticketTitle },
+      payload: { ticket_id: ticket.id, ticket_ref: ticketRef, ticket_title: ticketTitle, warning_kind: kind },
       ticketId: ticket.id,
       projectId: ticket.project_id,
       bypassDigest: true,
