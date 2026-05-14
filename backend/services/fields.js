@@ -46,6 +46,9 @@ const FIELD_MAP = {
   comments: {
     body: 'body_enc',
   },
+  ticket_notes: {
+    body: 'body_enc',
+  },
   audit_log: {
     old_value: 'old_value_enc',
     new_value: 'new_value_enc',

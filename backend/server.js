@@ -13,6 +13,7 @@ const inviteRoutes = require('./routes/invites');
 const authSettingsRoutes = require('./routes/authSettings');
 const ticketRoutes = require('./routes/tickets');
 const commentRoutes = require('./routes/comments');
+const ticketNoteRoutes = require('./routes/ticketNotes');
 const userRoutes = require('./routes/users');
 const dashboardRoutes = require('./routes/dashboard');
 const viewRoutes = require('./routes/views');
@@ -101,6 +102,7 @@ app.use('/api/invites', inviteRoutes);
 app.use('/api/auth-settings', authSettingsRoutes);
 app.use('/api/tickets', ticketRoutes);
 app.use('/api/tickets', commentRoutes);
+app.use('/api/tickets', ticketNoteRoutes);
 // commentRoutes also mounts /comments/:id/mute|unmute at /api/comments/...
 app.use('/api', commentRoutes);
 app.use('/api/users', userRoutes);

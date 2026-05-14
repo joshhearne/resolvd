@@ -2194,6 +2194,23 @@ async function initSchema() {
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_kb_versions_article ON kb_article_versions(article_id, version_no DESC)`);
 
+    // Internal-only notes on a ticket, visible to handler roles only
+    // (Admin/Manager/Tech). Distinct from comments — never sent outbound,
+    // never visible to Submitters or Vendors. Body is encrypted under the
+    // same FIELD_MAP entry as comments.body so the standard-mode cutover
+    // covers it automatically.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ticket_notes (
+        id SERIAL PRIMARY KEY,
+        ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        body TEXT,
+        body_enc BYTEA,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_notes_ticket ON ticket_notes(ticket_id, created_at)`);
+
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');
