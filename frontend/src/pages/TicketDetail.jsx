@@ -293,6 +293,15 @@ export default function TicketDetail() {
   const [addFollowerId, setAddFollowerId] = useState("");
   const [showMobileActions, setShowMobileActions] = useState(false);
 
+  // Internal notes (Admin/Manager/Tech only). Server enforces visibility;
+  // we just don't render the tab for other roles. Vendor-filter dropdown
+  // on the Comments tab lives in this same client state so the toggle
+  // survives tab switches.
+  const [notes, setNotes] = useState([]);
+  const [noteDraft, setNoteDraft] = useState("");
+  const [savingNote, setSavingNote] = useState(false);
+  const [commentFilter, setCommentFilter] = useState("all"); // all | vendor | internal
+
   // Auto-surface a high-confidence KB suggestion on ticket open. The
   // Resolution tab also lists suggestions but only after the user clicks
   // in — banner gets eyeballs without an extra click. Dismissal is
@@ -385,16 +394,77 @@ export default function TicketDetail() {
       api.get(`/api/tickets/${id}/attachments`).catch(() => []),
       api.get(`/api/tickets/${id}/followers`).catch(() => []),
       api.get(`/api/tickets/${id}/contacts`).catch(() => []),
+      // Notes route is role-gated server-side; non-handlers get 403 and
+      // we silently swallow so the rest of the page still renders.
+      isAdmin ? api.get(`/api/tickets/${id}/notes`).catch(() => []) : Promise.resolve([]),
     ])
-      .then(([, audit, atts, fols, vcs]) => {
+      .then(([, audit, atts, fols, vcs, nts]) => {
         setAuditLog(audit);
         setAttachments(atts);
         setFollowers(fols);
         setVendorContacts(vcs);
+        setNotes(Array.isArray(nts) ? nts : []);
         setLoading(false);
       })
       .catch(() => setLoading(false));
-  }, [id, loadTicket]);
+  }, [id, loadTicket, isAdmin]);
+
+  async function addNote() {
+    const body = noteDraft.trim();
+    if (!body) return;
+    setSavingNote(true);
+    try {
+      const n = await api.post(`/api/tickets/${id}/notes`, { body });
+      setNotes((prev) => [...prev, n]);
+      setNoteDraft("");
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setSavingNote(false);
+    }
+  }
+
+  async function deleteNote(noteId) {
+    try {
+      await api.delete(`/api/tickets/${id}/notes/${noteId}`);
+      setNotes((prev) => prev.filter((n) => n.id !== noteId));
+    } catch (e) { toast.error(e.message); }
+  }
+
+  // Mode-switch helpers — let an agent flip a draft from one composer
+  // to the other without copy/paste. Comment->Note posts immediately
+  // (notes have no extra knobs). Note->Comment transfers text into the
+  // comment composer and jumps to that tab so the agent can still
+  // choose vendor-share / canned response / etc. before posting.
+  async function commentDraftToNote() {
+    const body = commentBody.trim();
+    if (!body) return;
+    if (commentFiles.length > 0) {
+      toast.error("Remove attached files before saving as a note (notes don't support attachments).");
+      return;
+    }
+    setSavingNote(true);
+    try {
+      const n = await api.post(`/api/tickets/${id}/notes`, { body });
+      setNotes((prev) => [...prev, n]);
+      setCommentBody("");
+      setCommentAiLogId(null);
+      setActiveTab("notes");
+      toast.success("Saved as internal note");
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setSavingNote(false);
+    }
+  }
+
+  function noteDraftToComment() {
+    const body = noteDraft.trim();
+    if (!body) return;
+    setCommentBody((cur) => cur && cur.trim() ? `${cur}\n\n${body}` : body);
+    setNoteDraft("");
+    setActiveTab("comments");
+  }
 
   // Scroll to and flash a highlighted comment (e.g. from a mention notification).
   useEffect(() => {
@@ -1348,6 +1418,16 @@ export default function TicketDetail() {
               >
                 Comments ({comments.length})
               </button>
+              {isAdmin && (
+                <button
+                  onClick={() => setActiveTab("notes")}
+                  className={`px-4 py-3 text-sm font-medium transition-colors ${activeTab === "notes" ? "border-b-2 border-brand text-brand" : "text-fg-muted hover:text-fg"}`}
+                  title="Internal notes — hidden from Submitters and Vendors"
+                >
+                  Notes{notes.length > 0 && ` (${notes.length})`}
+                  <span className="ml-1 text-[10px] text-fg-dim normal-case">internal</span>
+                </button>
+              )}
               <button
                 onClick={() => setActiveTab("attachments")}
                 className={`px-4 py-3 text-sm font-medium transition-colors ${activeTab === "attachments" ? "border-b-2 border-brand text-brand" : "text-fg-muted hover:text-fg"}`}
@@ -1378,14 +1458,34 @@ export default function TicketDetail() {
 
             {activeTab === "comments" && (
               <div className="p-4 space-y-4">
+                {comments.length > 0 && (
+                  <div className="flex items-center gap-2 text-xs">
+                    <label className="text-fg-muted">Show:</label>
+                    <select
+                      value={commentFilter}
+                      onChange={(e) => setCommentFilter(e.target.value)}
+                      className="bg-surface-2 border border-border rounded px-2 py-1 text-xs"
+                    >
+                      <option value="all">All</option>
+                      <option value="vendor">From vendor</option>
+                      <option value="internal">From us</option>
+                    </select>
+                  </div>
+                )}
                 {comments.length === 0 && (
                   <p className="text-sm text-fg-dim text-center py-4">
                     No comments yet
                   </p>
                 )}
                 {(() => {
-                  const visible = comments.filter(c => !c.is_muted);
-                  const muted   = comments.filter(c =>  c.is_muted);
+                  const matchesFilter = (c) =>
+                    commentFilter === "all"
+                      ? true
+                      : commentFilter === "vendor"
+                      ? !!c.vendor_contact_id
+                      : !c.vendor_contact_id;
+                  const visible = comments.filter(c => !c.is_muted && matchesFilter(c));
+                  const muted   = comments.filter(c =>  c.is_muted && matchesFilter(c));
                   const renderComment = (c) => (
                     <div
                       key={c.id}
@@ -1616,9 +1716,81 @@ export default function TicketDetail() {
                           }
                         />
                       )}
+                      {isAdmin && (
+                        <button
+                          type="button"
+                          onClick={commentDraftToNote}
+                          disabled={savingNote || !commentBody.trim()}
+                          title="Save what you've typed as an internal note instead"
+                          className="ml-auto text-xs text-fg-muted hover:text-amber-600 disabled:opacity-40"
+                        >
+                          {savingNote ? "Saving…" : "Save as internal note →"}
+                        </button>
+                      )}
                     </div>
                   </form>
                 )}
+              </div>
+            )}
+
+            {activeTab === "notes" && isAdmin && (
+              <div className="p-4 space-y-3">
+                <div className="text-xs text-fg-muted bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded px-2 py-1.5">
+                  Internal notes are visible only to handlers (Admin / Manager / Tech).
+                  Submitters and vendors never see this content.
+                </div>
+                {notes.length === 0 && (
+                  <p className="text-sm text-fg-dim text-center py-4">
+                    No internal notes yet.
+                  </p>
+                )}
+                {notes.map((n) => (
+                  <div key={n.id} className="rounded-lg p-3 bg-amber-50/40 dark:bg-amber-950/20 border border-amber-200/60 dark:border-amber-800/60">
+                    <div className="flex items-center justify-between mb-1 gap-2 flex-wrap">
+                      <span className="text-xs font-semibold text-fg-muted">
+                        {n.user_name || "Unknown"}
+                        <span className="ml-1.5 text-[10px] px-1 py-0.5 rounded bg-amber-200/70 dark:bg-amber-800/60 text-amber-900 dark:text-amber-100 uppercase">internal</span>
+                      </span>
+                      <span className="flex items-center gap-2">
+                        {(n.user_id === user?.id || user?.role === "Admin") && (
+                          <button
+                            onClick={() => deleteNote(n.id)}
+                            className="text-[11px] text-fg-dim hover:text-red-500"
+                          >Delete</button>
+                        )}
+                        <HybridTime dt={n.created_at} className="text-xs text-fg-dim" />
+                      </span>
+                    </div>
+                    <MarkdownContent>{n.body}</MarkdownContent>
+                  </div>
+                ))}
+                <div className="border-t border-border pt-3 space-y-2">
+                  <textarea
+                    value={noteDraft}
+                    onChange={(e) => setNoteDraft(e.target.value)}
+                    placeholder="Add an internal note (markdown ok). Not visible to submitters or vendors."
+                    rows={3}
+                    className="w-full bg-surface-2 border border-border rounded px-2 py-1.5 text-sm"
+                  />
+                  <div className="flex items-center gap-2 flex-wrap">
+                    <button
+                      onClick={addNote}
+                      disabled={savingNote || !noteDraft.trim()}
+                      className="text-sm px-3 py-1 bg-brand text-white rounded disabled:opacity-50"
+                    >
+                      {savingNote ? "Saving…" : "Add note"}
+                    </button>
+                    <button
+                      type="button"
+                      onClick={noteDraftToComment}
+                      disabled={!noteDraft.trim()}
+                      title="Move this draft into the Comment composer instead"
+                      className="ml-auto text-xs text-fg-muted hover:text-brand disabled:opacity-40"
+                    >
+                      Send as comment instead →
+                    </button>
+                  </div>
+                </div>
               </div>
             )}
 
