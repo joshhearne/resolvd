@@ -293,10 +293,58 @@ export default function TicketDetail() {
   const [addFollowerId, setAddFollowerId] = useState("");
   const [showMobileActions, setShowMobileActions] = useState(false);
 
+  // Auto-surface a high-confidence KB suggestion on ticket open. The
+  // Resolution tab also lists suggestions but only after the user clicks
+  // in — banner gets eyeballs without an extra click. Dismissal is
+  // session-scoped per ticket so it doesn't re-pop on every refresh.
+  const KB_HINT_THRESHOLD = 0.45;
+  const [topKbHit, setTopKbHit] = useState(null);
+  const [kbHintDismissed, setKbHintDismissed] = useState(false);
+
   useEffect(() => {
     if (!isAdmin) return;
     api.get("/api/users").then(setAllUsers).catch(() => setAllUsers([]));
   }, [isAdmin]);
+
+  useEffect(() => {
+    if (!ticket?.id) return;
+    // Don't bother if the ticket already has linked KB articles or a
+    // resolution summary — operator either already knows or already
+    // handled it.
+    if (ticket.resolution_summary) return;
+    const dismissKey = `kb_hint_dismissed_${ticket.id}`;
+    if (sessionStorage.getItem(dismissKey)) { setKbHintDismissed(true); return; }
+    let cancelled = false;
+    (async () => {
+      try {
+        const [s, links] = await Promise.all([
+          api.get(`/api/kb/tickets/${ticket.id}/suggestions?limit=1`),
+          api.get(`/api/kb/tickets/${ticket.id}/links`).catch(() => []),
+        ]);
+        if (cancelled) return;
+        if (links && links.length > 0) return;
+        const top = Array.isArray(s) && s[0];
+        if (top && Number(top.sim) >= KB_HINT_THRESHOLD) setTopKbHit(top);
+      } catch { /* silent — banner is a nice-to-have */ }
+    })();
+    return () => { cancelled = true; };
+  }, [ticket?.id, ticket?.resolution_summary]);
+
+  function dismissKbHint() {
+    if (ticket?.id) sessionStorage.setItem(`kb_hint_dismissed_${ticket.id}`, '1');
+    setKbHintDismissed(true);
+  }
+  async function linkSuggestedKb() {
+    if (!topKbHit) return;
+    try {
+      await api.post(`/api/kb/tickets/${ticket.id}/links`, {
+        article_id: topKbHit.article_id,
+        kind: 'suggested_accepted',
+      });
+      toast.success('Article linked to ticket');
+      setTopKbHit(null);
+    } catch (e) { toast.error(e.message); }
+  }
 
   const [project, setProject] = useState(null);
   useEffect(() => {
@@ -722,6 +770,48 @@ export default function TicketDetail() {
         <span className="mx-1.5">›</span>
         <span className="font-mono text-fg">{ticket.internal_ref}</span>
       </nav>
+
+      {topKbHit && !kbHintDismissed && (
+        <div className="bg-brand/5 border border-brand/30 rounded-lg p-3 flex flex-wrap items-start gap-3">
+          <div className="flex-1 min-w-[200px]">
+            <div className="text-xs font-semibold text-brand uppercase tracking-wide mb-1">
+              Possible KB match
+            </div>
+            <Link
+              to={`/kb/${topKbHit.project_id}/${topKbHit.slug}`}
+              className="text-sm font-medium text-fg hover:underline"
+            >
+              {topKbHit.title}
+            </Link>
+            <span className="ml-2 text-xs text-fg-dim font-mono">
+              {Number(topKbHit.sim).toFixed(2)}
+            </span>
+          </div>
+          <div className="flex items-center gap-2">
+            <Link
+              to={`/kb/${topKbHit.project_id}/${topKbHit.slug}`}
+              className="text-xs px-2 py-1 rounded border border-border text-fg hover:bg-surface-2"
+            >
+              View
+            </Link>
+            {canEdit && (
+              <button
+                onClick={linkSuggestedKb}
+                className="text-xs px-2 py-1 rounded bg-brand text-white hover:opacity-90"
+              >
+                Link to ticket
+              </button>
+            )}
+            <button
+              onClick={dismissKbHint}
+              className="text-xs text-fg-muted hover:text-fg px-2"
+              title="Dismiss for this session"
+            >
+              ×
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* Header */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
