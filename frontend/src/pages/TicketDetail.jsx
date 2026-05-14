@@ -727,6 +727,9 @@ export default function TicketDetail() {
         ticketId={ticket.id}
         projectId={ticket.project_id}
         canEdit={canEdit}
+        isAdmin={isAdmin}
+        ticketResolved={!!ticket.resolved_at}
+        ticketRef={ticket.internal_ref}
         resolutionSummary={ticket.resolution_summary}
         onResolutionChange={async (next) => {
           try {
@@ -2682,7 +2685,7 @@ function AssetLinkCard({ ticket, projectId, canEdit, onLink }) {
 //   DELETE /api/kb/tickets/:id/links/:articleId
 //   PATCH  /api/tickets/:id { resolution_summary }
 // Read-only for non-Admin/Manager/Tech (canEdit gates writes).
-function KnowledgePanel({ ticketId, projectId, canEdit, resolutionSummary, onResolutionChange }) {
+function KnowledgePanel({ ticketId, projectId, canEdit, isAdmin, ticketResolved, ticketRef, resolutionSummary, onResolutionChange }) {
   const [links, setLinks] = useState([]);
   const [suggestions, setSuggestions] = useState([]);
   const [picker, setPicker] = useState("");
@@ -2755,8 +2758,40 @@ function KnowledgePanel({ ticketId, projectId, canEdit, resolutionSummary, onRes
     } finally { setResSaving(false); }
   }
 
+  // Close-time nudge: ticket is in a resolved/closed state but has
+  // neither a resolution summary nor any KB links — soft prompt to
+  // record the fix. Opt-in, not a forced modal.
+  const showNudge = canEdit && ticketResolved && !resolutionSummary && links.length === 0;
+
+  async function promoteToKb() {
+    if (!resolutionSummary || resolutionSummary.trim().length < 20) {
+      toast.error("Add a resolution summary first (20+ chars).");
+      return;
+    }
+    try {
+      const article = await api.post(`/api/kb/from-ticket/${ticketId}`, {});
+      toast.success("KB draft created from this ticket");
+      window.location.href = `/kb/${article.project_id}/${article.slug}/edit`;
+    } catch (e) { toast.error(e.message); }
+  }
+
   return (
     <div className="bg-surface border border-border rounded-lg p-3 space-y-3">
+      {showNudge && (
+        <div className="bg-amber-50 dark:bg-amber-950/40 border border-amber-300 dark:border-amber-700 rounded p-2 text-xs flex items-start gap-2">
+          <span className="text-amber-700 dark:text-amber-300 font-medium">Record how this was fixed?</span>
+          <span className="text-amber-800 dark:text-amber-200 flex-1">
+            Adding a resolution summary or linking a KB article helps the next person hit the same issue.
+          </span>
+          <button
+            onClick={() => setResEdit(true)}
+            className="text-amber-900 dark:text-amber-200 hover:underline font-medium whitespace-nowrap"
+          >
+            Add summary →
+          </button>
+        </div>
+      )}
+
       {/* Linked articles */}
       <div className="space-y-2">
         <div className="flex items-center justify-between">
@@ -2840,14 +2875,25 @@ function KnowledgePanel({ ticketId, projectId, canEdit, resolutionSummary, onRes
       <div className="border-t border-border pt-2 space-y-1">
         <div className="flex items-center justify-between">
           <div className="text-[11px] text-fg-muted uppercase tracking-wide">Resolution summary</div>
-          {canEdit && !resEdit && (
-            <button
-              onClick={() => setResEdit(true)}
-              className="text-[11px] text-brand hover:underline"
-            >
-              {resolutionSummary ? "Edit" : "Add"}
-            </button>
-          )}
+          <div className="flex items-center gap-2">
+            {isAdmin && resolutionSummary && (
+              <button
+                onClick={promoteToKb}
+                className="text-[11px] text-brand hover:underline"
+                title="Draft a KB article seeded with this resolution + the ticket description"
+              >
+                Promote to KB →
+              </button>
+            )}
+            {canEdit && !resEdit && (
+              <button
+                onClick={() => setResEdit(true)}
+                className="text-[11px] text-brand hover:underline"
+              >
+                {resolutionSummary ? "Edit" : "Add"}
+              </button>
+            )}
+          </div>
         </div>
         {resEdit ? (
           <div className="space-y-1">

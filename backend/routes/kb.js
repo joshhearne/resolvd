@@ -468,6 +468,103 @@ router.get('/tags', requireAuth, async (req, res) => {
   }
 });
 
+// POST /api/kb/from-ticket/:id — Promote-to-KB shortcut.
+// Drafts a new KB article seeded from the ticket (title, description,
+// resolution_summary), creates a kind='system' link back to the
+// ticket, returns the new article's slug. Admin / Manager only.
+// Project = ticket's project. Article status starts as 'draft' so
+// the admin can review + publish from the editor.
+router.post('/from-ticket/:id', requireAuth, async (req, res) => {
+  const user = req.session.user;
+  if (!['Admin', 'Manager'].includes(user.role)) {
+    return res.status(403).json({ error: 'Forbidden' });
+  }
+  const ticketId = Number(req.params.id);
+  if (!Number.isFinite(ticketId)) return res.status(400).json({ error: 'Bad ticket id' });
+
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const t = await client.query(
+      `SELECT id, project_id, internal_ref, title, title_enc,
+              description, description_enc,
+              resolution_summary, resolution_summary_enc
+         FROM tickets WHERE id = $1`,
+      [ticketId]
+    );
+    if (!t.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'Ticket not found' }); }
+    const ticket = t.rows[0];
+    if (!(await userCanReadProject(user, ticket.project_id))) {
+      await client.query('ROLLBACK');
+      return res.status(403).json({ error: 'Forbidden' });
+    }
+    // Decrypt the encrypted columns when standard mode is on.
+    const { decryptRow } = require('../services/fields');
+    await decryptRow('tickets', ticket);
+
+    const articleTitle = (ticket.title || `Untitled (${ticket.internal_ref})`).slice(0, 200);
+    const slug = await uniqueSlug(ticket.project_id, slugify(articleTitle));
+
+    // Seed body as BlockNote PartialBlock array. BlockNote drops
+    // inline runs without `styles: {}` (it parses initialContent
+    // strictly), which is why earlier seeded articles loaded blank.
+    // Always emit the full {type:'text', text, styles:{}} shape.
+    const desc = ticket.description || `Originally reported on ticket ${ticket.internal_ref}.`;
+    const resolution = ticket.resolution_summary || '(record the resolution here)';
+    const inline = (t) => [{ type: 'text', text: String(t), styles: {} }];
+    const blocks = [
+      { type: 'heading', props: { level: 2 }, content: inline('Symptom') },
+      { type: 'paragraph', content: inline(desc) },
+      { type: 'heading', props: { level: 2 }, content: inline('Resolution') },
+      { type: 'paragraph', content: inline(resolution) },
+    ];
+    const text = `Symptom\n${ticket.description || ''}\nResolution\n${ticket.resolution_summary || ''}`.trim();
+
+    // Cheap tag seed — project prefix slug + a short title-derived
+    // token (first 2 words past 3 chars). Admin will tune.
+    const proj = await client.query(`SELECT prefix FROM projects WHERE id = $1`, [ticket.project_id]);
+    const seedTags = new Set();
+    if (proj.rows[0]?.prefix) seedTags.add(String(proj.rows[0].prefix).toLowerCase());
+    for (const w of String(ticket.title || '').toLowerCase().split(/\s+/)) {
+      const clean = w.replace(/[^a-z0-9-_ ]/g, '');
+      if (clean.length >= 4 && seedTags.size < 4) seedTags.add(clean);
+    }
+
+    const ins = await client.query(
+      `INSERT INTO kb_articles
+         (project_id, slug, title, content_json, content_text, status,
+          tags, keywords, author_id, last_edited_by)
+       VALUES ($1,$2,$3,$4,$5,'draft', $6::text[], '{}'::text[], $7,$7)
+       RETURNING *`,
+      [ticket.project_id, slug, articleTitle, JSON.stringify(blocks), text, Array.from(seedTags), user.id]
+    );
+    const article = ins.rows[0];
+    await client.query(
+      `INSERT INTO kb_article_versions
+         (article_id, version_no, title, content_json, content_text, author_id, change_summary)
+       VALUES ($1, 1, $2, $3, $4, $5, $6)`,
+      [article.id, article.title, JSON.stringify(blocks), text, user.id,
+       `Drafted from ticket ${ticket.internal_ref}`]
+    );
+    // System-linked back to the ticket so the new article shows up in
+    // the Knowledge panel immediately.
+    await client.query(
+      `INSERT INTO ticket_kb_links (ticket_id, article_id, kind, created_by)
+       VALUES ($1, $2, 'system', $3)
+       ON CONFLICT DO NOTHING`,
+      [ticket.id, article.id, user.id]
+    );
+    await client.query('COMMIT');
+    res.status(201).json(article);
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('promote-to-kb:', err);
+    res.status(500).json({ error: 'Database error' });
+  } finally {
+    client.release();
+  }
+});
+
 // ─── Ticket ↔ KB linking ─────────────────────────────────────────────
 
 // Shared visibility check: caller must be able to read the ticket
