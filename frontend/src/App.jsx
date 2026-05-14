@@ -25,6 +25,7 @@ import AdminEmailBackends from "./pages/AdminEmailBackends";
 import AdminAiAssist from "./pages/AdminAiAssist";
 import AdminMerge from "./pages/AdminMerge";
 import AdminAlertSources from "./pages/AdminAlertSources";
+import AdminSoftwareAliases from "./pages/AdminSoftwareAliases";
 import AdminSystemHealth from "./pages/AdminSystemHealth";
 import AdminCannedResponses from "./pages/AdminCannedResponses";
 import AdminSlaPolicies from "./pages/AdminSlaPolicies";
@@ -182,6 +183,7 @@ function AppRoutes() {
           <Route path="merge" element={<AdminMerge />} />
           <Route path="alert-sources" element={<AdminAlertSources />} />
           <Route path="integrations" element={<AdminAlertSources />} />
+          <Route path="software-aliases" element={<AdminSoftwareAliases />} />
           <Route path="system-health" element={<AdminSystemHealth />} />
           <Route path="canned-responses" element={<AdminCannedResponses />} />
           <Route path="sla" element={<AdminSlaPolicies />} />

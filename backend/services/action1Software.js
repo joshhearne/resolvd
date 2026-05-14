@@ -167,6 +167,7 @@ async function syncSoftwareForAsset(assetId) {
   const startUrl = `${baseUrl}/api/3.0/apps/${encodeURIComponent(orgId)}/data/${encodeURIComponent(asset.source_external_id)}`;
   const list = await fetchPaged(baseUrl, accessToken, startUrl);
 
+  const { resolveSoftwareName } = require('./softwareAliases');
   let upserted = 0;
   for (const s of list) {
     const name = pickName(s);
@@ -175,16 +176,30 @@ async function syncSoftwareForAsset(assetId) {
     const vendor = pickVendor(s);
     const install_date = pickInstallDate(s);
     const size_bytes = pickSize(s);
+    // Alias-resolve against the admin-curated software_aliases table.
+    // Returns null when no alias matches — keep canonical_* NULL so the
+    // UI's "fallback to raw name" path kicks in.
+    const alias = await resolveSoftwareName({ name, vendor });
     await pool.query(
-      `INSERT INTO asset_software (asset_id, name, version, vendor, install_date, size_bytes, raw, updated_at)
-       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, NOW())
+      `INSERT INTO asset_software
+         (asset_id, name, version, vendor, install_date, size_bytes, raw,
+          canonical_name, canonical_vendor, last_alias_id, updated_at)
+       VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8, $9, $10, NOW())
        ON CONFLICT (asset_id, name, version) DO UPDATE SET
          vendor = EXCLUDED.vendor,
          install_date = EXCLUDED.install_date,
          size_bytes = EXCLUDED.size_bytes,
          raw = EXCLUDED.raw,
+         canonical_name = EXCLUDED.canonical_name,
+         canonical_vendor = EXCLUDED.canonical_vendor,
+         last_alias_id = EXCLUDED.last_alias_id,
          updated_at = NOW()`,
-      [asset.id, name, version, vendor, install_date, size_bytes, JSON.stringify(s)]
+      [
+        asset.id, name, version, vendor, install_date, size_bytes, JSON.stringify(s),
+        alias?.canonical_name || null,
+        alias?.canonical_vendor || null,
+        alias?.alias_id || null,
+      ]
     );
     upserted++;
   }

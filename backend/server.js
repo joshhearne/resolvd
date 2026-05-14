@@ -122,6 +122,7 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/push', pushRoutes);
 app.use('/api/system-health', systemHealthRoutes);
 app.use('/api/alert-sources', alertSourceRoutes);
+app.use('/api/software-aliases', require('./routes/softwareAliases'));
 app.use('/api/assets', assetRoutes);
 app.use('/api/asset-types', assetTypeRoutes);
 app.use('/api/canned-responses', cannedResponseRoutes);
