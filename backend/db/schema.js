@@ -1124,6 +1124,61 @@ async function initSchema() {
     // "Internal IT Infrastructure" all to one MOT company.
     await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS company_map JSONB NOT NULL DEFAULT '{}'::jsonb`);
 
+    // Phase 0 of the multi-vendor integrations refactor. New columns
+    // layered onto external_alert_source so it can model any RMM /
+    // monitor / webhook-only vendor, not just Action1 + Zabbix. The
+    // table will be renamed to `integrations` in a future release; for
+    // now we add an aliasing VIEW so new code can read by the better
+    // name without breaking existing routes.
+    //   vendor       — e.g. 'action1', 'ninjaone', 'datto', 'zabbix'.
+    //                  Backfilled from preset (1:1 for current installs).
+    //                  Adapter registry keys off this column.
+    //   kind         — coarse category for the admin UI: rmm /
+    //                  monitor / webhook_only. Drives default form
+    //                  rendering when an adapter doesn't fully declare
+    //                  its credentials schema yet.
+    //   capabilities — declared by the adapter. Drives which sections
+    //                  of the admin UI render (alerts tuning, inventory
+    //                  company override, software sync, etc.).
+    //   field_map    — generic JSON-path → resolvd-field tabular map.
+    //                  Supersedes attribute_map for new vendors; old
+    //                  rows continue using attribute_map until migrated.
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS vendor TEXT`);
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS kind TEXT`);
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS capabilities TEXT[] NOT NULL DEFAULT '{}'::text[]`);
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS field_map JSONB NOT NULL DEFAULT '{}'::jsonb`);
+
+    // Backfill vendor + kind + capabilities from the legacy preset
+    // column. Idempotent — only writes when the new columns are still
+    // empty / NULL so the admin's later edits aren't clobbered. After
+    // every install runs this once, the adapter registry takes over.
+    await client.query(`
+      UPDATE external_alert_source
+         SET vendor = COALESCE(vendor, preset),
+             kind = COALESCE(kind,
+               CASE preset
+                 WHEN 'action1' THEN 'rmm'
+                 WHEN 'zabbix'  THEN 'monitor'
+                 ELSE 'webhook_only'
+               END),
+             capabilities = CASE
+               WHEN array_length(capabilities, 1) IS NULL THEN
+                 CASE preset
+                   WHEN 'action1' THEN ARRAY['alerts','inventory','software','vulnerabilities','companies']::text[]
+                   WHEN 'zabbix'  THEN ARRAY['alerts']::text[]
+                   ELSE ARRAY['alerts']::text[]
+                 END
+               ELSE capabilities
+             END
+       WHERE vendor IS NULL OR kind IS NULL OR array_length(capabilities, 1) IS NULL
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_alert_source_vendor ON external_alert_source(vendor) WHERE vendor IS NOT NULL`);
+
+    // Forward-readers should use `integrations`. Old `external_alert_source`
+    // remains the writable table this release; next release renames the
+    // base table and drops the view in favor of the real name.
+    await client.query(`CREATE OR REPLACE VIEW integrations AS SELECT * FROM external_alert_source`);
+
     // Inventory module — one row per managed machine, scoped per source
     // system. source_external_id is the RMM's stable id for the device
     // (Action1 endpoint id, ConnectWise asset id, etc.). raw_data holds
