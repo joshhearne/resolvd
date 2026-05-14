@@ -62,7 +62,7 @@ export default function PhoneticPopover({ value, children, className = "" }) {
       onMouseLeave={() => setOpen(false)}
       onFocus={() => setOpen(true)}
       onBlur={() => setOpen(false)}
-      title={flat}
+      aria-label={flat}
     >
       {children ?? value}
       {open && tokens.length > 0 && createPortal(
