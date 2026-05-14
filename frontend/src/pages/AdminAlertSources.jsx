@@ -215,7 +215,7 @@ export default function AdminAlertSources() {
                     <span className="text-sm font-medium text-fg truncate">{s.name}</span>
                     {!s.enabled && (
                       <span className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-fg-dim/15 text-fg-dim">
-                        disabled
+                        alerting disabled
                       </span>
                     )}
                   </div>
@@ -591,6 +591,17 @@ function SourceDetail({ source, projects, presets, onBack, onPatch, onRotate, on
             </code>
             <CopyButton value={`${webhookUrlBase}/<your-token>`} />
           </div>
+          <p className="text-xs text-fg-muted pt-1">
+            Generic intake (works for any vendor — runs the registered
+            adapter when one matches, otherwise falls back to the field
+            map below):
+          </p>
+          <div className="flex items-center gap-2">
+            <code className="flex-1 text-xs bg-surface-2 rounded border border-border px-2 py-1.5 font-mono break-all">
+              {window.location.origin}/api/webhooks/in/&lt;your-token&gt;
+            </code>
+            <CopyButton value={`${window.location.origin}/api/webhooks/in/<your-token>`} />
+          </div>
         </div>
       )}
 
@@ -894,6 +905,10 @@ function SourceDetail({ source, projects, presets, onBack, onPatch, onRotate, on
         <CompanyMapSection source={source} onReload={onReload} />
       )}
 
+      <FieldMapSection source={source} onReload={onReload} />
+
+      <InboundEventsSection source={source} />
+
       <div className="space-y-2 pt-3 border-t border-border">
         <div className="text-sm font-medium text-fg">Recent events</div>
         {(!source.recent_events || source.recent_events.length === 0) ? (
@@ -1191,6 +1206,404 @@ function CompanyMapSection({ source, onReload }) {
           </tbody>
         </table>
       )}
+    </div>
+  );
+}
+
+// Tabular field-map editor. Vendor-agnostic: pull a JSON path from
+// the inbound payload, optionally transform, optionally enum-remap,
+// write to a known target. Powers the generic /api/webhooks/in/:token
+// intake. Falls back to the named adapter's mapper when one exists,
+// so this is for webhook-only vendors and overrides.
+const FIELD_MAP_TARGETS = [
+  { value: "external_event_id", label: "Event ID (required, dedup key)" },
+  { value: "event_type",        label: "Event type (problem | recovery)" },
+  { value: "severity",          label: "Severity (raw — mapped to priority below)" },
+  { value: "title",             label: "Title" },
+  { value: "description",       label: "Description (markdown ok)" },
+  { value: "vendor_ref",        label: "Vendor reference URL / id" },
+  { value: "user_email",        label: "Contact email (assigns to active user)" },
+];
+const TRANSFORM_KINDS = [
+  { value: "",               label: "(none)" },
+  { value: "trim",           label: "trim" },
+  { value: "lower",          label: "lower" },
+  { value: "upper",          label: "upper" },
+  { value: "regex_extract",  label: "regex extract" },
+  { value: "prepend",        label: "prepend" },
+  { value: "append",         label: "append" },
+  { value: "replace",        label: "replace (regex)" },
+];
+
+function newFieldMapRow() {
+  return { source_path: "", target: "title", transform: "", value_map_text: "" };
+}
+
+function FieldMapSection({ source, onReload }) {
+  function toEditorRows(rows) {
+    return (rows || []).map((r) => {
+      const base = {
+        source_path: r.source_path || "",
+        target: r.target || "title",
+        transform: "",
+        value_map_text: r.value_map ? JSON.stringify(r.value_map, null, 0) : "",
+      };
+      const t = r.transform;
+      if (typeof t === "string") {
+        base.transform = t;
+      } else if (t && typeof t === "object") {
+        base.transform = t.kind || "";
+        if (t.pattern != null) base.transform_pattern = t.pattern;
+        if (t.group != null) base.transform_group = t.group;
+        if (t.text != null) base.transform_text = t.text;
+        if (t.replacement != null) base.transform_replacement = t.replacement;
+      }
+      return base;
+    });
+  }
+  const [rows, setRows] = useState(() => toEditorRows(source.field_map?.rows));
+  const [saving, setSaving] = useState(false);
+  const [events, setEvents] = useState([]);
+  const [previewEventId, setPreviewEventId] = useState("");
+  const [preview, setPreview] = useState(null);
+
+  useEffect(() => {
+    setRows(toEditorRows(source.field_map?.rows));
+    setPreview(null);
+  }, [source.id, source.field_map]);
+
+  useEffect(() => {
+    api.get(`/api/alert-sources/${source.id}/inbound-events`)
+      .then(setEvents)
+      .catch(() => setEvents([]));
+  }, [source.id]);
+
+  function update(i, patch) {
+    setRows((prev) => prev.map((r, idx) => (idx === i ? { ...r, ...patch } : r)));
+  }
+  function remove(i) {
+    setRows((prev) => prev.filter((_, idx) => idx !== i));
+  }
+  function add() {
+    setRows((prev) => [...prev, newFieldMapRow()]);
+  }
+
+  function toServerRows() {
+    return rows.map((r) => {
+      const out = { source_path: r.source_path.trim(), target: r.target };
+      const kind = r.transform;
+      if (kind === "trim" || kind === "lower" || kind === "upper") {
+        out.transform = kind;
+      } else if (kind === "regex_extract") {
+        out.transform = { kind: "regex_extract", pattern: r.transform_pattern || "", group: r.transform_group ? Number(r.transform_group) : 0 };
+      } else if (kind === "prepend" || kind === "append") {
+        out.transform = { kind, text: r.transform_text || "" };
+      } else if (kind === "replace") {
+        out.transform = { kind: "replace", pattern: r.transform_pattern || "", replacement: r.transform_replacement || "" };
+      }
+      if (r.value_map_text && r.value_map_text.trim()) {
+        try { out.value_map = JSON.parse(r.value_map_text); }
+        catch { /* surfaced on save */ }
+      }
+      return out;
+    });
+  }
+
+  async function save() {
+    for (let i = 0; i < rows.length; i++) {
+      const txt = rows[i].value_map_text;
+      if (!txt || !txt.trim()) continue;
+      try { JSON.parse(txt); }
+      catch (e) { return toast.error(`row ${i + 1} value_map: ${e.message}`); }
+    }
+    setSaving(true);
+    try {
+      const serverRows = toServerRows();
+      await api.patch(`/api/alert-sources/${source.id}`, {
+        field_map: serverRows.length ? { rows: serverRows } : {},
+      });
+      toast.success("Field map saved");
+      if (onReload) await onReload();
+    } catch (e) {
+      toast.error(e.message || "Save failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function runPreview() {
+    if (!previewEventId) return;
+    try {
+      const r = await api.post(
+        `/api/alert-sources/${source.id}/inbound-events/${previewEventId}/preview`,
+        { field_map: { rows: toServerRows() } }
+      );
+      setPreview(r.resolved || {});
+    } catch (e) {
+      toast.error(e.message || "Preview failed");
+    }
+  }
+
+  return (
+    <div className="space-y-3 pt-3 border-t border-border">
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-medium text-fg">Field map (tabular)</div>
+        <div className="flex gap-2">
+          <button onClick={add} className="text-xs px-2 py-1 bg-surface-2 border border-border rounded hover:bg-surface">
+            + Add row
+          </button>
+          <button onClick={save} disabled={saving} className="text-xs px-2 py-1 bg-brand text-white rounded disabled:opacity-50">
+            {saving ? "Saving…" : "Save"}
+          </button>
+        </div>
+      </div>
+      <p className="text-xs text-fg-muted">
+        Used by the generic <code>/api/webhooks/in/&lt;token&gt;</code>
+        intake when no named adapter (Action1, Zabbix, …) covers this
+        source. Each row picks a path from the inbound JSON payload and
+        writes it to a known target field. Transforms run after path
+        extraction; value-maps run last (case-insensitive enum lookup).
+        Empty map = adapter-only mode.
+      </p>
+
+      {rows.length === 0 ? (
+        <div className="text-xs text-fg-dim italic">No rows. Add one to start mapping.</div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="text-fg-muted">
+              <tr>
+                <th className="text-left py-1 pr-2">Source path</th>
+                <th className="text-left py-1 pr-2">Target</th>
+                <th className="text-left py-1 pr-2">Transform</th>
+                <th className="text-left py-1 pr-2">Value map (JSON)</th>
+                <th></th>
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((r, i) => (
+                <tr key={i} className="border-t border-border align-top">
+                  <td className="py-1.5 pr-2">
+                    <input
+                      type="text"
+                      value={r.source_path}
+                      onChange={(e) => update(i, { source_path: e.target.value })}
+                      placeholder="$.event.id"
+                      className="border border-border-strong rounded px-2 py-1 text-xs font-mono w-full min-w-[10rem]"
+                    />
+                  </td>
+                  <td className="py-1.5 pr-2">
+                    <select
+                      value={r.target}
+                      onChange={(e) => update(i, { target: e.target.value })}
+                      className="border border-border-strong rounded px-2 py-1 text-xs w-full"
+                    >
+                      {FIELD_MAP_TARGETS.map((t) => (
+                        <option key={t.value} value={t.value}>{t.label}</option>
+                      ))}
+                    </select>
+                  </td>
+                  <td className="py-1.5 pr-2 space-y-1">
+                    <select
+                      value={r.transform}
+                      onChange={(e) => update(i, { transform: e.target.value })}
+                      className="border border-border-strong rounded px-2 py-1 text-xs w-full"
+                    >
+                      {TRANSFORM_KINDS.map((t) => (
+                        <option key={t.value} value={t.value}>{t.label}</option>
+                      ))}
+                    </select>
+                    {(r.transform === "regex_extract" || r.transform === "replace") && (
+                      <input
+                        type="text"
+                        value={r.transform_pattern || ""}
+                        onChange={(e) => update(i, { transform_pattern: e.target.value })}
+                        placeholder="pattern"
+                        className="border border-border-strong rounded px-2 py-1 text-xs font-mono w-full"
+                      />
+                    )}
+                    {r.transform === "regex_extract" && (
+                      <input
+                        type="number" min="0"
+                        value={r.transform_group || ""}
+                        onChange={(e) => update(i, { transform_group: e.target.value })}
+                        placeholder="group (0 = whole match)"
+                        className="border border-border-strong rounded px-2 py-1 text-xs font-mono w-full"
+                      />
+                    )}
+                    {r.transform === "replace" && (
+                      <input
+                        type="text"
+                        value={r.transform_replacement || ""}
+                        onChange={(e) => update(i, { transform_replacement: e.target.value })}
+                        placeholder="replacement"
+                        className="border border-border-strong rounded px-2 py-1 text-xs font-mono w-full"
+                      />
+                    )}
+                    {(r.transform === "prepend" || r.transform === "append") && (
+                      <input
+                        type="text"
+                        value={r.transform_text || ""}
+                        onChange={(e) => update(i, { transform_text: e.target.value })}
+                        placeholder="text"
+                        className="border border-border-strong rounded px-2 py-1 text-xs font-mono w-full"
+                      />
+                    )}
+                  </td>
+                  <td className="py-1.5 pr-2">
+                    <textarea
+                      value={r.value_map_text}
+                      onChange={(e) => update(i, { value_map_text: e.target.value })}
+                      placeholder='{"CRITICAL":"1","HIGH":"2"}'
+                      rows={2}
+                      className="border border-border-strong rounded px-2 py-1 text-xs font-mono w-full min-w-[12rem]"
+                    />
+                  </td>
+                  <td className="py-1.5">
+                    <button
+                      onClick={() => remove(i)}
+                      className="text-xs text-red-600 hover:underline"
+                    >
+                      Remove
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+
+      {events.length > 0 && (
+        <div className="pt-2 space-y-2">
+          <div className="text-xs font-medium text-fg">Preview against saved payload</div>
+          <div className="flex items-center gap-2 flex-wrap">
+            <select
+              value={previewEventId}
+              onChange={(e) => setPreviewEventId(e.target.value)}
+              className="border border-border-strong rounded px-2 py-1 text-xs"
+            >
+              <option value="">— pick an inbound event —</option>
+              {events.slice(0, 20).map((ev) => (
+                <option key={ev.id} value={ev.id}>
+                  #{ev.id} · {ev.status} · {new Date(ev.received_at).toLocaleString()}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={runPreview}
+              disabled={!previewEventId}
+              className="text-xs px-2 py-1 bg-surface-2 border border-border rounded hover:bg-surface disabled:opacity-50"
+            >
+              Run preview
+            </button>
+          </div>
+          {preview && (
+            <pre className="text-[11px] font-mono bg-surface-2 border border-border rounded p-2 overflow-x-auto whitespace-pre-wrap">
+{JSON.stringify(preview, null, 2)}
+            </pre>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Recent inbound webhook events for this source. Distinct from
+// "Recent events" higher up (which is the de-duped alert log) — this
+// one shows raw payloads landing on /api/webhooks/in/<token>, status,
+// error_message. Click a row to peek the payload.
+function InboundEventsSection({ source }) {
+  const [list, setList] = useState([]);
+  const [openId, setOpenId] = useState(null);
+  const [detail, setDetail] = useState(null);
+
+  async function reload() {
+    try {
+      setList(await api.get(`/api/alert-sources/${source.id}/inbound-events`));
+    } catch (e) {
+      toast.error(e.message || "Failed to load inbound events");
+    }
+  }
+  useEffect(() => { reload(); }, [source.id]);
+
+  async function openRow(id) {
+    if (openId === id) { setOpenId(null); setDetail(null); return; }
+    setOpenId(id);
+    try {
+      setDetail(await api.get(`/api/alert-sources/${source.id}/inbound-events/${id}`));
+    } catch (e) {
+      toast.error(e.message);
+    }
+  }
+
+  if (!list.length) return null;
+
+  return (
+    <div className="space-y-2 pt-3 border-t border-border">
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-medium text-fg">Inbound webhook events</div>
+        <button onClick={reload} className="text-xs px-2 py-1 bg-surface-2 border border-border rounded hover:bg-surface">
+          Refresh
+        </button>
+      </div>
+      <p className="text-xs text-fg-muted">
+        Last 50 raw payloads received on this source's webhook URL,
+        before mapping ran. Click to inspect — useful for tuning the
+        field map when a vendor's JSON shape isn't what you expected.
+      </p>
+      <div className="border border-border rounded overflow-hidden">
+        <table className="min-w-full divide-y divide-border text-xs">
+          <thead className="bg-surface-2">
+            <tr className="text-fg-dim">
+              <th className="px-3 py-1.5 text-left font-medium">ID</th>
+              <th className="px-3 py-1.5 text-left font-medium">Status</th>
+              <th className="px-3 py-1.5 text-left font-medium">Ticket</th>
+              <th className="px-3 py-1.5 text-left font-medium">Received</th>
+              <th className="px-3 py-1.5 text-left font-medium">Note</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border">
+            {list.map((ev) => (
+              <React.Fragment key={ev.id}>
+                <tr
+                  className="cursor-pointer hover:bg-surface-2"
+                  onClick={() => openRow(ev.id)}
+                >
+                  <td className="px-3 py-1.5 font-mono">{ev.id}</td>
+                  <td className="px-3 py-1.5">
+                    <span className={
+                      ev.status === "processed" ? "text-emerald-600 dark:text-emerald-400" :
+                      ev.status === "error" ? "text-red-600" :
+                      "text-fg-muted"
+                    }>{ev.status}</span>
+                  </td>
+                  <td className="px-3 py-1.5">
+                    {ev.ticket_id ? (
+                      <a href={`/tickets/${ev.ticket_id}`} className="text-brand hover:underline">#{ev.ticket_id}</a>
+                    ) : <span className="text-fg-dim">—</span>}
+                  </td>
+                  <td className="px-3 py-1.5 text-fg-muted whitespace-nowrap">
+                    <HybridTime value={ev.received_at} />
+                  </td>
+                  <td className="px-3 py-1.5 text-fg-muted truncate max-w-xs">
+                    {ev.error_message || ""}
+                  </td>
+                </tr>
+                {openId === ev.id && detail && (
+                  <tr>
+                    <td colSpan={5} className="px-3 py-2 bg-surface-2/40">
+                      <pre className="text-[11px] font-mono whitespace-pre-wrap overflow-x-auto">
+{JSON.stringify(detail.payload, null, 2)}
+                      </pre>
+                    </td>
+                  </tr>
+                )}
+              </React.Fragment>
+            ))}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

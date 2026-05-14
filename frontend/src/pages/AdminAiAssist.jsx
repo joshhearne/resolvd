@@ -532,7 +532,7 @@ function ProjectContextsPane() {
                       )}
                     </div>
                     {!p.ai_context_enabled && p.has_context && (
-                      <div className="text-[10px] text-amber-500 mt-0.5">disabled</div>
+                      <div className="text-[10px] text-amber-500 mt-0.5">context disabled</div>
                     )}
                   </button>
                 </li>
