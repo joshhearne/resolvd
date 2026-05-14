@@ -1179,6 +1179,38 @@ async function initSchema() {
     // base table and drops the view in favor of the real name.
     await client.query(`CREATE OR REPLACE VIEW integrations AS SELECT * FROM external_alert_source`);
 
+    // Raw inbound payload store. Every webhook hit lands here verbatim
+    // before mapping runs, so:
+    //   * the admin can debug a failed mapping by inspecting the actual
+    //     payload (no need to re-trigger the upstream tool);
+    //   * a "Test against last payload" button on the field-map editor
+    //     can replay an event without touching the live vendor;
+    //   * we can reprocess events after tweaking field_map.
+    // status: 'pending' (just landed) | 'processed' (mapping ran ok) |
+    //   'error' (mapping or ingest threw — see error_message).
+    // ticket_id back-points to the ticket created/updated by ingest
+    // when successful; NULL on errors or pure-event-no-side-effects.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS integration_inbound_events (
+        id BIGSERIAL PRIMARY KEY,
+        integration_id INTEGER REFERENCES external_alert_source(id) ON DELETE CASCADE,
+        received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        processed_at TIMESTAMPTZ,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','processed','error')),
+        error_message TEXT,
+        payload JSONB NOT NULL,
+        ticket_id INTEGER REFERENCES tickets(id) ON DELETE SET NULL
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_inbound_events_integration ON integration_inbound_events(integration_id, received_at DESC)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_inbound_events_status ON integration_inbound_events(status) WHERE status <> 'processed'`);
+    // Retention: 30 days of payloads is plenty for debugging and
+    // replay. Run cheap on every schema init so the table stays
+    // bounded without a separate cron job — deletes are FK-cascaded
+    // through ticket_id (SET NULL) so old debug rows stay viewable
+    // after tickets are pruned upstream.
+    await client.query(`DELETE FROM integration_inbound_events WHERE received_at < NOW() - INTERVAL '30 days'`);
+
     // Inventory module — one row per managed machine, scoped per source
     // system. source_external_id is the RMM's stable id for the device
     // (Action1 endpoint id, ConnectWise asset id, etc.). raw_data holds

@@ -177,6 +177,34 @@ router.patch('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
       sets.push(`company_map = $${p++}::jsonb`);
       values.push(JSON.stringify(body.company_map || {}));
     }
+    if (Object.prototype.hasOwnProperty.call(body, 'field_map')) {
+      const { validateFieldMap } = require('../services/integrations/fieldMap');
+      const err = validateFieldMap(body.field_map);
+      if (err) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: `field_map: ${err}` });
+      }
+      sets.push(`field_map = $${p++}::jsonb`);
+      values.push(JSON.stringify(body.field_map || {}));
+    }
+    // capabilities[] — admin can narrow what the adapter offers
+    // (e.g. an Action1 source the admin only wants alerts from). Empty
+    // arrays are rejected — set capabilities = NULL via DB if you
+    // really want to clear it (which falls back to adapter default).
+    if (Object.prototype.hasOwnProperty.call(body, 'capabilities')) {
+      if (!Array.isArray(body.capabilities)) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'capabilities must be an array' });
+      }
+      const ALLOWED = ['alerts', 'inventory', 'software', 'vulnerabilities', 'companies'];
+      const bad = body.capabilities.find((c) => !ALLOWED.includes(c));
+      if (bad) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: `capabilities: unknown value '${bad}'` });
+      }
+      sets.push(`capabilities = $${p++}::text[]`);
+      values.push(body.capabilities);
+    }
 
     // api_token is sensitive — route through buildWritePatch which writes
     // to api_token_enc (standard mode) or api_token (off mode).
@@ -512,6 +540,64 @@ router.get('/:id/seen-orgs', requireAuth, requireRole('Admin'), async (req, res)
     res.json({ orgs: r.rows.map((row) => row.organization) });
   } catch (err) {
     console.error('seen-orgs error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// Inbound event debug — list recent payloads for a source, view one,
+// preview field_map output against a saved payload, reprocess.
+router.get('/:id/inbound-events', requireAuth, requireRole('Admin'), async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const r = await pool.query(
+      `SELECT id, received_at, processed_at, status, error_message, ticket_id,
+              (CASE WHEN status = 'pending' THEN '(pending)' ELSE NULL END) AS placeholder
+         FROM integration_inbound_events
+        WHERE integration_id = $1
+        ORDER BY received_at DESC
+        LIMIT 50`,
+      [id]
+    );
+    res.json(r.rows);
+  } catch (err) {
+    console.error('inbound events list:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+router.get('/:id/inbound-events/:eventId', requireAuth, requireRole('Admin'), async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT * FROM integration_inbound_events
+        WHERE id = $1 AND integration_id = $2`,
+      [req.params.eventId, req.params.id]
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    res.json(r.rows[0]);
+  } catch (err) {
+    console.error('inbound event detail:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// Dry-run: apply a hypothetical field_map against a saved payload
+// without persisting. Lets the admin tune the map and see what would
+// land in each target before saving.
+router.post('/:id/inbound-events/:eventId/preview', requireAuth, requireRole('Admin'), async (req, res) => {
+  try {
+    const { applyFieldMap, validateFieldMap } = require('../services/integrations/fieldMap');
+    const fm = req.body?.field_map || {};
+    const err = validateFieldMap(fm);
+    if (err) return res.status(400).json({ error: `field_map: ${err}` });
+    const r = await pool.query(
+      `SELECT payload FROM integration_inbound_events
+        WHERE id = $1 AND integration_id = $2`,
+      [req.params.eventId, req.params.id]
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    res.json({ resolved: applyFieldMap(fm, r.rows[0].payload) });
+  } catch (err) {
+    console.error('inbound event preview:', err);
     res.status(500).json({ error: 'Database error' });
   }
 });
