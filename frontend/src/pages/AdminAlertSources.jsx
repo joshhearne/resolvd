@@ -65,6 +65,7 @@ export default function AdminAlertSources() {
   const [showCreate, setShowCreate] = useState(false);
   const [projects, setProjects] = useState([]);
   const [presets, setPresets] = useState([]);
+  const [adapters, setAdapters] = useState([]);
   const [newToken, setNewToken] = useState(null);
 
   async function loadList() {
@@ -94,6 +95,9 @@ export default function AdminAlertSources() {
     api.get("/api/alert-sources/_meta/presets").then((m) =>
       setPresets(m.presets || [])
     ).catch(() => setPresets([]));
+    api.get("/api/alert-sources/_meta/registry").then((m) =>
+      setAdapters(m.adapters || [])
+    ).catch(() => setAdapters([]));
   }, []);
 
   useEffect(() => {
@@ -157,10 +161,13 @@ export default function AdminAlertSources() {
     <div className="space-y-4">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
-          <h1 className="text-xl font-semibold text-fg mb-1">Alert sources</h1>
+          <h1 className="text-xl font-semibold text-fg mb-1">Integrations</h1>
           <p className="text-sm text-fg-muted">
-            Inbound webhooks from monitoring tools. Each source has a unique
-            token; URL stays stable. Events dedup per source.
+            Connect monitoring + RMM vendors. Each integration declares
+            capabilities (alerts, inventory, software, vulnerabilities,
+            companies) — toggle which ones are active per row. Named
+            adapters (Action1, Zabbix, …) work out of the box;
+            webhook-only vendors map JSON via the tabular field map.
           </p>
         </div>
         <button
@@ -203,7 +210,11 @@ export default function AdminAlertSources() {
             </div>
           ) : (
             <div className="divide-y divide-border max-h-[70vh] overflow-y-auto">
-              {sources.map((s) => (
+              {sources.map((s) => {
+                const adapter = adapters.find((a) => a.vendor === (s.vendor || s.preset));
+                const label = adapter?.label || PRESET_LABELS[s.preset] || s.preset;
+                const caps = Array.isArray(s.capabilities) ? s.capabilities : [];
+                return (
                 <button
                   key={s.id}
                   onClick={() => setSelectedId(s.id)}
@@ -220,8 +231,17 @@ export default function AdminAlertSources() {
                     )}
                   </div>
                   <div className="text-xs text-fg-muted truncate mt-0.5">
-                    {PRESET_LABELS[s.preset] || s.preset} · {s.event_count} events
+                    {label} · {s.event_count} events
                   </div>
+                  {caps.length > 0 && (
+                    <div className="flex flex-wrap gap-1 mt-1">
+                      {caps.map((c) => (
+                        <span key={c} className="text-[10px] px-1.5 py-0.5 rounded bg-brand/10 text-brand">
+                          {c}
+                        </span>
+                      ))}
+                    </div>
+                  )}
                   <div className="text-[11px] text-fg-dim mt-1">
                     {s.last_seen_at ? (
                       <>last seen <HybridTime value={s.last_seen_at} /></>
@@ -230,7 +250,8 @@ export default function AdminAlertSources() {
                     )}
                   </div>
                 </button>
-              ))}
+                );
+              })}
             </div>
           )}
         </aside>
@@ -245,6 +266,7 @@ export default function AdminAlertSources() {
               source={detail}
               projects={projects}
               presets={presets}
+              adapters={adapters}
               onBack={() => setSelectedId(null)}
               onPatch={(patch) => patchSource(detail.id, patch)}
               onRotate={() => rotateToken(detail.id)}
@@ -380,7 +402,7 @@ function NewTokenBanner({ token, source, onDismiss }) {
   );
 }
 
-function SourceDetail({ source, projects, presets, onBack, onPatch, onRotate, onDelete, onReload }) {
+function SourceDetail({ source, projects, presets, adapters, onBack, onPatch, onRotate, onDelete, onReload }) {
   const [name, setName] = useState(source.name);
   const [projectId, setProjectId] = useState(source.default_project_id || "");
   const [autoResolve, setAutoResolve] = useState(!!source.auto_resolve_on_recovery);
@@ -905,6 +927,8 @@ function SourceDetail({ source, projects, presets, onBack, onPatch, onRotate, on
         <CompanyMapSection source={source} onReload={onReload} />
       )}
 
+      <CapabilitiesSection source={source} adapters={adapters} onPatch={onPatch} onReload={onReload} />
+
       <FieldMapSection source={source} onReload={onReload} />
 
       <InboundEventsSection source={source} />
@@ -1206,6 +1230,107 @@ function CompanyMapSection({ source, onReload }) {
           </tbody>
         </table>
       )}
+    </div>
+  );
+}
+
+// Per-integration capability toggles. The adapter declares the upper
+// bound (what's possible); the admin narrows to the effective set
+// (what's active). Disabling a capability stops the scheduler from
+// invoking that path AND hides matching admin sections without
+// destroying credentials — re-enabling brings the integration back
+// the moment the box is ticked. Empty capabilities sources behave
+// as a legacy row (trust the adapter) for backwards compat.
+const ALL_CAPABILITIES = [
+  { value: "alerts",          label: "Alerts",           hint: "Accept webhook events / pull alert rules." },
+  { value: "inventory",       label: "Inventory",        hint: "Pull managed devices into the asset register." },
+  { value: "software",        label: "Software",         hint: "Per-device installed software inventory." },
+  { value: "vulnerabilities", label: "Vulnerabilities",  hint: "Per-CVE rows where the vendor exposes them." },
+  { value: "companies",       label: "Companies",        hint: "Map vendor orgs / customers to Resolvd companies." },
+];
+
+function CapabilitiesSection({ source, adapters, onPatch, onReload }) {
+  const adapter = adapters.find((a) => a.vendor === (source.vendor || source.preset));
+  const allowed = adapter?.capabilities || ALL_CAPABILITIES.map((c) => c.value);
+  const initial = Array.isArray(source.capabilities) && source.capabilities.length
+    ? source.capabilities
+    : allowed;
+  const [picked, setPicked] = useState(initial);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    setPicked(Array.isArray(source.capabilities) && source.capabilities.length
+      ? source.capabilities
+      : allowed);
+  }, [source.id, source.capabilities, adapter?.vendor]);
+
+  function toggle(cap) {
+    setPicked((prev) => prev.includes(cap) ? prev.filter((c) => c !== cap) : [...prev, cap]);
+  }
+
+  const dirty = JSON.stringify([...picked].sort()) !== JSON.stringify([...(source.capabilities || [])].sort());
+
+  async function save() {
+    if (!picked.length) { toast.error("At least one capability required"); return; }
+    setSaving(true);
+    try {
+      await onPatch({ capabilities: picked });
+      toast.success("Capabilities saved");
+      if (onReload) await onReload();
+    } catch (e) {
+      toast.error(e.message || "Save failed");
+    } finally { setSaving(false); }
+  }
+
+  return (
+    <div className="space-y-2 pt-3 border-t border-border">
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-medium text-fg">Capabilities</div>
+        {dirty && (
+          <button onClick={save} disabled={saving} className="text-xs px-2 py-1 bg-brand text-white rounded disabled:opacity-50">
+            {saving ? "Saving…" : "Save"}
+          </button>
+        )}
+      </div>
+      <p className="text-xs text-fg-muted">
+        Toggle which capabilities this integration actively contributes.
+        Adapter declares what's possible
+        ({adapter ? `${adapter.label}: ${allowed.join(", ")}` : "no adapter — accepts all"}).
+        Disabling a capability stops the scheduler / webhook intake from
+        invoking it but keeps the integration credentials intact.
+      </p>
+      <div className="grid sm:grid-cols-2 gap-2">
+        {ALL_CAPABILITIES.map((c) => {
+          const allowedHere = allowed.includes(c.value);
+          return (
+            <label
+              key={c.value}
+              className={`flex items-start gap-2 p-2 rounded border ${
+                allowedHere
+                  ? "border-border hover:bg-surface-2 cursor-pointer"
+                  : "border-border/40 opacity-50 cursor-not-allowed"
+              }`}
+            >
+              <input
+                type="checkbox"
+                checked={picked.includes(c.value)}
+                disabled={!allowedHere}
+                onChange={() => allowedHere && toggle(c.value)}
+                className="mt-0.5"
+              />
+              <div className="min-w-0">
+                <div className="text-xs font-medium text-fg">{c.label}</div>
+                <div className="text-[11px] text-fg-muted">{c.hint}</div>
+                {!allowedHere && (
+                  <div className="text-[11px] text-fg-dim italic mt-0.5">
+                    not supported by this vendor's adapter
+                  </div>
+                )}
+              </div>
+            </label>
+          );
+        })}
+      </div>
     </div>
   );
 }

@@ -181,6 +181,7 @@ function AppRoutes() {
           <Route path="ai-assist" element={<AdminAiAssist />} />
           <Route path="merge" element={<AdminMerge />} />
           <Route path="alert-sources" element={<AdminAlertSources />} />
+          <Route path="integrations" element={<AdminAlertSources />} />
           <Route path="system-health" element={<AdminSystemHealth />} />
           <Route path="canned-responses" element={<AdminCannedResponses />} />
           <Route path="sla" element={<AdminSlaPolicies />} />

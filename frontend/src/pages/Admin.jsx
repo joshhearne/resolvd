@@ -32,7 +32,7 @@ const NAV_GROUPS = [
     label: "Integrations",
     items: [
       { to: "/admin/ai-assist", label: "AI Assist" },
-      { to: "/admin/alert-sources", label: "Alert sources" },
+      { to: "/admin/alert-sources", label: "Integrations" },
       { to: "/admin/inbound", label: "Inbound email", manager: true },
       { to: "/admin/email-backends", label: "Email backends" },
       { to: "/admin/email-templates", label: "Email templates" },

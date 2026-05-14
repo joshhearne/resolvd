@@ -489,6 +489,27 @@ router.get('/_meta/presets', requireAuth, requireRole('Admin'), (_req, res) => {
   });
 });
 
+// GET /api/alert-sources/_meta/registry — adapter registry snapshot.
+// Powers the new Add-integration form and the per-source capabilities
+// editor: every adapter advertises its label, kind, declared
+// capabilities, default severity map, and credentialsSchema (form
+// fields). UI never hard-codes vendor lists; everything renders from
+// this response. Auth gated to Admin since the registry is internal
+// metadata.
+router.get('/_meta/registry', requireAuth, requireRole('Admin'), (_req, res) => {
+  const registry = require('../services/integrations/registry');
+  res.json({
+    adapters: registry.all().map((a) => ({
+      vendor: a.vendor,
+      label: a.label,
+      kind: a.kind,
+      capabilities: a.capabilities,
+      credentialsSchema: a.credentialsSchema || [],
+      default_severity_map: a.defaultSeverityMap || {},
+    })),
+  });
+});
+
 // GET /api/alert-sources/:id/attributes — list the custom-attribute
 // names from the most recent synced asset's raw_data.custom[] for this
 // source. Powers the admin mapping UI ("what attributes can I map?").
