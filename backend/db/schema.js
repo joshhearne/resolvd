@@ -2126,6 +2126,55 @@ async function initSchema() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_kb_articles_project ON kb_articles(project_id, status, updated_at DESC)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_kb_articles_fts ON kb_articles USING GIN (to_tsvector('english', coalesce(title,'') || ' ' || coalesce(content_text,'')))`);
 
+    // KB tagging + ticket linking (Phase: KB ↔ Tickets).
+    //
+    // tags       — admin-curated per-article topic labels. Powers the
+    //              "Related articles" / suggestion ranker (matched
+    //              against ticket titles via pg_trgm similarity) and
+    //              a future tag-filter on the KB index.
+    // keywords   — optional manual match-boost terms. When the title
+    //              alone is too generic ("Printer offline"), the
+    //              keywords list ("HP ColorJet OfficeNet 4840 paper
+    //              jam toner") gives the similarity ranker more to
+    //              chew on without polluting the human-facing title.
+    // Validation lives in the route (lowercase, length, count caps);
+    // the column shape is intentionally permissive so we can adjust
+    // rules without a migration.
+    await client.query(`ALTER TABLE kb_articles ADD COLUMN IF NOT EXISTS tags TEXT[] NOT NULL DEFAULT '{}'::text[]`);
+    await client.query(`ALTER TABLE kb_articles ADD COLUMN IF NOT EXISTS keywords TEXT[] NOT NULL DEFAULT '{}'::text[]`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_kb_articles_tags ON kb_articles USING GIN(tags)`);
+    // Trigram index on plain title for the suggestion ranker. Postgres
+    // refuses to index expressions containing array_to_string (STABLE,
+    // not IMMUTABLE), so we keep the composite "title + tags +
+    // keywords" matching at query time (similarity() works fine without
+    // an index; KB sizes stay small enough for sequential scans). The
+    // title trigram index alone still accelerates substring matches in
+    // the future picker / search endpoints.
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_kb_articles_title_trgm ON kb_articles USING GIN (title gin_trgm_ops)`);
+
+    // Ticket -> KB junction. One row per (ticket, article). kind
+    // tracks how the link was created so we can later tell suggestion
+    // adoption from manual linking and from system-generated promotes.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ticket_kb_links (
+        ticket_id  INTEGER NOT NULL REFERENCES tickets(id)     ON DELETE CASCADE,
+        article_id INTEGER NOT NULL REFERENCES kb_articles(id) ON DELETE CASCADE,
+        kind       TEXT    NOT NULL DEFAULT 'manual'
+                   CHECK (kind IN ('manual', 'suggested_accepted', 'system')),
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (ticket_id, article_id)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_kb_links_article ON ticket_kb_links(article_id)`);
+
+    // Per-ticket free-text resolution summary. Captured (optional) on
+    // close. Drives the "Fix applied" filter together with kb_links:
+    //   has_fix = (resolution_summary IS NOT NULL) OR EXISTS(kb_links)
+    // No CHECK on length — the column is TEXT to allow markdown.
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS resolution_summary TEXT`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS resolution_summary_enc BYTEA`);
+
     // Version snapshots — written on every save. Lets editors revert
     // and shows a change history surface. version_no monotonic per
     // article (computed at insert time).

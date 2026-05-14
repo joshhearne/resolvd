@@ -723,6 +723,21 @@ export default function TicketDetail() {
         <span className="font-mono text-fg">{ticket.internal_ref}</span>
       </nav>
 
+      <KnowledgePanel
+        ticketId={ticket.id}
+        projectId={ticket.project_id}
+        canEdit={canEdit}
+        resolutionSummary={ticket.resolution_summary}
+        onResolutionChange={async (next) => {
+          try {
+            await api.patch(`/api/tickets/${ticket.id}`, { resolution_summary: next });
+            const refreshed = await api.get(`/api/tickets/${ticket.id}`);
+            setTicket(refreshed);
+            toast.success(next ? "Resolution saved" : "Resolution cleared");
+          } catch (e) { toast.error(e.message); }
+        }}
+      />
+
       {/* Header */}
       <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
         <div className="flex-1 min-w-0">
@@ -2654,6 +2669,223 @@ function AssetLinkCard({ ticket, projectId, canEdit, onLink }) {
           </div>
         </div>
       )}
+    </div>
+  );
+}
+
+// Knowledge panel — surfaces linked KB articles, top similarity-ranked
+// suggestions, and the ticket's resolution summary in one place above
+// the description. Driven by:
+//   GET    /api/kb/tickets/:id/links
+//   GET    /api/kb/tickets/:id/suggestions
+//   POST   /api/kb/tickets/:id/links
+//   DELETE /api/kb/tickets/:id/links/:articleId
+//   PATCH  /api/tickets/:id { resolution_summary }
+// Read-only for non-Admin/Manager/Tech (canEdit gates writes).
+function KnowledgePanel({ ticketId, projectId, canEdit, resolutionSummary, onResolutionChange }) {
+  const [links, setLinks] = useState([]);
+  const [suggestions, setSuggestions] = useState([]);
+  const [picker, setPicker] = useState("");
+  const [pickerHits, setPickerHits] = useState([]);
+  const [resEdit, setResEdit] = useState(false);
+  const [resDraft, setResDraft] = useState(resolutionSummary || "");
+  const [resSaving, setResSaving] = useState(false);
+
+  async function loadAll() {
+    try { setLinks(await api.get(`/api/kb/tickets/${ticketId}/links`)); } catch { /* empty ok */ }
+    try { setSuggestions(await api.get(`/api/kb/tickets/${ticketId}/suggestions?limit=5`)); } catch { setSuggestions([]); }
+  }
+  useEffect(() => { loadAll(); }, [ticketId]);
+  useEffect(() => { setResDraft(resolutionSummary || ""); }, [resolutionSummary]);
+
+  async function unlink(articleId) {
+    try {
+      await api.delete(`/api/kb/tickets/${ticketId}/links/${articleId}`);
+      toast.success("Article unlinked");
+      await loadAll();
+    } catch (e) { toast.error(e.message); }
+  }
+  async function link(articleId, kind = "manual") {
+    try {
+      await api.post(`/api/kb/tickets/${ticketId}/links`, { article_id: articleId, kind });
+      toast.success("Article linked");
+      setPicker(""); setPickerHits([]);
+      await loadAll();
+    } catch (e) { toast.error(e.message); }
+  }
+
+  // Typeahead — searches across published articles. Server has no
+  // dedicated /search endpoint yet, so we just GET tags then list a
+  // small subset via project + global. Easier: piggyback on the
+  // suggestions ranker by sending q via title-like body? Simplest:
+  // fetch all visible KB articles once per session and filter
+  // client-side. For now keep it lightweight — call suggestions with
+  // a synthetic title override would require server change. Skip for
+  // v1; the suggestions panel covers the 80% case.
+  useEffect(() => {
+    if (!picker || picker.length < 2) { setPickerHits([]); return; }
+    let cancelled = false;
+    (async () => {
+      // Fall back to project's article list; ?q= isn't supported yet
+      // server-side so we filter client-side.
+      try {
+        const r = await api.get(`/api/kb/projects/${projectId}/articles?status=published`);
+        if (cancelled) return;
+        const term = picker.toLowerCase();
+        setPickerHits(
+          (r || [])
+            .filter((a) =>
+              a.title.toLowerCase().includes(term)
+              || (a.tags || []).some((t) => t.toLowerCase().includes(term))
+            )
+            .filter((a) => !links.find((l) => l.article_id === a.id))
+            .slice(0, 8)
+        );
+      } catch { setPickerHits([]); }
+    })();
+    return () => { cancelled = true; };
+  }, [picker, projectId, links]);
+
+  async function saveResolution() {
+    setResSaving(true);
+    try {
+      const next = resDraft.trim() || null;
+      await onResolutionChange(next);
+      setResEdit(false);
+    } finally { setResSaving(false); }
+  }
+
+  return (
+    <div className="bg-surface border border-border rounded-lg p-3 space-y-3">
+      {/* Linked articles */}
+      <div className="space-y-2">
+        <div className="flex items-center justify-between">
+          <div className="text-xs font-semibold text-fg uppercase tracking-wide">
+            Knowledge {links.length > 0 && <span className="text-fg-muted normal-case tracking-normal font-normal">({links.length})</span>}
+          </div>
+        </div>
+        {links.length === 0 ? (
+          <div className="text-xs text-fg-dim italic">No KB articles linked.</div>
+        ) : (
+          <div className="flex flex-wrap gap-1.5">
+            {links.map((l) => (
+              <span key={l.article_id}
+                className="inline-flex items-center gap-1 text-xs bg-brand/10 text-brand rounded px-2 py-1">
+                <Link to={`/kb/${l.project_id}/${l.slug}`} className="hover:underline">{l.title}</Link>
+                {canEdit && (
+                  <button
+                    onClick={() => unlink(l.article_id)}
+                    className="text-brand/70 hover:text-red-600"
+                    title="Unlink"
+                  >×</button>
+                )}
+              </span>
+            ))}
+          </div>
+        )}
+
+        {canEdit && (
+          <div className="relative">
+            <input
+              type="text"
+              value={picker}
+              onChange={(e) => setPicker(e.target.value)}
+              placeholder="Link an article by title or tag…"
+              className="w-full bg-surface-2 border border-border rounded px-2 py-1 text-xs"
+            />
+            {pickerHits.length > 0 && (
+              <div className="absolute z-20 left-0 right-0 mt-1 bg-surface border border-border rounded-md shadow-lg max-h-64 overflow-y-auto">
+                {pickerHits.map((a) => (
+                  <button
+                    key={a.id}
+                    onClick={() => link(a.id, "manual")}
+                    className="w-full text-left px-3 py-2 hover:bg-surface-2 text-xs"
+                  >
+                    <div className="font-medium text-fg">{a.title}</div>
+                    {a.tags?.length > 0 && (
+                      <div className="text-[10px] text-fg-dim mt-0.5">{a.tags.join(", ")}</div>
+                    )}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+        )}
+      </div>
+
+      {/* Suggestions */}
+      {canEdit && suggestions.length > 0 && (
+        <div className="space-y-1 border-t border-border pt-2">
+          <div className="text-[11px] text-fg-muted uppercase tracking-wide">Suggested</div>
+          <div className="space-y-1">
+            {suggestions.map((s) => (
+              <div key={s.article_id} className="flex items-center gap-2 text-xs">
+                <Link to={`/kb/${s.project_id}/${s.slug}`} className="text-brand hover:underline flex-1 truncate">
+                  {s.title}
+                </Link>
+                <span className="text-fg-dim font-mono">{Number(s.sim).toFixed(2)}</span>
+                <button
+                  onClick={() => link(s.article_id, "suggested_accepted")}
+                  className="text-[11px] px-2 py-0.5 bg-brand text-white rounded"
+                >
+                  Link
+                </button>
+              </div>
+            ))}
+          </div>
+        </div>
+      )}
+
+      {/* Resolution summary */}
+      <div className="border-t border-border pt-2 space-y-1">
+        <div className="flex items-center justify-between">
+          <div className="text-[11px] text-fg-muted uppercase tracking-wide">Resolution summary</div>
+          {canEdit && !resEdit && (
+            <button
+              onClick={() => setResEdit(true)}
+              className="text-[11px] text-brand hover:underline"
+            >
+              {resolutionSummary ? "Edit" : "Add"}
+            </button>
+          )}
+        </div>
+        {resEdit ? (
+          <div className="space-y-1">
+            <textarea
+              value={resDraft}
+              onChange={(e) => setResDraft(e.target.value)}
+              placeholder="What fixed it? (markdown ok)"
+              rows={4}
+              className="w-full bg-surface-2 border border-border rounded px-2 py-1.5 text-xs"
+            />
+            <div className="flex items-center gap-2">
+              <button
+                onClick={saveResolution}
+                disabled={resSaving}
+                className="text-xs px-2 py-1 bg-brand text-white rounded disabled:opacity-50"
+              >
+                {resSaving ? "Saving…" : "Save"}
+              </button>
+              <button
+                onClick={() => { setResEdit(false); setResDraft(resolutionSummary || ""); }}
+                className="text-xs text-fg-muted hover:text-fg"
+              >Cancel</button>
+              {resolutionSummary && (
+                <button
+                  onClick={async () => { await onResolutionChange(null); setResEdit(false); }}
+                  className="ml-auto text-xs text-red-600 hover:underline"
+                >Clear</button>
+              )}
+            </div>
+          </div>
+        ) : resolutionSummary ? (
+          <div className="text-xs text-fg">
+            <MarkdownContent>{resolutionSummary}</MarkdownContent>
+          </div>
+        ) : (
+          <div className="text-xs text-fg-dim italic">Not recorded yet.</div>
+        )}
+      </div>
     </div>
   );
 }

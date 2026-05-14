@@ -38,6 +38,10 @@ export default function KbEditor() {
   const [slugInput, setSlugInput] = useState("");
   const [status, setStatus] = useState("draft");
   const [changeSummary, setChangeSummary] = useState("");
+  const [tags, setTags] = useState([]);
+  const [tagDraft, setTagDraft] = useState("");
+  const [keywords, setKeywords] = useState([]);
+  const [keywordDraft, setKeywordDraft] = useState("");
   const [loading, setLoading] = useState(!isNew);
   const [saving, setSaving] = useState(false);
   const editorRef = useRef(null);
@@ -52,6 +56,8 @@ export default function KbEditor() {
         setTitle(a.title);
         setSlugInput(a.slug);
         setStatus(a.status);
+        setTags(a.tags || []);
+        setKeywords(a.keywords || []);
       })
       .catch((e) => {
         toast.error(e.message);
@@ -59,6 +65,17 @@ export default function KbEditor() {
       })
       .finally(() => setLoading(false));
   }, [projectId, slug, isNew, navigate]);
+
+  function commitChip(setter, current, draft, setDraft) {
+    const v = draft.trim().toLowerCase();
+    if (!v) return;
+    if (current.includes(v)) { setDraft(""); return; }
+    setter([...current, v]);
+    setDraft("");
+  }
+  function removeChip(setter, current, value) {
+    setter(current.filter((c) => c !== value));
+  }
 
   const initialContent = (() => {
     if (isNew) return undefined;
@@ -88,6 +105,8 @@ export default function KbEditor() {
           slug: slugInput.trim() || undefined,
           content_json: content,
           status: nextStatus,
+          tags,
+          keywords,
         });
         toast.success("Created");
         navigate(`/kb/${projectId}/${created.slug}`);
@@ -98,6 +117,8 @@ export default function KbEditor() {
           content_json: content,
           status: nextStatus,
           change_summary: changeSummary.trim() || null,
+          tags,
+          keywords,
         });
         toast.success("Saved");
         navigate(`/kb/${projectId}/${updated.slug}`);
@@ -144,6 +165,76 @@ export default function KbEditor() {
         placeholder="Article title"
         className="w-full text-3xl font-bold tracking-tight bg-transparent text-fg placeholder:text-fg-dim focus:outline-none border-0 border-b border-border pb-2"
       />
+
+      <div className="space-y-1">
+        <span className="text-fg-muted text-xs uppercase tracking-wider">Tags</span>
+        <div className="flex flex-wrap gap-1.5 items-center">
+          {tags.map((t) => (
+            <span key={t} className="inline-flex items-center gap-1 text-xs bg-brand/10 text-brand rounded px-2 py-0.5">
+              {t}
+              <button
+                type="button"
+                onClick={() => removeChip(setTags, tags, t)}
+                className="text-brand/70 hover:text-red-600"
+                aria-label={`Remove tag ${t}`}
+              >×</button>
+            </span>
+          ))}
+          <input
+            value={tagDraft}
+            onChange={(e) => setTagDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === "," || e.key === "Tab") {
+                e.preventDefault();
+                commitChip(setTags, tags, tagDraft, setTagDraft);
+              } else if (e.key === "Backspace" && !tagDraft && tags.length) {
+                setTags(tags.slice(0, -1));
+              }
+            }}
+            onBlur={() => commitChip(setTags, tags, tagDraft, setTagDraft)}
+            placeholder="add tag (Enter / comma)"
+            className="text-xs bg-transparent text-fg placeholder:text-fg-dim focus:outline-none px-1 py-0.5 min-w-[10rem]"
+          />
+        </div>
+      </div>
+
+      <details className="space-y-1">
+        <summary className="cursor-pointer text-fg-muted text-xs uppercase tracking-wider">
+          Boost match (keywords)
+        </summary>
+        <p className="text-[11px] text-fg-dim mt-1">
+          Add extra terms to help the suggestion ranker tie articles to
+          tickets when the title alone is too generic.
+        </p>
+        <div className="flex flex-wrap gap-1.5 items-center mt-1">
+          {keywords.map((k) => (
+            <span key={k} className="inline-flex items-center gap-1 text-xs bg-surface-2 text-fg-muted rounded px-2 py-0.5">
+              {k}
+              <button
+                type="button"
+                onClick={() => removeChip(setKeywords, keywords, k)}
+                className="hover:text-red-600"
+                aria-label={`Remove keyword ${k}`}
+              >×</button>
+            </span>
+          ))}
+          <input
+            value={keywordDraft}
+            onChange={(e) => setKeywordDraft(e.target.value)}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === "," || e.key === "Tab") {
+                e.preventDefault();
+                commitChip(setKeywords, keywords, keywordDraft, setKeywordDraft);
+              } else if (e.key === "Backspace" && !keywordDraft && keywords.length) {
+                setKeywords(keywords.slice(0, -1));
+              }
+            }}
+            onBlur={() => commitChip(setKeywords, keywords, keywordDraft, setKeywordDraft)}
+            placeholder="add keyword (Enter / comma)"
+            className="text-xs bg-transparent text-fg placeholder:text-fg-dim focus:outline-none px-1 py-0.5 min-w-[10rem]"
+          />
+        </div>
+      </details>
 
       <div className="grid sm:grid-cols-2 gap-3 text-sm">
         <label className="flex flex-col gap-1">

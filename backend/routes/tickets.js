@@ -128,6 +128,7 @@ router.get('/', requireAuth, async (req, res) => {
     const {
       project_id, internal_status, external_status, effective_priority,
       blocker_type, assigned_to, flagged_for_review, q, exclude_closed,
+      has_fix, linked_article,
       sort_by = 'updated_at', sort_dir = 'desc',
       page = 1, limit = 50
     } = req.query;
@@ -185,6 +186,29 @@ router.get('/', requireAuth, async (req, res) => {
       params.push(flagged_for_review === 'true');
     }
     if (exclude_closed === '1') { where.push(`t.internal_status != 'Closed'`); }
+    // "Has fix applied" — resolution_summary set OR at least one KB
+    // link. Driven by the ticket-list facet of the KB linking feature.
+    if (has_fix === '1' || has_fix === 'true') {
+      where.push(`(
+        t.resolution_summary IS NOT NULL
+        OR t.resolution_summary_enc IS NOT NULL
+        OR EXISTS (SELECT 1 FROM ticket_kb_links l WHERE l.ticket_id = t.id)
+      )`);
+    } else if (has_fix === '0' || has_fix === 'false') {
+      where.push(`(
+        t.resolution_summary IS NULL
+        AND t.resolution_summary_enc IS NULL
+        AND NOT EXISTS (SELECT 1 FROM ticket_kb_links l WHERE l.ticket_id = t.id)
+      )`);
+    }
+    // Drill from the KB article page: only tickets that link this article.
+    if (linked_article) {
+      where.push(`EXISTS (
+        SELECT 1 FROM ticket_kb_links l
+         WHERE l.ticket_id = t.id AND l.article_id = $${p++}
+      )`);
+      params.push(Number(linked_article));
+    }
 
     const allowed_sorts = ['created_at', 'updated_at', 'effective_priority', 'internal_ref'];
     const col = allowed_sorts.includes(sort_by) ? sort_by : 'updated_at';
@@ -199,7 +223,12 @@ router.get('/', requireAuth, async (req, res) => {
         asgn.display_name as assigned_to_name,
         bt.internal_ref as blocking_ticket_ref,
         bt.title as blocking_ticket_title,
-        bt.title_enc as blocking_ticket_title_enc
+        bt.title_enc as blocking_ticket_title_enc,
+        (
+          t.resolution_summary IS NOT NULL
+          OR t.resolution_summary_enc IS NOT NULL
+          OR EXISTS (SELECT 1 FROM ticket_kb_links l WHERE l.ticket_id = t.id)
+        ) AS has_fix
       FROM tickets t
       LEFT JOIN projects proj ON t.project_id = proj.id
       LEFT JOIN users sub ON t.submitted_by = sub.id
@@ -563,6 +592,20 @@ router.patch('/:id', requireAuth, async (req, res) => {
     const updated = await transaction(async (client) => {
       if ((isAdmin || isSubmitter) && body.title !== undefined) updates.title = body.title;
       if ((isAdmin || isSubmitter) && body.description !== undefined) updates.description = body.description;
+      // Resolution summary — free-text capture of how the ticket was
+      // fixed. Admin/Manager/Tech only (submitters can't claim their
+      // own fix). Drives the "Fix applied" filter on the ticket list
+      // and seeds Promote-to-KB.
+      if (isAdmin && body.resolution_summary !== undefined) {
+        const next = body.resolution_summary === null ? null : String(body.resolution_summary).slice(0, 4000);
+        updates.resolution_summary = next;
+        await auditLog(client, {
+          ticketId: ticket.id, userId: user.id,
+          action: next ? 'resolution_summary_set' : 'resolution_summary_cleared',
+          oldValue: ticket.resolution_summary || '',
+          newValue: next || '',
+        });
+      }
       if ((isAdmin || isSubmitter) && body.assigned_to !== undefined) {
         updates.assigned_to = body.assigned_to ? Number(body.assigned_to) : null;
       }
@@ -752,7 +795,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
 
       // Split sensitive vs pass-through fields, then encrypt the sensitive
       // ones via buildWritePatch so writes go to *_enc when mode='standard'.
-      const SENSITIVE = new Set(['title', 'description', 'review_note', 'internal_blocker_note']);
+      const SENSITIVE = new Set(['title', 'description', 'review_note', 'internal_blocker_note', 'resolution_summary']);
       const plainObj = {};
       const passthrough = {};
       for (const [k, v] of Object.entries(updates)) {

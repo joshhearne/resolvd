@@ -6,6 +6,28 @@ const router = express.Router();
 
 const EDIT_ROLES = ['Admin', 'Manager', 'Tech'];
 
+// Normalize + validate a tag list. Lowercase, trim, dedup. Returns
+// { ok: true, value } or { ok: false, error }. Used by both POST and
+// PATCH so the same rules apply.
+function normalizeTags(input, label = 'tags') {
+  if (input == null) return { ok: true, value: undefined }; // omit
+  if (!Array.isArray(input)) return { ok: false, error: `${label} must be an array` };
+  const out = [];
+  const seen = new Set();
+  for (const raw of input) {
+    if (typeof raw !== 'string') return { ok: false, error: `${label}: each entry must be a string` };
+    const v = raw.trim().toLowerCase();
+    if (!v) continue;
+    if (v.length > 40) return { ok: false, error: `${label}: '${v}' exceeds 40 chars` };
+    if (!/^[a-z0-9 _-]+$/.test(v)) return { ok: false, error: `${label}: '${v}' has unsupported chars` };
+    if (seen.has(v)) continue;
+    seen.add(v);
+    out.push(v);
+  }
+  if (out.length > 20) return { ok: false, error: `${label}: max 20 entries` };
+  return { ok: true, value: out };
+}
+
 function canEdit(role) {
   return EDIT_ROLES.includes(role);
 }
@@ -171,8 +193,12 @@ router.post('/projects/:projectId/articles', requireAuth, async (req, res) => {
   if (!(await userCanReadProject(user, projectId))) {
     return res.status(403).json({ error: 'Forbidden' });
   }
-  const { title, slug: slugIn, content_json, status } = req.body || {};
+  const { title, slug: slugIn, content_json, status, tags, keywords } = req.body || {};
   if (!title || !String(title).trim()) return res.status(400).json({ error: 'title required' });
+  const tg = normalizeTags(tags, 'tags');
+  if (!tg.ok) return res.status(400).json({ error: tg.error });
+  const kw = normalizeTags(keywords, 'keywords');
+  if (!kw.ok) return res.status(400).json({ error: kw.error });
   const blocks = Array.isArray(content_json) ? content_json : [];
   const slugBase = slugify(slugIn || title);
   const slug = await uniqueSlug(projectId, slugBase);
@@ -183,10 +209,10 @@ router.post('/projects/:projectId/articles', requireAuth, async (req, res) => {
   try {
     await client.query('BEGIN');
     const ins = await client.query(
-      `INSERT INTO kb_articles (project_id, slug, title, content_json, content_text, status, author_id, last_edited_by, published_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7,$7, CASE WHEN $6 = 'published' THEN NOW() ELSE NULL END)
+      `INSERT INTO kb_articles (project_id, slug, title, content_json, content_text, status, tags, keywords, author_id, last_edited_by, published_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7::text[],$8::text[],$9,$9, CASE WHEN $6 = 'published' THEN NOW() ELSE NULL END)
        RETURNING *`,
-      [projectId, slug, String(title).trim(), JSON.stringify(blocks), text, st, user.id]
+      [projectId, slug, String(title).trim(), JSON.stringify(blocks), text, st, tg.value || [], kw.value || [], user.id]
     );
     const art = ins.rows[0];
     await client.query(
@@ -220,7 +246,13 @@ router.patch('/articles/:id', requireAuth, async (req, res) => {
     return res.status(403).json({ error: 'Forbidden' });
   }
 
-  const { title, slug: slugIn, content_json, status, change_summary } = req.body || {};
+  const { title, slug: slugIn, content_json, status, change_summary, tags, keywords } = req.body || {};
+  const tg = normalizeTags(tags, 'tags');
+  if (!tg.ok) return res.status(400).json({ error: tg.error });
+  const kw = normalizeTags(keywords, 'keywords');
+  if (!kw.ok) return res.status(400).json({ error: kw.error });
+  const nextTags = tg.value !== undefined ? tg.value : art.tags;
+  const nextKeywords = kw.value !== undefined ? kw.value : art.keywords;
   const nextTitle = (title && String(title).trim()) || art.title;
   let nextSlug = art.slug;
   if (slugIn && slugify(slugIn) !== art.slug) {
@@ -238,11 +270,12 @@ router.patch('/articles/:id', requireAuth, async (req, res) => {
     const upd = await client.query(
       `UPDATE kb_articles
           SET title = $1, slug = $2, content_json = $3, content_text = $4,
-              status = $5, last_edited_by = $6, updated_at = NOW(),
-              published_at = CASE WHEN $7 THEN NOW() ELSE published_at END
-        WHERE id = $8
+              status = $5, tags = $6::text[], keywords = $7::text[],
+              last_edited_by = $8, updated_at = NOW(),
+              published_at = CASE WHEN $9 THEN NOW() ELSE published_at END
+        WHERE id = $10
         RETURNING *`,
-      [nextTitle, nextSlug, nextJson, nextText, nextStatus, user.id, publishingNow, art.id]
+      [nextTitle, nextSlug, nextJson, nextText, nextStatus, nextTags || [], nextKeywords || [], user.id, publishingNow, art.id]
     );
     const nextArt = upd.rows[0];
     // Snapshot version only if content/title actually changed.
@@ -389,6 +422,194 @@ router.post('/articles/:id/restore/:n', requireAuth, async (req, res) => {
     res.status(500).json({ error: 'Database error' });
   } finally {
     client.release();
+  }
+});
+
+// GET /api/kb/tags?q=&project_id= — distinct tags with article_count,
+// scoped to articles the caller can read. Powers the tag combobox in
+// the editor.
+router.get('/tags', requireAuth, async (req, res) => {
+  try {
+    const user = req.session.user;
+    const q = String(req.query.q || '').trim().toLowerCase();
+    const projectId = req.query.project_id ? Number(req.query.project_id) : null;
+    const params = [];
+    let scope = '';
+    if (user.role !== 'Admin') {
+      params.push(user.id);
+      scope = `AND EXISTS (
+        SELECT 1 FROM project_members pm
+         WHERE pm.project_id = a.project_id AND pm.user_id = $${params.length}
+      )`;
+    }
+    let projectClause = '';
+    if (Number.isFinite(projectId)) {
+      params.push(projectId);
+      projectClause = `AND a.project_id = $${params.length}`;
+    }
+    let qClause = '';
+    if (q) {
+      params.push(`%${q}%`);
+      qClause = `AND t LIKE $${params.length}`;
+    }
+    const r = await pool.query(
+      `SELECT t AS tag, COUNT(*)::int AS article_count
+         FROM kb_articles a, unnest(a.tags) AS t
+        WHERE a.status <> 'archived' ${scope} ${projectClause} ${qClause}
+        GROUP BY t
+        ORDER BY article_count DESC, t ASC
+        LIMIT 100`,
+      params
+    );
+    res.json(r.rows);
+  } catch (err) {
+    console.error('kb tags:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// ─── Ticket ↔ KB linking ─────────────────────────────────────────────
+
+// Shared visibility check: caller must be able to read the ticket
+// (existing per-project guard) AND the article's project. Returns the
+// ticket row + article row when ok, else throws { status, error }.
+async function loadTicketAndArticle({ user, ticketId, articleId }) {
+  const t = await pool.query(
+    `SELECT id, project_id, title, title_enc FROM tickets WHERE id = $1`,
+    [ticketId]
+  );
+  if (!t.rows[0]) throw { status: 404, error: 'ticket not found' };
+  if (!(await userCanReadProject(user, t.rows[0].project_id))) {
+    throw { status: 403, error: 'forbidden (ticket)' };
+  }
+  if (articleId == null) return { ticket: t.rows[0], article: null };
+  const a = await pool.query(`SELECT id, project_id, slug, title FROM kb_articles WHERE id = $1`, [articleId]);
+  if (!a.rows[0]) throw { status: 404, error: 'article not found' };
+  if (!(await userCanReadProject(user, a.rows[0].project_id))) {
+    throw { status: 403, error: 'forbidden (article)' };
+  }
+  return { ticket: t.rows[0], article: a.rows[0] };
+}
+
+// GET /api/kb/tickets/:id/links — articles linked to this ticket.
+router.get('/tickets/:id/links', requireAuth, async (req, res) => {
+  try {
+    const ticketId = Number(req.params.id);
+    const { ticket } = await loadTicketAndArticle({ user: req.session.user, ticketId });
+    const r = await pool.query(
+      `SELECT l.article_id, a.slug, a.title, a.project_id, a.tags,
+              l.kind, l.created_at,
+              u.display_name AS created_by_name
+         FROM ticket_kb_links l
+         JOIN kb_articles a ON a.id = l.article_id
+         LEFT JOIN users u ON u.id = l.created_by
+        WHERE l.ticket_id = $1
+        ORDER BY l.created_at ASC`,
+      [ticket.id]
+    );
+    res.json(r.rows);
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.error });
+    console.error('kb links list:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// POST /api/kb/tickets/:id/links { article_id, kind? } — create link.
+// Idempotent (PK conflict returns the existing row with 200).
+router.post('/tickets/:id/links', requireAuth, async (req, res) => {
+  try {
+    const ticketId = Number(req.params.id);
+    const articleId = Number(req.body?.article_id);
+    if (!Number.isInteger(articleId) || articleId <= 0) {
+      return res.status(400).json({ error: 'article_id required' });
+    }
+    const kind = ['manual', 'suggested_accepted', 'system'].includes(req.body?.kind)
+      ? req.body.kind : 'manual';
+    const { ticket, article } = await loadTicketAndArticle({
+      user: req.session.user, ticketId, articleId,
+    });
+    const r = await pool.query(
+      `INSERT INTO ticket_kb_links (ticket_id, article_id, kind, created_by)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT DO NOTHING
+       RETURNING ticket_id, article_id, kind, created_at`,
+      [ticket.id, article.id, kind, req.session.user.id]
+    );
+    if (!r.rows[0]) {
+      const existing = await pool.query(
+        `SELECT ticket_id, article_id, kind, created_at
+           FROM ticket_kb_links WHERE ticket_id = $1 AND article_id = $2`,
+        [ticket.id, article.id]
+      );
+      return res.json(existing.rows[0]);
+    }
+    res.status(201).json(r.rows[0]);
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.error });
+    console.error('kb link create:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// DELETE /api/kb/tickets/:id/links/:articleId — unlink.
+router.delete('/tickets/:id/links/:articleId', requireAuth, async (req, res) => {
+  try {
+    const ticketId = Number(req.params.id);
+    const articleId = Number(req.params.articleId);
+    const { ticket } = await loadTicketAndArticle({ user: req.session.user, ticketId, articleId });
+    await pool.query(
+      `DELETE FROM ticket_kb_links WHERE ticket_id = $1 AND article_id = $2`,
+      [ticket.id, articleId]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.error });
+    console.error('kb link delete:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// GET /api/kb/tickets/:id/suggestions?limit=5 — pg_trgm similarity over
+// (article.title + tags + keywords) vs the ticket's title. Scoped to
+// the ticket's project + org-wide (project_id IS NULL); already-linked
+// articles excluded; status='published' only. Falls back to empty
+// when pg_trgm isn't installed.
+router.get('/tickets/:id/suggestions', requireAuth, async (req, res) => {
+  try {
+    const ticketId = Number(req.params.id);
+    const limit = Math.max(1, Math.min(20, Number(req.query.limit) || 5));
+    const { ticket } = await loadTicketAndArticle({ user: req.session.user, ticketId });
+    // Decrypt ticket title under standard mode for matching. matchable
+    // is the cheap bag-of-words on the article side.
+    const { decryptRows } = require('../services/fields');
+    await decryptRows('tickets', [ticket]);
+    const titleQ = String(ticket.title || '').trim();
+    if (!titleQ) return res.json([]);
+    const r = await pool.query(
+      `SELECT a.id AS article_id, a.slug, a.title, a.tags, a.project_id,
+              similarity(
+                a.title || ' ' || array_to_string(a.tags, ' ') || ' ' || array_to_string(a.keywords, ' '),
+                $2
+              ) AS sim
+         FROM kb_articles a
+        WHERE a.status = 'published'
+          AND (a.project_id = $1 OR a.project_id IS NULL)
+          AND NOT EXISTS (
+            SELECT 1 FROM ticket_kb_links l
+             WHERE l.ticket_id = $3 AND l.article_id = a.id
+          )
+        ORDER BY
+          (CASE WHEN a.project_id = $1 THEN 0 ELSE 1 END),
+          sim DESC
+        LIMIT $4`,
+      [ticket.project_id, titleQ, ticket.id, limit]
+    );
+    res.json(r.rows);
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.error });
+    console.warn('kb suggestions:', err.message);
+    res.json([]);
   }
 });
 

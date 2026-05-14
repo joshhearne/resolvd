@@ -53,6 +53,7 @@ const BLANK_FILTERS = {
   effective_priority: "",
   blocker_type: "",
   flagged_for_review: "",
+  has_fix: "",
 };
 
 // Predefined sidebar views — each maps to a filter state
@@ -119,6 +120,11 @@ const PREDEFINED = [
         label: "Closed",
         countKey: "closed",
         filters: { ...BLANK_FILTERS, internal_status: "Closed" },
+      },
+      {
+        key: "has_fix",
+        label: "Fix applied",
+        filters: { ...BLANK_FILTERS, has_fix: "1" },
       },
     ],
   },
@@ -432,6 +438,7 @@ export default function TicketList() {
       effective_priority: f.effective_priority || "",
       blocker_type: f.blocker_type || "",
       flagged_for_review: f.flagged_for_review || "",
+      has_fix: f.has_fix || "",
     });
     setQ(f.q || "");
     setSortBy(f.sort_by || "updated_at");
@@ -1004,6 +1011,14 @@ export default function TicketList() {
                           >
                             {t.title}
                           </Link>
+                          {t.has_fix && (
+                            <span
+                              className="ml-1.5 inline-flex items-center text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300"
+                              title="Fix applied — resolution recorded or KB article linked"
+                            >
+                              fix
+                            </span>
+                          )}
                         </td>
                       )}
                       {cols.isVisible("priority") && (

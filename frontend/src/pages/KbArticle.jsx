@@ -141,6 +141,13 @@ export default function KbArticle() {
           )}
         </div>
         <h1 className="text-3xl font-bold tracking-tight text-fg">{article.title}</h1>
+        {article.tags?.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 mt-1">
+            {article.tags.map((t) => (
+              <span key={t} className="text-xs bg-brand/10 text-brand rounded px-2 py-0.5">{t}</span>
+            ))}
+          </div>
+        )}
         <div className="text-xs text-fg-dim flex flex-wrap gap-2">
           <span>By {article.author_name || "Unknown"}</span>
           <span>·</span>
