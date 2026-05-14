@@ -10,6 +10,7 @@
 
 const { pool } = require('../db/pool');
 const { decryptRow } = require('./fields');
+const { rateLimitedFetch, originOf } = require('./action1RateLimit');
 
 const SOFTWARE_TYPE_SLUGS = new Set(['workstation', 'server', 'laptop']);
 
@@ -29,11 +30,11 @@ async function oauthToken(baseUrl, clientId, clientSecret) {
     client_id: clientId,
     client_secret: clientSecret,
   }).toString();
-  const resp = await fetch(url, {
+  const resp = await rateLimitedFetch(baseUrl, () => fetch(url, {
     method: 'POST',
     headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
     body,
-  });
+  }));
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
     throw new Error(`HTTP ${resp.status} on token: ${text.slice(0, 200)}`);
@@ -44,9 +45,9 @@ async function oauthToken(baseUrl, clientId, clientSecret) {
 }
 
 async function getJSON(url, accessToken) {
-  const resp = await fetch(url, {
+  const resp = await rateLimitedFetch(originOf(url), () => fetch(url, {
     headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
-  });
+  }));
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
     const path = url.replace(/^https?:\/\/[^/]+/, '');

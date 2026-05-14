@@ -10,6 +10,7 @@ const { pool } = require('../db/pool');
 const { decryptRow } = require('./fields');
 const { getPreset } = require('./alertMappers');
 const { ingestAlertEvent } = require('./alertIngest');
+const { rateLimitedFetch, originOf } = require('./action1RateLimit');
 
 // Accept paste of curl command or trailing path — extract just the
 // scheme+host. Throws on input that can't be parsed as an http(s) URL.
@@ -46,11 +47,11 @@ async function oauthToken(baseUrl, clientId, clientSecret) {
   }).toString();
   let resp;
   try {
-    resp = await fetch(url, {
+    resp = await rateLimitedFetch(baseUrl, () => fetch(url, {
       method: 'POST',
       headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
       body,
-    });
+    }));
   } catch (err) {
     throw new Error(`network: ${err.message}`);
   }
@@ -64,9 +65,9 @@ async function oauthToken(baseUrl, clientId, clientSecret) {
 }
 
 async function getJSON(url, accessToken) {
-  const resp = await fetch(url, {
+  const resp = await rateLimitedFetch(originOf(url), () => fetch(url, {
     headers: { Authorization: `Bearer ${accessToken}`, Accept: 'application/json' },
-  });
+  }));
   if (!resp.ok) {
     const text = await resp.text().catch(() => '');
     const pathOnly = url.replace(/^https?:\/\/[^/]+/, '');
