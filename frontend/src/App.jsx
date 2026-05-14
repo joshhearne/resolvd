@@ -147,6 +147,14 @@ function AppRoutes() {
           }
         />
         <Route
+          path="inventory/:id"
+          element={
+            <ProtectedRoute>
+              <Inventory />
+            </ProtectedRoute>
+          }
+        />
+        <Route
           path="inventory"
           element={
             <ProtectedRoute>

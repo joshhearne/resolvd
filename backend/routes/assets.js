@@ -320,26 +320,103 @@ router.get('/export.csv', requireAuth, async (req, res) => {
 
 // GET /api/assets/:id/software — installed software for the asset.
 // Supports ?q= text filter on name / vendor for the typeahead.
+// Returns canonical_name + canonical_vendor + last_alias_id so the UI
+// can show "Adobe Acrobat (was: Adobe Acrobat Pro DC 64-bit)" and link
+// the alias rule that won the match.
 router.get('/:id(\\d+)/software', requireAuth, async (req, res) => {
   try {
     const id = Number(req.params.id);
     const q = (req.query.q || '').trim().toLowerCase();
     const params = [id];
-    let where = `WHERE asset_id = $1`;
+    let where = `WHERE s.asset_id = $1`;
     if (q) {
       params.push(`%${q}%`);
-      where += ` AND (LOWER(name) LIKE $2 OR LOWER(COALESCE(vendor,'')) LIKE $2)`;
+      where += ` AND (LOWER(s.name) LIKE $2 OR LOWER(COALESCE(s.vendor,'')) LIKE $2 OR LOWER(COALESCE(s.canonical_name,'')) LIKE $2)`;
     }
     const r = await pool.query(
-      `SELECT id, name, version, vendor, install_date, size_bytes, updated_at
-         FROM asset_software ${where}
-         ORDER BY LOWER(name), version
+      `SELECT s.id, s.name, s.version, s.vendor, s.install_date, s.size_bytes,
+              s.canonical_name, s.canonical_vendor, s.last_alias_id,
+              s.raw, s.updated_at,
+              a.pattern AS alias_pattern
+         FROM asset_software s
+         LEFT JOIN software_aliases a ON a.id = s.last_alias_id
+         ${where}
+         ORDER BY LOWER(COALESCE(s.canonical_name, s.name)), s.version
          LIMIT 1000`,
       params
     );
     res.json({ items: r.rows, total: r.rows.length });
   } catch (err) {
     console.error('asset software list error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// GET /api/assets/:id/tickets — tickets linked to this asset across all
+// projects. Admin / Manager see every row; others are scoped to
+// projects they're members of. Useful for the asset detail page's
+// "what tickets touched this machine" panel.
+router.get('/:id(\\d+)/tickets', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const user = req.session.user;
+    const isPriv = user.role === 'Admin' || user.role === 'Manager';
+    const params = [id];
+    let projectFilter = '';
+    if (!isPriv) {
+      params.push(user.id);
+      projectFilter = `AND EXISTS (
+        SELECT 1 FROM project_members pm
+         WHERE pm.project_id = t.project_id AND pm.user_id = $2
+      )`;
+    }
+    const r = await pool.query(
+      `SELECT t.id, t.internal_ref, t.title, t.title_enc,
+              t.internal_status, t.effective_priority, t.project_id,
+              p.name AS project_name, p.prefix AS project_prefix,
+              t.created_at, t.updated_at, t.resolved_at
+         FROM tickets t
+         LEFT JOIN projects p ON p.id = t.project_id
+        WHERE t.asset_id = $1 ${projectFilter}
+        ORDER BY
+          CASE WHEN t.resolved_at IS NULL THEN 0 ELSE 1 END,
+          t.created_at DESC
+        LIMIT 200`,
+      params
+    );
+    // Decrypt titles under standard mode.
+    const { decryptRows } = require('../services/fields');
+    await decryptRows('tickets', r.rows);
+    res.json(r.rows);
+  } catch (err) {
+    console.error('asset tickets list error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// GET /api/assets/:id/vulnerabilities — placeholder for Phase 5
+// per-CVE data. Today returns the count columns the assets table
+// already carries; future vendors that ship per-CVE rows will
+// populate an asset_vulnerabilities table the UI is already reading.
+router.get('/:id(\\d+)/vulnerabilities', requireAuth, async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const a = await pool.query(
+      `SELECT vulnerabilities_critical, vulnerabilities_other,
+              missing_updates_critical, missing_updates_other,
+              update_status, vulnerability_status, reboot_required
+         FROM assets WHERE id = $1`,
+      [id]
+    );
+    if (!a.rows[0]) return res.status(404).json({ error: 'not found' });
+    // Phase 5 will populate this from asset_vulnerabilities. For now
+    // empty list — UI degrades to count-only view.
+    res.json({
+      summary: a.rows[0],
+      items: [],
+    });
+  } catch (err) {
+    console.error('asset vulnerabilities error:', err);
     res.status(500).json({ error: 'Database error' });
   }
 });

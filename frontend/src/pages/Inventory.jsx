@@ -1,5 +1,6 @@
 import React, { useEffect, useState } from "react";
 import toast from "react-hot-toast";
+import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../utils/api";
 import HybridTime from "../components/HybridTime";
 
@@ -52,13 +53,18 @@ function formatBytes(n) {
   return `${v.toFixed(v >= 10 || i === 0 ? 0 : 1)} ${u[i]}`;
 }
 
+// Two-mode component. /inventory => list. /inventory/:id => full-page
+// detail. The two modes share asset-type loading and the search query
+// but render disjoint shells — the side-panel layout is gone.
 export default function Inventory() {
+  const params = useParams();
+  const navigate = useNavigate();
+  const detailId = params.id ? Number(params.id) : null;
+
   const [items, setItems] = useState([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
-  const [selected, setSelected] = useState(null);
-  const [detail, setDetail] = useState(null);
   const [creating, setCreating] = useState(false);
   const [types, setTypes] = useState([]);
   const [offlineOnly, setOfflineOnly] = useState(false);
@@ -66,6 +72,18 @@ export default function Inventory() {
   useEffect(() => {
     api.get("/api/asset-types").then(setTypes).catch(() => setTypes([]));
   }, []);
+  // List-mode data loaders. Declared above the detail-mode early
+  // return so the hook count stays stable when the user toggles
+  // between /inventory and /inventory/:id (Rules of Hooks).
+  // Effects no-op in detail mode so we don't burn an extra API call.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (!detailId) load("", false); }, []);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  useEffect(() => { if (!detailId) load(q, offlineOnly); }, [offlineOnly]);
+
+  if (detailId) {
+    return <AssetDetailPage id={detailId} types={types} onBack={() => navigate("/inventory")} />;
+  }
 
   function buildQs(searchQ = q, offline = offlineOnly) {
     const parts = [];
@@ -86,19 +104,6 @@ export default function Inventory() {
       setLoading(false);
     }
   }
-
-  useEffect(() => { load("", false); }, []);
-  useEffect(() => { load(q, offlineOnly); /* eslint-disable-next-line */ }, [offlineOnly]);
-
-  useEffect(() => {
-    if (!selected) {
-      setDetail(null);
-      return;
-    }
-    api.get(`/api/assets/${selected}`)
-      .then(setDetail)
-      .catch((e) => toast.error(e.message));
-  }, [selected]);
 
   function handleSearch(e) {
     e.preventDefault();
@@ -155,16 +160,13 @@ export default function Inventory() {
           onCancel={() => setCreating(false)}
           onCreated={(id) => {
             setCreating(false);
-            setSelected(id);
-            load(q);
+            navigate(`/inventory/${id}`);
           }}
         />
       )}
 
-      <div className="flex flex-col lg:flex-row gap-4 items-stretch">
-        <section
-          className={`${selected ? "hidden lg:block lg:w-2/3" : "block w-full"} bg-surface border border-border rounded-lg overflow-hidden`}
-        >
+      <div className="flex flex-col gap-4 items-stretch">
+        <section className="bg-surface border border-border rounded-lg overflow-hidden">
           {loading ? (
             <div className="p-6 text-sm text-fg-dim">Loading…</div>
           ) : items.length === 0 ? (
@@ -189,12 +191,18 @@ export default function Inventory() {
                   {items.map((a) => (
                     <tr
                       key={a.id}
-                      onClick={() => setSelected(a.id)}
-                      className={`cursor-pointer hover:bg-surface-2 ${selected === a.id ? "bg-brand/5" : ""}`}
+                      onClick={() => navigate(`/inventory/${a.id}`)}
+                      className="cursor-pointer hover:bg-surface-2"
                     >
                       <td className="px-3 py-2 font-medium text-fg">
                         <div className="flex items-center gap-1.5">
-                          <span>{a.hostname || <span className="text-fg-dim italic">unnamed</span>}</span>
+                          <Link
+                            to={`/inventory/${a.id}`}
+                            onClick={(e) => e.stopPropagation()}
+                            className="text-brand hover:underline"
+                          >
+                            {a.hostname || <span className="text-fg-dim italic">unnamed</span>}
+                          </Link>
                           {isOffline(a.last_seen_at) && (
                             <span
                               className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-amber-100 dark:bg-amber-950/40 text-amber-700 dark:text-amber-300"
@@ -225,28 +233,204 @@ export default function Inventory() {
             {items.length} of {total} shown
           </div>
         </section>
-
-        {selected && (
-          <section className="flex-1 min-w-0 lg:max-w-md">
-            <AssetDetail
-              detail={detail}
-              types={types}
-              onBack={() => setSelected(null)}
-              onReload={async () => {
-                if (selected) {
-                  try { setDetail(await api.get(`/api/assets/${selected}`)); } catch {}
-                }
-                load(q);
-              }}
-            />
-          </section>
-        )}
       </div>
     </div>
   );
 }
 
-function AssetDetail({ detail, types, onBack, onReload }) {
+// Full-page detail. Mounted at /inventory/:id. Replaces the old side
+// panel — gives the security posture, software, tickets, vulnerabilities
+// and raw payload room to breathe in a two-column layout.
+function AssetDetailPage({ id, types, onBack }) {
+  const [detail, setDetail] = useState(null);
+  const [tickets, setTickets] = useState([]);
+  const [vulns, setVulns] = useState(null);
+
+  async function loadDetail() {
+    try {
+      const d = await api.get(`/api/assets/${id}`);
+      setDetail(d);
+    } catch (e) {
+      toast.error(e.message);
+    }
+  }
+  async function loadSidebars() {
+    try { setTickets(await api.get(`/api/assets/${id}/tickets`)); } catch { setTickets([]); }
+    try { setVulns(await api.get(`/api/assets/${id}/vulnerabilities`)); } catch { setVulns(null); }
+  }
+
+  useEffect(() => {
+    setDetail(null); setTickets([]); setVulns(null);
+    loadDetail();
+    loadSidebars();
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [id]);
+
+  if (!detail) {
+    return (
+      <div className="space-y-4">
+        <button onClick={onBack} className="text-xs text-fg-muted hover:text-fg">← Back to inventory</button>
+        <div className="bg-surface border border-border rounded-lg p-6 text-sm text-fg-dim">Loading…</div>
+      </div>
+    );
+  }
+  return (
+    <div className="space-y-4">
+      <div className="flex items-center justify-between gap-3 flex-wrap">
+        <button onClick={onBack} className="text-xs text-fg-muted hover:text-fg">← Back to inventory</button>
+        <div className="text-xs text-fg-dim">
+          {detail.last_seen_at ? <>Last seen <HybridTime value={detail.last_seen_at} /></> : "Never seen"}
+        </div>
+      </div>
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">
+        <div className="lg:col-span-1 space-y-4">
+          <AssetDetail
+            detail={detail}
+            types={types}
+            onBack={onBack}
+            onReload={async () => { await loadDetail(); await loadSidebars(); }}
+            hideTicketsList   /* tickets get their own large panel on the right */
+            hideRawPayload    /* raw payload also moves to the right column */
+          />
+        </div>
+        <div className="lg:col-span-2 space-y-4">
+          <TicketsPanel tickets={tickets} />
+          <VulnerabilitiesPanel vulns={vulns} />
+          <RawPayloadPanel raw={detail.raw_data} />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Tickets across all projects this asset has appeared on. Admin /
+// Manager see every row; everyone else only their project_members
+// scope (server enforces).
+function TicketsPanel({ tickets }) {
+  return (
+    <div className="bg-surface border border-border rounded-lg p-4 space-y-2">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-fg">Linked tickets</h2>
+        <span className="text-xs text-fg-muted">{tickets.length}</span>
+      </div>
+      {tickets.length === 0 ? (
+        <div className="text-xs text-fg-dim italic">No tickets reference this asset yet.</div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="min-w-full divide-y divide-border text-xs">
+            <thead className="bg-surface-2 text-fg-dim">
+              <tr>
+                <th className="px-3 py-1.5 text-left font-medium">Ref</th>
+                <th className="px-3 py-1.5 text-left font-medium">Title</th>
+                <th className="px-3 py-1.5 text-left font-medium">Project</th>
+                <th className="px-3 py-1.5 text-left font-medium">Status</th>
+                <th className="px-3 py-1.5 text-left font-medium">Updated</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {tickets.map((t) => (
+                <tr key={t.id} className={t.resolved_at ? "opacity-60" : ""}>
+                  <td className="px-3 py-1.5 font-mono">
+                    <Link to={`/tickets/${t.id}`} className="text-brand hover:underline">{t.internal_ref}</Link>
+                  </td>
+                  <td className="px-3 py-1.5">{t.title || <span className="text-fg-dim italic">(no title)</span>}</td>
+                  <td className="px-3 py-1.5 text-fg-muted">
+                    {t.project_prefix ? <span className="font-mono">{t.project_prefix}</span> : "—"}
+                    {t.project_name && <span className="ml-1 text-fg-dim">{t.project_name}</span>}
+                  </td>
+                  <td className="px-3 py-1.5 text-fg-muted">{t.internal_status}</td>
+                  <td className="px-3 py-1.5 text-fg-muted whitespace-nowrap">
+                    <HybridTime value={t.updated_at} />
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// Vulnerabilities panel. Per-CVE items land here once Phase 5 ships
+// asset_vulnerabilities; for now we render the summary counters the
+// asset table already carries.
+function VulnerabilitiesPanel({ vulns }) {
+  if (!vulns) {
+    return (
+      <div className="bg-surface border border-border rounded-lg p-4 text-xs text-fg-dim">Vulnerabilities loading…</div>
+    );
+  }
+  const s = vulns.summary || {};
+  return (
+    <div className="bg-surface border border-border rounded-lg p-4 space-y-2">
+      <h2 className="text-sm font-semibold text-fg">Vulnerabilities</h2>
+      <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
+        <div className="bg-surface-2 rounded p-2">
+          <div className="text-fg-muted">Vuln (critical)</div>
+          <div className="text-lg font-semibold text-fg">{s.vulnerabilities_critical ?? "—"}</div>
+        </div>
+        <div className="bg-surface-2 rounded p-2">
+          <div className="text-fg-muted">Vuln (other)</div>
+          <div className="text-lg font-semibold text-fg">{s.vulnerabilities_other ?? "—"}</div>
+        </div>
+        <div className="bg-surface-2 rounded p-2">
+          <div className="text-fg-muted">Patches (critical)</div>
+          <div className="text-lg font-semibold text-fg">{s.missing_updates_critical ?? "—"}</div>
+        </div>
+        <div className="bg-surface-2 rounded p-2">
+          <div className="text-fg-muted">Patches (other)</div>
+          <div className="text-lg font-semibold text-fg">{s.missing_updates_other ?? "—"}</div>
+        </div>
+      </div>
+      {vulns.items.length === 0 ? (
+        <p className="text-xs text-fg-dim italic">
+          Per-CVE details land here when an integration ships them
+          (Phase 5). Today only counts + vendor-reported status are
+          available.
+        </p>
+      ) : (
+        <table className="min-w-full divide-y divide-border text-xs">
+          <thead className="bg-surface-2 text-fg-dim">
+            <tr>
+              <th className="px-3 py-1.5 text-left font-medium">CVE</th>
+              <th className="px-3 py-1.5 text-left font-medium">Severity</th>
+              <th className="px-3 py-1.5 text-left font-medium">Title</th>
+              <th className="px-3 py-1.5 text-left font-medium">First seen</th>
+            </tr>
+          </thead>
+          <tbody className="divide-y divide-border">
+            {vulns.items.map((v) => (
+              <tr key={v.id}>
+                <td className="px-3 py-1.5 font-mono">{v.cve_id}</td>
+                <td className="px-3 py-1.5">{v.severity}</td>
+                <td className="px-3 py-1.5">{v.title}</td>
+                <td className="px-3 py-1.5 text-fg-muted whitespace-nowrap">
+                  <HybridTime value={v.first_seen_at} />
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+    </div>
+  );
+}
+
+function RawPayloadPanel({ raw }) {
+  return (
+    <details className="bg-surface border border-border rounded-lg">
+      <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-fg hover:bg-surface-2">
+        Raw payload
+      </summary>
+      <pre className="text-[11px] font-mono bg-surface-2 border-t border-border p-3 overflow-x-auto max-h-[60vh] overflow-y-auto whitespace-pre-wrap">
+{JSON.stringify(raw, null, 2)}
+      </pre>
+    </details>
+  );
+}
+
+function AssetDetail({ detail, types, onBack, onReload, hideTicketsList, hideRawPayload }) {
   const [editing, setEditing] = useState(false);
   const [edits, setEdits] = useState({});
   const [saving, setSaving] = useState(false);
@@ -317,13 +501,7 @@ function AssetDetail({ detail, types, onBack, onReload }) {
     ["Source", `${SOURCE_LABELS[detail.source_system] || detail.source_system} (${detail.source_external_id})`],
   ];
   return (
-    <div className="bg-surface border border-border rounded-lg p-4 space-y-3 sticky top-20">
-      <button
-        onClick={onBack}
-        className="lg:hidden text-xs text-fg-muted hover:text-fg"
-      >
-        ← Back to list
-      </button>
+    <div className="bg-surface border border-border rounded-lg p-4 space-y-3">
       <div className="flex items-start justify-between gap-2">
         <div>
           <h2 className="text-base font-semibold text-fg">
@@ -370,7 +548,7 @@ function AssetDetail({ detail, types, onBack, onReload }) {
       <SecurityPostureSection detail={detail} />
       <SoftwareSection detail={detail} onReload={onReload} />
       <CustomFieldsPanel assetId={detail.id} />
-      {Array.isArray(detail.tickets) && detail.tickets.length > 0 && (
+      {!hideTicketsList && Array.isArray(detail.tickets) && detail.tickets.length > 0 && (
         <div className="border-t border-border pt-3 space-y-2">
           <div className="text-xs font-semibold text-fg-muted uppercase tracking-wider">
             Tickets ({detail.tickets.length})
@@ -392,12 +570,14 @@ function AssetDetail({ detail, types, onBack, onReload }) {
           </div>
         </div>
       )}
-      <details className="text-xs">
-        <summary className="cursor-pointer text-fg-muted hover:text-fg">Raw payload</summary>
-        <pre className="mt-2 bg-surface-2 border border-border rounded p-2 overflow-x-auto text-[10px] font-mono max-h-80 overflow-y-auto">
-          {JSON.stringify(detail.raw_data, null, 2)}
-        </pre>
-      </details>
+      {!hideRawPayload && (
+        <details className="text-xs">
+          <summary className="cursor-pointer text-fg-muted hover:text-fg">Raw payload</summary>
+          <pre className="mt-2 bg-surface-2 border border-border rounded p-2 overflow-x-auto text-[10px] font-mono max-h-80 overflow-y-auto">
+            {JSON.stringify(detail.raw_data, null, 2)}
+          </pre>
+        </details>
+      )}
     </div>
   );
 }
@@ -821,23 +1001,18 @@ function SoftwareSection({ detail, onReload }) {
               {detail.last_software_sync_at ? "No matches." : "No software synced yet — click Sync now."}
             </div>
           ) : (
-            <div className="max-h-80 overflow-y-auto border border-border rounded">
+            <div className="max-h-[60vh] overflow-y-auto border border-border rounded">
               <table className="w-full text-xs">
                 <thead className="bg-surface-2 sticky top-0 text-fg-muted">
                   <tr>
                     <th className="text-left px-2 py-1 font-medium">Name</th>
                     <th className="text-left px-2 py-1 font-medium">Version</th>
                     <th className="text-left px-2 py-1 font-medium">Vendor</th>
+                    <th className="text-left px-2 py-1 font-medium"></th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-border">
-                  {items.map((s) => (
-                    <tr key={s.id}>
-                      <td className="px-2 py-1 font-medium text-fg break-all">{s.name}</td>
-                      <td className="px-2 py-1 text-fg-muted font-mono">{s.version || "—"}</td>
-                      <td className="px-2 py-1 text-fg-muted">{s.vendor || "—"}</td>
-                    </tr>
-                  ))}
+                  {items.map((s) => <SoftwareRow key={s.id} s={s} />)}
                 </tbody>
               </table>
             </div>
@@ -845,5 +1020,52 @@ function SoftwareSection({ detail, onReload }) {
         </>
       )}
     </div>
+  );
+}
+
+// One row per installed package. Surfaces canonical name above raw
+// name when an alias matched (so reports tie back to a known
+// product), and exposes the raw JSON payload via an inline toggle so
+// admins can inspect what the upstream actually sent.
+function SoftwareRow({ s }) {
+  const [open, setOpen] = useState(false);
+  const display = s.canonical_name || s.name;
+  const aliased = !!s.canonical_name && s.canonical_name !== s.name;
+  return (
+    <>
+      <tr>
+        <td className="px-2 py-1 text-fg break-all">
+          <div className="font-medium">{display}</div>
+          {aliased && (
+            <div className="text-[10px] text-fg-dim font-mono">
+              was: {s.name}
+              {s.alias_pattern && (
+                <span className="ml-1 text-brand">[{s.alias_pattern}]</span>
+              )}
+            </div>
+          )}
+        </td>
+        <td className="px-2 py-1 text-fg-muted font-mono">{s.version || "—"}</td>
+        <td className="px-2 py-1 text-fg-muted">{s.canonical_vendor || s.vendor || "—"}</td>
+        <td className="px-2 py-1 text-right">
+          <button
+            type="button"
+            onClick={() => setOpen((x) => !x)}
+            className="text-[10px] text-fg-dim hover:text-fg"
+          >
+            {open ? "hide raw" : "raw"}
+          </button>
+        </td>
+      </tr>
+      {open && (
+        <tr>
+          <td colSpan={4} className="px-2 py-1 bg-surface-2/40">
+            <pre className="text-[10px] font-mono whitespace-pre-wrap overflow-x-auto max-h-48 overflow-y-auto">
+{JSON.stringify(s.raw || {}, null, 2)}
+            </pre>
+          </td>
+        </tr>
+      )}
+    </>
   );
 }
