@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
+import { useBranding } from "../context/BrandingContext";
 import PageShell from "../components/PageShell";
 
 function StatusPill({ status }) {
@@ -17,6 +18,14 @@ function StatusPill({ status }) {
 }
 
 export default function Projects() {
+  const { branding } = useBranding();
+  const mspMode = branding?.enable_customer_companies === true;
+  const externalLabel = mspMode
+    ? "This project has external contacts (vendors / customers)"
+    : "This project has an external vendor";
+  const externalHint = mspMode
+    ? "Shows external status/reference fields and outbound contact features on tickets."
+    : "(shows vendor status/ref fields on tickets)";
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
   const [showForm, setShowForm] = useState(false);
@@ -166,9 +175,9 @@ export default function Projects() {
               className="h-4 w-4 rounded border-border-strong text-brand focus:ring-brand/40"
             />
             <label htmlFor="has_external_vendor" className="text-sm text-fg">
-              This project has an external vendor
+              {externalLabel}
               <span className="text-fg-dim font-normal ml-1">
-                (shows vendor status/ref fields on tickets)
+                {externalHint}
               </span>
             </label>
           </div>

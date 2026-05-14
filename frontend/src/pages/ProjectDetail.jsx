@@ -3,6 +3,7 @@ import { useParams, useNavigate, Link } from "react-router-dom";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
 import { useAuth } from "../context/AuthContext";
+import { useBranding } from "../context/BrandingContext";
 import PageShell from "../components/PageShell";
 import AiRewriteButton from "../components/AiRewriteButton";
 
@@ -28,6 +29,11 @@ export default function ProjectDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
   const { user } = useAuth();
+  const { branding } = useBranding();
+  const mspMode = branding?.enable_customer_companies === true;
+  const externalLabel = mspMode
+    ? "This project has external contacts (vendors / customers)"
+    : "This project has an external vendor";
   const canEditProject = ["Admin", "Manager"].includes(user?.role);
 
   const [project, setProject] = useState(null);
@@ -351,7 +357,7 @@ export default function ProjectDetail() {
                 className="h-4 w-4 rounded border-border-strong text-brand focus:ring-brand/40"
               />
               <label htmlFor="edit_has_vendor" className="text-sm text-fg">
-                This project has an external vendor
+                {externalLabel}
               </label>
             </div>
             <div className="flex items-start gap-2">
