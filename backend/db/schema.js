@@ -2194,6 +2194,102 @@ async function initSchema() {
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_kb_versions_article ON kb_article_versions(article_id, version_no DESC)`);
 
+    // First-class deduped alert records. Distinct from external_alert_event
+    // (immutable audit log): alerts is one row per (source_id,
+    // external_event_id), state-machine'd between firing → recovered.
+    // Ticket creation is no longer automatic — it goes through
+    // alert_rules below.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS alerts (
+        id BIGSERIAL PRIMARY KEY,
+        source_id INTEGER NOT NULL REFERENCES external_alert_source(id) ON DELETE CASCADE,
+        external_event_id TEXT NOT NULL,
+        external_ref TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'firing' CHECK (state IN ('firing','recovered','suppressed')),
+        severity TEXT,
+        severity_rank SMALLINT,
+        title TEXT,
+        title_enc BYTEA,
+        description TEXT,
+        description_enc BYTEA,
+        user_email TEXT,
+        vendor_ref TEXT,
+        raw_payload JSONB,
+        first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        recovered_at TIMESTAMPTZ,
+        refire_count INTEGER NOT NULL DEFAULT 0,
+        ticket_id INTEGER REFERENCES tickets(id) ON DELETE SET NULL,
+        promoted_at TIMESTAMPTZ,
+        promoted_by_rule_id INTEGER,
+        promoted_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        evaluated_at TIMESTAMPTZ,
+        next_evaluation_at TIMESTAMPTZ,
+        suppression_reason TEXT,
+        UNIQUE(source_id, external_event_id)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_alerts_state_source ON alerts(state, source_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_alerts_ticket ON alerts(ticket_id) WHERE ticket_id IS NOT NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_alerts_next_eval ON alerts(next_evaluation_at) WHERE next_evaluation_at IS NOT NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_alerts_last_seen ON alerts(last_seen_at DESC)`);
+
+    // Per-integration rules that decide whether an inbound alert gets
+    // promoted to a ticket. First match (lowest priority value) wins.
+    // match_conditions JSON shape — clauses AND'd:
+    //   { severity_min_rank: 1..5,
+    //     title_contains: ['needle','word'],     // any-of, case-insensitive
+    //     title_excludes: ['ignore'],            // none-of
+    //     description_contains: [...],
+    //     description_excludes: [...],
+    //     user_email_domain: '@example.com'  }
+    // action: create_ticket | suppress | ignore
+    // delay_minutes: 0 = immediate; >0 = stamp next_evaluation_at and let
+    //   the scheduler re-check after the window before promoting.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS alert_rules (
+        id SERIAL PRIMARY KEY,
+        integration_id INTEGER NOT NULL REFERENCES external_alert_source(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        priority INTEGER NOT NULL DEFAULT 100,
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        match_conditions JSONB NOT NULL DEFAULT '{}'::jsonb,
+        action TEXT NOT NULL CHECK (action IN ('create_ticket','suppress','ignore')),
+        delay_minutes INTEGER NOT NULL DEFAULT 0,
+        ticket_overrides JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_alert_rules_integration ON alert_rules(integration_id, enabled, priority)`);
+
+    // Seed a default "create ticket for anything" rule per existing
+    // integration so existing deployments keep producing tickets out of
+    // the box. Admins edit the rule to add filters as they go.
+    await client.query(`
+      INSERT INTO alert_rules (integration_id, name, priority, action, match_conditions)
+      SELECT s.id, 'Default: create ticket for any alert', 1000, 'create_ticket', '{}'::jsonb
+        FROM external_alert_source s
+       WHERE NOT EXISTS (SELECT 1 FROM alert_rules r WHERE r.integration_id = s.id)
+    `);
+
+    // Backfill: every currently-open ticket linked to an alert source
+    // gets a synthetic firing alerts row so day-1 Alerts page is
+    // consistent. Skip rows we already have (re-runs are no-ops).
+    await client.query(`
+      INSERT INTO alerts (source_id, external_event_id, external_ref, state, ticket_id, first_seen_at, last_seen_at, promoted_at)
+      SELECT t.external_alert_source_id, split_part(t.external_ref, ':', 2), t.external_ref,
+             CASE WHEN t.internal_status = 'Closed' THEN 'recovered' ELSE 'firing' END,
+             t.id, t.created_at, t.updated_at, t.created_at
+        FROM tickets t
+       WHERE t.external_ref IS NOT NULL
+         AND t.external_alert_source_id IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM alerts a
+            WHERE a.source_id = t.external_alert_source_id
+              AND a.external_event_id = split_part(t.external_ref, ':', 2))
+    `);
+
     // Internal-only notes on a ticket, visible to handler roles only
     // (Admin/Manager/Tech). Distinct from comments — never sent outbound,
     // never visible to Submitters or Vendors. Body is encrypted under the

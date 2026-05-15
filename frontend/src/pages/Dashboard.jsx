@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../utils/api";
+import { useAuth } from "../context/AuthContext";
 import PriorityBadge from "../components/PriorityBadge";
 import HybridTime from "../components/HybridTime";
 import PageShell from "../components/PageShell";
@@ -135,6 +136,60 @@ function fmtSeconds(s) {
   if (n < 3600) return `${Math.round(n / 60)}m`;
   if (n < 86400) return `${(n / 3600).toFixed(1)}h`;
   return `${(n / 86400).toFixed(1)}d`;
+}
+
+// Read-only Active Alerts widget. Pulls top firing alerts so handlers
+// can see at-a-glance what's noisy without having to leave the
+// dashboard. Click a row -> alert detail; click the header -> /alerts.
+function ActiveAlertsCard() {
+  const [rows, setRows] = useState(null);
+  useEffect(() => {
+    api.get("/api/alerts?state=firing&limit=8")
+      .then((r) => setRows(Array.isArray(r) ? r : []))
+      .catch(() => setRows([]));
+  }, []);
+  if (rows == null) return null;
+  return (
+    <div className="card p-0 overflow-hidden">
+      <Link
+        to="/alerts"
+        className="flex items-center justify-between px-4 py-3 border-b border-border hover:bg-surface-2 transition-colors"
+        title="Open alerts page"
+      >
+        <h2 className="text-sm font-semibold text-fg flex items-center gap-2">
+          <span className="inline-block w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+          Active alerts {rows.length > 0 && <span className="text-fg-muted font-normal">({rows.length})</span>}
+        </h2>
+        <span className="text-xs text-fg-muted">View all →</span>
+      </Link>
+      {rows.length === 0 ? (
+        <div className="px-4 py-6 text-xs text-fg-dim text-center">No problems firing. 🎉</div>
+      ) : (
+        <ul className="divide-y divide-border">
+          {rows.map((r) => (
+            <li key={r.id}>
+              <Link
+                to={`/alerts/${r.id}`}
+                className="flex items-center gap-2 px-4 py-2 hover:bg-surface-2 transition-colors"
+                title={r.title || ""}
+              >
+                <span className="text-[10px] uppercase font-medium text-fg-muted bg-surface-2 border border-border rounded px-1.5 py-0.5 shrink-0">
+                  {r.severity || "—"}
+                </span>
+                <span className="text-sm text-fg truncate flex-1">
+                  {r.title || <span className="text-fg-dim italic">no title</span>}
+                </span>
+                <span className="text-[10px] text-fg-dim shrink-0">{r.source_name}</span>
+                {r.ticket_id && (
+                  <span className="text-[10px] text-brand font-mono shrink-0">{r.ticket_ref}</span>
+                )}
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
 }
 
 function SlaBreachCard({ sla }) {
@@ -296,6 +351,8 @@ function SlaBreachCard({ sla }) {
 }
 
 export default function Dashboard() {
+  const { user } = useAuth();
+  const canSeeAlerts = ["Admin", "Manager", "Tech"].includes(user?.role);
   const [stats, setStats] = useState(null);
   const [activity, setActivity] = useState([]);
   const [pendingTickets, setPendingTickets] = useState([]);
@@ -423,6 +480,8 @@ export default function Dashboard() {
       {sla && (
         <SlaBreachCard sla={sla} />
       )}
+
+      {canSeeAlerts && <ActiveAlertsCard />}
 
       <TimeInStatusCard />
 

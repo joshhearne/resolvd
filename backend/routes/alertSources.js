@@ -727,4 +727,121 @@ router.post('/:id/inbound-events/:eventId/preview', requireAuth, requireRole('Ad
   }
 });
 
+// ---------------------------------------------------------------------
+// Alert promotion rules per integration. First-match-wins on inbound
+// alerts. See services/alertEvaluator.js for match semantics. Each
+// rule's match_conditions JSON is validated lightly here; the matcher
+// treats malformed entries as wildcards.
+// ---------------------------------------------------------------------
+
+const VALID_ACTIONS = ['create_ticket', 'suppress', 'ignore'];
+
+function validateRulePatch(body) {
+  if (body.action && !VALID_ACTIONS.includes(body.action)) {
+    return `action must be one of ${VALID_ACTIONS.join(', ')}`;
+  }
+  if (body.delay_minutes !== undefined) {
+    const n = Number(body.delay_minutes);
+    if (!Number.isFinite(n) || n < 0 || n > 7 * 24 * 60) return 'delay_minutes 0..10080';
+  }
+  if (body.priority !== undefined) {
+    const n = Number(body.priority);
+    if (!Number.isFinite(n) || n < 0 || n > 100000) return 'priority 0..100000';
+  }
+  if (body.match_conditions && typeof body.match_conditions !== 'object') {
+    return 'match_conditions must be an object';
+  }
+  return null;
+}
+
+router.get('/:id/rules', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT * FROM alert_rules WHERE integration_id = $1 ORDER BY priority ASC, id ASC`,
+      [Number(req.params.id)]
+    );
+    res.json(r.rows);
+  } catch (err) {
+    console.error('rules list:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+router.post('/:id/rules', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+  try {
+    const errMsg = validateRulePatch(req.body || {});
+    if (errMsg) return res.status(400).json({ error: errMsg });
+    const r = await pool.query(
+      `INSERT INTO alert_rules (integration_id, name, priority, enabled,
+                                 match_conditions, action, delay_minutes, ticket_overrides)
+       VALUES ($1, $2, $3, COALESCE($4, TRUE), $5::jsonb, $6, $7, $8::jsonb)
+       RETURNING *`,
+      [
+        Number(req.params.id),
+        String(req.body.name || 'Unnamed rule').slice(0, 120),
+        Number.isFinite(Number(req.body.priority)) ? Number(req.body.priority) : 100,
+        req.body.enabled,
+        JSON.stringify(req.body.match_conditions || {}),
+        req.body.action || 'create_ticket',
+        Number(req.body.delay_minutes) || 0,
+        JSON.stringify(req.body.ticket_overrides || {}),
+      ]
+    );
+    res.status(201).json(r.rows[0]);
+  } catch (err) {
+    console.error('rules create:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+router.patch('/:id/rules/:ruleId', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+  try {
+    const errMsg = validateRulePatch(req.body || {});
+    if (errMsg) return res.status(400).json({ error: errMsg });
+    const sets = [];
+    const vals = [];
+    let p = 1;
+    for (const k of ['name', 'priority', 'enabled', 'action', 'delay_minutes']) {
+      if (Object.prototype.hasOwnProperty.call(req.body, k)) {
+        sets.push(`${k} = $${p++}`); vals.push(req.body[k]);
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(req.body, 'match_conditions')) {
+      sets.push(`match_conditions = $${p++}::jsonb`);
+      vals.push(JSON.stringify(req.body.match_conditions || {}));
+    }
+    if (Object.prototype.hasOwnProperty.call(req.body, 'ticket_overrides')) {
+      sets.push(`ticket_overrides = $${p++}::jsonb`);
+      vals.push(JSON.stringify(req.body.ticket_overrides || {}));
+    }
+    sets.push(`updated_at = NOW()`);
+    vals.push(Number(req.params.ruleId), Number(req.params.id));
+    const r = await pool.query(
+      `UPDATE alert_rules SET ${sets.join(', ')}
+        WHERE id = $${p} AND integration_id = $${p + 1}
+        RETURNING *`,
+      vals
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'Rule not found' });
+    res.json(r.rows[0]);
+  } catch (err) {
+    console.error('rules patch:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+router.delete('/:id/rules/:ruleId', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+  try {
+    const r = await pool.query(
+      `DELETE FROM alert_rules WHERE id = $1 AND integration_id = $2 RETURNING id`,
+      [Number(req.params.ruleId), Number(req.params.id)]
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'Rule not found' });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('rules delete:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
 module.exports = router;

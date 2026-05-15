@@ -92,7 +92,67 @@ async function tickOnce() {
   // doesn't hammer the upstream API. Daily-ish coverage per asset
   // emerges naturally from poll_interval_minutes × ticks.
   await sweepStaleSoftware().catch((err) => console.error('software sweep error:', err.message));
+  // Delayed alert promotion sweep: rules with delay_minutes > 0 stamp
+  // next_evaluation_at on the alert; this loop picks expired ones and
+  // re-evaluates. If the alert is still firing and a create_ticket
+  // rule still matches, promote.
+  await sweepDelayedAlerts().catch((err) => console.error('delayed alert sweep error:', err.message));
   return results;
+}
+
+async function sweepDelayedAlerts() {
+  const { pickRule } = require('./alertEvaluator');
+  const { promoteAlertToTicket } = require('./alertIngest');
+  const { transaction } = require('../db/pool');
+  const due = await pool.query(`
+    SELECT a.id AS alert_id, a.source_id
+      FROM alerts a
+     WHERE a.state = 'firing'
+       AND a.ticket_id IS NULL
+       AND a.next_evaluation_at IS NOT NULL
+       AND a.next_evaluation_at <= NOW()
+     ORDER BY a.next_evaluation_at ASC
+     LIMIT 25
+  `);
+  for (const row of due.rows) {
+    try {
+      await transaction(async (client) => {
+        // Re-lock and re-check inside the transaction.
+        const a = await client.query(
+          `SELECT a.*, a.title AS title_plain, a.description AS description_plain
+             FROM alerts a WHERE a.id = $1 FOR UPDATE`,
+          [row.alert_id]
+        );
+        const alertRow = a.rows[0];
+        if (!alertRow) return;
+        if (alertRow.state !== 'firing' || alertRow.ticket_id) {
+          await client.query(`UPDATE alerts SET next_evaluation_at = NULL WHERE id = $1`, [row.alert_id]);
+          return;
+        }
+        const src = await client.query(`SELECT * FROM external_alert_source WHERE id = $1`, [alertRow.source_id]);
+        if (!src.rows[0]) return;
+        await decryptRow('external_alert_source', src.rows[0]);
+        // Decrypt title/desc for the matcher.
+        const { decryptRow: decRow } = require('./fields');
+        await decRow('alerts', alertRow);
+        const rulesQ = await client.query(
+          `SELECT * FROM alert_rules WHERE integration_id = $1 AND enabled = TRUE
+            ORDER BY priority ASC, id ASC`,
+          [alertRow.source_id]
+        );
+        const rule = pickRule(rulesQ.rows, alertRow);
+        if (rule && rule.action === 'create_ticket') {
+          await promoteAlertToTicket(client, src.rows[0], { ...alertRow, event: {} }, rule, null);
+        } else {
+          // Rule changed / removed — drop the pending eval but leave
+          // state=firing so the admin still sees it on the Alerts page.
+          await client.query(`UPDATE alerts SET next_evaluation_at = NULL WHERE id = $1`, [row.alert_id]);
+        }
+      });
+    } catch (err) {
+      console.error(`delayed alert ${row.alert_id} eval error:`, err.message);
+    }
+  }
 }
 
 const SOFTWARE_STALE_DAYS = 7;

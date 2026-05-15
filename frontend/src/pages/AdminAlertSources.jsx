@@ -1053,6 +1053,8 @@ function SourceDetail({ source, projects, presets, adapters, onBack, onPatch, on
 
       <FieldMapSection source={source} onReload={onReload} />
 
+      <AlertRulesSection source={source} />
+
       <InboundEventsSection source={source} />
 
       <div className="space-y-2 pt-3 border-t border-border">
@@ -1850,6 +1852,243 @@ function InboundEventsSection({ source }) {
             ))}
           </tbody>
         </table>
+      </div>
+    </div>
+  );
+}
+
+// Alert promotion rules per integration. First match wins (priority ASC).
+function AlertRulesSection({ source }) {
+  const [rules, setRules] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [draft, setDraft] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  async function load() {
+    setLoading(true);
+    try {
+      const r = await api.get(`/api/alert-sources/${source.id}/rules`);
+      setRules(Array.isArray(r) ? r : []);
+    } catch { setRules([]); }
+    finally { setLoading(false); }
+  }
+  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [source.id]);
+
+  function newDraft() {
+    return {
+      id: null,
+      name: "",
+      priority: 100,
+      enabled: true,
+      action: "create_ticket",
+      delay_minutes: 0,
+      match_conditions: {
+        severity_min_rank: null,
+        title_contains: [],
+        title_excludes: [],
+        description_contains: [],
+        description_excludes: [],
+        user_email_domain: "",
+      },
+    };
+  }
+
+  async function save() {
+    setSaving(true);
+    try {
+      const body = {
+        name: draft.name || "Unnamed rule",
+        priority: Number(draft.priority) || 100,
+        enabled: !!draft.enabled,
+        action: draft.action,
+        delay_minutes: Number(draft.delay_minutes) || 0,
+        match_conditions: normalizeMatch(draft.match_conditions),
+      };
+      if (draft.id) {
+        await api.patch(`/api/alert-sources/${source.id}/rules/${draft.id}`, body);
+        toast.success("Rule updated");
+      } else {
+        await api.post(`/api/alert-sources/${source.id}/rules`, body);
+        toast.success("Rule created");
+      }
+      setDraft(null);
+      await load();
+    } catch (e) { toast.error(e.message); }
+    finally { setSaving(false); }
+  }
+
+  async function remove(id) {
+    if (!window.confirm("Delete this rule?")) return;
+    try {
+      await api.delete(`/api/alert-sources/${source.id}/rules/${id}`);
+      toast.success("Rule deleted");
+      await load();
+    } catch (e) { toast.error(e.message); }
+  }
+
+  return (
+    <div className="space-y-2 pt-3 border-t border-border">
+      <div className="flex items-center justify-between">
+        <div className="text-sm font-medium text-fg">Alert promotion rules</div>
+        <button
+          onClick={() => setDraft(newDraft())}
+          className="text-xs px-2 py-1 rounded bg-brand text-white"
+        >+ Add rule</button>
+      </div>
+      <p className="text-xs text-fg-muted">
+        First match wins (lowest priority number first). Alerts that
+        match no rule stay on the Alerts page without becoming a
+        ticket. Use <code>Delay minutes</code> with <code>Create ticket</code>
+        to defer promotion (e.g. printer toner: ignore unless still
+        firing after 120 minutes).
+      </p>
+
+      {loading ? (
+        <div className="text-xs text-fg-dim italic">Loading rules…</div>
+      ) : rules.length === 0 ? (
+        <div className="text-xs text-fg-dim italic">No rules yet.</div>
+      ) : (
+        <table className="w-full text-xs">
+          <thead className="text-fg-muted">
+            <tr>
+              <th className="text-left py-1 px-2">Priority</th>
+              <th className="text-left py-1 px-2">Name</th>
+              <th className="text-left py-1 px-2">Match</th>
+              <th className="text-left py-1 px-2">Action</th>
+              <th className="text-left py-1 px-2">Delay</th>
+              <th className="text-right py-1 px-2"></th>
+            </tr>
+          </thead>
+          <tbody>
+            {rules.map((r) => (
+              <tr key={r.id} className={r.enabled ? "" : "opacity-50"}>
+                <td className="py-1 px-2 font-mono">{r.priority}</td>
+                <td className="py-1 px-2">{r.name}</td>
+                <td className="py-1 px-2 text-fg-muted">{summarizeMatch(r.match_conditions)}</td>
+                <td className="py-1 px-2">{r.action}</td>
+                <td className="py-1 px-2">{r.delay_minutes ? `${r.delay_minutes}m` : "—"}</td>
+                <td className="py-1 px-2 text-right space-x-2">
+                  <button onClick={() => setDraft({ ...r, match_conditions: { ...newDraft().match_conditions, ...(r.match_conditions || {}) } })}
+                    className="text-brand hover:underline">Edit</button>
+                  <button onClick={() => remove(r.id)} className="text-red-500 hover:underline">Delete</button>
+                </td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      )}
+
+      {draft && (
+        <RuleEditor draft={draft} setDraft={setDraft} onSave={save} onCancel={() => setDraft(null)} saving={saving} />
+      )}
+    </div>
+  );
+}
+
+function summarizeMatch(c) {
+  if (!c) return "(any)";
+  const bits = [];
+  if (c.severity_min_rank) bits.push(`sev<=${c.severity_min_rank}`);
+  if (Array.isArray(c.title_contains) && c.title_contains.length) bits.push(`title has [${c.title_contains.join(",")}]`);
+  if (Array.isArray(c.title_excludes) && c.title_excludes.length) bits.push(`title not [${c.title_excludes.join(",")}]`);
+  if (Array.isArray(c.description_contains) && c.description_contains.length) bits.push(`desc has [${c.description_contains.join(",")}]`);
+  if (Array.isArray(c.description_excludes) && c.description_excludes.length) bits.push(`desc not [${c.description_excludes.join(",")}]`);
+  if (c.user_email_domain) bits.push(`email@${c.user_email_domain}`);
+  if (c.title_regex) bits.push(`re(title)`);
+  return bits.length ? bits.join(" · ") : "(any)";
+}
+
+function normalizeMatch(c) {
+  const out = {};
+  if (c.severity_min_rank) out.severity_min_rank = Number(c.severity_min_rank);
+  for (const k of ["title_contains", "title_excludes", "description_contains", "description_excludes"]) {
+    const arr = Array.isArray(c[k]) ? c[k] : String(c[k] || "").split(",").map((s) => s.trim()).filter(Boolean);
+    if (arr.length) out[k] = arr;
+  }
+  if (c.user_email_domain) out.user_email_domain = c.user_email_domain.trim();
+  if (c.title_regex) out.title_regex = c.title_regex.trim();
+  return out;
+}
+
+function RuleEditor({ draft, setDraft, onSave, onCancel, saving }) {
+  const m = draft.match_conditions;
+  function setM(patch) { setDraft({ ...draft, match_conditions: { ...m, ...patch } }); }
+  function csvField(label, key, placeholder) {
+    return (
+      <label className="block">
+        <span className="block text-[11px] text-fg-muted">{label}</span>
+        <input
+          value={Array.isArray(m[key]) ? m[key].join(", ") : (m[key] || "")}
+          onChange={(e) => setM({ [key]: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })}
+          placeholder={placeholder}
+          className="w-full bg-surface-2 border border-border rounded px-2 py-1 text-xs"
+        />
+      </label>
+    );
+  }
+  return (
+    <div className="border border-border rounded p-3 bg-surface-2/50 space-y-3">
+      <div className="grid grid-cols-1 sm:grid-cols-3 gap-2">
+        <label className="block sm:col-span-2">
+          <span className="block text-[11px] text-fg-muted">Name</span>
+          <input value={draft.name} onChange={(e) => setDraft({ ...draft, name: e.target.value })}
+            placeholder="e.g. Critical disk -> ticket"
+            className="w-full bg-surface border border-border rounded px-2 py-1 text-xs" />
+        </label>
+        <label className="block">
+          <span className="block text-[11px] text-fg-muted">Priority (lower = first)</span>
+          <input type="number" value={draft.priority}
+            onChange={(e) => setDraft({ ...draft, priority: e.target.value })}
+            className="w-full bg-surface border border-border rounded px-2 py-1 text-xs" />
+        </label>
+        <label className="block">
+          <span className="block text-[11px] text-fg-muted">Action</span>
+          <select value={draft.action}
+            onChange={(e) => setDraft({ ...draft, action: e.target.value })}
+            className="w-full bg-surface border border-border rounded px-2 py-1 text-xs">
+            <option value="create_ticket">Create ticket</option>
+            <option value="suppress">Suppress (mark handled)</option>
+            <option value="ignore">Ignore (default)</option>
+          </select>
+        </label>
+        <label className="block">
+          <span className="block text-[11px] text-fg-muted">Delay (minutes)</span>
+          <input type="number" min="0" value={draft.delay_minutes}
+            onChange={(e) => setDraft({ ...draft, delay_minutes: e.target.value })}
+            disabled={draft.action !== "create_ticket"}
+            className="w-full bg-surface border border-border rounded px-2 py-1 text-xs disabled:opacity-50" />
+        </label>
+        <label className="flex items-center gap-2 text-xs text-fg-muted">
+          <input type="checkbox" checked={!!draft.enabled}
+            onChange={(e) => setDraft({ ...draft, enabled: e.target.checked })} />
+          Enabled
+        </label>
+      </div>
+      <div className="grid grid-cols-1 sm:grid-cols-2 gap-2 pt-1 border-t border-border">
+        <label className="block">
+          <span className="block text-[11px] text-fg-muted">Severity rank &lt;= (1=Disaster, 5=Info)</span>
+          <input type="number" min="1" max="5" value={m.severity_min_rank || ""}
+            onChange={(e) => setM({ severity_min_rank: e.target.value ? Number(e.target.value) : null })}
+            className="w-full bg-surface border border-border rounded px-2 py-1 text-xs" />
+        </label>
+        <label className="block">
+          <span className="block text-[11px] text-fg-muted">User email ends with</span>
+          <input value={m.user_email_domain || ""}
+            onChange={(e) => setM({ user_email_domain: e.target.value })}
+            placeholder="@example.com"
+            className="w-full bg-surface border border-border rounded px-2 py-1 text-xs" />
+        </label>
+        {csvField("Title contains (any-of, comma-separated)", "title_contains", "disk full, oom")}
+        {csvField("Title excludes (none-of)", "title_excludes", "replace, swap")}
+        {csvField("Description contains (any-of)", "description_contains", "fatal, error")}
+        {csvField("Description excludes (none-of)", "description_excludes", "ignore")}
+      </div>
+      <div className="flex items-center justify-end gap-2 pt-2">
+        <button onClick={onCancel} className="text-xs text-fg-muted hover:text-fg">Cancel</button>
+        <button onClick={onSave} disabled={saving}
+          className="text-xs px-3 py-1 bg-brand text-white rounded disabled:opacity-50">
+          {saving ? "Saving..." : draft.id ? "Update rule" : "Create rule"}
+        </button>
       </div>
     </div>
   );

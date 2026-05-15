@@ -49,6 +49,10 @@ const FIELD_MAP = {
   ticket_notes: {
     body: 'body_enc',
   },
+  alerts: {
+    title: 'title_enc',
+    description: 'description_enc',
+  },
   audit_log: {
     old_value: 'old_value_enc',
     new_value: 'new_value_enc',
