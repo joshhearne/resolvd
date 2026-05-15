@@ -13,6 +13,7 @@ import {
 import HybridTime from "../components/HybridTime";
 import SlaTimer from "../components/SlaTimer";
 import AiUsageBadge from "../components/AiUsageBadge";
+import MentionTextarea from "../components/MentionTextarea";
 import {
   useStatuses,
   nextAllowedStatusIds,
@@ -1765,10 +1766,12 @@ export default function TicketDetail() {
                   </div>
                 ))}
                 <div className="border-t border-border pt-3 space-y-2">
-                  <textarea
+                  <MentionTextarea
                     value={noteDraft}
                     onChange={(e) => setNoteDraft(e.target.value)}
-                    placeholder="Add an internal note (markdown ok). Not visible to submitters or vendors."
+                    projectId={ticket?.project_id}
+                    agentsOnly={true}
+                    placeholder="Add an internal note (markdown ok, @mention project agents). Not visible to submitters or vendors."
                     rows={3}
                     className="w-full bg-surface-2 border border-border rounded px-2 py-1.5 text-sm"
                   />

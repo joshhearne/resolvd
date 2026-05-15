@@ -298,6 +298,10 @@ router.get('/search', requireAuth, async (req, res) => {
     const q = ((req.query.q || '').trim().toLowerCase()) + '%';
     const projectId = req.query.project_id ? Number(req.query.project_id) : null;
     const isAdmin = req.session.user?.role === 'Admin';
+    // agents_only=1 (mentions in handler-only contexts like notes) hard-
+    // restricts to project_members.is_agent=TRUE. Admins do NOT bypass
+    // this — notes are agent-only by design, not by restriction toggle.
+    const agentsOnly = req.query.agents_only === '1' || req.query.agents_only === 'true';
     let restrictToMembers = false;
     if (projectId) {
       const proj = await pool.query(
@@ -311,7 +315,22 @@ router.get('/search', requireAuth, async (req, res) => {
       }
     }
     let r;
-    if (projectId && restrictToMembers && !isAdmin) {
+    if (projectId && agentsOnly) {
+      r = await pool.query(`
+        SELECT u.id, u.display_name, u.email
+          FROM users u
+          JOIN project_members pm ON pm.user_id = u.id AND pm.project_id = $2
+         WHERE u.status = 'active'
+           AND pm.is_agent = TRUE
+           AND (
+             LOWER(u.display_name) LIKE $1
+             OR LOWER(u.email) LIKE $1
+             OR LOWER(SPLIT_PART(u.email, '@', 1)) LIKE $1
+           )
+         ORDER BY u.display_name
+         LIMIT 8
+      `, [q, projectId]);
+    } else if (projectId && restrictToMembers && !isAdmin) {
       r = await pool.query(`
         SELECT u.id, u.display_name, u.email
           FROM users u

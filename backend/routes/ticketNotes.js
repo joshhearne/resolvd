@@ -10,6 +10,8 @@ const express = require('express');
 const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { buildWritePatch, decryptRows } = require('../services/fields');
+const { resolveMentions } = require('../services/mentions');
+const { fanoutMention } = require('../services/notificationFanout');
 
 const router = express.Router();
 const NOTE_ROLES = ['Admin', 'Manager', 'Tech'];
@@ -40,8 +42,11 @@ router.post('/:id/notes', requireAuth, requireRole(...NOTE_ROLES), async (req, r
     const body = String(req.body?.body || '').trim();
     if (!body) return res.status(400).json({ error: 'Note body required' });
     const ticketId = Number(req.params.id);
-    const exists = await pool.query('SELECT id FROM tickets WHERE id = $1', [ticketId]);
-    if (!exists.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
+    const t = await pool.query(
+      'SELECT id, internal_ref, title, title_enc, project_id FROM tickets WHERE id = $1',
+      [ticketId]
+    );
+    if (!t.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
 
     const patch = await buildWritePatch(pool, 'ticket_notes', { body });
     const cols = ['ticket_id', 'user_id', ...patch.cols];
@@ -51,11 +56,37 @@ router.post('/:id/notes', requireAuth, requireRole(...NOTE_ROLES), async (req, r
       `INSERT INTO ticket_notes (${cols.join(', ')}) VALUES (${placeholders}) RETURNING id, created_at`,
       values
     );
+
+    // Mention fan-out — agents only. Decrypt the ticket title here so
+    // the notification email shows a real subject. Failure to fan out
+    // should never block note creation, so swallow errors.
+    try {
+      const mentioned = await resolveMentions(body, {
+        projectId: t.rows[0].project_id,
+        agentsOnly: true,
+        excludeUserId: req.session.user.id,
+      });
+      if (mentioned.length) {
+        const { decryptRow } = require('../services/fields');
+        await decryptRow('tickets', t.rows[0]);
+        await fanoutMention(pool, {
+          ticket: t.rows[0],
+          comment: body,
+          commentId: ins.rows[0].id,
+          mentionedUsers: mentioned,
+          actorId: req.session.user.id,
+          actorName: req.session.user.displayName || req.session.user.email,
+        });
+      }
+    } catch (err) {
+      console.error('note mention fanout:', err.message);
+    }
+
     res.status(201).json({
       id: ins.rows[0].id,
       ticket_id: ticketId,
       user_id: req.session.user.id,
-      user_name: req.session.user.display_name,
+      user_name: req.session.user.displayName || req.session.user.email,
       body,
       created_at: ins.rows[0].created_at,
     });
