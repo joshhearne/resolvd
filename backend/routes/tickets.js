@@ -6,7 +6,10 @@ const {
   fanoutStatusChange,
   fanoutPendingReview,
   fanoutAssignment,
+  fanoutNewComment,
+  fanoutMention,
 } = require('../services/notificationFanout');
+const { resolveMentions } = require('../services/mentions');
 const sla = require('../services/sla');
 const assignmentPolicies = require('../services/assignmentPolicies');
 const { getMode, buildWritePatch, decryptRow, decryptRows } = require('../services/fields');
@@ -1093,9 +1096,19 @@ router.post('/bulk', requireAuth, requireRole('Admin'), async (req, res) => {
             if (newStatus === 'Reopened') {
               await auditLog(client, { ticketId: ticket.id, userId: user.id, action: 'reopened', note: 'Bulk reopen' });
             }
-            const tagRow = await client.query(`SELECT semantic_tag FROM statuses WHERE kind='internal' AND name=$1`, [newStatus]);
+            const tagRow = await client.query(`SELECT semantic_tag, is_terminal FROM statuses WHERE kind='internal' AND name=$1`, [newStatus]);
             const tag = tagRow.rows[0]?.semantic_tag || null;
-            updates.resolved_at = tag === 'resolved_pending_close' ? new Date().toISOString() : null;
+            const isTerminal = !!tagRow.rows[0]?.is_terminal;
+            // Mirror single-ticket PATCH: terminal statuses (Closed) also
+            // stop the resolve clock. Without this, SLA tickWarnings /
+            // tickBreaches keep firing on bulk-closed tickets.
+            if (tag === 'resolved_pending_close') {
+              updates.resolved_at = new Date().toISOString();
+            } else if (isTerminal) {
+              updates.resolved_at = ticket.resolved_at || new Date().toISOString();
+            } else {
+              updates.resolved_at = null;
+            }
             const oldTag = await client.query(`SELECT semantic_tag FROM statuses WHERE kind='internal' AND name=$1`, [ticket.internal_status]);
             if (oldTag.rows[0]?.semantic_tag === 'pending_review' && tag !== 'pending_review') {
               updates.followup_at = null;
@@ -1190,6 +1203,138 @@ router.post('/bulk', requireAuth, requireRole('Admin'), async (req, res) => {
     }
   } catch (err) {
     console.error('bulk update error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// POST /api/tickets/bulk/comment — add the same comment body to many tickets.
+// Body: { ids: int[], body: string, is_external_visible?: bool, send_as?: 'submitter'|<user_id> }.
+// Admin/Manager/Tech can post; only Admin/Manager can flag external (vendor) visibility.
+// Each ticket gets its own comment row; fanout fires per ticket. Vendor outbound
+// fires per ticket when is_external_visible=true and the ticket has contacts.
+router.post('/bulk/comment', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+  try {
+    const user = req.session.user;
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isInteger) : [];
+    if (!ids.length) return res.status(400).json({ error: 'ids required' });
+    if (ids.length > 500) return res.status(400).json({ error: 'Bulk capped at 500 tickets per call' });
+
+    const body = typeof req.body?.body === 'string' ? req.body.body.trim() : '';
+    if (!body) return res.status(400).json({ error: 'Comment body required' });
+
+    const wantsExternal = !!req.body?.is_external_visible;
+    if (wantsExternal && !['Admin', 'Manager'].includes(user.role)) {
+      return res.status(403).json({ error: 'Only Admin/Manager can mark a comment as vendor-visible' });
+    }
+    const sendAs = req.body?.send_as;
+
+    const autoFollowRow = await pool.query(
+      'SELECT preferences FROM users WHERE id = $1', [user.id]
+    );
+    const autoFollow = autoFollowRow.rows[0]?.preferences?.auto_follow_on_comment !== false;
+
+    const posted = [];
+    const skipped = [];
+
+    for (const id of ids) {
+      try {
+        const tRes = await pool.query(
+          'SELECT id, internal_ref, title, title_enc, submitted_by, project_id FROM tickets WHERE id = $1',
+          [id]
+        );
+        const ticket = tRes.rows[0];
+        if (!ticket) { skipped.push({ id, reason: 'not_found' }); continue; }
+        await decryptRow('tickets', ticket);
+
+        const patch = await buildWritePatch(pool, 'comments', { body });
+        const cols = ['ticket_id', 'user_id', 'is_external_visible', ...patch.cols];
+        const values = [ticket.id, user.id, wantsExternal, ...patch.values];
+        const placeholders = cols.map((_, i) => `$${i + 1}`).join(', ');
+        const ins = await pool.query(
+          `INSERT INTO comments (${cols.join(', ')}) VALUES (${placeholders}) RETURNING id`,
+          values
+        );
+        const commentId = ins.rows[0].id;
+
+        await pool.query('UPDATE tickets SET updated_at = NOW() WHERE id = $1', [ticket.id]);
+
+        if (autoFollow) {
+          await pool.query(
+            `INSERT INTO ticket_followers (ticket_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+            [ticket.id, user.id]
+          );
+        }
+
+        posted.push({ id: ticket.id, comment_id: commentId, internal_ref: ticket.internal_ref });
+
+        // SLA first-response stamp (skip self-reply by submitter).
+        if (user.id !== ticket.submitted_by) {
+          sla.markResponded(null, ticket.id)
+            .catch(err => console.error('sla markResponded (bulk comment) failed:', err.message));
+        }
+
+        // Vendor outbound when externally visible.
+        if (wantsExternal) {
+          let vendorActorId = user.id;
+          if (sendAs === 'submitter' && ticket.submitted_by) {
+            vendorActorId = ticket.submitted_by;
+          } else {
+            const numeric = Number(sendAs);
+            if (Number.isInteger(numeric) && numeric > 0) {
+              const u = await pool.query(
+                `SELECT id FROM users WHERE id = $1 AND status = 'active'`, [numeric]
+              );
+              if (u.rows[0]) vendorActorId = u.rows[0].id;
+            }
+          }
+          sendVendorEmail({
+            eventType: 'new_comment',
+            ticketId: ticket.id,
+            actorId: vendorActorId,
+            commentId,
+          }).catch(err => console.error('vendor outbound (bulk comment) failed:', err.message));
+        }
+
+        // In-app/push/email fanout per ticket, mentions split off.
+        (async () => {
+          try {
+            const mentioned = await resolveMentions(body, {
+              excludeUserId: user.id,
+              projectId: ticket.project_id,
+            });
+            const mentionedIds = mentioned.map(m => m.id);
+            await Promise.all([
+              fanoutNewComment(pool, {
+                ticket,
+                comment: body,
+                actorId: user.id,
+                actorName: user.displayName,
+                excludeUserIds: mentionedIds,
+              }).catch(err => console.error('fanoutNewComment (bulk) failed:', err.message)),
+              mentioned.length
+                ? fanoutMention(pool, {
+                    ticket,
+                    comment: body,
+                    commentId,
+                    mentionedUsers: mentioned,
+                    actorId: user.id,
+                    actorName: user.displayName,
+                  }).catch(err => console.error('fanoutMention (bulk) failed:', err.message))
+                : null,
+            ]);
+          } catch (err) {
+            console.error('bulk comment fanout failed:', err.message);
+          }
+        })();
+      } catch (err) {
+        console.error(`bulk comment ticket ${id} failed:`, err.message);
+        skipped.push({ id, reason: 'error' });
+      }
+    }
+
+    res.json({ posted, skipped });
+  } catch (err) {
+    console.error('bulk comment error:', err);
     res.status(500).json({ error: 'Database error' });
   }
 });

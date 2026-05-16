@@ -33,6 +33,33 @@ const ACTION_KINDS = [
 ];
 
 const PRIORITY_OPS = ["=", "<=", ">=", "<", ">"];
+
+// Importance-based operator semantics: ">= P3" = P3 or more important = P1..P3.
+function matchedPriorities(op, priority) {
+  const p = Number(priority);
+  if (!Number.isInteger(p)) return [];
+  return [1, 2, 3, 4, 5].filter((tp) => {
+    if (op === "=") return tp === p;
+    if (op === "<") return tp > p;
+    if (op === ">") return tp < p;
+    if (op === "<=") return tp >= p;
+    if (op === ">=") return tp <= p;
+    return false;
+  });
+}
+function MatchPreview({ op, priority }) {
+  const list = matchedPriorities(op, priority);
+  return (
+    <span className="text-[11px] text-fg-muted">
+      Matches:{" "}
+      {list.length === 0 ? (
+        <span className="text-red-600">nothing</span>
+      ) : (
+        list.map((p) => <code key={p} className="font-mono mr-1">P{p}</code>)
+      )}
+    </span>
+  );
+}
 const TARGETABLE_ROLES = ["Admin", "Manager", "Tech"];
 
 function needsUser(kind) {
@@ -425,6 +452,7 @@ export default function AdminEscalationPolicies() {
                 className="border border-border-strong rounded px-2 py-1 text-sm">
                 {[1, 2, 3, 4, 5].map((i) => <option key={i} value={i}>{PRIORITY_LABELS[i]}</option>)}
               </select>
+              <MatchPreview op={newRow.priority_op} priority={newRow.priority} />
             </label>
             <label className="flex flex-col gap-1">
               <span className="text-xs text-fg-muted">Trigger</span>
@@ -473,6 +501,7 @@ export default function AdminEscalationPolicies() {
                   <span>
                     <code className="font-mono">{g.priority_op}</code> {PRIORITY_LABELS[g.priority]}
                   </span>
+                  <MatchPreview op={g.priority_op} priority={g.priority} />
                   <span>·</span>
                   <span>{TRIGGER_LABELS[g.trigger]}</span>
                   <span className="ml-auto">{g.items.length} step{g.items.length === 1 ? "" : "s"}</span>

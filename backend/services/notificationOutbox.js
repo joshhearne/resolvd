@@ -16,6 +16,21 @@ const { renderDigest } = require('./notificationEmailTemplates');
 const TICK_MS = 5 * 60 * 1000;
 
 async function tickOnce() {
+  // Suppress rows whose ticket has since reached a terminal status —
+  // a comment / assignment / SLA event buffered before close shouldn't
+  // surface in a digest sent after the ticket was already closed.
+  // Mark them sent (skipped) so they don't pile up forever.
+  await pool.query(`
+    UPDATE notification_outbox o
+       SET sent_at = NOW()
+      FROM tickets t
+      JOIN statuses s ON s.kind='internal' AND s.name=t.internal_status
+     WHERE o.sent_at IS NULL
+       AND o.ticket_id IS NOT NULL
+       AND t.id = o.ticket_id
+       AND s.is_terminal = TRUE
+  `).catch((err) => console.error('outbox terminal-suppress failed:', err.message));
+
   const r = await pool.query(`
     SELECT o.id, o.user_id, o.event_type, o.ticket_id, o.payload, o.created_at,
            u.email AS user_email, u.display_name AS user_name

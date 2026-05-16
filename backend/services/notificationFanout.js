@@ -43,6 +43,25 @@ async function getFollowerRecipients(client, ticketId, excludeUserId, extraExclu
   return r.rows;
 }
 
+// Terminal-status gate. Returns true when the ticket's current
+// internal_status is flagged is_terminal=TRUE (Closed, etc.). Fanout
+// entry points consult this to drop notifications on already-closed
+// tickets — protects against re-firing during rebuilds / migrations /
+// background sweeps / accidental status-noise on stale rows.
+async function isTicketTerminal(ticketId) {
+  if (!ticketId) return false;
+  const r = await pool.query(
+    `SELECT 1 FROM tickets t
+       JOIN statuses s
+         ON s.kind = 'internal' AND s.name = t.internal_status
+      WHERE t.id = $1
+        AND s.is_terminal = TRUE
+      LIMIT 1`,
+    [ticketId]
+  );
+  return r.rowCount > 0;
+}
+
 async function getUserById(userId) {
   const r = await pool.query(
     `SELECT id, email, display_name, preferences FROM users WHERE id = $1 AND status = 'active'`,
@@ -199,6 +218,7 @@ async function dispatchPerRecipient({ user, eventType, inApp, push, ticketId, ti
 
 async function fanoutAssignment(_unusedPool, { ticket, assigneeId, actorId, actorName }) {
   if (!assigneeId || assigneeId === actorId) return;
+  if (await isTicketTerminal(ticket.id)) return;
   const user = await getUserById(assigneeId);
   if (!user) return;
   const ticketRef = ticket.internal_ref;
@@ -232,6 +252,18 @@ async function fanoutAssignment(_unusedPool, { ticket, assigneeId, actorId, acto
 }
 
 async function fanoutStatusChange(_unusedPool, { ticket, oldStatus, newStatus, actorId }) {
+  // Allow legitimate close transition (non-terminal → terminal) so
+  // followers learn the ticket closed. Suppress terminal → terminal
+  // re-fires (e.g. background re-stamping during a rebuild).
+  const oldTerminal = await pool.query(
+    `SELECT 1 FROM statuses WHERE kind='internal' AND name=$1 AND is_terminal=TRUE LIMIT 1`,
+    [oldStatus]
+  );
+  const newTerminal = await pool.query(
+    `SELECT 1 FROM statuses WHERE kind='internal' AND name=$1 AND is_terminal=TRUE LIMIT 1`,
+    [newStatus]
+  );
+  if (oldTerminal.rowCount && newTerminal.rowCount) return;
   const recipients = await getFollowerRecipients(null, ticket.id, actorId);
   if (!recipients.length) return;
   const ticketRef = ticket.internal_ref;
@@ -267,6 +299,7 @@ async function fanoutStatusChange(_unusedPool, { ticket, oldStatus, newStatus, a
 }
 
 async function fanoutNewComment(_unusedPool, { ticket, comment, actorId, actorName, excludeUserIds = [] }) {
+  if (await isTicketTerminal(ticket.id)) return;
   const recipients = await getFollowerRecipients(null, ticket.id, actorId, excludeUserIds);
   if (!recipients.length) return;
   const ticketRef = ticket.internal_ref;
@@ -300,6 +333,7 @@ async function fanoutNewComment(_unusedPool, { ticket, comment, actorId, actorNa
 
 async function fanoutMention(_unusedPool, { ticket, comment, commentId, mentionedUsers, actorId, actorName }) {
   if (!mentionedUsers || !mentionedUsers.length) return;
+  if (await isTicketTerminal(ticket.id)) return;
   const ticketRef = ticket.internal_ref;
   const ticketTitle = ticket.title || '';
   const preview = String(comment || '').length > 300 ? String(comment).slice(0, 300) + '…' : String(comment || '');
@@ -349,6 +383,7 @@ async function fanoutMention(_unusedPool, { ticket, comment, commentId, mentione
 }
 
 async function fanoutPendingReview(_unusedPool, { ticket, actorId }) {
+  if (await isTicketTerminal(ticket.id)) return;
   // Recipients = all active Admins minus the actor.
   const r = await pool.query(
     `SELECT id, email, display_name, preferences FROM users
@@ -387,6 +422,7 @@ async function fanoutPendingReview(_unusedPool, { ticket, actorId }) {
 
 async function fanoutFollowUp(_unusedPool, { ticket, schedulerUserId, schedulerEmail, schedulerName }) {
   if (!schedulerUserId) return;
+  if (await isTicketTerminal(ticket.id)) return;
   const user = await getUserById(schedulerUserId);
   if (!user) return;
   const ticketRef = ticket.internal_ref;
@@ -420,6 +456,9 @@ async function fanoutFollowUp(_unusedPool, { ticket, schedulerUserId, schedulerE
 
 async function fanoutSlaBreach(_unusedPool, { ticket, kind }) {
   // kind: 'response' | 'resolve'
+  // Defense-in-depth: sla.tickBreaches already filters terminal tickets,
+  // but guard here in case the helper is called from a future path.
+  if (await isTicketTerminal(ticket.id)) return;
   // Recipients: assignee (if any) + ticket followers + submitter, minus
   // the actor (which doesn't exist for cron-fired events — pass null).
   const recipients = await getFollowerRecipients(null, ticket.id, null);
@@ -476,6 +515,7 @@ async function fanoutSlaBreach(_unusedPool, { ticket, kind }) {
 // title and a separate matrix event so users can opt out of warnings
 // without losing the actual breach signal.
 async function fanoutSlaWarning(_unusedPool, { ticket, kind }) {
+  if (await isTicketTerminal(ticket.id)) return;
   const recipients = await getFollowerRecipients(null, ticket.id, null);
   const assigneeId = ticket.assigned_to;
   if (assigneeId && !recipients.find(u => u.id === assigneeId)) {

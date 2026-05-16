@@ -401,6 +401,20 @@ async function initSchema() {
     // auto-promote tickets to Closed after N days in that state.
     await client.query(`ALTER TABLE statuses ADD COLUMN IF NOT EXISTS auto_close_after_days INTEGER`);
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ`);
+    // One-shot backfill: any ticket in a terminal status (Closed, etc.)
+    // with resolved_at IS NULL gets stamped to updated_at. Without this,
+    // SLA tickWarnings / tickBreaches keep matching closed tickets
+    // (their filter is `resolved_at IS NULL`) and re-fire on every tick
+    // after a rebuild. Idempotent — re-runs hit zero rows.
+    await client.query(`
+      UPDATE tickets t
+         SET resolved_at = COALESCE(t.updated_at, NOW())
+        FROM statuses s
+       WHERE s.kind = 'internal'
+         AND s.name = t.internal_status
+         AND s.is_terminal = TRUE
+         AND t.resolved_at IS NULL
+    `).catch((err) => console.error('resolved_at backfill failed:', err.message));
     // Optional follow-up reminder set by an admin while a ticket sits in
     // a resolved_pending_close state. Cleared on status change away from
     // that state and when the reminder has fired.

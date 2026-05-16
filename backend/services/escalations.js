@@ -298,17 +298,31 @@ async function tickEscalations() {
     // when its operator is <, >, <=, or >=. Combined with project
     // scoping (project row OR org default) the additive semantics from
     // PR 3 are preserved — both can fire on one ticket.
+    // Importance-based operator semantics (P1 = most important).
+    // ">= P3" = "P3 or more important" → ticket priority NUMBER <= 3.
+    // Keep in sync with assignmentPolicies.policyForTicket and the
+    // matchedPriorities() helper in admin UIs.
     const opMatch = (col) => `(
       (s.priority_op = '=' AND s.priority = ${col}) OR
-      (s.priority_op = '<' AND ${col} < s.priority) OR
-      (s.priority_op = '>' AND ${col} > s.priority) OR
-      (s.priority_op = '<=' AND ${col} <= s.priority) OR
-      (s.priority_op = '>=' AND ${col} >= s.priority)
+      (s.priority_op = '<' AND ${col} > s.priority) OR
+      (s.priority_op = '>' AND ${col} < s.priority) OR
+      (s.priority_op = '<=' AND ${col} >= s.priority) OR
+      (s.priority_op = '>=' AND ${col} <= s.priority)
     )`;
     // Chain priority = snapshot if set (locked at first bump_priority),
     // else current effective_priority. Locking prevents a bumped ticket
     // from cascading into the new tier's chain on the next tick.
     const chainPriExpr = 'COALESCE(t.escalation_priority_snapshot, t.effective_priority, 3)';
+    // Defense-in-depth: a ticket in a terminal status (Closed, etc.)
+    // is done — escalation steps must never fire on it even if the
+    // trigger columns (sla_*_breached / sla_*_warned) were left stamped
+    // from before the close. Mirrors the NOT_TERMINAL guard in sla.js.
+    const NOT_TERMINAL = `NOT EXISTS (
+      SELECT 1 FROM statuses st
+       WHERE st.kind = 'internal'
+         AND st.name = t.internal_status
+         AND st.is_terminal = TRUE
+    )`;
     const candidates = await pool.query(
       `SELECT t.id, t.internal_ref, t.title, t.title_enc, t.project_id, t.assigned_to,
               t.effective_priority, t.escalation_priority_snapshot,
@@ -317,6 +331,7 @@ async function tickEscalations() {
          FROM tickets t
         WHERE ${activeCond}
           AND t.${tsCol} IS NOT NULL
+          AND ${NOT_TERMINAL}
           AND EXISTS (
             SELECT 1 FROM escalation_chain_steps s
              WHERE s.trigger = $1

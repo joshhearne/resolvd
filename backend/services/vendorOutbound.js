@@ -184,6 +184,19 @@ async function sendVendorEmail({ eventType, ticketId, actorId, commentId = null 
     );
     if (!r.rows[0]?.vendor_notified_at) return { sent: 0, skipped: 1 };
   }
+  // Terminal-status gate for non-closing events: a closed ticket
+  // shouldn't ping vendors with new comments / re-fires. status_change
+  // and ticket_resolved are exempt — that's how the vendor learns the
+  // ticket reached its terminal state.
+  if (eventType !== 'status_change' && eventType !== 'ticket_resolved') {
+    const t = await pool.query(
+      `SELECT 1 FROM tickets t
+         JOIN statuses s ON s.kind='internal' AND s.name=t.internal_status
+        WHERE t.id = $1 AND s.is_terminal = TRUE LIMIT 1`,
+      [ticketId]
+    );
+    if (t.rowCount) return { sent: 0, skipped: 1 };
+  }
 
   const tplRow = await loadTemplate(eventType, 'vendor');
   if (!tplRow) {

@@ -153,6 +153,10 @@ export default function TicketList() {
   const [bulkProject, setBulkProject] = useState("");
   const [bulkUsers, setBulkUsers] = useState([]);
   const [bulkBusy, setBulkBusy] = useState(false);
+  const [bulkReplyOpen, setBulkReplyOpen] = useState(false);
+  const [bulkReplyBody, setBulkReplyBody] = useState("");
+  const [bulkReplyExternal, setBulkReplyExternal] = useState(false);
+  const [bulkReplyBusy, setBulkReplyBusy] = useState(false);
 
   useEffect(() => {
     if (!bulkMode || !isAdmin || bulkUsers.length) return;
@@ -168,6 +172,42 @@ export default function TicketList() {
     setBulkStatus("");
     setBulkAssignee("");
     setBulkProject("");
+    setBulkReplyOpen(false);
+    setBulkReplyBody("");
+    setBulkReplyExternal(false);
+  }
+
+  async function applyBulkReply() {
+    if (!selectedIds.size) {
+      toast.error("Select at least one ticket");
+      return;
+    }
+    const body = bulkReplyBody.trim();
+    if (!body) {
+      toast.error("Comment body required");
+      return;
+    }
+    setBulkReplyBusy(true);
+    try {
+      const res = await api.post("/api/tickets/bulk/comment", {
+        ids: Array.from(selectedIds),
+        body,
+        is_external_visible: bulkReplyExternal,
+      });
+      const okN = res.posted?.length || 0;
+      const skipN = res.skipped?.length || 0;
+      if (okN) toast.success(`Posted on ${okN} ticket${okN === 1 ? "" : "s"}`);
+      if (skipN) toast.error(`Skipped ${skipN} (${res.skipped[0]?.reason || "error"})`);
+      setBulkReplyOpen(false);
+      setBulkReplyBody("");
+      setBulkReplyExternal(false);
+      exitBulkMode();
+      fetchTickets();
+    } catch (e) {
+      toast.error(e.message || "Bulk reply failed");
+    } finally {
+      setBulkReplyBusy(false);
+    }
   }
 
   function toggleId(id) {
@@ -353,6 +393,18 @@ export default function TicketList() {
   // Mobile drawer toggle for the Recently opened rail. Desktop hides
   // the hamburger and just renders the rail inline.
   const [drawerOpen, setDrawerOpen] = useState(false);
+  const [navCollapsed, setNavCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem("tickets:nav-collapsed") === "1";
+    } catch {
+      return false;
+    }
+  });
+  useEffect(() => {
+    try {
+      localStorage.setItem("tickets:nav-collapsed", navCollapsed ? "1" : "0");
+    } catch {}
+  }, [navCollapsed]);
 
   return (
     <PageShell variant="wide" className="flex gap-5 items-start">
@@ -367,11 +419,13 @@ export default function TicketList() {
       {/* ── Left rail: Recently opened ── */}
       <aside
         className={`
-          space-y-2 md:block md:w-52 md:flex-shrink-0 md:self-start md:sticky md:top-14 md:max-h-[calc(100vh-6.5rem)] md:overflow-y-auto md:pr-2 md:relative md:bg-transparent md:shadow-none
+          space-y-2 md:w-52 md:flex-shrink-0 md:self-start md:sticky md:top-14 md:max-h-[calc(100vh-6.5rem)] md:overflow-y-auto md:pr-2 md:relative md:bg-transparent md:shadow-none
           ${
             drawerOpen
               ? "fixed inset-y-0 left-0 z-50 w-72 bg-surface shadow-xl overflow-y-auto p-4"
-              : "hidden md:block"
+              : navCollapsed
+                ? "hidden"
+                : "hidden md:block"
           }
         `}
       >
@@ -449,6 +503,20 @@ export default function TicketList() {
               >
                 <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h7" />
+                </svg>
+              </button>
+              <button
+                onClick={() => setNavCollapsed((v) => !v)}
+                className="hidden md:inline-flex p-1.5 rounded-md text-fg-muted hover:bg-surface-2 hover:text-fg transition-colors"
+                aria-label={navCollapsed ? "Expand recently opened rail" : "Collapse recently opened rail"}
+                title={navCollapsed ? "Show recently opened" : "Hide recently opened"}
+              >
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  {navCollapsed ? (
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h16" />
+                  ) : (
+                    <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M11 19l-7-7 7-7M19 19l-7-7 7-7" />
+                  )}
                 </svg>
               </button>
               <h1 className="text-xl font-semibold text-fg truncate">
@@ -619,12 +687,86 @@ export default function TicketList() {
               {bulkBusy ? "Applying…" : `Apply${selectedIds.size ? ` (${selectedIds.size})` : ""}`}
             </button>
             <button
+              onClick={() => setBulkReplyOpen(true)}
+              disabled={bulkBusy || !selectedIds.size}
+              className="btn-secondary btn btn-sm disabled:opacity-50"
+              title="Post the same comment to every selected ticket"
+            >
+              Reply…
+            </button>
+            <button
               onClick={exitBulkMode}
               disabled={bulkBusy}
               className="btn-secondary btn btn-sm"
             >
               Cancel
             </button>
+          </div>
+        )}
+
+        {/* Bulk reply modal */}
+        {bulkReplyOpen && (
+          <div
+            className="fixed inset-0 z-50 flex items-center justify-center bg-black/50 p-4"
+            onClick={() => !bulkReplyBusy && setBulkReplyOpen(false)}
+          >
+            <div
+              className="bg-surface border border-border rounded-lg shadow-xl w-full max-w-lg p-4 space-y-3"
+              onClick={(e) => e.stopPropagation()}
+            >
+              <div className="flex items-center justify-between">
+                <h3 className="text-base font-semibold text-fg">
+                  Reply to {selectedIds.size} ticket{selectedIds.size === 1 ? "" : "s"}
+                </h3>
+                <button
+                  onClick={() => setBulkReplyOpen(false)}
+                  disabled={bulkReplyBusy}
+                  className="text-fg-dim hover:text-fg text-2xl leading-none"
+                >
+                  ×
+                </button>
+              </div>
+              <textarea
+                value={bulkReplyBody}
+                onChange={(e) => setBulkReplyBody(e.target.value)}
+                disabled={bulkReplyBusy}
+                rows={6}
+                placeholder="Toner has been ordered. ETA next business day."
+                className="w-full border border-border-strong rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40"
+                autoFocus
+              />
+              <label className="flex items-center gap-2 text-sm text-fg-muted">
+                <input
+                  type="checkbox"
+                  checked={bulkReplyExternal}
+                  onChange={(e) => setBulkReplyExternal(e.target.checked)}
+                  disabled={bulkReplyBusy}
+                />
+                Send to vendor contacts (external visibility)
+              </label>
+              <p className="text-xs text-fg-dim">
+                Same body is posted as a new comment on every selected ticket.
+                Mentions and notifications fire per ticket.
+              </p>
+              <div className="flex items-center justify-end gap-2">
+                <button
+                  onClick={() => setBulkReplyOpen(false)}
+                  disabled={bulkReplyBusy}
+                  className="btn-secondary btn btn-sm"
+                >
+                  Cancel
+                </button>
+                <button
+                  onClick={applyBulkReply}
+                  disabled={bulkReplyBusy || !bulkReplyBody.trim() || !selectedIds.size}
+                  className="btn-primary btn btn-sm disabled:opacity-50"
+                >
+                  {bulkReplyBusy
+                    ? "Posting…"
+                    : `Post${selectedIds.size ? ` (${selectedIds.size})` : ""}`}
+                </button>
+              </div>
+            </div>
           </div>
         )}
 

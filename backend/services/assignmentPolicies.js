@@ -25,12 +25,17 @@ const { pool } = require('../db/pool');
 // rank so PostgreSQL's ORDER BY can pick deterministically.
 async function policyForTicket(client, priority, projectId) {
   const db = client || pool;
+  // Operator semantics are IMPORTANCE-based, not numeric. P1 is the
+  // most important priority (smaller number = higher importance), so
+  // ">= P3" means "P3 or more important" → ticket priority NUMBER <= 3
+  // (P1, P2, P3). The SQL flips the comparison accordingly. Keep this
+  // mapping in sync with the matchedPriorities() helper on the admin UI.
   const opMatch = `(
     (priority_op = '=' AND priority = $1) OR
-    (priority_op = '<' AND $1 < priority) OR
-    (priority_op = '>' AND $1 > priority) OR
-    (priority_op = '<=' AND $1 <= priority) OR
-    (priority_op = '>=' AND $1 >= priority)
+    (priority_op = '<' AND $1 > priority) OR
+    (priority_op = '>' AND $1 < priority) OR
+    (priority_op = '<=' AND $1 >= priority) OR
+    (priority_op = '>=' AND $1 <= priority)
   )`;
   const orderBy = `CASE priority_op WHEN '=' THEN 0 ELSE 1 END, created_at DESC`;
 
