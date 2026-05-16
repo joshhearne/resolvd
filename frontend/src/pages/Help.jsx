@@ -5,12 +5,14 @@ import HelpScreenshot from "../components/HelpScreenshot";
 
 // ── Constants ─────────────────────────────────────────────────────────────────
 
-const ALL_ROLES = ["Admin", "Manager", "Submitter", "Viewer", "Support"];
+const ALL_ROLES = ["Admin", "Manager", "Tech", "Submitter", "Viewer", "Support"];
 const PRIV = ["Admin", "Manager"];
+const HANDLER = ["Admin", "Manager", "Tech"];
 
 const ROLE_COLOR = {
   Admin:     "bg-purple-100 dark:bg-purple-950/40 text-purple-700 dark:text-purple-300 border-purple-300 dark:border-purple-800",
   Manager:   "bg-blue-100 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 border-blue-300 dark:border-blue-800",
+  Tech:      "bg-sky-100 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 border-sky-300 dark:border-sky-800",
   Submitter: "bg-green-100 dark:bg-green-950/40 text-green-700 dark:text-green-300 border-green-300 dark:border-green-800",
   Viewer:    "bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-300 border-gray-300 dark:border-gray-600",
   Support:   "bg-amber-100 dark:bg-amber-950/40 text-amber-700 dark:text-amber-400 border-amber-300 dark:border-amber-800",
@@ -109,6 +111,7 @@ function SectionOverview({ role }) {
             {[
               ["Admin",     "Full system access including user management, encryption, and all admin settings."],
               ["Manager",   "Full ticket and project access; most admin settings. Cannot manage users or encryption."],
+              ["Tech",      "Handler tier (v0.7.0). Edit any ticket in their projects, manage inventory assets, edit Knowledge Base articles, post handler-only notes, receive escalation pages. No org-config access."],
               ["Submitter", "Can submit tickets, comment, and view their own submissions. No admin or status controls."],
               ["Viewer",    "Read-only access to tickets. Cannot submit, comment, or take any action."],
               ["Support",   "Read-only access gated by a time-limited grant issued by an Admin. Every access is audit-logged."],
@@ -128,24 +131,27 @@ function SectionOverview({ role }) {
           <thead>
             <tr className="bg-surface-2">
               <th className="border border-border px-3 py-2 text-left font-semibold text-fg">Capability</th>
-              {["Admin","Manager","Submitter","Viewer","Support"].map(r => (
+              {["Admin","Manager","Tech","Submitter","Viewer","Support"].map(r => (
                 <th key={r} className="border border-border px-2 py-2 text-center font-semibold text-fg">{r}</th>
               ))}
             </tr>
           </thead>
           <tbody>
             {[
-              ["View tickets",              "✓","✓","✓ (own)","✓","✓ (grant)"],
-              ["Submit tickets",            "✓","✓","✓","✗","✗"],
-              ["Comment",                   "✓","✓","✓","✗","✗"],
-              ["Change status",             "✓","✓","✗","✗","✗"],
-              ["Assign tickets",            "✓","✓","✗","✗","✗"],
-              ["Vendor contact management", "✓","✓","✗","✗","✗"],
-              ["Send vendor emails",        "✓","✓","✗","✗","✗"],
-              ["Manage projects",           "✓","✓","✗","✗","✗"],
-              ["Admin panel",               "✓","partial","✗","✗","✗"],
-              ["User management",           "✓","✗","✗","✗","✗"],
-              ["Encryption settings",       "✓","✗","✗","✗","✗"],
+              ["View tickets",              "✓","✓","✓","✓ (own)","✓","✓ (grant)"],
+              ["Submit tickets",            "✓","✓","✓","✓","✗","✗"],
+              ["Comment",                   "✓","✓","✓","✓","✗","✗"],
+              ["Internal notes (handler)",  "✓","✓","✓","✗","✗","✗"],
+              ["Change status",             "✓","✓","✓","✗","✗","✗"],
+              ["Assign tickets",            "✓","✓","✓","✗","✗","✗"],
+              ["Edit Knowledge Base",       "✓","✓","✓","✗","✗","✗"],
+              ["Manage inventory assets",   "✓","✓","✓","✗","✗","✗"],
+              ["Vendor contact management", "✓","✓","✗","✗","✗","✗"],
+              ["Send vendor emails",        "✓","✓","✗","✗","✗","✗"],
+              ["Manage projects",           "✓","✓","✗","✗","✗","✗"],
+              ["Admin panel",               "✓","partial","✗","✗","✗","✗"],
+              ["User management",           "✓","✗","✗","✗","✗","✗"],
+              ["Encryption settings",       "✓","✗","✗","✗","✗","✗"],
             ].map(([cap, ...vals]) => (
               <tr key={cap} className="hover:bg-surface-2/50">
                 <td className="border border-border px-3 py-1.5 text-fg">{cap}</td>
@@ -190,44 +196,85 @@ function SectionDashboard({ role }) {
         : <FullAccess />
       }
       <p className="text-sm text-fg leading-relaxed">
-        The Dashboard is your home screen — a live snapshot of ticket activity relevant to your role.
+        The Dashboard is your home screen — a live grid of status tiles, priority distribution chart,
+        SLA card, Active alerts widget, Time-in-status report, plus Recent Activity and Pending Review.
       </p>
-      <HelpScreenshot src="/help/dashboard-overview.png" alt="Dashboard with assigned-to-you panel, recent activity feed, and per-project ticket count cards" />
+      <HelpScreenshot src="/help/dashboard-overview.png" alt="Dashboard with status tiles, priority distribution, SLA card, and active alerts widget" />
+
+      <h3 className="text-sm font-semibold text-fg pt-1">Global filters (v0.7.0)</h3>
+      <p className="text-sm text-fg leading-relaxed">
+        A single <b>Filters</b> button at the top-right opens a modal that drives <em>every</em> module on the page.
+        Date range (7 / 30 / 60 / 90 / 180 / 365 / all-time), projects multi-select, internal-status multi-select.
+        Selection persists across reloads. Active filters render as chips above the modules with × quick-clear
+        and a Reset link. Replaces the old per-module date pickers.
+      </p>
+
       <div className="space-y-0">
-        <Feature name="Open ticket snapshot" roles="all" />
+        <Feature name="Status tiles (Open / In Progress / etc.)" roles="all" />
+        <Feature name="Priority distribution bar chart" roles="all" />
+        <Feature name="SLA — Month to date card" roles="all" note="MTD breach counts, currently breached, open w/ SLA clock, per-project breakdown." />
+        <Feature name="Active alerts widget" roles={HANDLER} note="Top 8 firing alerts from configured monitoring sources." />
+        <Feature name="Time-in-status report" roles="all" note="Total + average + entry count per status, sourced from status_change audit." />
         <Feature name="Recent activity feed" roles="all" />
-        <Feature name="Assigned to me" roles={PRIV} note="Tickets currently assigned to you." />
-        <Feature name="Flagged for review" roles={PRIV} note="Tickets pending review before closing." />
-        <Feature name="Priority breakdown chart" roles={PRIV} note="Distribution of open tickets by priority." />
+        <Feature name="Pending Review tile" roles={HANDLER} note="Tickets waiting on a handler review before close. Bypasses the dashboard status filter." />
+        <Feature name="Global filter modal" roles="all" note="Date range, projects, statuses — applies to every module on the page." />
+        <Feature name="Filter persistence" roles="all" note="Selection survives reload via localStorage.resolvd.dashboardFilters.v1." />
+      </div>
+      <div className="bg-surface-2 border border-border rounded-lg p-3 text-xs text-fg-muted space-y-1">
+        <p className="font-semibold text-fg">Project scope intersection</p>
+        <p>
+          Submitter / Viewer requested <code>project_id</code> filters are intersected with their
+          <code>project_members</code> set on the server — they can never widen past their access tier.
+          Admin / Manager see everything by default.
+        </p>
       </div>
     </div>
   );
 }
 
 function SectionTicketList({ role }) {
-  const isPriv = PRIV.includes(role);
+  const isHandler = HANDLER.includes(role);
   return (
     <div className="space-y-4">
-      {isPriv
+      {isHandler
         ? <FullAccess />
         : role === "Submitter"
           ? <PartialAccess note="You can view tickets you submitted. Tickets in projects you're not a member of won't appear." />
           : <PartialAccess note="Read-only. You can view tickets you have access to but cannot take actions." />
       }
       <p className="text-sm text-fg leading-relaxed">
-        The Tickets list shows all tickets you have access to. Use filters and search to narrow results.
+        The ticket list landing page is filter-driven (v0.7.0). The sidebar is your <b>Recently opened</b>
+        history; the header is your filter surface. Default view: active (not Closed) · last 60 days · sort
+        priority P1 → P5.
       </p>
-      <HelpScreenshot src="/help/ticket-list-filters.png" alt="Ticket list with filter sidebar, project picker, status pills, and the column-visibility picker" />
+      <HelpScreenshot src="/help/ticket-list-filters.png" alt="Ticket list with Mine quick-toggle, Filters modal button, breadcrumb chip summary, and Recently opened rail" />
+
+      <h3 className="text-sm font-semibold text-fg pt-1">Header surface</h3>
       <div className="space-y-0">
-        <Feature name="View ticket list" roles="all" />
+        <Feature name="Mine quick-toggle" roles="all" note="One-click filter to tickets assigned to you, across every project + priority. Server resolves the `me` sentinel — saved-view URLs stay user-portable." />
+        <Feature name="Filters modal" roles="all" note="Date range, projects multi, statuses multi, priorities multi, plus toggles: Mine / Active only / Flagged / Has fix / No fix. Sort selector for priority / updated / created." />
+        <Feature name="Breadcrumb chip summary" roles="all" note="Plain-English line above the table describing the active filter set (e.g. 'Active · last 60d · all projects · P1/P2 reset')." />
+        <Feature name="Saved views dropdown" roles="all" note="Save current filter set under a name, recall + delete from the dropdown." />
         <Feature name="Search by title / ref" roles="all" />
-        <Feature name="Filter by status, priority" roles="all" />
-        <Feature name="Filter by project, assignee" roles={PRIV} />
-        <Feature name="Bulk status update" roles={PRIV} note="Select multiple tickets, change status in one action." />
-        <Feature name="Export CSV" roles={PRIV} />
-        <Feature name="View all tickets across all projects" roles={PRIV} note="Non-privileged roles see only tickets scoped to their membership." />
+        <Feature name="+ New Ticket" roles={["Admin","Manager","Tech","Submitter"]} />
+        <Feature name="Column picker" roles="all" note="Toggle ref / title / priority / internal / external / vendor ref / alert ref / blocker / flagged / updated columns. Per-user preference." />
+        <Feature name="Bulk Edit (status / assignee / project)" roles={["Admin"]} note="Select up to 500 rows, change fields in one action. Per-ticket transaction so one failure doesn't roll back the batch." />
+        <Feature name="Bulk reply (same comment to many tickets)" roles={PRIV} note="Mirror of bulk-status flow. Each post goes through the regular comment pipeline — @mentions resolve, follower notifications fire." />
       </div>
-      {!isPriv && <OverrideNote />}
+
+      <h3 className="text-sm font-semibold text-fg pt-1">Recently opened rail</h3>
+      <p className="text-sm text-fg leading-relaxed">
+        The left rail is a per-user log of the last 20 tickets you opened, deduped by id. Populated on row
+        click <em>and</em> on ticket-detail mount, so deep-links from email or dashboard also fill the history.
+        On mobile it lives behind a hamburger drawer.
+      </p>
+
+      <h3 className="text-sm font-semibold text-fg pt-1">URL deep-link presets</h3>
+      <p className="text-sm text-fg leading-relaxed">
+        Dashboard tiles + email links still work — <code>?preset=open|in_progress|awaiting_mot|pending_review|flagged|closed|mine|sla_breached</code> overlays the matching filter set once, then the URL param is stripped so subsequent filter changes don't re-overlay.
+      </p>
+
+      {!isHandler && <OverrideNote />}
     </div>
   );
 }
@@ -273,15 +320,23 @@ function SectionTicketDetail({ role }) {
       }
       <HelpScreenshot src="/help/ticket-detail-comments.png?v=2" alt="Ticket detail comment area with markdown composer, attach + canned-response controls, and a thread of vendor + internal comments" />
 
+      <h3 className="text-sm font-semibold text-fg">Tabs (v0.7.0)</h3>
+      <p className="text-sm text-fg leading-relaxed">
+        Ticket detail is tabbed. <b>Comments</b> + the metadata sidebar are visible to anyone with access.
+        <b> Notes</b> (handler-only — see the Notes section) and <b>Resolution</b> appear for Admin / Manager / Tech.
+        <b> Activity</b> shows the audit log. Knowledge-base suggestions surface on the Resolution tab when the
+        ranker matches an article to the ticket title.
+      </p>
+
       <h3 className="text-sm font-semibold text-fg">Comments</h3>
       <div className="space-y-0">
         <Feature name="Read comments" roles="all" />
-        <Feature name="Post a comment" roles={["Admin","Manager","Submitter"]} note="Supports markdown and @mentions." />
-        <Feature name="@mention a user" roles={["Admin","Manager","Submitter"]} note="Dropdown scoped to project members. Triggers in-app and email notification." />
-        <Feature name="Attach files to comment" roles={["Admin","Manager","Submitter"]} />
+        <Feature name="Post a comment" roles={["Admin","Manager","Tech","Submitter"]} note="Supports markdown and @mentions." />
+        <Feature name="@mention a user" roles={["Admin","Manager","Tech","Submitter"]} note="Dropdown scoped to project members. Triggers in-app and email notification." />
+        <Feature name="Attach files to comment" roles={["Admin","Manager","Tech","Submitter"]} />
         <Feature name="Mark comment vendor-visible" roles={PRIV} note="Sends comment to attached vendor contacts via email." />
-        <Feature name="Insert canned response" roles={["Admin","Manager","Submitter"]} note="📋 popover next to the composer. Tags like {ticket.ref}, {submitter.firstName} render server-side at insert time." />
-        <Feature name="Post & Close / Post & Reopen" roles={PRIV} note="Change ticket status in the same action as posting." />
+        <Feature name="Insert canned response" roles={["Admin","Manager","Tech","Submitter"]} note="📋 popover next to the composer. Tags like {ticket.ref}, {submitter.firstName} render server-side at insert time." />
+        <Feature name="Post & Close / Post & Reopen" roles={HANDLER} note="Change ticket status in the same action as posting." />
         <Feature name="Mute / delete comments" roles={PRIV} note="Muting hides vendor replies without deleting." />
       </div>
 
@@ -289,15 +344,17 @@ function SectionTicketDetail({ role }) {
       <h3 className="text-sm font-semibold text-fg">Status &amp; Fields</h3>
       <div className="space-y-0">
         <Feature name="View status and all metadata" roles="all" />
-        <Feature name="Edit title and description" roles={["Admin","Manager","Submitter"]} note="Submitters can only edit tickets they submitted." />
-        <Feature name="Edit impact / urgency" roles={["Admin","Manager","Submitter"]} />
-        <Feature name="Change internal status" roles={PRIV} />
-        <Feature name="One-click advance status" roles={PRIV} note="Advances to the next logical status in the workflow." />
+        <Feature name="Edit title and description" roles={["Admin","Manager","Tech","Submitter"]} note="Submitters can only edit tickets they submitted." />
+        <Feature name="Edit impact / urgency" roles={["Admin","Manager","Tech","Submitter"]} />
+        <Feature name="Change internal status" roles={HANDLER} />
+        <Feature name="One-click advance status" roles={HANDLER} note="Advances to the next logical status in the workflow." />
         <Feature name="Change external / vendor status" roles={PRIV} />
-        <Feature name="Priority override" roles={PRIV} note="Manually pin priority regardless of computed score." />
-        <Feature name="Assign ticket" roles={PRIV} />
-        <Feature name="Set blocker" roles={PRIV} note="Block on another ticket or flag as awaiting team input." />
-        <Feature name="Schedule follow-up reminder" roles={PRIV} />
+        <Feature name="Priority override" roles={HANDLER} note="Manually pin priority regardless of computed score." />
+        <Feature name="Assign ticket" roles={HANDLER} />
+        <Feature name="Set blocker" roles={HANDLER} note="Block on another ticket or flag as awaiting team input." />
+        <Feature name="Schedule follow-up reminder" roles={HANDLER} />
+        <Feature name="Link asset (Inventory)" roles={HANDLER} note="Surfaces the asset hostname in place of an opaque id and feeds cross-project history on the asset detail page." />
+        <Feature name="Resolution summary" roles={HANDLER} note="One-line summary captured at close time. Drives the 'Fix applied' ticket-list filter together with linked KB articles." />
       </div>
 
       <h3 className="text-sm font-semibold text-fg">Vendor &amp; Contacts</h3>
@@ -376,10 +433,19 @@ function SectionAdmin({ role }) {
           <Feature name="Email Templates — outbound vendor email content" roles={PRIV} />
           <Feature name="Email Backends — SMTP / Graph / Gmail with project scope" roles={PRIV} note="Many-to-many account-to-project scoping for helpdesk routing." />
           <Feature name="Inbound email — parse replies into comments" roles={PRIV} />
-          <Feature name="Alert sources — Zabbix + webhook ingestion" roles={PRIV} note="Token-authed webhook receiver, severity → priority map, optional API backfill of currently-open problems." />
+          <Feature name="Alert sources — Zabbix / Action1 / generic webhook" roles={PRIV} note="Registry-driven add form. Capabilities picker per source: alerts / inventory / software / vulnerabilities / companies. Tabular field-map editor for generic intake." />
+          <Feature name="SLA policies — response + resolve targets" roles={PRIV} note="Per-priority defaults; per-project overrides. Default targets seeded P1 30m/4h … P5 1d/7d." />
+          <Feature name="Business-hours policies" roles={PRIV} note="Per-project work windows (tz / days / start / end). SLA pauses outside business hours." />
+          <Feature name="Escalation policies" roles={PRIV} note="Per-priority + per-project step chains on SLA triggers. Multi-action steps (notify_role / notify_assignee / reassign_role / reassign_agent / bump_priority). See the Escalation chains section." />
+          <Feature name="Assignment policies" roles={PRIV} note="Per-project auto-assign on ticket create + on escalation reassign_agent. Round-robin / least-open-tickets / fixed." />
+          <Feature name="Asset types" roles={PRIV} note="Per-type field schemas for Inventory (laptop / server / printer / generic). Sensitive fields land in the encrypted column." />
+          <Feature name="Software aliases — canonical product names" roles={PRIV} note="Maps 'M365 Apps' / 'Office 365' / 'Microsoft 365 Apps for Enterprise' to one canonical product so reports don't fragment." />
+          <Feature name="Custom fields" roles={PRIV} note="Per-entity (ticket / asset) custom fields: text / number / select / multiselect / date / boolean. Values stored separately keyed by entity id." />
+          <Feature name="AI Assist — provider, model, project context" roles={PRIV} note="BYO-AI org config + per-user keys; rewrite surfaces on comments, descriptions, canned responses." />
           <Feature name="Authentication — MFA policy, SSO / Azure AD" roles={["Admin"]} />
           <Feature name="Branding — logo, site name, colors, locale defaults" roles={PRIV} />
           <Feature name="System health — scheduler heartbeats + DB / queue stats" roles={PRIV} note="Auto-refreshes every 30s; shows ok / stale / error / never_ran per scheduled job." />
+          <Feature name="Login security — failed-login forensics" roles={["Admin"]} note="Raw + per-IP / per-email aggregates. Backed by the per-IP block + dwell timer + honeypot pipeline." />
           <Feature name="Support — issue JIT access grants" roles={["Admin"]} note="Time-limited read grants for Support role users." />
           <Feature name="Export — full data export" roles={PRIV} />
           <Feature name="Encryption — field-level encryption keys" roles={["Admin"]} />
@@ -682,16 +748,171 @@ function SectionAccount({ role }) {
 
 // ── Section registry ──────────────────────────────────────────────────────────
 
+function SectionNotes({ role }) {
+  const isHandler = HANDLER.includes(role);
+  return (
+    <div className="space-y-4">
+      {isHandler ? <FullAccess /> : <NoAccess note="Notes are handler-only (Admin / Manager / Tech). You won't see the Notes tab on tickets." />}
+      <p className="text-sm text-fg leading-relaxed">
+        Every ticket carries a <b>Notes</b> tab visible only to Admin / Manager / Tech.
+        Notes never reach the submitter or vendor — they're a triage / shift-handoff scratchpad
+        separate from the comment thread.
+      </p>
+      <div className="space-y-0">
+        <Feature name="Post handler-only note" roles={HANDLER} />
+        <Feature name="@mention project agents" roles={HANDLER} note="Mentions resolve only against active agents on the ticket's project." />
+        <Feature name="Read notes" roles={HANDLER} />
+        <Feature name="Notes visible to submitter / vendor" roles={[]} note="Never. By design — notes don't fan out via email or push to non-handlers." />
+      </div>
+    </div>
+  );
+}
+
+function SectionInventory({ role }) {
+  const isHandler = HANDLER.includes(role);
+  return (
+    <div className="space-y-4">
+      {isHandler ? <FullAccess /> : <PartialAccess note="You can view inventory data but cannot create / edit assets." />}
+      <p className="text-sm text-fg leading-relaxed">
+        <b>Inventory</b> is Resolvd's CMDB-lite — every managed endpoint (laptop, server, printer, network device)
+        appears as an <b>asset</b> with per-type fields. Tickets can link to an asset so its hostname appears in
+        place of an opaque ID and so cross-project history per endpoint shows up on the asset detail page.
+      </p>
+      <HelpScreenshot src="/help/inventory-list.png" alt="Inventory list with asset types, last-seen badges, and the offline filter" />
+      <div className="space-y-0">
+        <Feature name="View inventory list" roles="all" />
+        <Feature name="Filter offline (>14 days no check-in)" roles="all" />
+        <Feature name="Create / edit / archive assets" roles={HANDLER} />
+        <Feature name="Per-type field schemas" roles={HANDLER} note="Admin → Asset types defines which fields each type carries (laptop, server, printer, generic)." />
+        <Feature name="On-demand software sync" roles={HANDLER} note="Computer-type assets sourced from Action1 expose a 'Pull software inventory now' button on the asset detail page." />
+        <Feature name="Cross-project ticket history" roles="all" note="Asset detail lists every ticket that linked this asset, across every project the viewer has access to." />
+        <Feature name="Vulnerability + patch counts" roles="all" note="Pulled from the source's reports endpoint when the source has the 'vulnerabilities' capability enabled." />
+        <Feature name="CSV export" roles={HANDLER} />
+      </div>
+      <div className="bg-surface-2 border border-border rounded-lg p-3 text-xs text-fg-muted space-y-1">
+        <p className="font-semibold text-fg">Action1 / generic RMM sync</p>
+        <p>
+          Action1 sources with the <em>Feed inventory module</em> capability turned on poll their REST API for endpoint
+          inventory. Hudu-style org→company mapping handles the MSP silo case where one Action1 tenant feeds multiple
+          Resolvd companies. <em>Software-name normalization</em> via Admin → Software aliases keeps reports from
+          fragmenting across "Microsoft 365 Apps for Enterprise" / "M365" / "Office 365".
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function SectionKb({ role }) {
+  const isHandler = HANDLER.includes(role);
+  return (
+    <div className="space-y-4">
+      {isHandler ? <FullAccess /> : <PartialAccess note="You can read published articles in projects you're a member of, but cannot author or edit." />}
+      <p className="text-sm text-fg leading-relaxed">
+        <b>Knowledge Base</b> is per-project rich-text documentation built on the BlockNote editor. Every project
+        owns its own articles, version history, and tag taxonomy. Articles drive the suggestion ranker on the
+        ticket Resolution tab and feed the close-time "Promote to KB" nudge.
+      </p>
+      <HelpScreenshot src="/help/kb-index.png" alt="Knowledge Base project index with tag filter chips and article cards" />
+      <div className="space-y-0">
+        <Feature name="Browse project articles" roles="all" />
+        <Feature name="Tag filter chips (AND across tags)" roles="all" />
+        <Feature name="Create / edit / archive articles" roles={HANDLER} />
+        <Feature name="Version history + restore" roles={HANDLER} note="Every save snapshots a version with optional change_summary; restore writes a fresh version marked 'Restored from vN'." />
+        <Feature name="Promote ticket to KB" roles={PRIV} note="Drafts a new article seeded from the ticket title + description + resolution_summary. Admin / Manager only." />
+        <Feature name="Suggested article on ticket open" roles="all" note="pg_trgm ranker over title + tags + keywords. Auto-surfaces high-confidence matches; manual picker for the long tail." />
+        <Feature name="Star projects across Projects + KB" roles="all" note="Starred projects float to the top in both navs — shared between Projects list and KB project picker." />
+      </div>
+      <div className="bg-surface-2 border border-border rounded-lg p-3 text-xs text-fg-muted space-y-1">
+        <p className="font-semibold text-fg">Tags vs. keywords</p>
+        <p>
+          <em>Tags</em> surface as filter chips on the KB index and are meant for human navigation
+          ("network", "printer", "VPN"). <em>Keywords</em> don't show as chips but boost the
+          suggestion ranker's similarity score — use them for SKU codes, model numbers, error
+          strings that shouldn't clutter the chip row but are searchable signal.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function SectionAlerts({ role }) {
+  const isHandler = HANDLER.includes(role);
+  return (
+    <div className="space-y-4">
+      {isHandler ? <FullAccess /> : <PartialAccess note="You can view the Alerts page if it appears in your nav, but cannot manage rules or sources." />}
+      <p className="text-sm text-fg leading-relaxed">
+        The <b>Alerts</b> page is the deduped state-machined view of every alert ingested from a configured
+        monitoring source. Distinct from the immutable per-event audit log — one row per
+        <code>(source, external_event_id)</code> pair, transitioning <code>firing</code> → <code>recovered</code> as
+        the vendor fires + clears.
+      </p>
+      <div className="space-y-0">
+        <Feature name="View alerts list + state" roles={HANDLER} />
+        <Feature name="Drill into alert detail" roles={HANDLER} note="Linked ticket (if promoted), source-mapped asset, raw payload." />
+        <Feature name="Promote alert → ticket manually" roles={HANDLER} />
+        <Feature name="Auto-promotion via alert rules" roles={PRIV} note="Admin / Manager configure rules per source: severity threshold + optional title regex → promote_ticket / notify_only / ignore." />
+        <Feature name="Dashboard 'Active alerts' widget" roles={HANDLER} note="Top 8 firing alerts on the dashboard for quick triage." />
+      </div>
+      <div className="bg-surface-2 border border-border rounded-lg p-3 text-xs text-fg-muted space-y-1">
+        <p className="font-semibold text-fg">Integration registry</p>
+        <p>
+          Built-in adapters: Zabbix (webhook + optional REST backfill), Action1 (REST poll + 429 retry + token bucket).
+          Anything else uses the generic webhook intake with a tabular field-map editor — map inbound JSON paths
+          to Resolvd ticket fields with optional value-map lookups. No code change required to onboard a new vendor.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+function SectionEscalations({ role }) {
+  const isPriv = PRIV.includes(role);
+  return (
+    <div className="space-y-4">
+      {isPriv
+        ? <FullAccess />
+        : <PartialAccess note="You may receive escalation pages (notify_role / reassign_role / reassign_agent) but only Admin / Manager configure the chains." />
+      }
+      <p className="text-sm text-fg leading-relaxed">
+        <b>Escalation chains</b> fire on the four SLA triggers — <code>warning_response</code>, <code>warning_resolve</code>,
+        <code>breach_response</code>, <code>breach_resolve</code> — and run per-priority + per-project step
+        chains with multi-action steps. Configure at <b>Admin → Escalation policies</b>.
+      </p>
+      <div className="space-y-0">
+        <Feature name="Configure escalation policies" roles={PRIV} />
+        <Feature name="notify_role / notify_assignee / notify_user" roles="all" note="DMs the targeted user(s). notify_role is scoped to the ticket's project so Org-Wide steps don't broadcast across every project." />
+        <Feature name="reassign_role / reassign_user" roles={PRIV} note="Sets assigned_to to a role's first active agent on the project, or a specific user." />
+        <Feature name="reassign_agent (assignment policy)" roles={PRIV} note="Defers to the project's assignment policy — round-robin / lowest-case-load — excluding the current assignee. Falls back to any other active agent if no policy or pool is empty." />
+        <Feature name="bump_priority (cascade-safe)" roles={PRIV} note="Raises urgency by N tiers (clamped to a floor). Snapshots original priority into escalation_priority_snapshot so a bumped P3 → P2 still matches P3 chain rows on the next tick — no cascade into the new tier's chain." />
+      </div>
+      <div className="bg-surface-2 border border-border rounded-lg p-3 text-xs text-fg-muted space-y-1">
+        <p className="font-semibold text-fg">Additive matching</p>
+        <p>
+          Org-Wide (project_id NULL) steps and project-scoped steps both apply if both exist — different from
+          <em> sla_policies</em> / <em> assignment_policies</em> which pick one or the other. Use <code>priority_op</code>
+          (`=`, `&lt;`, `&gt;`, `&lt;=`, `&gt;=`) to cover priority ranges with a single row.
+          <code>delay_minutes</code> is the grace after the trigger before the step fires.
+        </p>
+      </div>
+    </div>
+  );
+}
+
 const SECTIONS = [
   { id: "overview",       label: "Overview & Roles",    icon: "🗺" },
   { id: "dashboard",      label: "Dashboard",            icon: "🏠" },
   { id: "ticket-list",    label: "Ticket List",          icon: "📋" },
   { id: "new-ticket",     label: "New Ticket",           icon: "➕" },
   { id: "ticket-detail",  label: "Ticket Detail",        icon: "🎫" },
+  { id: "notes",          label: "Notes (handler-only)", icon: "📝" },
   { id: "projects",       label: "Projects",             icon: "📁" },
+  { id: "inventory",      label: "Inventory + Assets",   icon: "🖥" },
+  { id: "kb",             label: "Knowledge Base",       icon: "📚" },
+  { id: "alerts",         label: "Alerts",               icon: "🚨" },
   { id: "admin",          label: "Admin Panel",          icon: "⚙" },
   { id: "notifications",  label: "Notifications",        icon: "🔔" },
   { id: "sla",            label: "SLA tracker",          icon: "⏱" },
+  { id: "escalations",    label: "Escalation chains",    icon: "⛓" },
   { id: "ai-assist",      label: "AI Assist",            icon: "✨" },
   { id: "mentions",       label: "@Mentions",            icon: "@" },
   { id: "markdown",       label: "Markdown Formatting",  icon: "✏" },
@@ -707,10 +928,15 @@ function renderSection(id, role) {
     case "ticket-list":   return <SectionTicketList role={role} />;
     case "new-ticket":    return <SectionNewTicket role={role} />;
     case "ticket-detail": return <SectionTicketDetail role={role} />;
+    case "notes":         return <SectionNotes role={role} />;
     case "projects":      return <SectionProjects role={role} />;
+    case "inventory":     return <SectionInventory role={role} />;
+    case "kb":            return <SectionKb role={role} />;
+    case "alerts":        return <SectionAlerts role={role} />;
     case "admin":         return <SectionAdmin role={role} />;
     case "notifications": return <SectionNotifications role={role} />;
     case "sla":           return <SectionSla role={role} />;
+    case "escalations":   return <SectionEscalations role={role} />;
     case "ai-assist":     return <SectionAiAssist role={role} />;
     case "mentions":      return <SectionMentions role={role} />;
     case "markdown":      return <SectionMarkdown role={role} />;
