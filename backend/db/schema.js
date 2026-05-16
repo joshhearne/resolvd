@@ -1256,15 +1256,9 @@ async function initSchema() {
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_software_aliases_priority ON software_aliases(priority, id)`);
 
-    // asset_software gains canonical_name + canonical_vendor. Nullable
-    // by design — when no alias matches, the raw name IS the canonical
-    // (the UI handles the fallback). last_alias_id back-references the
-    // row that won the match so the admin can audit and a deleted /
-    // edited alias can trigger a resync.
-    await client.query(`ALTER TABLE asset_software ADD COLUMN IF NOT EXISTS canonical_name TEXT`);
-    await client.query(`ALTER TABLE asset_software ADD COLUMN IF NOT EXISTS canonical_vendor TEXT`);
-    await client.query(`ALTER TABLE asset_software ADD COLUMN IF NOT EXISTS last_alias_id INTEGER REFERENCES software_aliases(id) ON DELETE SET NULL`);
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_asset_software_canonical ON asset_software(LOWER(canonical_name)) WHERE canonical_name IS NOT NULL`);
+    // The canonical_* ALTERs on asset_software live further down — after
+    // the CREATE TABLE IF NOT EXISTS asset_software statement — so a
+    // fresh DB doesn't hit "relation asset_software does not exist".
 
     // pg_trgm is needed for the "near-duplicates" suggestion endpoint
     // (similarity() function). Enabling it is cheap and idempotent.
@@ -1390,6 +1384,17 @@ async function initSchema() {
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_asset_software_asset ON asset_software(asset_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_asset_software_name ON asset_software(LOWER(name))`);
+
+    // asset_software gains canonical_name + canonical_vendor. Nullable
+    // by design — when no alias matches, the raw name IS the canonical
+    // (the UI handles the fallback). last_alias_id back-references the
+    // row that won the match so the admin can audit and a deleted /
+    // edited alias can trigger a resync. Lives here (after the CREATE
+    // TABLE above) so a fresh DB doesn't trip on a missing table.
+    await client.query(`ALTER TABLE asset_software ADD COLUMN IF NOT EXISTS canonical_name TEXT`);
+    await client.query(`ALTER TABLE asset_software ADD COLUMN IF NOT EXISTS canonical_vendor TEXT`);
+    await client.query(`ALTER TABLE asset_software ADD COLUMN IF NOT EXISTS last_alias_id INTEGER REFERENCES software_aliases(id) ON DELETE SET NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_asset_software_canonical ON asset_software(LOWER(canonical_name)) WHERE canonical_name IS NOT NULL`);
     // One-time backfill from raw_data for existing Action1 rows. Cheap
     // — single UPDATE, only touches rows where the columns are still
     // null. Subsequent syncs keep these fresh.
