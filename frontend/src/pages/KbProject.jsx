@@ -13,27 +13,31 @@ export default function KbProject() {
 
   const [project, setProject] = useState(null);
   const [articles, setArticles] = useState([]);
+  const [tags, setTags] = useState([]);
   const [loading, setLoading] = useState(true);
   const [q, setQ] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
+  const [activeTags, setActiveTags] = useState([]);
+
+  function buildArticlesUrl() {
+    const parts = [];
+    if (q) parts.push(`q=${encodeURIComponent(q)}`);
+    if (statusFilter) parts.push(`status=${statusFilter}`);
+    if (activeTags.length) parts.push(`tag=${encodeURIComponent(activeTags.join(","))}`);
+    return `/api/kb/projects/${projectId}/articles${parts.length ? `?${parts.join("&")}` : ""}`;
+  }
 
   async function load() {
     setLoading(true);
     try {
-      const [p, list] = await Promise.all([
+      const [p, list, tagList] = await Promise.all([
         api.get(`/api/projects/${projectId}`).catch(() => null),
-        api.get(
-          `/api/kb/projects/${projectId}/articles${
-            q || statusFilter
-              ? `?${[q ? `q=${encodeURIComponent(q)}` : "", statusFilter ? `status=${statusFilter}` : ""]
-                  .filter(Boolean)
-                  .join("&")}`
-              : ""
-          }`,
-        ),
+        api.get(buildArticlesUrl()),
+        api.get(`/api/kb/tags?project_id=${projectId}`).catch(() => []),
       ]);
       setProject(p);
       setArticles(list || []);
+      setTags(tagList || []);
     } catch (e) {
       toast.error(e.message);
     } finally {
@@ -44,11 +48,21 @@ export default function KbProject() {
   useEffect(() => {
     load();
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [projectId, statusFilter]);
+  }, [projectId, statusFilter, activeTags]);
 
   function onSearchSubmit(e) {
     e.preventDefault();
     load();
+  }
+
+  function toggleTag(tag) {
+    setActiveTags((prev) =>
+      prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag]
+    );
+  }
+
+  function clearTags() {
+    setActiveTags([]);
   }
 
   return (
@@ -97,12 +111,51 @@ export default function KbProject() {
         </select>
       </div>
 
+      {tags.length > 0 && (
+        <div className="flex flex-wrap items-center gap-1.5">
+          <span className="text-xs text-fg-dim uppercase tracking-wider mr-1">Tags:</span>
+          {tags.map((t) => {
+            const active = activeTags.includes(t.tag);
+            return (
+              <button
+                key={t.tag}
+                type="button"
+                onClick={() => toggleTag(t.tag)}
+                className={`text-xs rounded-full px-2 py-0.5 border transition-colors ${
+                  active
+                    ? "bg-brand text-brand-fg border-brand"
+                    : "bg-surface border-border text-fg-muted hover:bg-surface-2 hover:text-fg"
+                }`}
+              >
+                {t.tag}
+                <span className={`ml-1 ${active ? "opacity-80" : "text-fg-dim"}`}>
+                  {t.article_count}
+                </span>
+              </button>
+            );
+          })}
+          {activeTags.length > 0 && (
+            <button
+              type="button"
+              onClick={clearTags}
+              className="text-xs text-fg-dim hover:text-fg ml-1"
+            >
+              clear
+            </button>
+          )}
+        </div>
+      )}
+
       {loading ? (
         <div className="text-fg-muted text-sm">Loading…</div>
       ) : articles.length === 0 ? (
         <div className="rounded-lg border border-border bg-surface p-10 text-center">
-          <p className="text-fg-muted">No articles yet.</p>
-          {canEdit && (
+          <p className="text-fg-muted">
+            {activeTags.length || q || statusFilter
+              ? "No articles match these filters."
+              : "No articles yet."}
+          </p>
+          {canEdit && !activeTags.length && !q && !statusFilter && (
             <Link
               to={`/kb/${projectId}/new`}
               className="inline-block mt-3 text-accent hover:underline text-sm"
@@ -116,7 +169,7 @@ export default function KbProject() {
           {articles.map((a) => (
             <li key={a.id} className="hover:bg-surface-2 transition-colors">
               <Link to={`/kb/${projectId}/${a.slug}`} className="block p-4">
-                <div className="flex items-center gap-2">
+                <div className="flex items-center gap-2 flex-wrap">
                   <span className="font-medium text-fg truncate">{a.title}</span>
                   {a.status !== "published" && (
                     <span
@@ -127,6 +180,22 @@ export default function KbProject() {
                       }`}
                     >
                       {a.status}
+                    </span>
+                  )}
+                  {a.tags?.length > 0 && (
+                    <span className="flex flex-wrap gap-1">
+                      {a.tags.map((t) => (
+                        <span
+                          key={t}
+                          className={`text-[10px] rounded px-1.5 py-0.5 ${
+                            activeTags.includes(t)
+                              ? "bg-brand/20 text-brand"
+                              : "bg-brand/10 text-brand"
+                          }`}
+                        >
+                          {t}
+                        </span>
+                      ))}
                     </span>
                   )}
                 </div>

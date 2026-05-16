@@ -126,7 +126,7 @@ router.get('/projects/:projectId/articles', requireAuth, async (req, res) => {
     if (!(await userCanReadProject(req.session.user, projectId))) {
       return res.status(403).json({ error: 'Forbidden' });
     }
-    const { q, status } = req.query;
+    const { q, status, tag } = req.query;
     const params = [projectId];
     const where = ['a.project_id = $1'];
     if (status && ['draft','published','archived'].includes(status)) {
@@ -138,9 +138,17 @@ router.get('/projects/:projectId/articles', requireAuth, async (req, res) => {
       params.push(`%${String(q).trim().toLowerCase()}%`);
       where.push(`(LOWER(a.title) LIKE $${params.length} OR LOWER(a.content_text) LIKE $${params.length})`);
     }
+    // ?tag=foo or ?tag=foo,bar (AND semantics — article must carry all listed tags)
+    if (tag && String(tag).trim()) {
+      const tagList = String(tag).split(',').map((t) => t.trim().toLowerCase()).filter(Boolean);
+      if (tagList.length) {
+        params.push(tagList);
+        where.push(`a.tags @> $${params.length}::text[]`);
+      }
+    }
     const r = await pool.query(
       `SELECT a.id, a.project_id, a.slug, a.title, a.status, a.updated_at, a.published_at,
-              a.view_count,
+              a.view_count, a.tags,
               u.display_name AS last_edited_by_name,
               LEFT(a.content_text, 240) AS excerpt
          FROM kb_articles a
