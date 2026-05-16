@@ -286,7 +286,27 @@ export default function AdminAlertSources() {
           )}
         </section>
       </div>
+
+      <Action1Disclaimer />
     </div>
+  );
+}
+
+// Footnote required by Action1 trademark-use permission. Renders only
+// when Action1 is referenced on the page (Integrations always lists it
+// in the adapter registry). Shown in small print at page bottom.
+function Action1Disclaimer() {
+  return (
+    <p className="text-[11px] leading-relaxed text-fg-dim pt-6 border-t border-border">
+      <span aria-hidden="true">* </span>
+      This integration is an independent community project and is not
+      affiliated with, endorsed by, sponsored by, or supported by Action1
+      Corporation. Action1 has not reviewed, tested, certified, or audited
+      this integration for security, performance, or compliance purposes
+      and is not responsible for its operation, availability, or use.
+      &ldquo;Action1&rdquo; is a trademark of Action1 Corporation and is
+      used solely to identify compatibility with the Action1 platform.
+    </p>
   );
 }
 

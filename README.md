@@ -794,3 +794,7 @@ Need a different license for procurement? hosted@resolvd.dev
 ### Contributing
 
 By contributing, you agree your contribution is licensed under the same FSL-1.1-ALv2 terms as the rest of the project. We use the **Developer Certificate of Origin (DCO)** instead of a CLA — every commit must be signed off (`git commit -s`). See [CONTRIBUTING.md](./.github/CONTRIBUTING.md) for details.
+
+---
+
+<sub>\* This integration is an independent community project and is not affiliated with, endorsed by, sponsored by, or supported by Action1 Corporation. Action1 has not reviewed, tested, certified, or audited this integration for security, performance, or compliance purposes and is not responsible for its operation, availability, or use. &ldquo;Action1&rdquo; is a trademark of Action1 Corporation and is used solely to identify compatibility with the Action1 platform.</sub>
