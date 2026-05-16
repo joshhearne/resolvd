@@ -5,6 +5,12 @@ import { useAuth } from "../context/AuthContext";
 import PriorityBadge from "../components/PriorityBadge";
 import HybridTime from "../components/HybridTime";
 import PageShell from "../components/PageShell";
+import {
+  useDashboardFilters,
+  useFilterLookups,
+  DashboardFiltersBar,
+  buildQs,
+} from "../components/DashboardFilters";
 
 const STAT_TONES = {
   blue: "text-sky-500 dark:text-sky-400",
@@ -42,25 +48,23 @@ function StatCard({ label, value, color = "blue", urgent = false, to }) {
   return <div className={base}>{inner}</div>;
 }
 
-function TimeInStatusCard() {
+function TimeInStatusCard({ filters }) {
   const [rows, setRows] = useState(null);
-  const [days, setDays] = useState(30);
 
   useEffect(() => {
-    const since = new Date(Date.now() - days * 86_400_000).toISOString();
-    api.get(`/api/sla/time-in-status?since=${encodeURIComponent(since)}`)
+    // time-in-status takes its own since=, so route through buildQs which
+    // already includes since. Pass project_id too.
+    api
+      .get(`/api/sla/time-in-status${buildQs(filters)}`)
       .then((r) => setRows(r.rows || []))
       .catch(() => setRows([]));
-  }, [days]);
+  }, [filters]);
 
   if (rows == null) return null;
   if (rows.length === 0) {
     return (
       <div className="card p-4">
-        <div className="flex items-center justify-between mb-2">
-          <h2 className="text-sm font-semibold text-fg">Time in status</h2>
-          <DaysPicker days={days} setDays={setDays} />
-        </div>
+        <h2 className="text-sm font-semibold text-fg mb-2">Time in status</h2>
         <div className="text-sm text-fg-muted py-3 text-center">
           No status transitions in the selected window.
         </div>
@@ -69,18 +73,17 @@ function TimeInStatusCard() {
   }
 
   const max = rows.reduce((m, r) => Math.max(m, Number(r.total_seconds) || 0), 0);
+  const rangeLabel =
+    filters.days && filters.days > 0 ? `the last ${filters.days} days` : "all time";
 
   return (
     <div className="card p-4">
-      <div className="flex items-center justify-between mb-3">
-        <h2 className="text-sm font-semibold text-fg">Time in status</h2>
-        <DaysPicker days={days} setDays={setDays} />
-      </div>
+      <h2 className="text-sm font-semibold text-fg mb-3">Time in status</h2>
       <p className="text-xs text-fg-muted mb-3">
-        Total time tickets have spent in each status over the last{" "}
-        {days} days. Derived from status-change history; initial status
-        (before any change) isn't counted. Resolved and Closed are
-        excluded — tickets sit there by design, not as chokepoints.
+        Total time tickets have spent in each status over {rangeLabel}. Derived
+        from status-change history; initial status (before any change) isn't
+        counted. Resolved and Closed are excluded — tickets sit there by
+        design, not as chokepoints.
       </p>
       <table className="w-full text-sm">
         <thead className="text-xs text-fg-muted">
@@ -116,20 +119,6 @@ function TimeInStatusCard() {
   );
 }
 
-function DaysPicker({ days, setDays }) {
-  return (
-    <select
-      value={days}
-      onChange={(e) => setDays(Number(e.target.value))}
-      className="bg-surface-2 border border-border rounded px-2 py-0.5 text-xs"
-    >
-      <option value={7}>Last 7 days</option>
-      <option value={30}>Last 30 days</option>
-      <option value={90}>Last 90 days</option>
-    </select>
-  );
-}
-
 function fmtSeconds(s) {
   const n = Number(s) || 0;
   if (n < 60) return `${n}s`;
@@ -138,16 +127,19 @@ function fmtSeconds(s) {
   return `${(n / 86400).toFixed(1)}d`;
 }
 
-// Read-only Active Alerts widget. Pulls top firing alerts so handlers
-// can see at-a-glance what's noisy without having to leave the
-// dashboard. Click a row -> alert detail; click the header -> /alerts.
-function ActiveAlertsCard() {
+// Active alerts widget. Filter integration: project_id narrows source-
+// scoped alerts; since/status don't apply (alerts aren't ticket-shaped).
+function ActiveAlertsCard({ filters }) {
   const [rows, setRows] = useState(null);
   useEffect(() => {
-    api.get("/api/alerts?state=firing&limit=8")
+    const projectQs = filters.projectIds?.length
+      ? `&project_id=${filters.projectIds.join(",")}`
+      : "";
+    api
+      .get(`/api/alerts?state=firing&limit=8${projectQs}`)
       .then((r) => setRows(Array.isArray(r) ? r : []))
       .catch(() => setRows([]));
-  }, []);
+  }, [filters]);
   if (rows == null) return null;
   return (
     <div className="card p-0 overflow-hidden">
@@ -163,7 +155,7 @@ function ActiveAlertsCard() {
         <span className="text-xs text-fg-muted">View all →</span>
       </Link>
       {rows.length === 0 ? (
-        <div className="px-4 py-6 text-xs text-fg-dim text-center">No problems firing. 🎉</div>
+        <div className="px-4 py-6 text-xs text-fg-dim text-center">No problems firing.</div>
       ) : (
         <ul className="divide-y divide-border">
           {rows.map((r) => (
@@ -222,7 +214,6 @@ function SlaBreachCard({ sla }) {
         </div>
       ) : (
         <>
-          {/* Top stat row */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
             <div className="rounded-md border border-border bg-surface-2 px-3 py-2">
               <div className="text-xs text-fg-muted">MTD response breaches</div>
@@ -259,8 +250,6 @@ function SlaBreachCard({ sla }) {
             </div>
           </div>
 
-          {/* Pause-time breakdown — vendor wait vs internal hold across
-              every in-scope ticket. Bar widths use vendor/internal share. */}
           {pauseTotal > 0 && (
             <div className="border border-border rounded-md overflow-hidden mb-3">
               <div className="bg-surface-2 px-3 py-1.5 text-[11px] uppercase tracking-wider font-semibold text-fg-dim flex items-center justify-between">
@@ -294,7 +283,6 @@ function SlaBreachCard({ sla }) {
             </div>
           )}
 
-          {/* Per-project breakdown */}
           {byProject.length > 0 && (
             <div className="border border-border rounded-md overflow-hidden">
               <div className="bg-surface-2 px-3 py-1.5 text-[11px] uppercase tracking-wider font-semibold text-fg-dim">
@@ -353,6 +341,9 @@ function SlaBreachCard({ sla }) {
 export default function Dashboard() {
   const { user } = useAuth();
   const canSeeAlerts = ["Admin", "Manager", "Tech"].includes(user?.role);
+  const { filters, setFilters } = useDashboardFilters();
+  const { projects, statuses } = useFilterLookups();
+
   const [stats, setStats] = useState(null);
   const [activity, setActivity] = useState([]);
   const [pendingTickets, setPendingTickets] = useState([]);
@@ -360,13 +351,22 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    setLoading(true);
+    const qs = buildQs(filters);
+    // Pending review intentionally uses the dashboard-wide project filter
+    // but not the status filter — its whole purpose is the Pending Review
+    // status, regardless of what statuses the user has filtered to.
+    const pendingQs = buildQs(filters, {
+      internal_status: "Pending Review",
+      sort_by: "updated_at",
+      sort_dir: "desc",
+      limit: "10",
+    }).replace(/[?&]status=[^&]*/, ""); // drop dashboard status param
     Promise.all([
-      api.get("/api/dashboard/stats"),
-      api.get("/api/dashboard/activity"),
-      api.get(
-        "/api/tickets?internal_status=Pending+Review&sort_by=updated_at&sort_dir=desc&limit=10",
-      ),
-      api.get("/api/sla/dashboard").catch(() => null),
+      api.get(`/api/dashboard/stats${qs}`),
+      api.get(`/api/dashboard/activity${qs}`),
+      api.get(`/api/tickets${pendingQs}`),
+      api.get(`/api/sla/dashboard${qs.replace(/[?&]status=[^&]*/, "")}`).catch(() => null),
     ])
       .then(([s, a, pt, sl]) => {
         setStats(s);
@@ -376,11 +376,22 @@ export default function Dashboard() {
         setLoading(false);
       })
       .catch(() => setLoading(false));
-  }, []);
+  }, [filters]);
 
   if (loading)
     return (
-      <div className="text-fg-muted py-12 text-center">Loading dashboard…</div>
+      <PageShell variant="wide" className="space-y-6">
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <h1 className="text-xl font-semibold text-fg tracking-tight">Dashboard</h1>
+          <DashboardFiltersBar
+            filters={filters}
+            setFilters={setFilters}
+            projects={projects}
+            statuses={statuses}
+          />
+        </div>
+        <div className="text-fg-muted py-12 text-center">Loading dashboard…</div>
+      </PageShell>
     );
 
   const priorities = [1, 2, 3, 4, 5];
@@ -395,9 +406,17 @@ export default function Dashboard() {
 
   return (
     <PageShell variant="wide" className="space-y-6">
-      <h1 className="text-xl font-semibold text-fg tracking-tight">
-        Dashboard
-      </h1>
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <h1 className="text-xl font-semibold text-fg tracking-tight">
+          Dashboard
+        </h1>
+        <DashboardFiltersBar
+          filters={filters}
+          setFilters={setFilters}
+          projects={projects}
+          statuses={statuses}
+        />
+      </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
         <StatCard
@@ -477,14 +496,11 @@ export default function Dashboard() {
         </div>
       )}
 
-      {sla && (
-        <SlaBreachCard sla={sla} />
-      )}
+      {sla && <SlaBreachCard sla={sla} />}
 
-      {canSeeAlerts && <ActiveAlertsCard />}
+      {canSeeAlerts && <ActiveAlertsCard filters={filters} />}
 
-      <TimeInStatusCard />
-
+      <TimeInStatusCard filters={filters} />
 
       <div className="grid lg:grid-cols-2 gap-6">
         {pendingTickets.length > 0 && (

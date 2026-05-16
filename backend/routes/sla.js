@@ -262,10 +262,26 @@ async function getAccessibleProjectIds(user) {
 router.get('/dashboard', requireAuth, async (req, res) => {
   try {
     const accessible = await getAccessibleProjectIds(req.session.user);
-    // Empty array case: scoped user with zero project memberships → no
-    // SLA data to show. Return zeroed shape so the frontend can render
-    // an empty state without special-casing.
-    if (accessible !== null && accessible.length === 0) {
+    // Caller-requested project narrow (comma-separated). Intersects
+    // with `accessible` so a member can never widen past their scope.
+    const requested = String(req.query.project_id || '')
+      .split(',')
+      .map((s) => Number(s.trim()))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    let effective = null;
+    if (accessible !== null && requested.length) {
+      effective = requested.filter((id) => accessible.includes(id));
+    } else if (accessible !== null) {
+      effective = accessible;
+    } else if (requested.length) {
+      effective = requested;
+    }
+
+    // Empty array case: scoped user with zero project memberships OR
+    // requested filter that intersects to zero → no SLA data to show.
+    // Return zeroed shape so the frontend can render an empty state
+    // without special-casing.
+    if (effective !== null && effective.length === 0) {
       return res.json({
         scope: 'project_member',
         live: { breached_response: 0, breached_resolve: 0, open_response: 0, open_resolve: 0 },
@@ -280,8 +296,8 @@ router.get('/dashboard', requireAuth, async (req, res) => {
     // the same scope across the four queries below.
     const scopeParams = [];
     let scopeWhere = '';
-    if (accessible !== null) {
-      scopeParams.push(accessible);
+    if (effective !== null) {
+      scopeParams.push(effective);
       scopeWhere = `AND project_id = ANY($1)`;
     }
 
@@ -427,13 +443,26 @@ router.get('/time-in-status', requireAuth, async (req, res) => {
            AND (semantic_tag = 'resolved_pending_close' OR is_terminal = TRUE)
        )`,
     ];
-    if (req.query.project_id) {
-      params.push(Number(req.query.project_id));
-      where.push(`t.project_id = $${params.length}`);
+    // project_id may be a single value or comma-separated list. When
+    // both the caller's accessible scope and a requested list are
+    // present, intersect — caller can only narrow within what they're
+    // allowed to see.
+    const requested = String(req.query.project_id || '')
+      .split(',')
+      .map((s) => Number(s.trim()))
+      .filter((n) => Number.isFinite(n) && n > 0);
+    let effective = null;
+    if (accessible !== null && requested.length) {
+      effective = requested.filter((id) => accessible.includes(id));
+      if (effective.length === 0) return res.json({ scope: 'project_member', rows: [] });
+    } else if (accessible !== null) {
+      effective = accessible;
+    } else if (requested.length) {
+      effective = requested;
     }
-    if (accessible !== null) {
-      params.push(accessible);
-      where.push(`t.project_id = ANY($${params.length})`);
+    if (effective) {
+      params.push(effective);
+      where.push(`t.project_id = ANY($${params.length}::int[])`);
     }
     if (req.query.since) {
       params.push(req.query.since);
