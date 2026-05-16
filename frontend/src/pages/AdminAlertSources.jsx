@@ -286,15 +286,13 @@ export default function AdminAlertSources() {
           )}
         </section>
       </div>
-
-      <Action1Disclaimer />
     </div>
   );
 }
 
-// Footnote required by Action1 trademark-use permission. Renders only
-// when Action1 is referenced on the page (Integrations always lists it
-// in the adapter registry). Shown in small print at page bottom.
+// Footnote required by Action1 trademark-use permission. Rendered at
+// the bottom of the Action1 source detail view only (vendor-specific
+// scope), not on the integrations index.
 function Action1Disclaimer() {
   return (
     <p className="text-[11px] leading-relaxed text-fg-dim pt-6 border-t border-border">
@@ -1116,6 +1114,8 @@ function SourceDetail({ source, projects, presets, adapters, onBack, onPatch, on
           </div>
         )}
       </div>
+
+      {source.preset === "action1" && <Action1Disclaimer />}
     </div>
   );
 }
