@@ -9,7 +9,7 @@
     "preview": "vite preview"
   },
   "dependencies": {
-    "@azure/msal-browser": "^3.10.0",
+    "@azure/msal-browser": "^5.10.1",
     "@azure/msal-react": "^2.0.22",
     "@blocknote/core": "^0.30.0",
     "@blocknote/mantine": "^0.30.0",
