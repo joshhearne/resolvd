@@ -31,21 +31,61 @@ const APP_URL = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\
 const REPLY_TO = process.env.INBOUND_REPLY_TO || null;
 const UPLOADS_DIR = process.env.UPLOADS_DIR || '/data/uploads';
 
-async function fetchTicketImages(ticketId) {
-  const r = await pool.query(
-    `SELECT filename, original_name, mimetype, encrypted_at_rest
-     FROM attachments WHERE ticket_id = $1 AND mimetype LIKE 'image/%'
-     ORDER BY created_at ASC`,
-    [ticketId]
-  );
+// Outbound attachment caps. Most enterprise mail relays cap a single
+// message at 25–35 MB total including base64 encoding overhead (~33%).
+// We cap raw bytes well below that so the encoded payload still fits.
+//   per-file: 10 MB — single large PDF / video stays sendable
+//   total:    20 MB — comfortable headroom under Graph's 25 MB body limit
+// Anything exceeding the caps is dropped from the message with a console
+// warn naming the file; recipients see the body without it. The original
+// attachments stay on the ticket so internal viewers still have them.
+const ATTACH_PER_FILE_BYTES = 10 * 1024 * 1024;
+const ATTACH_TOTAL_BYTES = 20 * 1024 * 1024;
+
+// commentId scopes the pull to attachments belonging to that comment
+// (new_comment events should only send what the comment added, not the
+// whole ticket history). Pass null/omit for ticket-wide (new_ticket).
+async function fetchAttachments({ ticketId, commentId = null }) {
+  const sql = commentId
+    ? `SELECT filename, original_name, mimetype, size, encrypted_at_rest
+         FROM attachments
+        WHERE ticket_id = $1 AND comment_id = $2
+        ORDER BY created_at ASC`
+    : `SELECT filename, original_name, mimetype, size, encrypted_at_rest
+         FROM attachments
+        WHERE ticket_id = $1
+        ORDER BY created_at ASC`;
+  const params = commentId ? [ticketId, commentId] : [ticketId];
+  const r = await pool.query(sql, params);
+
   const result = [];
+  let total = 0;
   for (const row of r.rows) {
+    if (row.size && row.size > ATTACH_PER_FILE_BYTES) {
+      console.warn(`vendorOutbound: skipping ${row.original_name || row.filename} — ${row.size} bytes exceeds per-file cap`);
+      continue;
+    }
+    if (total + (row.size || 0) > ATTACH_TOTAL_BYTES) {
+      console.warn(`vendorOutbound: skipping ${row.original_name || row.filename} — total payload would exceed cap`);
+      continue;
+    }
     try {
       const raw = await fsp.readFile(path.join(UPLOADS_DIR, row.filename));
       const data = row.encrypted_at_rest
         ? await decrypt(raw, `attachments.file:${row.filename}`, { raw: true })
         : raw;
-      result.push({ filename: row.original_name || row.filename, mimetype: row.mimetype, data });
+      // Recheck against decrypted size — encryption overhead is small but
+      // we accumulate against the actual bytes we're about to send.
+      if (total + data.length > ATTACH_TOTAL_BYTES) {
+        console.warn(`vendorOutbound: skipping ${row.original_name || row.filename} — decrypted bytes would exceed cap`);
+        continue;
+      }
+      result.push({
+        filename: row.original_name || row.filename,
+        mimetype: row.mimetype || 'application/octet-stream',
+        data,
+      });
+      total += data.length;
     } catch (e) {
       console.warn(`vendorOutbound: skipping attachment ${row.filename}:`, e.message);
     }
@@ -134,7 +174,7 @@ function replyMarkerHtml(ticketRef) {
   return `<div style="font-family:system-ui,-apple-system,sans-serif;font-size:11px;color:#9ca3af;border-bottom:1px solid #e5e7eb;padding:0 0 8px;margin:0 0 16px;text-align:center;letter-spacing:0.01em">--- ${REPLY_MARKER_TEXT}${ref} ---</div>`;
 }
 
-async function sendVendorEmail({ eventType, ticketId, actorId }) {
+async function sendVendorEmail({ eventType, ticketId, actorId, commentId = null }) {
   // Status/resolved notifications only go out if the vendor was already
   // contacted about this ticket (new_ticket or vendor-visible comment sent).
   if (eventType === 'status_change' || eventType === 'ticket_resolved') {
@@ -155,10 +195,16 @@ async function sendVendorEmail({ eventType, ticketId, actorId }) {
   const contacts = await fetchTicketContacts(ticketId);
   if (!contacts.length) return { sent: 0, skipped: 0 };
 
-  const attachOnEvents = new Set(['new_ticket', 'new_comment']);
-  const imageAttachments = attachOnEvents.has(eventType)
-    ? await fetchTicketImages(ticketId)
-    : [];
+  // new_ticket sends the ticket-wide attachments (initial context for
+  // the vendor). new_comment scopes to the comment that triggered the
+  // send — only the files the user just added go out, not the full
+  // ticket history. status_change / ticket_resolved carry no
+  // attachments by design.
+  const attachments = (eventType === 'new_ticket')
+    ? await fetchAttachments({ ticketId })
+    : (eventType === 'new_comment')
+      ? await fetchAttachments({ ticketId, commentId })
+      : [];
 
   const ticketStatusName = ctx.ticket.internal_status || '';
 
@@ -208,7 +254,7 @@ async function sendVendorEmail({ eventType, ticketId, actorId }) {
         replyTo: REPLY_TO,
         senderName,
         projectId: ctx.ticket.project_id,
-        attachments: imageAttachments,
+        attachments,
         headers: {
           'Auto-Submitted': 'auto-generated',
           'X-Auto-Response-Suppress': 'All',

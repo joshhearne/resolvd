@@ -501,7 +501,7 @@ function ScopeSection({ account, currentUser, onAdd, onRemove, onApprove }) {
                     {s.send_enabled && "send"}
                     {s.send_enabled && s.recv_enabled && " · "}
                     {s.recv_enabled && "recv"}
-                    {!s.send_enabled && !s.recv_enabled && "disabled"}
+                    {!s.send_enabled && !s.recv_enabled && "send + receive disabled"}
                   </span>
                   {s.approved_at ? (
                     <span className="px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300">

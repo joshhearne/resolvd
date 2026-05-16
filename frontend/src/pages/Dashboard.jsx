@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link } from "react-router-dom";
 import { api } from "../utils/api";
+import { useAuth } from "../context/AuthContext";
 import PriorityBadge from "../components/PriorityBadge";
 import HybridTime from "../components/HybridTime";
 import PageShell from "../components/PageShell";
@@ -41,13 +42,166 @@ function StatCard({ label, value, color = "blue", urgent = false, to }) {
   return <div className={base}>{inner}</div>;
 }
 
+function TimeInStatusCard() {
+  const [rows, setRows] = useState(null);
+  const [days, setDays] = useState(30);
+
+  useEffect(() => {
+    const since = new Date(Date.now() - days * 86_400_000).toISOString();
+    api.get(`/api/sla/time-in-status?since=${encodeURIComponent(since)}`)
+      .then((r) => setRows(r.rows || []))
+      .catch(() => setRows([]));
+  }, [days]);
+
+  if (rows == null) return null;
+  if (rows.length === 0) {
+    return (
+      <div className="card p-4">
+        <div className="flex items-center justify-between mb-2">
+          <h2 className="text-sm font-semibold text-fg">Time in status</h2>
+          <DaysPicker days={days} setDays={setDays} />
+        </div>
+        <div className="text-sm text-fg-muted py-3 text-center">
+          No status transitions in the selected window.
+        </div>
+      </div>
+    );
+  }
+
+  const max = rows.reduce((m, r) => Math.max(m, Number(r.total_seconds) || 0), 0);
+
+  return (
+    <div className="card p-4">
+      <div className="flex items-center justify-between mb-3">
+        <h2 className="text-sm font-semibold text-fg">Time in status</h2>
+        <DaysPicker days={days} setDays={setDays} />
+      </div>
+      <p className="text-xs text-fg-muted mb-3">
+        Total time tickets have spent in each status over the last{" "}
+        {days} days. Derived from status-change history; initial status
+        (before any change) isn't counted. Resolved and Closed are
+        excluded — tickets sit there by design, not as chokepoints.
+      </p>
+      <table className="w-full text-sm">
+        <thead className="text-xs text-fg-muted">
+          <tr>
+            <th className="text-left py-1">Status</th>
+            <th className="text-left py-1">Total</th>
+            <th className="text-left py-1">Avg</th>
+            <th className="text-right py-1">Entries</th>
+          </tr>
+        </thead>
+        <tbody>
+          {rows.map((r) => {
+            const pct = max ? (Number(r.total_seconds) / max) * 100 : 0;
+            return (
+              <tr key={r.status} className="border-t border-border">
+                <td className="py-1.5 pr-3 font-medium">{r.status}</td>
+                <td className="py-1.5 pr-3 min-w-[180px]">
+                  <div className="flex items-center gap-2">
+                    <div className="flex-1 bg-surface-2 rounded h-1.5 overflow-hidden">
+                      <div className="bg-brand h-full" style={{ width: `${pct}%` }} />
+                    </div>
+                    <span className="text-xs text-fg-muted whitespace-nowrap">{fmtSeconds(r.total_seconds)}</span>
+                  </div>
+                </td>
+                <td className="py-1.5 pr-3 text-fg-muted">{fmtSeconds(r.avg_seconds)}</td>
+                <td className="py-1.5 text-right text-fg-muted">{r.entries}</td>
+              </tr>
+            );
+          })}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
+function DaysPicker({ days, setDays }) {
+  return (
+    <select
+      value={days}
+      onChange={(e) => setDays(Number(e.target.value))}
+      className="bg-surface-2 border border-border rounded px-2 py-0.5 text-xs"
+    >
+      <option value={7}>Last 7 days</option>
+      <option value={30}>Last 30 days</option>
+      <option value={90}>Last 90 days</option>
+    </select>
+  );
+}
+
+function fmtSeconds(s) {
+  const n = Number(s) || 0;
+  if (n < 60) return `${n}s`;
+  if (n < 3600) return `${Math.round(n / 60)}m`;
+  if (n < 86400) return `${(n / 3600).toFixed(1)}h`;
+  return `${(n / 86400).toFixed(1)}d`;
+}
+
+// Read-only Active Alerts widget. Pulls top firing alerts so handlers
+// can see at-a-glance what's noisy without having to leave the
+// dashboard. Click a row -> alert detail; click the header -> /alerts.
+function ActiveAlertsCard() {
+  const [rows, setRows] = useState(null);
+  useEffect(() => {
+    api.get("/api/alerts?state=firing&limit=8")
+      .then((r) => setRows(Array.isArray(r) ? r : []))
+      .catch(() => setRows([]));
+  }, []);
+  if (rows == null) return null;
+  return (
+    <div className="card p-0 overflow-hidden">
+      <Link
+        to="/alerts"
+        className="flex items-center justify-between px-4 py-3 border-b border-border hover:bg-surface-2 transition-colors"
+        title="Open alerts page"
+      >
+        <h2 className="text-sm font-semibold text-fg flex items-center gap-2">
+          <span className="inline-block w-2 h-2 rounded-full bg-red-500 animate-pulse" />
+          Active alerts {rows.length > 0 && <span className="text-fg-muted font-normal">({rows.length})</span>}
+        </h2>
+        <span className="text-xs text-fg-muted">View all →</span>
+      </Link>
+      {rows.length === 0 ? (
+        <div className="px-4 py-6 text-xs text-fg-dim text-center">No problems firing. 🎉</div>
+      ) : (
+        <ul className="divide-y divide-border">
+          {rows.map((r) => (
+            <li key={r.id}>
+              <Link
+                to={`/alerts/${r.id}`}
+                className="flex items-center gap-2 px-4 py-2 hover:bg-surface-2 transition-colors"
+                title={r.title || ""}
+              >
+                <span className="text-[10px] uppercase font-medium text-fg-muted bg-surface-2 border border-border rounded px-1.5 py-0.5 shrink-0">
+                  {r.severity || "—"}
+                </span>
+                <span className="text-sm text-fg truncate flex-1">
+                  {r.title || <span className="text-fg-dim italic">no title</span>}
+                </span>
+                <span className="text-[10px] text-fg-dim shrink-0">{r.source_name}</span>
+                {r.ticket_id && (
+                  <span className="text-[10px] text-brand font-mono shrink-0">{r.ticket_ref}</span>
+                )}
+              </Link>
+            </li>
+          ))}
+        </ul>
+      )}
+    </div>
+  );
+}
+
 function SlaBreachCard({ sla }) {
   const live = sla.live || {};
   const mtd = sla.mtd_total || { response: 0, resolve: 0 };
   const byProject = sla.mtd_by_project || [];
   const liveBreached = (live.breached_response || 0) + (live.breached_resolve || 0);
   const mtdTotal = (mtd.response || 0) + (mtd.resolve || 0);
-  const allClear = liveBreached === 0 && mtdTotal === 0 && byProject.length === 0;
+  const vendor = Number(live.vendor_wait_seconds || 0);
+  const internal = Number(live.internal_hold_seconds || 0);
+  const pauseTotal = vendor + internal;
+  const allClear = liveBreached === 0 && mtdTotal === 0 && byProject.length === 0 && pauseTotal === 0;
 
   const monthLabel = new Date().toLocaleString("default", { month: "long" });
 
@@ -104,6 +258,41 @@ function SlaBreachCard({ sla }) {
               </div>
             </div>
           </div>
+
+          {/* Pause-time breakdown — vendor wait vs internal hold across
+              every in-scope ticket. Bar widths use vendor/internal share. */}
+          {pauseTotal > 0 && (
+            <div className="border border-border rounded-md overflow-hidden mb-3">
+              <div className="bg-surface-2 px-3 py-1.5 text-[11px] uppercase tracking-wider font-semibold text-fg-dim flex items-center justify-between">
+                <span>Total SLA pause time</span>
+                <span className="normal-case tracking-normal">{fmtSeconds(pauseTotal)}</span>
+              </div>
+              <div className="p-3 space-y-2">
+                <div className="flex h-2 rounded overflow-hidden bg-surface-2">
+                  <div
+                    className="bg-amber-500"
+                    style={{ width: `${(vendor / pauseTotal) * 100}%` }}
+                    title={`Vendor wait — ${fmtSeconds(vendor)}`}
+                  />
+                  <div
+                    className="bg-sky-500"
+                    style={{ width: `${(internal / pauseTotal) * 100}%` }}
+                    title={`Internal hold — ${fmtSeconds(internal)}`}
+                  />
+                </div>
+                <div className="flex justify-between text-xs">
+                  <span className="text-fg-muted">
+                    <span className="inline-block w-2 h-2 rounded-sm bg-amber-500 mr-1.5 align-middle" />
+                    Vendor wait <b className="text-fg ml-1">{fmtSeconds(vendor)}</b>
+                  </span>
+                  <span className="text-fg-muted">
+                    <span className="inline-block w-2 h-2 rounded-sm bg-sky-500 mr-1.5 align-middle" />
+                    Internal hold <b className="text-fg ml-1">{fmtSeconds(internal)}</b>
+                  </span>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Per-project breakdown */}
           {byProject.length > 0 && (
@@ -162,6 +351,8 @@ function SlaBreachCard({ sla }) {
 }
 
 export default function Dashboard() {
+  const { user } = useAuth();
+  const canSeeAlerts = ["Admin", "Manager", "Tech"].includes(user?.role);
   const [stats, setStats] = useState(null);
   const [activity, setActivity] = useState([]);
   const [pendingTickets, setPendingTickets] = useState([]);
@@ -289,6 +480,11 @@ export default function Dashboard() {
       {sla && (
         <SlaBreachCard sla={sla} />
       )}
+
+      {canSeeAlerts && <ActiveAlertsCard />}
+
+      <TimeInStatusCard />
+
 
       <div className="grid lg:grid-cols-2 gap-6">
         {pendingTickets.length > 0 && (

@@ -72,9 +72,9 @@ router.get('/:id/comments', requireAuth, async (req, res) => {
 });
 
 // POST /api/tickets/:id/comments
-router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Submitter'), async (req, res) => {
+router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter'), async (req, res) => {
   try {
-    const { body, is_external_visible, send_as, ai_rewrite_log_id } = req.body;
+    const { body, is_external_visible, send_as, ai_rewrite_log_id, defer_vendor_email } = req.body;
     if (!body || !body.trim()) return res.status(400).json({ error: 'Comment body required' });
 
     const ticket = await pool.query(
@@ -198,11 +198,26 @@ router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Submi
           if (u.rows[0]) vendorActorId = u.rows[0].id;
         }
       }
-      sendVendorEmail({
-        eventType: 'new_comment',
-        ticketId: ticket.rows[0].id,
-        actorId: vendorActorId,
-      }).catch(err => console.error('vendor outbound failed:', err.message));
+      // defer_vendor_email = client is about to upload attachments to
+      // this comment. The outbound route races the upload otherwise
+      // (vendor email leaves before attachments are linked). The
+      // attachments POST handler fires sendVendorEmail itself once the
+      // files are persisted. Stash the resolved actor on the comment
+      // row so the upload handler can re-use it without the client
+      // having to re-send send_as.
+      if (defer_vendor_email) {
+        await pool.query(
+          `UPDATE comments SET vendor_actor_id = $1 WHERE id = $2`,
+          [vendorActorId, result.id]
+        );
+      } else {
+        sendVendorEmail({
+          eventType: 'new_comment',
+          ticketId: ticket.rows[0].id,
+          actorId: vendorActorId,
+          commentId: result.id,
+        }).catch(err => console.error('vendor outbound failed:', err.message));
+      }
     }
 
     // Resolve @mentions, then fire the comment fanout (excluding mentioned

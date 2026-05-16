@@ -8,6 +8,7 @@ const {
   fanoutAssignment,
 } = require('../services/notificationFanout');
 const sla = require('../services/sla');
+const assignmentPolicies = require('../services/assignmentPolicies');
 const { getMode, buildWritePatch, decryptRow, decryptRows } = require('../services/fields');
 const blindIndex = require('../services/blindIndex');
 const { logSupportRead } = require('../middleware/supportAccess');
@@ -127,6 +128,7 @@ router.get('/', requireAuth, async (req, res) => {
     const {
       project_id, internal_status, external_status, effective_priority,
       blocker_type, assigned_to, flagged_for_review, q, exclude_closed,
+      has_fix, linked_article,
       sort_by = 'updated_at', sort_dir = 'desc',
       page = 1, limit = 50
     } = req.query;
@@ -184,6 +186,29 @@ router.get('/', requireAuth, async (req, res) => {
       params.push(flagged_for_review === 'true');
     }
     if (exclude_closed === '1') { where.push(`t.internal_status != 'Closed'`); }
+    // "Has fix applied" — resolution_summary set OR at least one KB
+    // link. Driven by the ticket-list facet of the KB linking feature.
+    if (has_fix === '1' || has_fix === 'true') {
+      where.push(`(
+        t.resolution_summary IS NOT NULL
+        OR t.resolution_summary_enc IS NOT NULL
+        OR EXISTS (SELECT 1 FROM ticket_kb_links l WHERE l.ticket_id = t.id)
+      )`);
+    } else if (has_fix === '0' || has_fix === 'false') {
+      where.push(`(
+        t.resolution_summary IS NULL
+        AND t.resolution_summary_enc IS NULL
+        AND NOT EXISTS (SELECT 1 FROM ticket_kb_links l WHERE l.ticket_id = t.id)
+      )`);
+    }
+    // Drill from the KB article page: only tickets that link this article.
+    if (linked_article) {
+      where.push(`EXISTS (
+        SELECT 1 FROM ticket_kb_links l
+         WHERE l.ticket_id = t.id AND l.article_id = $${p++}
+      )`);
+      params.push(Number(linked_article));
+    }
 
     const allowed_sorts = ['created_at', 'updated_at', 'effective_priority', 'internal_ref'];
     const col = allowed_sorts.includes(sort_by) ? sort_by : 'updated_at';
@@ -198,7 +223,12 @@ router.get('/', requireAuth, async (req, res) => {
         asgn.display_name as assigned_to_name,
         bt.internal_ref as blocking_ticket_ref,
         bt.title as blocking_ticket_title,
-        bt.title_enc as blocking_ticket_title_enc
+        bt.title_enc as blocking_ticket_title_enc,
+        (
+          t.resolution_summary IS NOT NULL
+          OR t.resolution_summary_enc IS NOT NULL
+          OR EXISTS (SELECT 1 FROM ticket_kb_links l WHERE l.ticket_id = t.id)
+        ) AS has_fix
       FROM tickets t
       LEFT JOIN projects proj ON t.project_id = proj.id
       LEFT JOIN users sub ON t.submitted_by = sub.id
@@ -240,7 +270,7 @@ router.get('/', requireAuth, async (req, res) => {
 });
 
 // POST /api/tickets
-router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Submitter'), async (req, res) => {
+router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter'), async (req, res) => {
   try {
     const user = req.session.user;
     const { project_id, title, description, impact = 2, urgency = 2, external_ticket_ref, assigned_to, contact_ids, submitted_by } = req.body;
@@ -254,11 +284,12 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Submitter'), asyn
       [project_id]
     );
     if (!proj.rows[0]) return res.status(404).json({ error: 'Project not found or archived' });
-    // If creator didn't pick an assignee, fall back to project default.
+    // Explicit assignee from the request always wins. Policy match and
+    // project default are tried inside the transaction post-INSERT so
+    // (a) round_robin cursor increments are atomic and (b) we know the
+    // committed priority + project_id.
     let effectiveAssignee = assigned_to ? Number(assigned_to) : null;
-    if (!effectiveAssignee && proj.rows[0].default_assignee_id) {
-      effectiveAssignee = proj.rows[0].default_assignee_id;
-    }
+    const projectDefaultAssigneeId = proj.rows[0].default_assignee_id || null;
 
     // Non-admins must be project members
     if (user.role !== 'Admin') {
@@ -362,6 +393,24 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Submitter'), asyn
         projectId: t.project_id,
         createdAt: t.created_at,
       });
+
+      // Auto-assignment: only runs when the requester didn't already
+      // pick an assignee. Policy match beats project default; if both
+      // miss, ticket stays unassigned.
+      if (!t.assigned_to) {
+        const policyPick = await assignmentPolicies.applyOnCreate(client, {
+          priority: t.effective_priority || computed,
+          projectId: t.project_id,
+        });
+        const finalAssignee = policyPick || projectDefaultAssigneeId;
+        if (finalAssignee) {
+          await client.query(
+            `UPDATE tickets SET assigned_to = $1 WHERE id = $2`,
+            [finalAssignee, t.id]
+          );
+          t.assigned_to = finalAssignee;
+        }
+      }
       await auditLog(client, { ticketId: t.id, userId: user.id, action: 'ticket_created', newValue: internalRef });
       if (effectiveSubmitterId !== user.id) {
         await auditLog(client, {
@@ -500,12 +549,14 @@ router.get('/:id', requireAuth, async (req, res) => {
         proj.name as project_name, proj.prefix as project_prefix, proj.has_external_vendor as project_has_external_vendor,
         sub.display_name as submitted_by_name, sub.email as submitted_by_email,
         asgn.display_name as assigned_to_name,
-        bt.internal_ref as blocking_ticket_ref, bt.title as blocking_ticket_title, bt.title_enc as blocking_ticket_title_enc, bt.internal_status as blocking_ticket_status
+        bt.internal_ref as blocking_ticket_ref, bt.title as blocking_ticket_title, bt.title_enc as blocking_ticket_title_enc, bt.internal_status as blocking_ticket_status,
+        ast.hostname as asset_hostname, ast.serial as asset_serial
       FROM tickets t
       LEFT JOIN projects proj ON t.project_id = proj.id
       LEFT JOIN users sub ON t.submitted_by = sub.id
       LEFT JOIN users asgn ON t.assigned_to = asgn.id
       LEFT JOIN tickets bt ON t.blocked_by_ticket = bt.id
+      LEFT JOIN assets ast ON t.asset_id = ast.id
       WHERE t.id = $1
     `, [req.params.id]);
 
@@ -528,7 +579,12 @@ router.patch('/:id', requireAuth, async (req, res) => {
     const ticket = ticketResult.rows[0];
     if (!ticket) return res.status(404).json({ error: 'Ticket not found' });
 
-    const isAdmin = ['Admin','Manager'].includes(user.role);
+    // Local `isAdmin` here means "elevated handler" — anyone who can
+    // manage the ticket beyond what a Submitter can do. Tech sits in
+    // this group (internal IT staff). Keep variable name for blast-
+    // radius reasons; the true-Admin-only paths key off the body
+    // intent rather than this flag.
+    const isAdmin = ['Admin', 'Manager', 'Tech'].includes(user.role);
     const isSubmitter = user.role === 'Submitter';
     const updates = {};
     const body = req.body;
@@ -536,8 +592,45 @@ router.patch('/:id', requireAuth, async (req, res) => {
     const updated = await transaction(async (client) => {
       if ((isAdmin || isSubmitter) && body.title !== undefined) updates.title = body.title;
       if ((isAdmin || isSubmitter) && body.description !== undefined) updates.description = body.description;
+      // Resolution summary — free-text capture of how the ticket was
+      // fixed. Admin/Manager/Tech only (submitters can't claim their
+      // own fix). Drives the "Fix applied" filter on the ticket list
+      // and seeds Promote-to-KB.
+      if (isAdmin && body.resolution_summary !== undefined) {
+        const next = body.resolution_summary === null ? null : String(body.resolution_summary).slice(0, 4000);
+        updates.resolution_summary = next;
+        await auditLog(client, {
+          ticketId: ticket.id, userId: user.id,
+          action: next ? 'resolution_summary_set' : 'resolution_summary_cleared',
+          oldValue: ticket.resolution_summary || '',
+          newValue: next || '',
+        });
+      }
       if ((isAdmin || isSubmitter) && body.assigned_to !== undefined) {
         updates.assigned_to = body.assigned_to ? Number(body.assigned_to) : null;
+      }
+      // Asset linking — anyone who can edit the ticket can update the
+      // link (admin/manager/submitter), gated by project setting +
+      // company filter so MSP project A can't link to customer B's
+      // assets even if a user knows the id.
+      if (body.asset_id !== undefined) {
+        const assetId = body.asset_id === null ? null : Number(body.asset_id);
+        if (assetId !== null) {
+          const proj = await client.query(
+            `SELECT allow_asset_linking, asset_company_ids FROM projects WHERE id = $1`,
+            [ticket.project_id]
+          );
+          if (!proj.rows[0]?.allow_asset_linking) {
+            return res.status(400).json({ error: 'Asset linking is disabled for this project' });
+          }
+          const assetRes = await client.query(`SELECT id, company_id FROM assets WHERE id = $1`, [assetId]);
+          if (!assetRes.rows[0]) return res.status(400).json({ error: 'Asset not found' });
+          const companyIds = proj.rows[0].asset_company_ids || [];
+          if (companyIds.length && !companyIds.includes(assetRes.rows[0].company_id)) {
+            return res.status(400).json({ error: 'Asset is not in an allowed company for this project' });
+          }
+        }
+        updates.asset_id = assetId;
       }
       // Admin/Manager can reassign the submitter (e.g. correcting an
       // import or filing-on-behalf metadata). Submitters cannot.
@@ -597,15 +690,27 @@ router.patch('/:id', requireAuth, async (req, res) => {
         if (body.internal_status === 'Reopened') {
           await auditLog(client, { ticketId: ticket.id, userId: user.id, action: 'reopened', note: 'Ticket reopened' });
         }
-        // Track resolved_at for auto-close grace window. Set when entering
-        // a resolved_pending_close-tagged status; clear on any other move.
+        // Track resolved_at — drives the auto-close grace window AND
+        // stops the SLA resolve clock. Stamp on entering either a
+        // resolved_pending_close-tagged status OR any terminal status
+        // (direct Open -> Closed without going through Resolved must
+        // still close the resolve clock, otherwise tickWarnings keeps
+        // firing on a closed ticket — see INC-0002 incident).
+        // Reopening / moving back to a non-resolved non-terminal
+        // status clears resolved_at so the clock resumes.
         const tagRow = await client.query(
-          `SELECT semantic_tag FROM statuses WHERE kind='internal' AND name=$1`,
+          `SELECT semantic_tag, is_terminal FROM statuses WHERE kind='internal' AND name=$1`,
           [body.internal_status]
         );
         const tag = tagRow.rows[0]?.semantic_tag || null;
+        const isTerminal = !!tagRow.rows[0]?.is_terminal;
         if (tag === 'resolved_pending_close') {
           updates.resolved_at = new Date().toISOString();
+        } else if (isTerminal) {
+          // Preserve prior resolved_at if one exists (closing a previously
+          // Resolved ticket shouldn't reset the resolve timestamp);
+          // otherwise stamp NOW so the resolve clock stops here.
+          updates.resolved_at = ticket.resolved_at || new Date().toISOString();
         } else {
           updates.resolved_at = null;
         }
@@ -690,7 +795,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
 
       // Split sensitive vs pass-through fields, then encrypt the sensitive
       // ones via buildWritePatch so writes go to *_enc when mode='standard'.
-      const SENSITIVE = new Set(['title', 'description', 'review_note', 'internal_blocker_note']);
+      const SENSITIVE = new Set(['title', 'description', 'review_note', 'internal_blocker_note', 'resolution_summary']);
       const plainObj = {};
       const passthrough = {};
       for (const [k, v] of Object.entries(updates)) {
@@ -752,12 +857,14 @@ router.patch('/:id', requireAuth, async (req, res) => {
           sub.display_name as submitted_by_name,
           asgn.display_name as assigned_to_name,
           bt.internal_ref as blocking_ticket_ref, bt.title as blocking_ticket_title,
-          bt.title_enc as blocking_ticket_title_enc, bt.internal_status as blocking_ticket_status
+          bt.title_enc as blocking_ticket_title_enc, bt.internal_status as blocking_ticket_status,
+          ast.hostname as asset_hostname, ast.serial as asset_serial
         FROM tickets t
         LEFT JOIN projects proj ON t.project_id = proj.id
         LEFT JOIN users sub ON t.submitted_by = sub.id
         LEFT JOIN users asgn ON t.assigned_to = asgn.id
         LEFT JOIN tickets bt ON t.blocked_by_ticket = bt.id
+        LEFT JOIN assets ast ON t.asset_id = ast.id
         WHERE t.id = $1
       `, [ticket.id]);
 
@@ -815,7 +922,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
 // reminder N days from now. Admin/Manager only. Only meaningful while
 // ticket sits in a resolved_pending_close state; cleared automatically
 // on status change. DELETE clears it.
-router.post('/:id/followup', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+router.post('/:id/followup', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const days = Math.max(1, Math.floor(Number(req.body?.days || 0)));
     if (!days || !Number.isFinite(days)) return res.status(400).json({ error: 'days must be a positive integer' });
@@ -839,7 +946,7 @@ router.post('/:id/followup', requireAuth, requireRole('Admin', 'Manager'), async
   }
 });
 
-router.delete('/:id/followup', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+router.delete('/:id/followup', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     await pool.query(
       `UPDATE tickets SET followup_at = NULL, followup_user_id = NULL, updated_at = NOW() WHERE id = $1`,
@@ -1115,7 +1222,7 @@ router.post('/:id/move', requireAuth, async (req, res) => {
 });
 
 // POST /api/tickets/:id/notify-vendor — manually fire new_ticket vendor email
-router.post('/:id/notify-vendor', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+router.post('/:id/notify-vendor', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const ticket = await pool.query('SELECT id, submitted_by FROM tickets WHERE id = $1', [req.params.id]);
     if (!ticket.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
@@ -1156,7 +1263,7 @@ router.post('/:id/merge', requireAuth, requireRole('Admin'), async (req, res) =>
     }
     const merged = await transaction(async (client) => {
       const both = await client.query(
-        `SELECT id, internal_ref, project_id, internal_status FROM tickets WHERE id = ANY($1::int[])`,
+        `SELECT id, internal_ref, project_id, internal_status, external_ticket_ref FROM tickets WHERE id = ANY($1::int[])`,
         [[loserId, winnerId]]
       );
       const loser  = both.rows.find(r => r.id === loserId);
@@ -1164,6 +1271,29 @@ router.post('/:id/merge', requireAuth, requireRole('Admin'), async (req, res) =>
       if (!loser || !winner) throw Object.assign(new Error('Ticket not found'), { http: 404 });
       if (loser.project_id !== winner.project_id) {
         throw Object.assign(new Error('Tickets must be in the same project'), { http: 400 });
+      }
+
+      // Preserve loser's external_ticket_ref by folding into winner's as
+      // CSV. Winner's existing value (possibly already CSV from a prior
+      // merge) keeps its slot; each loser token gets a `*old` suffix
+      // unless already tagged. If only one side has a ref, copy/keep it.
+      const winnerRef = (winner.external_ticket_ref || '').trim();
+      const loserRef  = (loser.external_ticket_ref  || '').trim();
+      if (winnerRef && loserRef) {
+        const loserTokens = loserRef.split(',')
+          .map(s => s.trim())
+          .filter(Boolean)
+          .map(t => t.endsWith('*old') ? t : `${t}*old`);
+        const combined = [winnerRef, ...loserTokens].join(', ');
+        await client.query(
+          `UPDATE tickets SET external_ticket_ref = $1 WHERE id = $2`,
+          [combined, winnerId]
+        );
+      } else if (!winnerRef && loserRef) {
+        await client.query(
+          `UPDATE tickets SET external_ticket_ref = $1 WHERE id = $2`,
+          [loserRef, winnerId]
+        );
       }
 
       // Reassign children. Followers and contacts use ON CONFLICT to
@@ -1252,7 +1382,7 @@ router.get('/:id/contacts', requireAuth, async (req, res) => {
 });
 
 // POST /api/tickets/:id/contacts — link a contact to a ticket
-router.post('/:id/contacts', requireAuth, requireRole('Admin', 'Manager', 'Submitter'), async (req, res) => {
+router.post('/:id/contacts', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter'), async (req, res) => {
   try {
     const { contact_id } = req.body || {};
     if (!contact_id) return res.status(400).json({ error: 'contact_id required' });
@@ -1276,7 +1406,7 @@ router.post('/:id/contacts', requireAuth, requireRole('Admin', 'Manager', 'Submi
 });
 
 // DELETE /api/tickets/:id/contacts/:contactId — unlink a contact
-router.delete('/:id/contacts/:contactId', requireAuth, requireRole('Admin', 'Manager', 'Submitter'),
+router.delete('/:id/contacts/:contactId', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter'),
   async (req, res) => {
     try {
       const result = await pool.query(

@@ -2,9 +2,15 @@ const express = require('express');
 const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { generateToken, hashToken } = require('../auth/tokens');
-const { PRESETS, DEFAULT_ZABBIX_SEVERITY_MAP, getPreset } = require('../services/alertMappers');
+const {
+  PRESETS,
+  DEFAULT_ZABBIX_SEVERITY_MAP,
+  DEFAULT_ACTION1_SEVERITY_MAP,
+  getPreset,
+} = require('../services/alertMappers');
 const { buildWritePatch, decryptRow } = require('../services/fields');
 const { ingestAlertEvent } = require('../services/alertIngest');
+const action1Poll = require('../services/action1Poll');
 
 const router = express.Router();
 
@@ -12,6 +18,7 @@ const PRESET_NAMES = Object.keys(PRESETS);
 
 const PRESET_DEFAULT_SEVERITY_MAPS = {
   zabbix: DEFAULT_ZABBIX_SEVERITY_MAP,
+  action1: DEFAULT_ACTION1_SEVERITY_MAP,
 };
 
 // Strip secrets before returning. token_hash + api_token_enc are bytea
@@ -72,59 +79,163 @@ router.get('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
 });
 
 // POST /api/alert-sources — create. Returns the raw token ONCE.
+//
+// Two creation modes:
+//   * Legacy preset path: { preset: 'action1'|'zabbix', ... }. Backfills
+//     vendor + kind + capabilities from the preset (keeps every existing
+//     client working without changes).
+//   * Registry path: { vendor: 'ninjaone'|'datto'|'whatever',
+//                      capabilities?: [...], api_url?, api_client_id?,
+//                      api_token? }. Vendor must match a registered
+//                      adapter OR be flagged as a webhook-only generic
+//                      integration (kind='webhook_only', caps=['alerts']
+//                      default) for unsupported vendors.
+//
+// preset stays in the row for back-compat (legacy mappers / route URL
+// /api/webhooks/:preset/:token still resolve through it). vendor +
+// capabilities are the new source of truth for behavior.
 router.post('/', requireAuth, requireRole('Admin'), async (req, res) => {
+  const client = await pool.connect();
   try {
+    await client.query('BEGIN');
     const {
       name,
-      preset,
+      preset: presetIn,
+      vendor: vendorIn,
+      kind: kindIn,
+      capabilities: capsIn,
       default_project_id,
       default_assignee_id,
       severity_map,
       auto_resolve_on_recovery,
       enabled,
+      api_url,
+      api_client_id,
+      api_token,
     } = req.body || {};
 
-    if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name required' });
-    if (!PRESET_NAMES.includes(preset)) {
-      return res.status(400).json({ error: `Unknown preset. Choose: ${PRESET_NAMES.join(', ')}` });
+    if (!name || typeof name !== 'string') {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'name required' });
     }
-    if (!default_project_id) return res.status(400).json({ error: 'default_project_id required' });
+    if (!default_project_id) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'default_project_id required' });
+    }
 
-    const proj = await pool.query(
+    // Resolve vendor + preset + kind + caps. Caller can pass any of
+    // (vendor, preset) — we normalize to both columns so legacy
+    // readers and the new registry path stay happy.
+    const registry = require('../services/integrations/registry');
+    let vendor = vendorIn ? String(vendorIn).trim() : null;
+    let preset = presetIn ? String(presetIn).trim() : null;
+    if (!vendor && preset) vendor = preset;
+    if (!preset && vendor) preset = vendor;
+    if (!vendor) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'vendor or preset required' });
+    }
+
+    const adapter = registry.get(vendor);
+    let kind = kindIn || adapter?.kind || 'webhook_only';
+    if (!['rmm', 'monitor', 'webhook_only'].includes(kind)) {
+      await client.query('ROLLBACK');
+      return res.status(400).json({ error: 'kind must be rmm | monitor | webhook_only' });
+    }
+
+    const ALLOWED_CAPS = ['alerts', 'inventory', 'software', 'vulnerabilities', 'companies'];
+    let capabilities;
+    if (Array.isArray(capsIn) && capsIn.length) {
+      const bad = capsIn.find((c) => !ALLOWED_CAPS.includes(c));
+      if (bad) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: `capabilities: unknown value '${bad}'` });
+      }
+      // Adapter declares the upper bound — narrowing is fine, widening
+      // beyond what the adapter supports is not (would have no effect
+      // anyway but better to fail loud than silent).
+      if (adapter && Array.isArray(adapter.capabilities)) {
+        const overReach = capsIn.find((c) => !adapter.capabilities.includes(c));
+        if (overReach) {
+          await client.query('ROLLBACK');
+          return res.status(400).json({ error: `capabilities: '${overReach}' not supported by ${vendor} adapter` });
+        }
+      }
+      capabilities = capsIn;
+    } else if (adapter && Array.isArray(adapter.capabilities)) {
+      capabilities = adapter.capabilities;
+    } else {
+      capabilities = ['alerts'];
+    }
+
+    const proj = await client.query(
       `SELECT id FROM projects WHERE id = $1 AND status = 'active'`,
       [Number(default_project_id)]
     );
-    if (!proj.rows[0]) return res.status(404).json({ error: 'Project not found or archived' });
+    if (!proj.rows[0]) {
+      await client.query('ROLLBACK');
+      return res.status(404).json({ error: 'Project not found or archived' });
+    }
 
     const token = generateToken();
     const tokenHash = hashToken(token);
+    const defaultSevMap = adapter?.defaultSeverityMap
+      || PRESET_DEFAULT_SEVERITY_MAPS[preset]
+      || {};
     const sevMap = severity_map && typeof severity_map === 'object' && !Array.isArray(severity_map)
       ? severity_map
-      : (PRESET_DEFAULT_SEVERITY_MAPS[preset] || {});
+      : defaultSevMap;
 
-    const r = await pool.query(
+    const r = await client.query(
       `INSERT INTO external_alert_source
-         (name, preset, token_hash, default_project_id, default_assignee_id,
-          severity_map, auto_resolve_on_recovery, enabled, created_by)
-       VALUES ($1,$2,$3,$4,$5,$6::jsonb,$7,$8,$9)
+         (name, preset, vendor, kind, capabilities, token_hash,
+          default_project_id, default_assignee_id, severity_map,
+          auto_resolve_on_recovery, enabled, api_url, api_client_id,
+          created_by)
+       VALUES ($1,$2,$3,$4,$5::text[],$6,$7,$8,$9::jsonb,$10,$11,$12,$13,$14)
        RETURNING *`,
       [
         name.trim(),
         preset,
+        vendor,
+        kind,
+        capabilities,
         tokenHash,
         Number(default_project_id),
         default_assignee_id ? Number(default_assignee_id) : null,
         JSON.stringify(sevMap),
         !!auto_resolve_on_recovery,
         enabled !== false,
+        api_url ? String(api_url).trim() : null,
+        api_client_id ? String(api_client_id).trim() : null,
         req.session.user.id,
       ]
     );
+    const row = r.rows[0];
 
-    res.status(201).json({ ...publicRow(r.rows[0]), token });
+    // api_token rides through buildWritePatch so it lands in the
+    // encrypted-at-rest column under standard mode.
+    if (api_token && String(api_token).trim()) {
+      const patch = await buildWritePatch(client, 'external_alert_source', {
+        api_token: String(api_token).trim(),
+      });
+      if (patch.cols.length) {
+        const sets = patch.cols.map((c, i) => `${c} = $${i + 1}`).join(', ');
+        await client.query(
+          `UPDATE external_alert_source SET ${sets} WHERE id = $${patch.cols.length + 1}`,
+          [...patch.values, row.id]
+        );
+      }
+    }
+
+    await client.query('COMMIT');
+    res.status(201).json({ ...publicRow(row), token });
   } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
     console.error('alert-source create error:', err);
     res.status(500).json({ error: 'Database error' });
+  } finally {
+    client.release();
   }
 });
 
@@ -142,7 +253,8 @@ router.patch('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
 
     // Plain fields
     const plain = ['name', 'default_project_id', 'default_assignee_id',
-      'auto_resolve_on_recovery', 'enabled', 'api_url'];
+      'auto_resolve_on_recovery', 'enabled', 'api_url', 'api_client_id',
+      'poll_interval_minutes', 'affect_inventory', 'inventory_company_id'];
     for (const k of plain) {
       if (Object.prototype.hasOwnProperty.call(body, k)) {
         sets.push(`${k} = $${p++}`);
@@ -152,6 +264,50 @@ router.patch('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
     if (Object.prototype.hasOwnProperty.call(body, 'severity_map')) {
       sets.push(`severity_map = $${p++}::jsonb`);
       values.push(JSON.stringify(body.severity_map || {}));
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'attribute_map')) {
+      if (typeof body.attribute_map !== 'object' || Array.isArray(body.attribute_map)) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'attribute_map must be an object' });
+      }
+      sets.push(`attribute_map = $${p++}::jsonb`);
+      values.push(JSON.stringify(body.attribute_map || {}));
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'company_map')) {
+      if (typeof body.company_map !== 'object' || Array.isArray(body.company_map)) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'company_map must be an object' });
+      }
+      sets.push(`company_map = $${p++}::jsonb`);
+      values.push(JSON.stringify(body.company_map || {}));
+    }
+    if (Object.prototype.hasOwnProperty.call(body, 'field_map')) {
+      const { validateFieldMap } = require('../services/integrations/fieldMap');
+      const err = validateFieldMap(body.field_map);
+      if (err) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: `field_map: ${err}` });
+      }
+      sets.push(`field_map = $${p++}::jsonb`);
+      values.push(JSON.stringify(body.field_map || {}));
+    }
+    // capabilities[] — admin can narrow what the adapter offers
+    // (e.g. an Action1 source the admin only wants alerts from). Empty
+    // arrays are rejected — set capabilities = NULL via DB if you
+    // really want to clear it (which falls back to adapter default).
+    if (Object.prototype.hasOwnProperty.call(body, 'capabilities')) {
+      if (!Array.isArray(body.capabilities)) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'capabilities must be an array' });
+      }
+      const ALLOWED = ['alerts', 'inventory', 'software', 'vulnerabilities', 'companies'];
+      const bad = body.capabilities.find((c) => !ALLOWED.includes(c));
+      if (bad) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: `capabilities: unknown value '${bad}'` });
+      }
+      sets.push(`capabilities = $${p++}::text[]`);
+      values.push(body.capabilities);
     }
 
     // api_token is sensitive — route through buildWritePatch which writes
@@ -193,16 +349,15 @@ router.patch('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
 // live webhook. Idempotent: events already seen (by event_id+type) are
 // skipped (the dedup index does the work).
 //
-// Currently Zabbix-only. Other presets get added when their API maps to
-// a similar "list open problems" call.
+// Supports Zabbix (API token) and Action1 (OAuth2 client_credentials).
 router.post('/:id/backfill', requireAuth, requireRole('Admin'), async (req, res) => {
   try {
     const id = Number(req.params.id);
     const r = await pool.query(`SELECT * FROM external_alert_source WHERE id = $1`, [id]);
     const source = r.rows[0];
     if (!source) return res.status(404).json({ error: 'Not found' });
-    if (source.preset !== 'zabbix') {
-      return res.status(400).json({ error: 'Backfill only supported for Zabbix today' });
+    if (!['zabbix', 'action1'].includes(source.preset)) {
+      return res.status(400).json({ error: `Backfill not supported for preset: ${source.preset}` });
     }
     if (!source.default_project_id) {
       return res.status(400).json({ error: 'Source has no default project configured' });
@@ -212,7 +367,11 @@ router.post('/:id/backfill', requireAuth, requireRole('Admin'), async (req, res)
     }
     await decryptRow('external_alert_source', source);
     const apiToken = source.api_token;
-    if (!apiToken) return res.status(400).json({ error: 'API token not configured on source' });
+    if (!apiToken) return res.status(400).json({ error: 'API credential not configured on source' });
+
+    if (source.preset === 'action1') {
+      return await backfillAction1(req, res, id, source);
+    }
 
     const { host_group, severities } = req.body || {};
 
@@ -375,6 +534,21 @@ function mapZabbixSeverity(n) {
   })[Number(n)] || 'Information';
 }
 
+// Action1 polling lives in services/action1Poll.js. This handler is a
+// thin wrapper so the on-demand "Pull now" button and the scheduled
+// poll share the same code path.
+async function backfillAction1(req, res, id, source) {
+  try {
+    const summary = await action1Poll.pollSource(source);
+    return res.json(summary);
+  } catch (err) {
+    if (err.upstream) {
+      return res.status(502).json({ error: `Action1 API error: ${err.message}` });
+    }
+    return res.status(400).json({ error: err.message });
+  }
+}
+
 // POST /api/alert-sources/:id/rotate-token — regenerate, return raw once
 router.post('/:id/rotate-token', requireAuth, requireRole('Admin'), async (req, res) => {
   try {
@@ -417,6 +591,257 @@ router.get('/_meta/presets', requireAuth, requireRole('Admin'), (_req, res) => {
       default_severity_map: PRESET_DEFAULT_SEVERITY_MAPS[name] || {},
     })),
   });
+});
+
+// GET /api/alert-sources/_meta/registry — adapter registry snapshot.
+// Powers the new Add-integration form and the per-source capabilities
+// editor: every adapter advertises its label, kind, declared
+// capabilities, default severity map, and credentialsSchema (form
+// fields). UI never hard-codes vendor lists; everything renders from
+// this response. Auth gated to Admin since the registry is internal
+// metadata.
+router.get('/_meta/registry', requireAuth, requireRole('Admin'), (_req, res) => {
+  const registry = require('../services/integrations/registry');
+  res.json({
+    adapters: registry.all().map((a) => ({
+      vendor: a.vendor,
+      label: a.label,
+      kind: a.kind,
+      capabilities: a.capabilities,
+      credentialsSchema: a.credentialsSchema || [],
+      default_severity_map: a.defaultSeverityMap || {},
+    })),
+  });
+});
+
+// GET /api/alert-sources/:id/attributes — list the custom-attribute
+// names from the most recent synced asset's raw_data.custom[] for this
+// source. Powers the admin mapping UI ("what attributes can I map?").
+// Falls back to numbered placeholders if no asset has synced yet so
+// admins can pre-configure mappings.
+router.get('/:id/attributes', requireAuth, requireRole('Admin'), async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT raw_data FROM assets
+        WHERE source_alert_source_id = $1
+          AND raw_data ? 'custom'
+        ORDER BY last_seen_at DESC NULLS LAST, id DESC
+        LIMIT 1`,
+      [Number(req.params.id)]
+    );
+    if (!r.rows[0]) {
+      return res.json({
+        attributes: [],
+        sample_source: null,
+        hint: 'No assets synced yet for this source; click Pull now then revisit.',
+      });
+    }
+    const custom = r.rows[0].raw_data?.custom;
+    if (!Array.isArray(custom)) return res.json({ attributes: [], sample_source: null });
+    const attrs = custom
+      .filter((c) => c && typeof c.name === 'string' && c.name.trim())
+      .map((c) => ({ name: String(c.name).trim(), sample_value: c.value != null ? String(c.value) : '' }));
+    res.json({ attributes: attrs, sample_source: 'most_recent_asset' });
+  } catch (err) {
+    console.error('attributes list error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// GET /api/alert-sources/:id/seen-orgs — distinct organization names
+// observed in this source's recent assets. Powers the Hudu-style
+// company-mapping UI ("here's what the source ships; map each one").
+router.get('/:id/seen-orgs', requireAuth, requireRole('Admin'), async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT DISTINCT organization
+         FROM assets
+        WHERE source_alert_source_id = $1
+          AND organization IS NOT NULL
+          AND organization <> ''
+        ORDER BY organization`,
+      [Number(req.params.id)]
+    );
+    res.json({ orgs: r.rows.map((row) => row.organization) });
+  } catch (err) {
+    console.error('seen-orgs error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// Inbound event debug — list recent payloads for a source, view one,
+// preview field_map output against a saved payload, reprocess.
+router.get('/:id/inbound-events', requireAuth, requireRole('Admin'), async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const r = await pool.query(
+      `SELECT id, received_at, processed_at, status, error_message, ticket_id,
+              (CASE WHEN status = 'pending' THEN '(pending)' ELSE NULL END) AS placeholder
+         FROM integration_inbound_events
+        WHERE integration_id = $1
+        ORDER BY received_at DESC
+        LIMIT 50`,
+      [id]
+    );
+    res.json(r.rows);
+  } catch (err) {
+    console.error('inbound events list:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+router.get('/:id/inbound-events/:eventId', requireAuth, requireRole('Admin'), async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT * FROM integration_inbound_events
+        WHERE id = $1 AND integration_id = $2`,
+      [req.params.eventId, req.params.id]
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    res.json(r.rows[0]);
+  } catch (err) {
+    console.error('inbound event detail:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// Dry-run: apply a hypothetical field_map against a saved payload
+// without persisting. Lets the admin tune the map and see what would
+// land in each target before saving.
+router.post('/:id/inbound-events/:eventId/preview', requireAuth, requireRole('Admin'), async (req, res) => {
+  try {
+    const { applyFieldMap, validateFieldMap } = require('../services/integrations/fieldMap');
+    const fm = req.body?.field_map || {};
+    const err = validateFieldMap(fm);
+    if (err) return res.status(400).json({ error: `field_map: ${err}` });
+    const r = await pool.query(
+      `SELECT payload FROM integration_inbound_events
+        WHERE id = $1 AND integration_id = $2`,
+      [req.params.eventId, req.params.id]
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    res.json({ resolved: applyFieldMap(fm, r.rows[0].payload) });
+  } catch (err) {
+    console.error('inbound event preview:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// ---------------------------------------------------------------------
+// Alert promotion rules per integration. First-match-wins on inbound
+// alerts. See services/alertEvaluator.js for match semantics. Each
+// rule's match_conditions JSON is validated lightly here; the matcher
+// treats malformed entries as wildcards.
+// ---------------------------------------------------------------------
+
+const VALID_ACTIONS = ['create_ticket', 'suppress', 'ignore'];
+
+function validateRulePatch(body) {
+  if (body.action && !VALID_ACTIONS.includes(body.action)) {
+    return `action must be one of ${VALID_ACTIONS.join(', ')}`;
+  }
+  if (body.delay_minutes !== undefined) {
+    const n = Number(body.delay_minutes);
+    if (!Number.isFinite(n) || n < 0 || n > 7 * 24 * 60) return 'delay_minutes 0..10080';
+  }
+  if (body.priority !== undefined) {
+    const n = Number(body.priority);
+    if (!Number.isFinite(n) || n < 0 || n > 100000) return 'priority 0..100000';
+  }
+  if (body.match_conditions && typeof body.match_conditions !== 'object') {
+    return 'match_conditions must be an object';
+  }
+  return null;
+}
+
+router.get('/:id/rules', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT * FROM alert_rules WHERE integration_id = $1 ORDER BY priority ASC, id ASC`,
+      [Number(req.params.id)]
+    );
+    res.json(r.rows);
+  } catch (err) {
+    console.error('rules list:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+router.post('/:id/rules', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+  try {
+    const errMsg = validateRulePatch(req.body || {});
+    if (errMsg) return res.status(400).json({ error: errMsg });
+    const r = await pool.query(
+      `INSERT INTO alert_rules (integration_id, name, priority, enabled,
+                                 match_conditions, action, delay_minutes, ticket_overrides)
+       VALUES ($1, $2, $3, COALESCE($4, TRUE), $5::jsonb, $6, $7, $8::jsonb)
+       RETURNING *`,
+      [
+        Number(req.params.id),
+        String(req.body.name || 'Unnamed rule').slice(0, 120),
+        Number.isFinite(Number(req.body.priority)) ? Number(req.body.priority) : 100,
+        req.body.enabled,
+        JSON.stringify(req.body.match_conditions || {}),
+        req.body.action || 'create_ticket',
+        Number(req.body.delay_minutes) || 0,
+        JSON.stringify(req.body.ticket_overrides || {}),
+      ]
+    );
+    res.status(201).json(r.rows[0]);
+  } catch (err) {
+    console.error('rules create:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+router.patch('/:id/rules/:ruleId', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+  try {
+    const errMsg = validateRulePatch(req.body || {});
+    if (errMsg) return res.status(400).json({ error: errMsg });
+    const sets = [];
+    const vals = [];
+    let p = 1;
+    for (const k of ['name', 'priority', 'enabled', 'action', 'delay_minutes']) {
+      if (Object.prototype.hasOwnProperty.call(req.body, k)) {
+        sets.push(`${k} = $${p++}`); vals.push(req.body[k]);
+      }
+    }
+    if (Object.prototype.hasOwnProperty.call(req.body, 'match_conditions')) {
+      sets.push(`match_conditions = $${p++}::jsonb`);
+      vals.push(JSON.stringify(req.body.match_conditions || {}));
+    }
+    if (Object.prototype.hasOwnProperty.call(req.body, 'ticket_overrides')) {
+      sets.push(`ticket_overrides = $${p++}::jsonb`);
+      vals.push(JSON.stringify(req.body.ticket_overrides || {}));
+    }
+    sets.push(`updated_at = NOW()`);
+    vals.push(Number(req.params.ruleId), Number(req.params.id));
+    const r = await pool.query(
+      `UPDATE alert_rules SET ${sets.join(', ')}
+        WHERE id = $${p} AND integration_id = $${p + 1}
+        RETURNING *`,
+      vals
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'Rule not found' });
+    res.json(r.rows[0]);
+  } catch (err) {
+    console.error('rules patch:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+router.delete('/:id/rules/:ruleId', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+  try {
+    const r = await pool.query(
+      `DELETE FROM alert_rules WHERE id = $1 AND integration_id = $2 RETURNING id`,
+      [Number(req.params.ruleId), Number(req.params.id)]
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'Rule not found' });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('rules delete:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
 });
 
 module.exports = router;

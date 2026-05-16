@@ -25,12 +25,19 @@ import AdminEmailBackends from "./pages/AdminEmailBackends";
 import AdminAiAssist from "./pages/AdminAiAssist";
 import AdminMerge from "./pages/AdminMerge";
 import AdminAlertSources from "./pages/AdminAlertSources";
+import AdminSoftwareAliases from "./pages/AdminSoftwareAliases";
 import AdminSystemHealth from "./pages/AdminSystemHealth";
 import AdminCannedResponses from "./pages/AdminCannedResponses";
 import AdminSlaPolicies from "./pages/AdminSlaPolicies";
+import AdminAssignmentPolicies from "./pages/AdminAssignmentPolicies";
+import AdminEscalationPolicies from "./pages/AdminEscalationPolicies";
+import AdminCustomFields from "./pages/AdminCustomFields";
 import PrintExport from "./pages/PrintExport";
 import Projects from "./pages/Projects";
 import ProjectDetail from "./pages/ProjectDetail";
+import Inventory from "./pages/Inventory";
+import Alerts from "./pages/Alerts";
+import AlertDetail from "./pages/AlertDetail";
 import Login from "./pages/Login";
 import MfaChallenge from "./pages/MfaChallenge";
 import MfaSetup from "./pages/MfaSetup";
@@ -42,6 +49,10 @@ import ForgotPassword from "./pages/ForgotPassword";
 import ResetPassword from "./pages/ResetPassword";
 import AcceptInvite from "./pages/AcceptInvite";
 import Help from "./pages/Help";
+import KbIndex from "./pages/KbIndex";
+import KbProject from "./pages/KbProject";
+import KbArticle from "./pages/KbArticle";
+import KbEditor from "./pages/KbEditor";
 
 function ProtectedRoute({ children, adminOnly = false }) {
   const { user, loading } = useAuth();
@@ -138,6 +149,43 @@ function AppRoutes() {
           }
         />
         <Route
+          path="alerts"
+          element={
+            <ProtectedRoute>
+              <Alerts />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="alerts/:id"
+          element={
+            <ProtectedRoute>
+              <AlertDetail />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="inventory/:id"
+          element={
+            <ProtectedRoute>
+              <Inventory />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="inventory"
+          element={
+            <ProtectedRoute>
+              <Inventory />
+            </ProtectedRoute>
+          }
+        />
+        <Route path="kb" element={<ProtectedRoute><KbIndex /></ProtectedRoute>} />
+        <Route path="kb/:projectId" element={<ProtectedRoute><KbProject /></ProtectedRoute>} />
+        <Route path="kb/:projectId/new" element={<ProtectedRoute><KbEditor /></ProtectedRoute>} />
+        <Route path="kb/:projectId/:slug" element={<ProtectedRoute><KbArticle /></ProtectedRoute>} />
+        <Route path="kb/:projectId/:slug/edit" element={<ProtectedRoute><KbEditor /></ProtectedRoute>} />
+        <Route
           path="admin"
           element={
             <ProtectedRoute adminOnly>
@@ -160,9 +208,14 @@ function AppRoutes() {
           <Route path="ai-assist" element={<AdminAiAssist />} />
           <Route path="merge" element={<AdminMerge />} />
           <Route path="alert-sources" element={<AdminAlertSources />} />
+          <Route path="integrations" element={<AdminAlertSources />} />
+          <Route path="software-aliases" element={<AdminSoftwareAliases />} />
           <Route path="system-health" element={<AdminSystemHealth />} />
           <Route path="canned-responses" element={<AdminCannedResponses />} />
           <Route path="sla" element={<AdminSlaPolicies />} />
+          <Route path="assignment" element={<AdminAssignmentPolicies />} />
+          <Route path="escalations" element={<AdminEscalationPolicies />} />
+          <Route path="custom-fields" element={<AdminCustomFields />} />
         </Route>
       </Route>
     </Routes>

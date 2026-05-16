@@ -41,9 +41,17 @@ const FIELD_MAP = {
     description: 'description_enc',
     review_note: 'review_note_enc',
     internal_blocker_note: 'internal_blocker_note_enc',
+    resolution_summary: 'resolution_summary_enc',
   },
   comments: {
     body: 'body_enc',
+  },
+  ticket_notes: {
+    body: 'body_enc',
+  },
+  alerts: {
+    title: 'title_enc',
+    description: 'description_enc',
   },
   audit_log: {
     old_value: 'old_value_enc',

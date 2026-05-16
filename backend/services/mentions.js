@@ -46,7 +46,25 @@ async function resolveMentions(body, opts = {}) {
     }
   }
 
-  const sql = restrict
+  // agentsOnly hard-restricts to project_members.is_agent=TRUE regardless
+  // of the project's effective restrict_mentions_to_members setting. Used
+  // by notes (handler-only mentions).
+  const agentsOnly = !!opts.agentsOnly && !!opts.projectId;
+  const sql = agentsOnly
+    ? `
+      SELECT u.id, u.email, u.display_name
+        FROM users u
+        JOIN project_members pm ON pm.user_id = u.id AND pm.project_id = $3
+       WHERE u.status = 'active'
+         AND pm.is_agent = TRUE
+         AND (
+           LOWER(u.email) = ANY($1::text[])
+           OR LOWER(SPLIT_PART(u.email, '@', 1)) = ANY($1::text[])
+           OR LOWER(REPLACE(REPLACE(u.display_name, '.', ' '), '_', ' '))
+              = ANY($2::text[])
+         )
+    `
+    : restrict
     ? `
       SELECT u.id, u.email, u.display_name
         FROM users u
@@ -70,7 +88,7 @@ async function resolveMentions(body, opts = {}) {
               = ANY($2::text[])
          )
     `;
-  const params = restrict
+  const params = (agentsOnly || restrict)
     ? [lc, lc.map(t => t.replace(/[._]/g, ' ')), opts.projectId]
     : [lc, lc.map(t => t.replace(/[._]/g, ' '))];
   const r = await pool.query(sql, params);

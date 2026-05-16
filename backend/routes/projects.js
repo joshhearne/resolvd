@@ -18,23 +18,27 @@ router.get('/', requireAuth, async (req, res) => {
         SELECT p.*,
           u.display_name as created_by_name,
           (SELECT COUNT(*) FROM tickets t WHERE t.project_id = p.id)::int as ticket_count,
-          (SELECT COUNT(*) FROM project_members pm WHERE pm.project_id = p.id)::int as member_count
+          (SELECT COUNT(*) FROM project_members pm WHERE pm.project_id = p.id)::int as member_count,
+          (sp.user_id IS NOT NULL) AS starred
         FROM projects p
         LEFT JOIN users u ON p.created_by = u.id
-        ORDER BY p.status ASC, p.name ASC
-      `);
+        LEFT JOIN user_starred_projects sp ON sp.project_id = p.id AND sp.user_id = $1
+        ORDER BY p.status ASC, starred DESC, p.name ASC
+      `, [user.id]);
     } else {
       result = await pool.query(`
         SELECT p.*,
           u.display_name as created_by_name,
           (SELECT COUNT(*) FROM tickets t WHERE t.project_id = p.id)::int as ticket_count,
           (SELECT COUNT(*) FROM project_members pm2 WHERE pm2.project_id = p.id)::int as member_count,
-          pm.role_override
+          pm.role_override,
+          (sp.user_id IS NOT NULL) AS starred
         FROM projects p
         JOIN project_members pm ON pm.project_id = p.id AND pm.user_id = $1
         LEFT JOIN users u ON p.created_by = u.id
+        LEFT JOIN user_starred_projects sp ON sp.project_id = p.id AND sp.user_id = $1
         WHERE p.status = 'active'
-        ORDER BY p.name ASC
+        ORDER BY starred DESC, p.name ASC
       `, [user.id]);
     }
 
@@ -96,7 +100,7 @@ router.get('/:id', requireAuth, async (req, res) => {
     }
 
     const membersResult = await pool.query(`
-      SELECT pm.id, pm.user_id, pm.role_override, pm.added_at,
+      SELECT pm.id, pm.user_id, pm.role_override, pm.is_agent, pm.added_at,
         u.display_name, u.email, u.role as global_role, u.status,
         adder.display_name as added_by_name
       FROM project_members pm
@@ -123,7 +127,7 @@ router.get('/:id', requireAuth, async (req, res) => {
 // PATCH /api/projects/:id — Admin only
 router.patch('/:id', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
-    const { name, description, status, has_external_vendor, default_assignee_id, restrict_followers_to_members, restrict_mentions_to_members, auto_add_new_users, ai_context_md, ai_context_enabled } = req.body;
+    const { name, description, status, has_external_vendor, default_assignee_id, restrict_followers_to_members, restrict_mentions_to_members, auto_add_new_users, ai_context_md, ai_context_enabled, allow_asset_linking, asset_company_ids } = req.body;
     const updates = {};
     if (name !== undefined) updates.name = name.trim();
     if (description !== undefined) updates.description = description?.trim() || null;
@@ -157,6 +161,15 @@ router.patch('/:id', requireAuth, requireRole('Admin', 'Manager'), async (req, r
     }
     if (ai_context_enabled !== undefined) {
       updates.ai_context_enabled = ai_context_enabled !== false && ai_context_enabled !== 'false';
+    }
+    if (allow_asset_linking !== undefined) {
+      updates.allow_asset_linking = allow_asset_linking !== false && allow_asset_linking !== 'false';
+    }
+    if (asset_company_ids !== undefined) {
+      if (!Array.isArray(asset_company_ids) || asset_company_ids.some((id) => !Number.isInteger(id) || id <= 0)) {
+        return res.status(400).json({ error: 'asset_company_ids must be an array of positive integer ids' });
+      }
+      updates.asset_company_ids = asset_company_ids;
     }
     if (default_assignee_id !== undefined) {
       if (default_assignee_id === null || default_assignee_id === '') {
@@ -292,16 +305,34 @@ router.post('/:id/members/bulk', requireAuth, requireRole('Admin', 'Manager'), a
   }
 });
 
-// PATCH /api/projects/:id/members/:uid — update role override
+// PATCH /api/projects/:id/members/:uid — update role override and/or
+// agent flag. Either or both can be patched in one call; omitted fields
+// are left untouched.
 router.patch('/:id/members/:uid', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
-    const { role_override } = req.body;
-    if (role_override && !VALID_ROLES.includes(role_override)) {
-      return res.status(400).json({ error: 'Invalid role_override' });
+    const body = req.body || {};
+    const sets = [];
+    const values = [];
+    let p = 1;
+    if (Object.prototype.hasOwnProperty.call(body, 'role_override')) {
+      if (body.role_override && !VALID_ROLES.includes(body.role_override)) {
+        return res.status(400).json({ error: 'Invalid role_override' });
+      }
+      sets.push(`role_override = $${p++}`);
+      values.push(body.role_override || null);
     }
+    if (Object.prototype.hasOwnProperty.call(body, 'is_agent')) {
+      if (typeof body.is_agent !== 'boolean') {
+        return res.status(400).json({ error: 'is_agent must be boolean' });
+      }
+      sets.push(`is_agent = $${p++}`);
+      values.push(body.is_agent);
+    }
+    if (!sets.length) return res.status(400).json({ error: 'no updatable fields supplied' });
+    values.push(req.params.id, req.params.uid);
     const result = await pool.query(
-      'UPDATE project_members SET role_override = $1 WHERE project_id = $2 AND user_id = $3 RETURNING *',
-      [role_override || null, req.params.id, req.params.uid]
+      `UPDATE project_members SET ${sets.join(', ')} WHERE project_id = $${p++} AND user_id = $${p} RETURNING *`,
+      values
     );
     if (!result.rows[0]) return res.status(404).json({ error: 'Member not found' });
     res.json(result.rows[0]);

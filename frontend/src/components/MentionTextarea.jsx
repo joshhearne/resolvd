@@ -17,7 +17,7 @@ function tokenForUser(u) {
   return '@' + name;
 }
 
-const MentionTextarea = forwardRef(function MentionTextarea({ value, onChange, onKeyDown, projectId, ...props }, forwardedRef) {
+const MentionTextarea = forwardRef(function MentionTextarea({ value, onChange, onKeyDown, projectId, agentsOnly, ...props }, forwardedRef) {
   const [drop, setDrop] = useState(null); // { query, tokenStart, results, idx }
   const internalRef = useRef(null);
   const ref = forwardedRef || internalRef;
@@ -27,7 +27,9 @@ const MentionTextarea = forwardRef(function MentionTextarea({ value, onChange, o
     clearTimeout(timer.current);
     timer.current = setTimeout(async () => {
       try {
-        const qs = projectId ? `q=${encodeURIComponent(query)}&project_id=${projectId}` : `q=${encodeURIComponent(query)}`;
+        let qs = `q=${encodeURIComponent(query)}`;
+        if (projectId) qs += `&project_id=${projectId}`;
+        if (agentsOnly) qs += `&agents_only=1`;
         const results = await api.get(`/api/users/search?${qs}`);
         setDrop(prev => prev ? { ...prev, results, idx: 0 } : null);
       } catch { /* silent */ }

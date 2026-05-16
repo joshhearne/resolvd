@@ -24,10 +24,14 @@ const avatarUpload = multer({
   },
 });
 
-const VALID_ROLES = ['Admin', 'Manager', 'Submitter', 'Viewer', 'Support'];
+// Tech sits between Manager and Submitter — internal IT staff who can
+// handle tickets (assignment target, status changes, internal comments)
+// without admin-level config access. Permission gates added per-route;
+// the role string itself is opt-in by including 'Tech' in requireRole(...).
+const VALID_ROLES = ['Admin', 'Manager', 'Tech', 'Submitter', 'Viewer', 'Support'];
 
 // GET /api/users (Admin + Manager)
-router.get('/', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+router.get('/', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const result = await pool.query(`
       SELECT id, display_name, email, upn, role, created_at, last_login,
@@ -226,6 +230,45 @@ router.patch('/me/prefs', requireAuth, async (req, res) => {
   }
 });
 
+// Star / unstar a project for the calling user. Used by Projects +
+// KB index pages to float favored projects to the top. Multiple
+// projects can be starred. Membership is not enforced server-side —
+// the list endpoints already filter to projects the user can see, so
+// a starred-but-unreachable row simply doesn't appear (and the
+// user_starred_projects FK CASCADE cleans up on project delete).
+router.put('/me/starred-projects/:projectId', requireAuth, async (req, res) => {
+  const projectId = Number(req.params.projectId);
+  if (!Number.isInteger(projectId) || projectId <= 0) return res.status(400).json({ error: 'Bad project id' });
+  try {
+    const p = await pool.query('SELECT id FROM projects WHERE id = $1', [projectId]);
+    if (!p.rows[0]) return res.status(404).json({ error: 'Project not found' });
+    await pool.query(
+      `INSERT INTO user_starred_projects (user_id, project_id) VALUES ($1, $2)
+       ON CONFLICT DO NOTHING`,
+      [req.session.user.id, projectId]
+    );
+    res.json({ ok: true, starred: true });
+  } catch (err) {
+    console.error('star project:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+router.delete('/me/starred-projects/:projectId', requireAuth, async (req, res) => {
+  const projectId = Number(req.params.projectId);
+  if (!Number.isInteger(projectId) || projectId <= 0) return res.status(400).json({ error: 'Bad project id' });
+  try {
+    await pool.query(
+      'DELETE FROM user_starred_projects WHERE user_id = $1 AND project_id = $2',
+      [req.session.user.id, projectId]
+    );
+    res.json({ ok: true, starred: false });
+  } catch (err) {
+    console.error('unstar project:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
 // PATCH /api/users/me/profile — update own display name
 router.patch('/me/profile', requireAuth, async (req, res) => {
   try {
@@ -255,6 +298,10 @@ router.get('/search', requireAuth, async (req, res) => {
     const q = ((req.query.q || '').trim().toLowerCase()) + '%';
     const projectId = req.query.project_id ? Number(req.query.project_id) : null;
     const isAdmin = req.session.user?.role === 'Admin';
+    // agents_only=1 (mentions in handler-only contexts like notes) hard-
+    // restricts to project_members.is_agent=TRUE. Admins do NOT bypass
+    // this — notes are agent-only by design, not by restriction toggle.
+    const agentsOnly = req.query.agents_only === '1' || req.query.agents_only === 'true';
     let restrictToMembers = false;
     if (projectId) {
       const proj = await pool.query(
@@ -268,7 +315,22 @@ router.get('/search', requireAuth, async (req, res) => {
       }
     }
     let r;
-    if (projectId && restrictToMembers && !isAdmin) {
+    if (projectId && agentsOnly) {
+      r = await pool.query(`
+        SELECT u.id, u.display_name, u.email
+          FROM users u
+          JOIN project_members pm ON pm.user_id = u.id AND pm.project_id = $2
+         WHERE u.status = 'active'
+           AND pm.is_agent = TRUE
+           AND (
+             LOWER(u.display_name) LIKE $1
+             OR LOWER(u.email) LIKE $1
+             OR LOWER(SPLIT_PART(u.email, '@', 1)) LIKE $1
+           )
+         ORDER BY u.display_name
+         LIMIT 8
+      `, [q, projectId]);
+    } else if (projectId && restrictToMembers && !isAdmin) {
       r = await pool.query(`
         SELECT u.id, u.display_name, u.email
           FROM users u

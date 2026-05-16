@@ -460,7 +460,60 @@ async function fanoutSlaBreach(_unusedPool, { ticket, kind }) {
     await routeEmail({
       user,
       eventType: 'pending_review',
-      payload: { ticket_id: ticket.id, ticket_ref: ticketRef, ticket_title: ticketTitle },
+      // Include breach_kind so the email renderer branches the subject /
+      // body to "SLA breach: response/resolve window missed" instead of
+      // the generic "Needs review — action required" — recipients get a
+      // clearer signal of what actually fired.
+      payload: { ticket_id: ticket.id, ticket_ref: ticketRef, ticket_title: ticketTitle, breach_kind: kind },
+      ticketId: ticket.id,
+      projectId: ticket.project_id,
+      bypassDigest: true,
+    });
+  }
+}
+
+// Pre-breach warning. Same shape as fanoutSlaBreach but with a softer
+// title and a separate matrix event so users can opt out of warnings
+// without losing the actual breach signal.
+async function fanoutSlaWarning(_unusedPool, { ticket, kind }) {
+  const recipients = await getFollowerRecipients(null, ticket.id, null);
+  const assigneeId = ticket.assigned_to;
+  if (assigneeId && !recipients.find(u => u.id === assigneeId)) {
+    const u = await getUserById(assigneeId);
+    if (u) recipients.push(u);
+  }
+  if (!recipients.length) return;
+  const ticketRef = ticket.internal_ref;
+  const ticketTitle = ticket.title || '';
+  const titleVerb = kind === 'response' ? 'Response SLA at warning threshold' : 'Resolve SLA at warning threshold';
+  const dueAt = kind === 'response' ? ticket.sla_response_due_at : ticket.sla_resolve_due_at;
+  const bodyText = kind === 'response'
+    ? `Response window closing on ${ticketRef}${ticketTitle ? ` — ${ticketTitle}` : ''}${dueAt ? ` (due ${new Date(dueAt).toISOString()})` : ''}.`
+    : `Resolve window closing on ${ticketRef}${ticketTitle ? ` — ${ticketTitle}` : ''}${dueAt ? ` (due ${new Date(dueAt).toISOString()})` : ''}.`;
+  const payload = {
+    ticket_id: ticket.id,
+    ticket_ref: ticketRef,
+    ticket_title: ticketTitle,
+    warning_kind: kind,
+    due_at: dueAt || null,
+  };
+  for (const user of recipients) {
+    await dispatchPerRecipient({
+      user,
+      eventType: 'pending_review',
+      ticketId: ticket.id,
+      ticketRef,
+      inApp: { title: `${titleVerb}: ${ticketRef}`, body: bodyText, extraData: { warning_kind: kind } },
+      push: null,
+      payload,
+    });
+    // Email immediately — warnings are pre-breach and want to land while
+    // there's still time to act. Carry warning_kind so the email
+    // renderer can branch the subject to a warning-specific line.
+    await routeEmail({
+      user,
+      eventType: 'pending_review',
+      payload: { ticket_id: ticket.id, ticket_ref: ticketRef, ticket_title: ticketTitle, warning_kind: kind },
       ticketId: ticket.id,
       projectId: ticket.project_id,
       bypassDigest: true,
@@ -476,7 +529,12 @@ module.exports = {
   fanoutPendingReview,
   fanoutFollowUp,
   fanoutSlaBreach,
+  fanoutSlaWarning,
   // Exported for tests / outbox flusher
   getFollowerRecipients,
   nextFlushBoundary,
+  // Exported for the escalations service so it can fire per-recipient
+  // and look up users without re-implementing the helpers.
+  dispatchPerRecipient,
+  getUserById,
 };

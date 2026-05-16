@@ -21,6 +21,9 @@ const NAV_GROUPS = [
     items: [
       { to: "/admin/statuses", label: "Statuses" },
       { to: "/admin/sla", label: "SLA policies", manager: true },
+      { to: "/admin/assignment", label: "Auto-assignment", manager: true },
+      { to: "/admin/escalations", label: "Escalations", manager: true },
+      { to: "/admin/custom-fields", label: "Custom fields", manager: true },
       { to: "/admin/canned-responses", label: "Canned responses", manager: true },
       { to: "/admin/merge", label: "Merge tickets" },
     ],
@@ -29,7 +32,8 @@ const NAV_GROUPS = [
     label: "Integrations",
     items: [
       { to: "/admin/ai-assist", label: "AI Assist" },
-      { to: "/admin/alert-sources", label: "Alert sources" },
+      { to: "/admin/alert-sources", label: "Integrations" },
+      { to: "/admin/software-aliases", label: "Software aliases", manager: true },
       { to: "/admin/inbound", label: "Inbound email", manager: true },
       { to: "/admin/email-backends", label: "Email backends" },
       { to: "/admin/email-templates", label: "Email templates" },

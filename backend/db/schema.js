@@ -259,6 +259,12 @@ async function initSchema() {
     // the authored content.
     await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS ai_context_md TEXT`);
     await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS ai_context_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
+
+    // Ticket-asset linking. Off by default — admins opt in per project.
+    // asset_company_ids = empty array means "any asset", non-empty
+    // restricts pickable assets to those companies (MSP isolation).
+    await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS allow_asset_linking BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS asset_company_ids INTEGER[] NOT NULL DEFAULT '{}'::int[]`);
     // Global defaults (admin panel). Apply when a project hasn't set its
     // own value. Defaults TRUE so a fresh install is locked down.
     await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS default_restrict_followers BOOLEAN NOT NULL DEFAULT TRUE`);
@@ -287,6 +293,32 @@ async function initSchema() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_saved_views_user ON saved_views(user_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_project_members_user ON project_members(user_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_project_members_project ON project_members(project_id)`);
+    // is_agent marks a member as eligible for ticket assignment within
+    // this project. Replaces the previous role-based filter (which
+    // assumed Admin/Manager/Tech == assignable everywhere). A user can
+    // be an agent on one project but not another. Org-default policies
+    // (project_id IS NULL) treat anyone who is an agent on ANY project
+    // as a candidate.
+    await client.query(`ALTER TABLE project_members ADD COLUMN IF NOT EXISTS is_agent BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_project_members_agent ON project_members(project_id) WHERE is_agent = TRUE`);
+
+    // Per-user starred projects. Used by Projects + KB index pages to
+    // float favored projects to the top and (eventually) by anywhere
+    // else that lists projects. Composite PK + cascade keeps the table
+    // self-cleaning: deleting the user or project removes the row.
+    // Membership is NOT enforced here — admins can star projects they
+    // aren't members of (they see all projects); per-page list queries
+    // already filter to accessible projects so unreachable stars become
+    // dead rows harmlessly until the user re-stars somewhere visible.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS user_starred_projects (
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (user_id, project_id)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_starred_user ON user_starred_projects(user_id)`);
 
     // Status configuration tables (advisory transitions, suggested mappings).
     await client.query(`
@@ -889,6 +921,13 @@ async function initSchema() {
     // row in the users table.
     await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS vendor_contact_id INTEGER REFERENCES contacts(id) ON DELETE SET NULL`);
     await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS source_inbound_email_id INTEGER REFERENCES inbound_email_queue(id) ON DELETE SET NULL`);
+    // Resolved vendor-outbound actor for this comment. Stamped at comment
+    // create time when the client signals attachments are coming
+    // (defer_vendor_email=true), so the attachment-upload handler can
+    // fire sendVendorEmail with the original send_as identity once files
+    // are linked — avoids the race where vendor email leaves before the
+    // attachments land. NULL when the comment fired vendor email inline.
+    await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS vendor_actor_id INTEGER REFERENCES users(id) ON DELETE SET NULL`);
     await client.query(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS notification_prefs JSONB NOT NULL DEFAULT '{}'`);
 
     // Seed default templates the first time the table is created.
@@ -1042,8 +1081,459 @@ async function initSchema() {
     await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS api_url TEXT`);
     await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS api_token TEXT`);
     await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS api_token_enc BYTEA`);
+    // api_client_id holds the OAuth2 client identifier for presets that use
+    // client_credentials (Action1). Not secret — pairs with api_token (which
+    // holds the client_secret under encryption).
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS api_client_id TEXT`);
     await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS api_last_ok_at TIMESTAMPTZ`);
     await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS api_last_error TEXT`);
+    // Periodic poll (Action1: no webhook channel, so the scheduler pulls
+    // policy results on this cadence). 0 = disabled, else minutes between
+    // ticks. last_poll_at marks the most recent attempt (success or fail).
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS poll_interval_minutes INTEGER NOT NULL DEFAULT 0`);
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS last_poll_at TIMESTAMPTZ`);
+    // When enabled, the source also feeds the inventory module. Multiple
+    // sources can feed inventory simultaneously; phase 2 adds a priority
+    // list for dedup. For now the latest write wins per (source_system,
+    // source_external_id).
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS affect_inventory BOOLEAN NOT NULL DEFAULT FALSE`);
+    // Per-source attribute mapping. Format:
+    //   { "<source attribute name>": {
+    //       type:   'asset_column' | 'custom_field',
+    //       target: <asset column name> | <custom_field_defs.id> }
+    //   }
+    // Action1 returns a custom[] array of {name, value}; each entry can
+    // be routed via this map to either a built-in asset column or a
+    // custom field def. Empty {} = no mapping (current behavior). The
+    // asset_column whitelist lives in services/action1Poll.js to prevent
+    // writing arbitrary columns through user input.
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS attribute_map JSONB NOT NULL DEFAULT '{}'::jsonb`);
+    // Inventory company override — pins every asset from this source to
+    // one Resolvd company. Useful for per-customer sources (Zabbix
+    // instance dedicated to customer A's network). Multi-tenant sources
+    // (Action1 with multiple orgs) leave this NULL and let the org-name
+    // matcher in services/upnMatch.js resolve per-asset.
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS inventory_company_id INTEGER REFERENCES companies(id) ON DELETE SET NULL`);
+    // Hudu-style explicit org→company mapping for multi-tenant sources
+    // where the integration ships customer org names that don't match
+    // Resolvd company names exactly. Format:
+    //   { "<source org name>": <resolvd_company_id>, ... }
+    // Resolution at sync time prefers inventory_company_id over this,
+    // and this over the per-asset name matcher. Lets an admin route
+    // "Motorhomes of Texas — Site 1" + "Motorhomes of Texas HQ" +
+    // "Internal IT Infrastructure" all to one MOT company.
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS company_map JSONB NOT NULL DEFAULT '{}'::jsonb`);
+
+    // Phase 0 of the multi-vendor integrations refactor. New columns
+    // layered onto external_alert_source so it can model any RMM /
+    // monitor / webhook-only vendor, not just Action1 + Zabbix. The
+    // table will be renamed to `integrations` in a future release; for
+    // now we add an aliasing VIEW so new code can read by the better
+    // name without breaking existing routes.
+    //   vendor       — e.g. 'action1', 'ninjaone', 'datto', 'zabbix'.
+    //                  Backfilled from preset (1:1 for current installs).
+    //                  Adapter registry keys off this column.
+    //   kind         — coarse category for the admin UI: rmm /
+    //                  monitor / webhook_only. Drives default form
+    //                  rendering when an adapter doesn't fully declare
+    //                  its credentials schema yet.
+    //   capabilities — declared by the adapter. Drives which sections
+    //                  of the admin UI render (alerts tuning, inventory
+    //                  company override, software sync, etc.).
+    //   field_map    — generic JSON-path → resolvd-field tabular map.
+    //                  Supersedes attribute_map for new vendors; old
+    //                  rows continue using attribute_map until migrated.
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS vendor TEXT`);
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS kind TEXT`);
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS capabilities TEXT[] NOT NULL DEFAULT '{}'::text[]`);
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS field_map JSONB NOT NULL DEFAULT '{}'::jsonb`);
+
+    // Backfill vendor + kind + capabilities from the legacy preset
+    // column. Idempotent — only writes when the new columns are still
+    // empty / NULL so the admin's later edits aren't clobbered. After
+    // every install runs this once, the adapter registry takes over.
+    await client.query(`
+      UPDATE external_alert_source
+         SET vendor = COALESCE(vendor, preset),
+             kind = COALESCE(kind,
+               CASE preset
+                 WHEN 'action1' THEN 'rmm'
+                 WHEN 'zabbix'  THEN 'monitor'
+                 ELSE 'webhook_only'
+               END),
+             capabilities = CASE
+               WHEN array_length(capabilities, 1) IS NULL THEN
+                 CASE preset
+                   WHEN 'action1' THEN ARRAY['alerts','inventory','software','vulnerabilities','companies']::text[]
+                   WHEN 'zabbix'  THEN ARRAY['alerts']::text[]
+                   ELSE ARRAY['alerts']::text[]
+                 END
+               ELSE capabilities
+             END
+       WHERE vendor IS NULL OR kind IS NULL OR array_length(capabilities, 1) IS NULL
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_alert_source_vendor ON external_alert_source(vendor) WHERE vendor IS NOT NULL`);
+
+    // Forward-readers should use `integrations`. Old `external_alert_source`
+    // remains the writable table this release; next release renames the
+    // base table and drops the view in favor of the real name.
+    await client.query(`CREATE OR REPLACE VIEW integrations AS SELECT * FROM external_alert_source`);
+
+    // Raw inbound payload store. Every webhook hit lands here verbatim
+    // before mapping runs, so:
+    //   * the admin can debug a failed mapping by inspecting the actual
+    //     payload (no need to re-trigger the upstream tool);
+    //   * a "Test against last payload" button on the field-map editor
+    //     can replay an event without touching the live vendor;
+    //   * we can reprocess events after tweaking field_map.
+    // status: 'pending' (just landed) | 'processed' (mapping ran ok) |
+    //   'error' (mapping or ingest threw — see error_message).
+    // ticket_id back-points to the ticket created/updated by ingest
+    // when successful; NULL on errors or pure-event-no-side-effects.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS integration_inbound_events (
+        id BIGSERIAL PRIMARY KEY,
+        integration_id INTEGER REFERENCES external_alert_source(id) ON DELETE CASCADE,
+        received_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        processed_at TIMESTAMPTZ,
+        status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending','processed','error')),
+        error_message TEXT,
+        payload JSONB NOT NULL,
+        ticket_id INTEGER REFERENCES tickets(id) ON DELETE SET NULL
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_inbound_events_integration ON integration_inbound_events(integration_id, received_at DESC)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_inbound_events_status ON integration_inbound_events(status) WHERE status <> 'processed'`);
+    // Retention: 30 days of payloads is plenty for debugging and
+    // replay. Run cheap on every schema init so the table stays
+    // bounded without a separate cron job — deletes are FK-cascaded
+    // through ticket_id (SET NULL) so old debug rows stay viewable
+    // after tickets are pruned upstream.
+    await client.query(`DELETE FROM integration_inbound_events WHERE received_at < NOW() - INTERVAL '30 days'`);
+
+    // Phase 4 — Software-name normalization across vendors.
+    //
+    // Different RMMs ship the same product under different strings
+    // ("Adobe Acrobat DC" vs "Adobe Acrobat Pro DC 64-bit"). Reports
+    // that count installs need the canonical name to roll up correctly.
+    //
+    // software_aliases is admin-curated: each row maps a pattern
+    // (LIKE, or full regex when is_regex=TRUE) to a canonical
+    // {name, vendor} pair. The software-pull adapters consult this
+    // table at insert time and stamp the canonical columns on
+    // asset_software so dashboards / reports / dedup queries can group
+    // by canonical instead of raw vendor strings.
+    //
+    // Raw name + vendor stay on asset_software so admins can see what
+    // the upstream actually sent, and the alias list can grow / change
+    // without rewriting historical rows (canonical is recomputed on
+    // next sync).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS software_aliases (
+        id SERIAL PRIMARY KEY,
+        pattern TEXT NOT NULL,
+        is_regex BOOLEAN NOT NULL DEFAULT FALSE,
+        canonical_name TEXT NOT NULL,
+        canonical_vendor TEXT,
+        priority INTEGER NOT NULL DEFAULT 100,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_software_aliases_priority ON software_aliases(priority, id)`);
+
+    // asset_software gains canonical_name + canonical_vendor. Nullable
+    // by design — when no alias matches, the raw name IS the canonical
+    // (the UI handles the fallback). last_alias_id back-references the
+    // row that won the match so the admin can audit and a deleted /
+    // edited alias can trigger a resync.
+    await client.query(`ALTER TABLE asset_software ADD COLUMN IF NOT EXISTS canonical_name TEXT`);
+    await client.query(`ALTER TABLE asset_software ADD COLUMN IF NOT EXISTS canonical_vendor TEXT`);
+    await client.query(`ALTER TABLE asset_software ADD COLUMN IF NOT EXISTS last_alias_id INTEGER REFERENCES software_aliases(id) ON DELETE SET NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_asset_software_canonical ON asset_software(LOWER(canonical_name)) WHERE canonical_name IS NOT NULL`);
+
+    // pg_trgm is needed for the "near-duplicates" suggestion endpoint
+    // (similarity() function). Enabling it is cheap and idempotent.
+    // If the extension isn't available on the install (rare — it ships
+    // with stock Postgres), the route degrades to "no suggestions"
+    // rather than erroring.
+    await client.query(`CREATE EXTENSION IF NOT EXISTS pg_trgm`).catch(() => {
+      console.warn('pg_trgm extension unavailable — software-alias near-dupe suggestions will be empty');
+    });
+
+    // Inventory module — one row per managed machine, scoped per source
+    // system. source_external_id is the RMM's stable id for the device
+    // (Action1 endpoint id, ConnectWise asset id, etc.). raw_data holds
+    // the upstream payload verbatim for fields we don't surface yet.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS assets (
+        id SERIAL PRIMARY KEY,
+        source_system TEXT NOT NULL,
+        source_external_id TEXT NOT NULL,
+        source_alert_source_id INTEGER REFERENCES external_alert_source(id) ON DELETE SET NULL,
+        hostname TEXT,
+        serial TEXT,
+        mac TEXT,
+        manufacturer TEXT,
+        model TEXT,
+        os TEXT,
+        os_version TEXT,
+        cpu TEXT,
+        ram_bytes BIGINT,
+        storage_bytes BIGINT,
+        ip_address TEXT,
+        organization TEXT,
+        last_seen_at TIMESTAMPTZ,
+        raw_data JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(source_system, source_external_id)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_assets_hostname ON assets(hostname)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_assets_serial ON assets(serial) WHERE serial IS NOT NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_assets_last_seen ON assets(last_seen_at DESC NULLS LAST)`);
+    // Cross-references — asset → user (auto-resolved from RMM's reported
+    // username via the UPN matcher) and asset → company (auto-resolved
+    // from the source system's organization label when names match).
+    // Both nullable; matcher leaves them NULL when ambiguous so the
+    // admin can correct manually later.
+    await client.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS linked_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL`);
+    await client.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS company_id INTEGER REFERENCES companies(id) ON DELETE SET NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_assets_linked_user ON assets(linked_user_id) WHERE linked_user_id IS NOT NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_assets_company ON assets(company_id) WHERE company_id IS NOT NULL`);
+
+    // Asset types — drives which fields apply per asset. Seeded with a
+    // handful of common kinds (workstation, server, printer, monitor,
+    // voip phone, etc.). is_system marks the shipped defaults so the
+    // UI can prevent accidental deletion. Admin can add custom types
+    // for anything else (door reader, sensor, signage display, etc.).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS asset_types (
+        id SERIAL PRIMARY KEY,
+        slug TEXT NOT NULL UNIQUE,
+        label TEXT NOT NULL,
+        icon TEXT,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        is_system BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    // Per-type field list. Each row says "this builtin column on
+    // assets applies to this type". Required + sort_order control
+    // form rendering + validation. Phase 1B-2 keeps this to builtin
+    // columns only; custom-field-defs continue to apply globally
+    // (per asset entity, not per type). Per-type custom slots can
+    // come later if real usage demands.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS asset_type_fields (
+        id SERIAL PRIMARY KEY,
+        type_id INTEGER NOT NULL REFERENCES asset_types(id) ON DELETE CASCADE,
+        builtin_key TEXT NOT NULL,
+        required BOOLEAN NOT NULL DEFAULT FALSE,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(type_id, builtin_key)
+      )
+    `);
+
+    await client.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS asset_type_id INTEGER REFERENCES asset_types(id) ON DELETE SET NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_assets_type ON assets(asset_type_id) WHERE asset_type_id IS NOT NULL`);
+
+    // Security posture — pulled from RMM payloads each sync. Critical
+    // counts get their own column so the list view can render a red
+    // badge cheaply without parsing raw_data. status fields hold the
+    // RMM's own classification ('SUCCESS' / 'WARNING' / 'ERROR' for
+    // Action1) for display + sort.
+    await client.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS missing_updates_critical INTEGER`);
+    await client.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS missing_updates_other INTEGER`);
+    await client.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS vulnerabilities_critical INTEGER`);
+    await client.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS vulnerabilities_other INTEGER`);
+    await client.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS update_status TEXT`);
+    await client.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS vulnerability_status TEXT`);
+    await client.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS reboot_required BOOLEAN`);
+
+    // Installed software per asset. Sourced from the RMM's software
+    // inventory endpoint (Action1 today; others when they're wired).
+    // last_software_sync_at on the parent asset lets the UI show how
+    // fresh the list is + drives the on-demand "Sync now" button.
+    await client.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS last_software_sync_at TIMESTAMPTZ`);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS asset_software (
+        id SERIAL PRIMARY KEY,
+        asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        version TEXT,
+        vendor TEXT,
+        install_date TIMESTAMPTZ,
+        size_bytes BIGINT,
+        raw JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(asset_id, name, version)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_asset_software_asset ON asset_software(asset_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_asset_software_name ON asset_software(LOWER(name))`);
+    // One-time backfill from raw_data for existing Action1 rows. Cheap
+    // — single UPDATE, only touches rows where the columns are still
+    // null. Subsequent syncs keep these fresh.
+    await client.query(`
+      UPDATE assets
+         SET missing_updates_critical = COALESCE(missing_updates_critical, NULLIF((raw_data->'missing_updates'->>'critical')::int, NULL)),
+             missing_updates_other = COALESCE(missing_updates_other, NULLIF((raw_data->'missing_updates'->>'other')::int, NULL)),
+             vulnerabilities_critical = COALESCE(vulnerabilities_critical, NULLIF((raw_data->'vulnerabilities'->>'critical')::int, NULL)),
+             vulnerabilities_other = COALESCE(vulnerabilities_other, NULLIF((raw_data->'vulnerabilities'->>'other')::int, NULL)),
+             update_status = COALESCE(update_status, raw_data->>'update_status'),
+             vulnerability_status = COALESCE(vulnerability_status, raw_data->>'vulnerability_status'),
+             reboot_required = COALESCE(reboot_required,
+               CASE LOWER(COALESCE(raw_data->>'reboot_required', ''))
+                 WHEN 'yes' THEN TRUE
+                 WHEN 'no' THEN FALSE
+                 ELSE NULL END)
+       WHERE source_system = 'action1'
+         AND (missing_updates_critical IS NULL
+              OR missing_updates_other IS NULL
+              OR vulnerabilities_critical IS NULL
+              OR vulnerabilities_other IS NULL)
+    `);
+
+    // Seed default types (idempotent via slug UNIQUE). Order matches
+    // sort_order so the picker has a sensible default ordering.
+    // Each type's field list is seeded right after.
+    const DEFAULT_TYPES = [
+      { slug: 'workstation', label: 'Workstation', sort: 10, fields: [
+        ['hostname', true], ['serial', false], ['mac', false], ['ip_address', false],
+        ['manufacturer', false], ['model', false], ['os', false], ['os_version', false],
+        ['cpu', false], ['ram_bytes', false], ['storage_bytes', false],
+      ]},
+      { slug: 'laptop', label: 'Laptop', sort: 20, fields: [
+        ['hostname', true], ['serial', false], ['mac', false], ['ip_address', false],
+        ['manufacturer', false], ['model', false], ['os', false], ['os_version', false],
+        ['cpu', false], ['ram_bytes', false], ['storage_bytes', false],
+      ]},
+      { slug: 'server', label: 'Server', sort: 30, fields: [
+        ['hostname', true], ['serial', false], ['mac', false], ['ip_address', false],
+        ['manufacturer', false], ['model', false], ['os', false], ['os_version', false],
+        ['cpu', false], ['ram_bytes', false], ['storage_bytes', false],
+      ]},
+      { slug: 'printer', label: 'Printer', sort: 40, fields: [
+        ['hostname', false], ['serial', false], ['manufacturer', false],
+        ['model', false], ['ip_address', false], ['mac', false],
+      ]},
+      { slug: 'monitor', label: 'Monitor', sort: 50, fields: [
+        ['serial', false], ['manufacturer', false], ['model', false],
+      ]},
+      { slug: 'voip_phone', label: 'VoIP phone', sort: 60, fields: [
+        ['hostname', false], ['serial', false], ['manufacturer', false],
+        ['model', false], ['ip_address', false], ['mac', false],
+      ]},
+      { slug: 'network_switch', label: 'Network switch', sort: 70, fields: [
+        ['hostname', false], ['serial', false], ['manufacturer', false],
+        ['model', false], ['ip_address', false], ['mac', false],
+      ]},
+      { slug: 'wireless_ap', label: 'Wireless AP', sort: 80, fields: [
+        ['hostname', false], ['serial', false], ['manufacturer', false],
+        ['model', false], ['ip_address', false], ['mac', false],
+      ]},
+      { slug: 'mobile', label: 'Mobile device', sort: 90, fields: [
+        ['serial', false], ['manufacturer', false], ['model', false],
+      ]},
+      { slug: 'ups', label: 'UPS', sort: 100, fields: [
+        ['hostname', false], ['serial', false], ['manufacturer', false],
+        ['model', false], ['ip_address', false], ['mac', false],
+      ]},
+      { slug: 'nvr_dvr', label: 'NVR / DVR', sort: 110, fields: [
+        ['hostname', false], ['serial', false], ['manufacturer', false],
+        ['model', false], ['ip_address', false], ['mac', false],
+      ]},
+      { slug: 'other', label: 'Other', sort: 999, fields: [
+        ['hostname', false], ['serial', false], ['mac', false], ['ip_address', false],
+        ['manufacturer', false], ['model', false], ['os', false], ['os_version', false],
+        ['cpu', false], ['ram_bytes', false], ['storage_bytes', false],
+      ]},
+    ];
+    for (const t of DEFAULT_TYPES) {
+      const ins = await client.query(
+        `INSERT INTO asset_types (slug, label, sort_order, is_system)
+         VALUES ($1, $2, $3, TRUE)
+         ON CONFLICT (slug) DO NOTHING
+         RETURNING id`,
+        [t.slug, t.label, t.sort]
+      );
+      let typeId = ins.rows[0]?.id;
+      if (!typeId) {
+        const r = await client.query(`SELECT id FROM asset_types WHERE slug = $1`, [t.slug]);
+        typeId = r.rows[0]?.id;
+      }
+      if (!typeId) continue;
+      for (let i = 0; i < t.fields.length; i++) {
+        const [key, required] = t.fields[i];
+        await client.query(
+          `INSERT INTO asset_type_fields (type_id, builtin_key, required, sort_order)
+           VALUES ($1, $2, $3, $4)
+           ON CONFLICT (type_id, builtin_key) DO NOTHING`,
+          [typeId, key, required, i]
+        );
+      }
+    }
+    // Stamp existing Action1-sourced assets with the Workstation type
+    // so the inventory list shows a sane default. New Action1 syncs
+    // pick it up via the resolver in services/action1Poll.js.
+    await client.query(`
+      UPDATE assets SET asset_type_id = (SELECT id FROM asset_types WHERE slug = 'workstation')
+       WHERE asset_type_id IS NULL AND source_system = 'action1'
+    `);
+
+    // Custom field definitions. entity_type lets one table cover assets,
+    // tickets, companies, etc. as the system grows. slug is a stable
+    // machine-readable handle (lowercase, no spaces); label is the
+    // display name. type drives the validator + which value_* column
+    // holds the actual data. options is type='select' specific: a JSON
+    // array of {value, label}. sort_order controls UI display order
+    // within an entity_type. UNIQUE on (entity_type, slug) prevents
+    // duplicate slugs per scope.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS custom_field_defs (
+        id SERIAL PRIMARY KEY,
+        entity_type TEXT NOT NULL CHECK (entity_type IN ('asset', 'ticket')),
+        slug TEXT NOT NULL,
+        label TEXT NOT NULL,
+        type TEXT NOT NULL CHECK (type IN ('text', 'number', 'date', 'bool', 'select')),
+        options JSONB NOT NULL DEFAULT '[]'::jsonb,
+        required BOOLEAN NOT NULL DEFAULT FALSE,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        help_text TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(entity_type, slug)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_custom_field_defs_entity
+      ON custom_field_defs(entity_type, sort_order, id)`);
+
+    // Custom field values. One row per (def_id, asset_id). Only one
+    // value_* column is populated per row based on the def's type;
+    // others stay NULL. ON DELETE CASCADE both directions keeps the
+    // join clean. Asset-only for now; ticket support adds a parallel
+    // ticket_id column when we wire that entity.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS custom_field_values (
+        id SERIAL PRIMARY KEY,
+        def_id INTEGER NOT NULL REFERENCES custom_field_defs(id) ON DELETE CASCADE,
+        asset_id INTEGER REFERENCES assets(id) ON DELETE CASCADE,
+        value_text TEXT,
+        value_number NUMERIC,
+        value_date TIMESTAMPTZ,
+        value_bool BOOLEAN,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(def_id, asset_id)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_custom_field_values_asset
+      ON custom_field_values(asset_id) WHERE asset_id IS NOT NULL`);
 
     // Audit + dedup log. UNIQUE(source_id, external_event_id) blocks Zabbix
     // resends from spawning duplicate tickets even if the mapper logic
@@ -1071,6 +1561,11 @@ async function initSchema() {
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS external_ref TEXT`);
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS external_source TEXT`);
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS external_alert_source_id INTEGER REFERENCES external_alert_source(id) ON DELETE SET NULL`);
+    // Ticket → asset link. Optional; gated per-project by
+    // projects.allow_asset_linking. SET NULL on asset deletion keeps
+    // ticket history intact when an asset is decommissioned.
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS asset_id INTEGER REFERENCES assets(id) ON DELETE SET NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_asset ON tickets(asset_id) WHERE asset_id IS NOT NULL`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_external_ref ON tickets(external_ref) WHERE external_ref IS NOT NULL`);
 
     // Canned responses — reusable comment text. scope='global' rows are
@@ -1193,6 +1688,36 @@ async function initSchema() {
     // counts on the dashboard. Stays NULL for unbreached tickets.
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_response_breached_at TIMESTAMPTZ`);
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_resolve_breached_at TIMESTAMPTZ`);
+    // Pre-breach warnings. warn_at fires before due_at — driven by the
+    // policy's warning_threshold_percent (default 80). Same pause/resume
+    // semantics as due_at. Notification fanout uses fanoutSlaWarning;
+    // separate from breach so users can opt out of one without losing
+    // the other.
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_response_warn_at TIMESTAMPTZ`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_resolve_warn_at TIMESTAMPTZ`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_response_warned BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_resolve_warned BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_response_warned_at TIMESTAMPTZ`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_resolve_warned_at TIMESTAMPTZ`);
+    // D1 breakdown: split sla_paused_seconds by pause kind so the
+    // dashboard can show "vendor wait" vs "internal hold" separately.
+    // sla_pause_kind tracks the in-progress pause's kind so resume can
+    // route to the right counter; semantic_tag 'awaiting_input' = vendor,
+    // 'on_hold' = internal (default mapping in services/sla.js).
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_vendor_wait_seconds INTEGER NOT NULL DEFAULT 0`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_internal_hold_seconds INTEGER NOT NULL DEFAULT 0`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS sla_pause_kind TEXT CHECK (sla_pause_kind IN ('vendor', 'internal'))`);
+    // One-time backfill: legacy sla_paused_seconds gets attributed to
+    // vendor wait (the more common case). Idempotent — only updates
+    // rows where the new counters are still zero and there's something
+    // to attribute. Loss is acceptable: this is approximate history.
+    await client.query(`
+      UPDATE tickets
+         SET sla_vendor_wait_seconds = sla_paused_seconds
+       WHERE sla_paused_seconds > 0
+         AND sla_vendor_wait_seconds = 0
+         AND sla_internal_hold_seconds = 0
+    `);
     // Backfill timestamps for any tickets that were already flagged
     // breached before this column existed. Use the due_at as the best
     // proxy. Only updates rows missing the timestamp — idempotent.
@@ -1216,8 +1741,186 @@ async function initSchema() {
       ON tickets(sla_response_due_at) WHERE sla_response_due_at IS NOT NULL AND sla_first_response_at IS NULL AND sla_response_breached = FALSE`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_sla_resolve_due
       ON tickets(sla_resolve_due_at) WHERE sla_resolve_due_at IS NOT NULL AND resolved_at IS NULL AND sla_resolve_breached = FALSE`);
+    // Warn-at partial indexes mirror the due-at ones so the scheduler
+    // sweep stays cheap as the ticket table grows.
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_sla_response_warn
+      ON tickets(sla_response_warn_at) WHERE sla_response_warn_at IS NOT NULL AND sla_first_response_at IS NULL AND sla_response_warned = FALSE`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_sla_resolve_warn
+      ON tickets(sla_resolve_warn_at) WHERE sla_resolve_warn_at IS NOT NULL AND resolved_at IS NULL AND sla_resolve_warned = FALSE`);
+
+    // Per-policy warning threshold (% of total window elapsed before
+    // the warning fires). 80 = warn at 80% of the window. 0 disables.
+    await client.query(`ALTER TABLE sla_policies ADD COLUMN IF NOT EXISTS warning_threshold_percent INTEGER NOT NULL DEFAULT 80 CHECK (warning_threshold_percent BETWEEN 0 AND 99)`);
+
+    // Business hours — used by SLA clock math so a Friday-5pm ticket
+    // doesn't burn through the weekend. One row per scope: project_id
+    // NULL = org default. tz is an IANA name; days is a 0–6 array
+    // (0=Sun..6=Sat). start/end are local clock times in tz.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS business_hours_policies (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+        tz TEXT NOT NULL DEFAULT 'America/Chicago',
+        days INTEGER[] NOT NULL DEFAULT ARRAY[1,2,3,4,5],
+        start_time TIME NOT NULL DEFAULT '09:00',
+        end_time TIME NOT NULL DEFAULT '17:00',
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_business_hours_org_default
+      ON business_hours_policies((project_id IS NULL)) WHERE project_id IS NULL`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_business_hours_project
+      ON business_hours_policies(project_id) WHERE project_id IS NOT NULL`);
+    // SLA policy can pin a business-hours policy. NULL = clock runs
+    // 24/7 (existing behavior pre-A3). Stays compatible with old rows.
+    await client.query(`ALTER TABLE sla_policies ADD COLUMN IF NOT EXISTS business_hours_id INTEGER REFERENCES business_hours_policies(id) ON DELETE SET NULL`);
+
+    // Seed an org default Mon-Fri 9-5 Central. Customers can edit or
+    // disable. Idempotent.
+    await client.query(`
+      INSERT INTO business_hours_policies (name, project_id, tz, days, start_time, end_time, enabled)
+      SELECT 'Org default — Mon–Fri 9–5 CT', NULL, 'America/Chicago', ARRAY[1,2,3,4,5], '09:00', '17:00', TRUE
+      WHERE NOT EXISTS (SELECT 1 FROM business_hours_policies WHERE project_id IS NULL)
+    `);
+
+    // Backfill warn_at on existing tickets: warn_at = created_at +
+    // ((due_at - created_at) * threshold / 100). Idempotent — only
+    // updates rows missing the warn_at column.
+    await client.query(`
+      UPDATE tickets t
+         SET sla_response_warn_at = t.created_at + ((t.sla_response_due_at - t.created_at) * COALESCE(sp.warning_threshold_percent, 80) / 100.0),
+             sla_resolve_warn_at  = t.created_at + ((t.sla_resolve_due_at  - t.created_at) * COALESCE(sp.warning_threshold_percent, 80) / 100.0)
+        FROM sla_policies sp
+       WHERE sp.project_id IS NULL
+         AND sp.priority = COALESCE(t.effective_priority, 3)
+         AND t.sla_response_warn_at IS NULL
+         AND t.sla_resolve_warn_at IS NULL
+         AND t.sla_response_due_at IS NOT NULL
+         AND t.sla_resolve_due_at IS NOT NULL
+    `);
 
     await client.query(`INSERT INTO system_jobs (name) VALUES ('sla_breach_check') ON CONFLICT DO NOTHING`);
+
+    // Auto-assignment policies. Same (priority, project_id) scoping as
+    // sla_policies — project-specific row beats org default. Strategy
+    // controls how an agent is picked from agent_pool:
+    //   round_robin  — cycle through agent_pool by index; cursor stored
+    //                  on the row, incremented atomically per pick.
+    //   case_load    — pick the agent with the fewest currently open
+    //                  tickets (resolved_at IS NULL + status not closed).
+    //   specific_user — return specific_user_id (pool ignored).
+    // enabled=FALSE leaves tickets falling through to project default.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS assignment_policies (
+        id SERIAL PRIMARY KEY,
+        priority INTEGER NOT NULL CHECK (priority BETWEEN 1 AND 5),
+        project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+        strategy TEXT NOT NULL DEFAULT 'specific_user'
+          CHECK (strategy IN ('round_robin', 'case_load', 'specific_user')),
+        agent_pool INTEGER[] NOT NULL DEFAULT '{}'::int[],
+        specific_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        round_robin_cursor INTEGER NOT NULL DEFAULT 0,
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    // priority_op lets one policy cover a priority range. With operators,
+    // multiple rows can match the same ticket priority — resolution
+    // picks the most specific (project-scoped beats org-default, '='
+    // beats range operators, newest beats older). The old unique
+    // indexes are dropped (idempotent: only drops if present).
+    await client.query(`ALTER TABLE assignment_policies ADD COLUMN IF NOT EXISTS priority_op TEXT NOT NULL DEFAULT '=' CHECK (priority_op IN ('=', '<', '>', '<=', '>='))`);
+    await client.query(`DROP INDEX IF EXISTS idx_assignment_policies_org_default`);
+    await client.query(`DROP INDEX IF EXISTS idx_assignment_policies_project`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_assignment_policies_lookup
+      ON assignment_policies(project_id, priority, priority_op) WHERE enabled = TRUE`);
+
+    // Escalation chains. One row = one step. Steps grouped by
+    // (priority, project_id, trigger); step_order drives execution.
+    // Trigger names mirror the four SLA milestones surfaced by
+    // tickWarnings + tickBreaches. delay_minutes = grace period after
+    // the trigger before this step fires (0 = immediately). Actions:
+    //   notify_user / notify_role  — fan out to user or all users in role
+    //   reassign_user / reassign_role — UPDATE assigned_to (role pick
+    //     uses the first active user with that role on the project;
+    //     refine in a later PR if round-robin among managers is needed)
+    // Tickets track which steps have fired via tickets.escalation_steps_fired
+    // so a single trigger doesn't re-fire a step on every scheduler tick.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS escalation_chain_steps (
+        id SERIAL PRIMARY KEY,
+        priority INTEGER NOT NULL CHECK (priority BETWEEN 1 AND 5),
+        project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+        trigger TEXT NOT NULL CHECK (trigger IN (
+          'warning_response', 'warning_resolve',
+          'breach_response',  'breach_resolve'
+        )),
+        step_order INTEGER NOT NULL DEFAULT 1,
+        delay_minutes INTEGER NOT NULL DEFAULT 0 CHECK (delay_minutes >= 0),
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`ALTER TABLE escalation_chain_steps ADD COLUMN IF NOT EXISTS priority_op TEXT NOT NULL DEFAULT '=' CHECK (priority_op IN ('=', '<', '>', '<=', '>='))`);
+    await client.query(`DROP INDEX IF EXISTS idx_escalation_lookup`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_escalation_lookup
+      ON escalation_chain_steps(priority, priority_op, project_id, trigger, enabled)`);
+
+    // Multi-action support: one step can fan out to multiple actions
+    // on the same (trigger, delay) without duplicating rows. Each entry
+    // is { kind, target_user_id?, target_role? } — kind ∈ notify_user /
+    // notify_role / notify_assignee / reassign_user / reassign_role.
+    // 'notify_assignee' targets the ticket's current assignee directly,
+    // avoiding the ambiguity of notify_role when many users share a role.
+    await client.query(`ALTER TABLE escalation_chain_steps ADD COLUMN IF NOT EXISTS actions JSONB NOT NULL DEFAULT '[]'::jsonb`);
+    // Backfill from legacy single-action columns into the actions array
+    // only when those columns still exist (first run after upgrade).
+    // Subsequent boots skip the UPDATE because the cols have been dropped.
+    await client.query(`
+      DO $do$
+      BEGIN
+        IF EXISTS (
+          SELECT 1 FROM information_schema.columns
+           WHERE table_name='escalation_chain_steps' AND column_name='action'
+        ) THEN
+          UPDATE escalation_chain_steps
+             SET actions = jsonb_build_array(
+                   jsonb_strip_nulls(jsonb_build_object(
+                     'kind', action,
+                     'target_user_id', target_user_id,
+                     'target_role', target_role
+                   ))
+                 )
+           WHERE jsonb_array_length(actions) = 0
+             AND action IS NOT NULL;
+        END IF;
+      END
+      $do$;
+    `);
+    // Drop legacy single-action columns + their CHECK constraint. New
+    // code reads/writes only the actions[] array. Safe because the
+    // module shipped in the current (held) v0.7.0 work — no prior
+    // release depended on this shape.
+    await client.query(`ALTER TABLE escalation_chain_steps DROP COLUMN IF EXISTS action`);
+    await client.query(`ALTER TABLE escalation_chain_steps DROP COLUMN IF EXISTS target_user_id`);
+    await client.query(`ALTER TABLE escalation_chain_steps DROP COLUMN IF EXISTS target_role`);
+
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS escalation_steps_fired INTEGER[] NOT NULL DEFAULT '{}'::int[]`);
+    // Snapshot of the priority the chain first matched against on this
+    // ticket. Written the first time a `bump_priority` action fires.
+    // After that, the chain matcher uses this column instead of
+    // effective_priority so bumping doesn't re-enter the chain at the
+    // newly elevated tier (would cascade indefinitely). NULL = never
+    // bumped; matcher falls back to effective_priority. Reset only on
+    // ticket delete; admin re-priority does NOT clear it (intentional —
+    // an admin overriding priority on a previously-escalated ticket
+    // shouldn't re-arm the chain at a different tier).
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS escalation_priority_snapshot INTEGER CHECK (escalation_priority_snapshot BETWEEN 1 AND 5)`);
 
     // Sensible org-default targets per priority. Idempotent: only inserts
     // when the row doesn't already exist. Customers tune these in the
@@ -1395,6 +2098,214 @@ async function initSchema() {
              COALESCE((SELECT ai_disclosure_audience FROM branding WHERE id = 1), 'self_and_admin')
       ON CONFLICT DO NOTHING
     `);
+
+    // ── Knowledge Base — per-project articles with version history ───────
+    // BlockNote editor stores rich content as JSON; content_text is the
+    // plain-text extraction kept in sync for FTS + summaries. Slug is
+    // unique per project so different projects can use the same slug.
+    // Soft delete via status='archived'.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS kb_articles (
+        id SERIAL PRIMARY KEY,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        slug TEXT NOT NULL,
+        title TEXT NOT NULL,
+        content_json JSONB NOT NULL DEFAULT '[]'::jsonb,
+        content_text TEXT NOT NULL DEFAULT '',
+        status TEXT NOT NULL DEFAULT 'draft'
+          CHECK (status IN ('draft','published','archived')),
+        author_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        last_edited_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        published_at TIMESTAMPTZ,
+        view_count INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(project_id, slug)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_kb_articles_project ON kb_articles(project_id, status, updated_at DESC)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_kb_articles_fts ON kb_articles USING GIN (to_tsvector('english', coalesce(title,'') || ' ' || coalesce(content_text,'')))`);
+
+    // KB tagging + ticket linking (Phase: KB ↔ Tickets).
+    //
+    // tags       — admin-curated per-article topic labels. Powers the
+    //              "Related articles" / suggestion ranker (matched
+    //              against ticket titles via pg_trgm similarity) and
+    //              a future tag-filter on the KB index.
+    // keywords   — optional manual match-boost terms. When the title
+    //              alone is too generic ("Printer offline"), the
+    //              keywords list ("HP ColorJet OfficeNet 4840 paper
+    //              jam toner") gives the similarity ranker more to
+    //              chew on without polluting the human-facing title.
+    // Validation lives in the route (lowercase, length, count caps);
+    // the column shape is intentionally permissive so we can adjust
+    // rules without a migration.
+    await client.query(`ALTER TABLE kb_articles ADD COLUMN IF NOT EXISTS tags TEXT[] NOT NULL DEFAULT '{}'::text[]`);
+    await client.query(`ALTER TABLE kb_articles ADD COLUMN IF NOT EXISTS keywords TEXT[] NOT NULL DEFAULT '{}'::text[]`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_kb_articles_tags ON kb_articles USING GIN(tags)`);
+    // Trigram index on plain title for the suggestion ranker. Postgres
+    // refuses to index expressions containing array_to_string (STABLE,
+    // not IMMUTABLE), so we keep the composite "title + tags +
+    // keywords" matching at query time (similarity() works fine without
+    // an index; KB sizes stay small enough for sequential scans). The
+    // title trigram index alone still accelerates substring matches in
+    // the future picker / search endpoints.
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_kb_articles_title_trgm ON kb_articles USING GIN (title gin_trgm_ops)`);
+
+    // Ticket -> KB junction. One row per (ticket, article). kind
+    // tracks how the link was created so we can later tell suggestion
+    // adoption from manual linking and from system-generated promotes.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ticket_kb_links (
+        ticket_id  INTEGER NOT NULL REFERENCES tickets(id)     ON DELETE CASCADE,
+        article_id INTEGER NOT NULL REFERENCES kb_articles(id) ON DELETE CASCADE,
+        kind       TEXT    NOT NULL DEFAULT 'manual'
+                   CHECK (kind IN ('manual', 'suggested_accepted', 'system')),
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (ticket_id, article_id)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_kb_links_article ON ticket_kb_links(article_id)`);
+
+    // Per-ticket free-text resolution summary. Captured (optional) on
+    // close. Drives the "Fix applied" filter together with kb_links:
+    //   has_fix = (resolution_summary IS NOT NULL) OR EXISTS(kb_links)
+    // No CHECK on length — the column is TEXT to allow markdown.
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS resolution_summary TEXT`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS resolution_summary_enc BYTEA`);
+
+    // Version snapshots — written on every save. Lets editors revert
+    // and shows a change history surface. version_no monotonic per
+    // article (computed at insert time).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS kb_article_versions (
+        id SERIAL PRIMARY KEY,
+        article_id INTEGER NOT NULL REFERENCES kb_articles(id) ON DELETE CASCADE,
+        version_no INTEGER NOT NULL,
+        title TEXT NOT NULL,
+        content_json JSONB NOT NULL,
+        content_text TEXT NOT NULL,
+        author_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        change_summary TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(article_id, version_no)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_kb_versions_article ON kb_article_versions(article_id, version_no DESC)`);
+
+    // First-class deduped alert records. Distinct from external_alert_event
+    // (immutable audit log): alerts is one row per (source_id,
+    // external_event_id), state-machine'd between firing → recovered.
+    // Ticket creation is no longer automatic — it goes through
+    // alert_rules below.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS alerts (
+        id BIGSERIAL PRIMARY KEY,
+        source_id INTEGER NOT NULL REFERENCES external_alert_source(id) ON DELETE CASCADE,
+        external_event_id TEXT NOT NULL,
+        external_ref TEXT NOT NULL,
+        state TEXT NOT NULL DEFAULT 'firing' CHECK (state IN ('firing','recovered','suppressed')),
+        severity TEXT,
+        severity_rank SMALLINT,
+        title TEXT,
+        title_enc BYTEA,
+        description TEXT,
+        description_enc BYTEA,
+        user_email TEXT,
+        vendor_ref TEXT,
+        raw_payload JSONB,
+        first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        recovered_at TIMESTAMPTZ,
+        refire_count INTEGER NOT NULL DEFAULT 0,
+        ticket_id INTEGER REFERENCES tickets(id) ON DELETE SET NULL,
+        promoted_at TIMESTAMPTZ,
+        promoted_by_rule_id INTEGER,
+        promoted_by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        evaluated_at TIMESTAMPTZ,
+        next_evaluation_at TIMESTAMPTZ,
+        suppression_reason TEXT,
+        UNIQUE(source_id, external_event_id)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_alerts_state_source ON alerts(state, source_id)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_alerts_ticket ON alerts(ticket_id) WHERE ticket_id IS NOT NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_alerts_next_eval ON alerts(next_evaluation_at) WHERE next_evaluation_at IS NOT NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_alerts_last_seen ON alerts(last_seen_at DESC)`);
+
+    // Per-integration rules that decide whether an inbound alert gets
+    // promoted to a ticket. First match (lowest priority value) wins.
+    // match_conditions JSON shape — clauses AND'd:
+    //   { severity_min_rank: 1..5,
+    //     title_contains: ['needle','word'],     // any-of, case-insensitive
+    //     title_excludes: ['ignore'],            // none-of
+    //     description_contains: [...],
+    //     description_excludes: [...],
+    //     user_email_domain: '@example.com'  }
+    // action: create_ticket | suppress | ignore
+    // delay_minutes: 0 = immediate; >0 = stamp next_evaluation_at and let
+    //   the scheduler re-check after the window before promoting.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS alert_rules (
+        id SERIAL PRIMARY KEY,
+        integration_id INTEGER NOT NULL REFERENCES external_alert_source(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        priority INTEGER NOT NULL DEFAULT 100,
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        match_conditions JSONB NOT NULL DEFAULT '{}'::jsonb,
+        action TEXT NOT NULL CHECK (action IN ('create_ticket','suppress','ignore')),
+        delay_minutes INTEGER NOT NULL DEFAULT 0,
+        ticket_overrides JSONB NOT NULL DEFAULT '{}'::jsonb,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_alert_rules_integration ON alert_rules(integration_id, enabled, priority)`);
+
+    // Seed a default "create ticket for anything" rule per existing
+    // integration so existing deployments keep producing tickets out of
+    // the box. Admins edit the rule to add filters as they go.
+    await client.query(`
+      INSERT INTO alert_rules (integration_id, name, priority, action, match_conditions)
+      SELECT s.id, 'Default: create ticket for any alert', 1000, 'create_ticket', '{}'::jsonb
+        FROM external_alert_source s
+       WHERE NOT EXISTS (SELECT 1 FROM alert_rules r WHERE r.integration_id = s.id)
+    `);
+
+    // Backfill: every currently-open ticket linked to an alert source
+    // gets a synthetic firing alerts row so day-1 Alerts page is
+    // consistent. Skip rows we already have (re-runs are no-ops).
+    await client.query(`
+      INSERT INTO alerts (source_id, external_event_id, external_ref, state, ticket_id, first_seen_at, last_seen_at, promoted_at)
+      SELECT t.external_alert_source_id, split_part(t.external_ref, ':', 2), t.external_ref,
+             CASE WHEN t.internal_status = 'Closed' THEN 'recovered' ELSE 'firing' END,
+             t.id, t.created_at, t.updated_at, t.created_at
+        FROM tickets t
+       WHERE t.external_ref IS NOT NULL
+         AND t.external_alert_source_id IS NOT NULL
+         AND NOT EXISTS (
+           SELECT 1 FROM alerts a
+            WHERE a.source_id = t.external_alert_source_id
+              AND a.external_event_id = split_part(t.external_ref, ':', 2))
+    `);
+
+    // Internal-only notes on a ticket, visible to handler roles only
+    // (Admin/Manager/Tech). Distinct from comments — never sent outbound,
+    // never visible to Submitters or Vendors. Body is encrypted under the
+    // same FIELD_MAP entry as comments.body so the standard-mode cutover
+    // covers it automatically.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ticket_notes (
+        id SERIAL PRIMARY KEY,
+        ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        body TEXT,
+        body_enc BYTEA,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_notes_ticket ON ticket_notes(ticket_id, created_at)`);
 
     await client.query('COMMIT');
   } catch (err) {

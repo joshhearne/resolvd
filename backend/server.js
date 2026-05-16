@@ -13,6 +13,7 @@ const inviteRoutes = require('./routes/invites');
 const authSettingsRoutes = require('./routes/authSettings');
 const ticketRoutes = require('./routes/tickets');
 const commentRoutes = require('./routes/comments');
+const ticketNoteRoutes = require('./routes/ticketNotes');
 const userRoutes = require('./routes/users');
 const dashboardRoutes = require('./routes/dashboard');
 const viewRoutes = require('./routes/views');
@@ -34,11 +35,19 @@ const pushRoutes = require('./routes/push');
 const systemHealthRoutes = require('./routes/systemHealth');
 const webhookRoutes = require('./routes/webhooks');
 const alertSourceRoutes = require('./routes/alertSources');
+const alertRoutes = require('./routes/alerts');
+const assetRoutes = require('./routes/assets');
+const assetTypeRoutes = require('./routes/assetTypes');
 const cannedResponseRoutes = require('./routes/cannedResponses');
 const slaRoutes = require('./routes/sla');
+const assignmentPolicyRoutes = require('./routes/assignmentPolicies');
+const escalationPolicyRoutes = require('./routes/escalationPolicies');
+const agentRoutes = require('./routes/agents');
+const customFieldRoutes = require('./routes/customFields');
 const aiAssistRoutes = require('./routes/aiAssist');
 const aiSettingsRoutes = require('./routes/aiSettings');
 const securityRoutes = require('./routes/security');
+const kbRoutes = require('./routes/kb');
 const { requireSupportAccessIfSupport } = require('./middleware/supportAccess');
 const { securityHeaders } = require('./middleware/securityHeaders');
 
@@ -94,6 +103,7 @@ app.use('/api/invites', inviteRoutes);
 app.use('/api/auth-settings', authSettingsRoutes);
 app.use('/api/tickets', ticketRoutes);
 app.use('/api/tickets', commentRoutes);
+app.use('/api/tickets', ticketNoteRoutes);
 // commentRoutes also mounts /comments/:id/mute|unmute at /api/comments/...
 app.use('/api', commentRoutes);
 app.use('/api/users', userRoutes);
@@ -115,11 +125,20 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/push', pushRoutes);
 app.use('/api/system-health', systemHealthRoutes);
 app.use('/api/alert-sources', alertSourceRoutes);
+app.use('/api/alerts', alertRoutes);
+app.use('/api/software-aliases', require('./routes/softwareAliases'));
+app.use('/api/assets', assetRoutes);
+app.use('/api/asset-types', assetTypeRoutes);
 app.use('/api/canned-responses', cannedResponseRoutes);
 app.use('/api/sla', slaRoutes);
+app.use('/api/assignment-policies', assignmentPolicyRoutes);
+app.use('/api/escalation-policies', escalationPolicyRoutes);
+app.use('/api/agents', agentRoutes);
+app.use('/api/custom-field-defs', customFieldRoutes);
 app.use('/api/ai', aiAssistRoutes);
 app.use('/api/ai-settings', aiSettingsRoutes);
 app.use('/api/security', securityRoutes);
+app.use('/api/kb', kbRoutes);
 
 // Health check
 app.get('/health', (req, res) => res.json({ ok: true }));
@@ -143,6 +162,10 @@ initSchema()
     // sla_response_due_at / sla_resolve_due_at without being responded
     // / resolved, mark breached, fan out to assignee + followers.
     require('./services/sla').startScheduler();
+    // External alert source poller: pulls policy results from Action1 on
+    // each source's configured cadence (Action1 has no webhook channel).
+    // 30-second tick; each source fires per its poll_interval_minutes.
+    require('./services/alertSourcePollScheduler').startScheduler();
     app.listen(PORT, () => {
       console.log(`Resolvd backend running on port ${PORT}`);
     });
