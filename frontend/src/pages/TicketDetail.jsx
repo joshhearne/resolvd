@@ -3,6 +3,7 @@ import { createPortal } from "react-dom";
 import { Link, useParams, useNavigate, useLocation } from "react-router-dom";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
+import { pushRecentTicket } from "../utils/recentTickets";
 import { useAuth } from "../context/AuthContext";
 import {
   computePriority,
@@ -385,6 +386,10 @@ export default function TicketDetail() {
     ]).then(([t, c]) => {
       setTicket(t);
       setComments(c);
+      // Push into the TicketList "Recently opened" rail. Done here so
+      // direct deep-links + ticket-detail nav populate history, not
+      // just clicks from the list page.
+      pushRecentTicket({ id: t.id, ref: t.internal_ref, title: t.title });
     });
   }, [id]);
 

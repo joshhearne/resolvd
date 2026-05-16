@@ -137,19 +137,34 @@ router.get('/', requireAuth, async (req, res) => {
     const params = [];
     let p = 1;
 
-    // Project access control
-    if (project_id) {
-      where.push(`t.project_id = $${p++}`);
-      params.push(Number(project_id));
-    } else {
-      const accessibleIds = await getAccessibleProjectIds(user);
-      if (accessibleIds !== null) {
-        if (accessibleIds.length === 0) {
-          return res.json({ tickets: [], total: 0, page: Number(page), limit: Number(limit) });
-        }
-        where.push(`t.project_id = ANY($${p++})`);
-        params.push(accessibleIds);
+    // Project access control. `project_id` may be a single id (legacy)
+    // or a comma-separated list (matches the dashboard filter shape).
+    // Requested list is intersected with the caller's accessible set so
+    // a non-Admin can never widen past their project_members.
+    const requestedProjectIds = project_id
+      ? String(project_id)
+          .split(',')
+          .map((s) => Number(s.trim()))
+          .filter((n) => Number.isFinite(n) && n > 0)
+      : [];
+    const accessibleIds = await getAccessibleProjectIds(user);
+    let effectiveProjectIds = null;
+    if (accessibleIds !== null && requestedProjectIds.length) {
+      effectiveProjectIds = requestedProjectIds.filter((id) => accessibleIds.includes(id));
+      if (effectiveProjectIds.length === 0) {
+        return res.json({ tickets: [], total: 0, page: Number(page), limit: Number(limit) });
       }
+    } else if (accessibleIds !== null) {
+      effectiveProjectIds = accessibleIds;
+      if (effectiveProjectIds.length === 0) {
+        return res.json({ tickets: [], total: 0, page: Number(page), limit: Number(limit) });
+      }
+    } else if (requestedProjectIds.length) {
+      effectiveProjectIds = requestedProjectIds;
+    }
+    if (effectiveProjectIds !== null) {
+      where.push(`t.project_id = ANY($${p++}::int[])`);
+      params.push(effectiveProjectIds);
     }
 
     // Search: under encrypted mode the title ciphertext is opaque to ILIKE.
@@ -176,11 +191,48 @@ router.get('/', requireAuth, async (req, res) => {
         postFilterTerm = q.trim().toLowerCase();
       }
     }
-    if (internal_status) { where.push(`t.internal_status = $${p++}`); params.push(internal_status); }
-    if (external_status) { where.push(`t.external_status = $${p++}`); params.push(external_status); }
-    if (effective_priority) { where.push(`t.effective_priority = $${p++}`); params.push(Number(effective_priority)); }
+    // internal_status / external_status accept a single value (legacy)
+    // or a comma-separated list (matches dashboard filter shape).
+    if (internal_status) {
+      const list = String(internal_status).split(',').map((s) => s.trim()).filter(Boolean);
+      if (list.length === 1) {
+        where.push(`t.internal_status = $${p++}`); params.push(list[0]);
+      } else {
+        where.push(`t.internal_status = ANY($${p++}::text[])`); params.push(list);
+      }
+    }
+    if (external_status) {
+      const list = String(external_status).split(',').map((s) => s.trim()).filter(Boolean);
+      if (list.length === 1) {
+        where.push(`t.external_status = $${p++}`); params.push(list[0]);
+      } else {
+        where.push(`t.external_status = ANY($${p++}::text[])`); params.push(list);
+      }
+    }
+    if (effective_priority) {
+      const list = String(effective_priority).split(',').map((s) => Number(s.trim())).filter((n) => Number.isFinite(n));
+      if (list.length === 1) {
+        where.push(`t.effective_priority = $${p++}`); params.push(list[0]);
+      } else if (list.length > 1) {
+        where.push(`t.effective_priority = ANY($${p++}::int[])`); params.push(list);
+      }
+    }
     if (blocker_type) { where.push(`t.blocker_type = $${p++}`); params.push(blocker_type); }
-    if (assigned_to) { where.push(`t.assigned_to = $${p++}`); params.push(Number(assigned_to)); }
+    if (assigned_to) {
+      // `me` sentinel resolves server-side so the URL stays user-agnostic
+      // (saved view portability + bookmarkability).
+      const id = assigned_to === 'me' ? user.id : Number(assigned_to);
+      if (Number.isFinite(id)) {
+        where.push(`t.assigned_to = $${p++}`); params.push(id);
+      }
+    }
+    // Dashboard-style since filter — limits to tickets created in window.
+    if (req.query.since) {
+      const d = new Date(String(req.query.since));
+      if (!Number.isNaN(d.getTime())) {
+        where.push(`t.created_at >= $${p++}`); params.push(d.toISOString());
+      }
+    }
     if (flagged_for_review !== undefined && flagged_for_review !== '') {
       where.push(`t.flagged_for_review = $${p++}`);
       params.push(flagged_for_review === 'true');
@@ -213,6 +265,10 @@ router.get('/', requireAuth, async (req, res) => {
     const allowed_sorts = ['created_at', 'updated_at', 'effective_priority', 'internal_ref'];
     const col = allowed_sorts.includes(sort_by) ? sort_by : 'updated_at';
     const dir = sort_dir === 'asc' ? 'ASC' : 'DESC';
+    // When sorting by priority, P1 should always surface above P5 with
+    // recent activity. Add updated_at DESC as the secondary key so two
+    // P1 rows don't return in arbitrary order.
+    const tieBreaker = col === 'effective_priority' ? ', t.updated_at DESC' : '';
     const offset = (Number(page) - 1) * Number(limit);
     const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
@@ -235,7 +291,7 @@ router.get('/', requireAuth, async (req, res) => {
       LEFT JOIN users asgn ON t.assigned_to = asgn.id
       LEFT JOIN tickets bt ON t.blocked_by_ticket = bt.id
       ${whereClause}
-      ORDER BY t.${col} ${dir}
+      ORDER BY t.${col} ${dir}${tieBreaker}
       LIMIT $${p} OFFSET $${p+1}
     `, [...params, Number(limit), offset]);
 

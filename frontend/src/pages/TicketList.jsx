@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useState, useCallback } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
@@ -10,6 +10,19 @@ import StatusBadge from "../components/StatusBadge";
 import PhoneticPopover from "../components/PhoneticPopover";
 import PageShell from "../components/PageShell";
 import ColumnPicker, { useColumnPrefs } from "../components/ColumnPicker";
+import {
+  useTicketFilters,
+  useTicketFilterLookups,
+  buildTicketQs,
+  summarizeFilters,
+  TicketFiltersModal,
+  DEFAULT_TICKET_FILTERS,
+} from "../components/TicketFilters";
+import {
+  getRecentTickets,
+  pushRecentTicket,
+  clearRecentTickets,
+} from "../utils/recentTickets";
 
 const TICKET_COLUMNS = [
   { id: "ref", label: "Ref", alwaysOn: true },
@@ -23,6 +36,22 @@ const TICKET_COLUMNS = [
   { id: "flagged", label: "Flagged" },
   { id: "updated", label: "Updated" },
 ];
+
+const LIMIT = 50;
+
+// URL ?preset=foo → filter overlay applied on top of the current
+// persisted filter state. Lets dashboard tiles + email links deep-link
+// into a specific view without inventing a new URL schema.
+const URL_PRESETS = {
+  open:           { statuses: ["Open"],            excludeClosed: true },
+  in_progress:    { statuses: ["In Progress"],     excludeClosed: true },
+  awaiting_mot:   { statuses: ["Awaiting Input"],  excludeClosed: true },
+  pending_review: { statuses: ["Pending Review"],  excludeClosed: true },
+  flagged:        { flagged: true,                 excludeClosed: true },
+  closed:         { statuses: ["Closed"],          excludeClosed: false },
+  sla_breached:   { excludeClosed: true },
+  mine:           { mine: true,                    excludeClosed: true },
+};
 
 function DateTimeStack({ value }) {
   if (!value) return <span className="text-fg-dim">—</span>;
@@ -47,249 +76,84 @@ function DateTimeStack({ value }) {
   );
 }
 
-const BLANK_FILTERS = {
-  internal_status: "",
-  external_status: "",
-  effective_priority: "",
-  blocker_type: "",
-  flagged_for_review: "",
-  has_fix: "",
-};
-
-// Predefined sidebar views — each maps to a filter state
-const PREDEFINED = [
-  {
-    group: "Overview",
-    items: [
-      {
-        key: "all",
-        label: "All Tickets",
-        countKey: "total",
-        filters: BLANK_FILTERS,
-      },
-      {
-        key: "active",
-        label: "All Active",
-        countKey: "active",
-        filters: BLANK_FILTERS,
-        excludeClosed: true,
-      },
-    ],
-  },
-  {
-    group: "By Status",
-    items: [
-      {
-        key: "open",
-        label: "Open",
-        countKey: "open",
-        filters: { ...BLANK_FILTERS, internal_status: "Open" },
-      },
-      {
-        key: "in_progress",
-        label: "In Progress",
-        countKey: "in_progress",
-        filters: { ...BLANK_FILTERS, internal_status: "In Progress" },
-      },
-      {
-        key: "awaiting_mot",
-        label: "Awaiting Input",
-        countKey: "awaiting_mot",
-        filters: { ...BLANK_FILTERS, internal_status: "Awaiting Input" },
-      },
-      {
-        key: "pending_review",
-        label: "Pending Review",
-        countKey: "pending_review",
-        filters: { ...BLANK_FILTERS, internal_status: "Pending Review" },
-      },
-      {
-        key: "reopened",
-        label: "Reopened",
-        countKey: "reopened",
-        filters: { ...BLANK_FILTERS, internal_status: "Reopened" },
-      },
-      {
-        key: "flagged",
-        label: "Flagged for Review",
-        countKey: "flagged",
-        filters: { ...BLANK_FILTERS, flagged_for_review: "true" },
-      },
-      {
-        key: "closed",
-        label: "Closed",
-        countKey: "closed",
-        filters: { ...BLANK_FILTERS, internal_status: "Closed" },
-      },
-      {
-        key: "has_fix",
-        label: "Fix applied",
-        filters: { ...BLANK_FILTERS, has_fix: "1" },
-      },
-    ],
-  },
-  {
-    group: "By Priority",
-    items: [
-      {
-        key: "p1",
-        label: "P1 — Critical",
-        countKey: "p1",
-        filters: { ...BLANK_FILTERS, effective_priority: "1" },
-      },
-      {
-        key: "p2",
-        label: "P2 — High",
-        countKey: "p2",
-        filters: { ...BLANK_FILTERS, effective_priority: "2" },
-      },
-    ],
-  },
-  {
-    group: "External",
-    items: [
-      {
-        key: "external_unacked",
-        label: "Unacknowledged",
-        countKey: "external_unacked",
-        filters: { ...BLANK_FILTERS, external_status: "Unacknowledged" },
-      },
-      {
-        key: "external_resolved",
-        label: "Marked Resolved",
-        countKey: "external_resolved",
-        filters: { ...BLANK_FILTERS, external_status: "Resolved" },
-      },
-      {
-        key: "internal_blocker",
-        label: "Team Owes Input",
-        countKey: "internal_blocker",
-        filters: { ...BLANK_FILTERS, blocker_type: "mot_input" },
-      },
-    ],
-  },
-];
-
-const URGENT_KEYS = new Set([
-  "awaiting_mot",
-  "pending_review",
-  "flagged",
-  "p1",
-  "internal_blocker",
-]);
-
-function CountBadge({ count, urgent }) {
-  if (!count) return null;
-  return (
-    <span
-      className={`ml-auto text-xs font-semibold px-1.5 py-0.5 rounded-full ${
-        urgent && count > 0
-          ? "bg-red-100 dark:bg-red-950/40 text-red-700 dark:text-red-300"
-          : "bg-surface-2 text-fg-muted"
-      }`}
-    >
-      {count}
-    </span>
-  );
-}
-
-const LIMIT = 50;
-
 export default function TicketList() {
-  const { user, setDefaultProject } = useAuth();
-  const canManageViews =
-    ["Admin", "Manager"].includes(user?.role) || user?.role === "Submitter";
+  const { user } = useAuth();
   const isAdmin = user?.role === "Admin";
   const { internal: internalStatuses } = useStatuses();
   const [searchParams, setSearchParams] = useSearchParams();
   const cols = useColumnPrefs("tickets");
 
-  // Bulk-edit mode: admin-only. Replaces search bar + New Ticket button
-  // with an action bar; checkbox column becomes visible. Selection is
-  // cleared when the filter set or page changes (stale ids would no
-  // longer match the visible rows).
-  const [bulkMode, setBulkMode] = useState(false);
-  const [selectedIds, setSelectedIds] = useState(() => new Set());
-  const [bulkStatus, setBulkStatus] = useState("");
-  const [bulkAssignee, setBulkAssignee] = useState(""); // "" = no change, "0" = unassign, else user id
-  const [bulkProject, setBulkProject] = useState("");
-  const [bulkUsers, setBulkUsers] = useState([]);
-  const [bulkBusy, setBulkBusy] = useState(false);
+  const { filters, setFilters, reset } = useTicketFilters();
+  const { projects, statuses } = useTicketFilterLookups();
+
+  // One-shot apply of ?preset=… on mount or when URL changes. Overlay
+  // on top of the persisted filter — leaves the user's other choices
+  // (range, projects) alone unless the preset explicitly changes them.
+  useEffect(() => {
+    const preset = searchParams.get("preset");
+    if (!preset || !URL_PRESETS[preset]) return;
+    setFilters((f) => ({ ...f, ...URL_PRESETS[preset] }));
+    // Strip the param so a subsequent filter change doesn't re-overlay.
+    const next = new URLSearchParams(searchParams);
+    next.delete("preset");
+    setSearchParams(next, { replace: true });
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams.get("preset")]);
+
+  // Search bar drives ?q= so it survives reloads + breadcrumb resets.
+  const [q, setQ] = useState(searchParams.get("q") || "");
+  useEffect(() => {
+    const urlQ = searchParams.get("q") || "";
+    if (urlQ !== q) setQ(urlQ);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [searchParams.get("q")]);
+
+  // Pagination resets on any filter / sort / search / preset change.
+  const [page, setPage] = useState(1);
+  useEffect(() => {
+    setPage(1);
+  }, [filters, q]);
 
   const [tickets, setTickets] = useState([]);
   const [total, setTotal] = useState(0);
   const [loading, setLoading] = useState(true);
-  const [counts, setCounts] = useState({});
-  const [q, setQ] = useState(searchParams.get("q") || "");
-  const allItems = PREDEFINED.flatMap((g) => g.items);
-  const presetKey = searchParams.get("preset");
-  const presetItem = presetKey
-    ? allItems.find((i) => i.key === presetKey)
-    : null;
-  // Restore filter state from sessionStorage unless URL specifies a preset.
-  const STORAGE_KEY = "ticket_list_v1";
-  const saved = !presetKey ? (() => { try { return JSON.parse(sessionStorage.getItem(STORAGE_KEY) || "null"); } catch { return null; } })() : null;
 
-  const [activeKey, setActiveKey] = useState(
-    presetItem ? presetItem.key : (saved?.activeKey ?? "active"),
-  );
-  const [filters, setFilters] = useState(
-    presetItem ? { ...presetItem.filters } : (saved?.filters ?? { ...BLANK_FILTERS }),
-  );
-  // Default sort honors user preference when nothing is persisted yet.
-  const prefSort = (() => {
-    const raw = user?.preferences?.default_ticket_sort || "updated_at_desc";
-    const idx = raw.lastIndexOf("_");
-    return idx > 0
-      ? { by: raw.slice(0, idx), dir: raw.slice(idx + 1) }
-      : { by: "updated_at", dir: "desc" };
-  })();
-  const [sortBy, setSortBy] = useState(saved?.sortBy ?? prefSort.by);
-  const [sortDir, setSortDir] = useState(saved?.sortDir ?? prefSort.dir);
-  const [page, setPage] = useState(1);
+  const [filtersOpen, setFiltersOpen] = useState(false);
 
-  // Persist filter state to sessionStorage whenever it changes
-  const [selectedProjectId, setSelectedProjectIdState] = useState(
-    searchParams.get("project_id")
-      ? Number(searchParams.get("project_id"))
-      : (saved?.selectedProjectId ?? user?.defaultProjectId ?? null),
-  );
-  function setSelectedProjectId(id) {
-    setSelectedProjectIdState(id);
-    try { sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ activeKey, filters, selectedProjectId: id, sortBy, sortDir })); } catch {}
-  }
-
-  useEffect(() => {
-    try {
-      sessionStorage.setItem(STORAGE_KEY, JSON.stringify({ activeKey, filters, selectedProjectId, sortBy, sortDir }));
-    } catch {}
-  }, [activeKey, filters, selectedProjectId, sortBy, sortDir]);
-
-  // Projects
-  const [projects, setProjects] = useState([]);
-
-  // Sidebar mobile state
-  const [sidebarOpen, setSidebarOpen] = useState(false);
-
-  // Saved views
+  // Saved views — kept but moved into a compact menu instead of a
+  // side-rail block. Selecting a view replaces the current filter set.
   const [savedViews, setSavedViews] = useState([]);
-  const [saveOpen, setSaveOpen] = useState(false);
-  const [viewName, setViewName] = useState("");
-  const [savingView, setSavingView] = useState(false);
+  const [savedMenuOpen, setSavedMenuOpen] = useState(false);
+  const [saveName, setSaveName] = useState("");
 
-  // Load projects + saved views once
   useEffect(() => {
-    api
-      .get("/api/projects")
-      .then((all) => setProjects(all.filter((p) => p.status === "active")))
-      .catch(() => {});
-    api
-      .get("/api/views")
-      .then(setSavedViews)
-      .catch(() => {});
+    api.get("/api/views").then(setSavedViews).catch(() => setSavedViews([]));
   }, []);
 
-  // Lazy-load assignable users on first entering bulk mode (admin-only).
+  // Recently opened — drives the left rail. Pulled fresh on every
+  // localStorage change so opening a ticket in another tab is visible.
+  const [recents, setRecents] = useState(() => getRecentTickets());
+  useEffect(() => {
+    function onChange() {
+      setRecents(getRecentTickets());
+    }
+    window.addEventListener("resolvd:recent-tickets-changed", onChange);
+    window.addEventListener("storage", onChange);
+    return () => {
+      window.removeEventListener("resolvd:recent-tickets-changed", onChange);
+      window.removeEventListener("storage", onChange);
+    };
+  }, []);
+
+  // Bulk edit (admin only) — preserved from prior implementation.
+  const [bulkMode, setBulkMode] = useState(false);
+  const [selectedIds, setSelectedIds] = useState(() => new Set());
+  const [bulkStatus, setBulkStatus] = useState("");
+  const [bulkAssignee, setBulkAssignee] = useState("");
+  const [bulkProject, setBulkProject] = useState("");
+  const [bulkUsers, setBulkUsers] = useState([]);
+  const [bulkBusy, setBulkBusy] = useState(false);
+
   useEffect(() => {
     if (!bulkMode || !isAdmin || bulkUsers.length) return;
     api
@@ -315,29 +179,26 @@ export default function TicketList() {
     });
   }
 
-  const selectedProject = selectedProjectId
-    ? projects.find((p) => p.id === selectedProjectId)
-    : null;
-  const showVendorCols =
-    !selectedProject || selectedProject.has_external_vendor !== false;
+  const fetchTickets = useCallback(() => {
+    setLoading(true);
+    const qs = buildTicketQs(filters, {
+      q: q.trim() || null,
+      page,
+      limit: LIMIT,
+    });
+    api
+      .get(`/api/tickets${qs}`)
+      .then((data) => {
+        setTickets(data.tickets || []);
+        setTotal(data.total || 0);
+        setLoading(false);
+      })
+      .catch(() => setLoading(false));
+  }, [filters, q, page]);
 
-  // Load counts — scoped to selected project if set
   useEffect(() => {
-    const qs = selectedProjectId ? `?project_id=${selectedProjectId}` : "";
-    api
-      .get(`/api/tickets/counts${qs}`)
-      .then(setCounts)
-      .catch(() => {});
-  }, [selectedProjectId]);
-
-  // Refresh counts after ticket changes
-  const refreshCounts = useCallback(() => {
-    const qs = selectedProjectId ? `?project_id=${selectedProjectId}` : "";
-    api
-      .get(`/api/tickets/counts${qs}`)
-      .then(setCounts)
-      .catch(() => {});
-  }, [selectedProjectId]);
+    fetchTickets();
+  }, [fetchTickets]);
 
   async function applyBulk() {
     if (!selectedIds.size) {
@@ -363,10 +224,9 @@ export default function TicketList() {
       const okN = res.updated?.length || 0;
       const skipN = res.skipped?.length || 0;
       if (okN) toast.success(`Updated ${okN} ticket${okN === 1 ? "" : "s"}`);
-      if (skipN) toast.error(`Skipped ${skipN} (${(res.skipped[0]?.reason) || "error"})`);
+      if (skipN) toast.error(`Skipped ${skipN} (${res.skipped[0]?.reason || "error"})`);
       exitBulkMode();
       fetchTickets();
-      refreshCounts();
     } catch (e) {
       toast.error(e.message || "Bulk update failed");
     } finally {
@@ -374,114 +234,43 @@ export default function TicketList() {
     }
   }
 
-  // Sync q from nav search bar
-  useEffect(() => {
-    const urlQ = searchParams.get("q") || "";
-    if (urlQ !== q) {
-      setQ(urlQ);
-      setPage(1);
-    }
-  }, [searchParams.get("q")]);
-
-  function buildQuery() {
-    const p = new URLSearchParams();
-    if (selectedProjectId) p.set("project_id", selectedProjectId);
-    if (q.trim()) p.set("q", q.trim());
-    Object.entries(filters).forEach(([k, v]) => {
-      if (v) p.set(k, v);
-    });
-    const item = PREDEFINED.flatMap((g) => g.items).find(
-      (i) => i.key === activeKey,
-    );
-    if (item?.excludeClosed) p.set("exclude_closed", "1");
-    p.set("sort_by", sortBy);
-    p.set("sort_dir", sortDir);
-    p.set("page", page);
-    p.set("limit", LIMIT);
-    return p.toString();
-  }
-
-  const fetchTickets = useCallback(() => {
-    setLoading(true);
-    api
-      .get(`/api/tickets?${buildQuery()}`)
-      .then((data) => {
-        setTickets(data.tickets);
-        setTotal(data.total);
-        setLoading(false);
-      })
-      .catch(() => setLoading(false));
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [filters, sortBy, sortDir, page, q, activeKey, selectedProjectId]);
-
-  useEffect(() => { fetchTickets(); }, [fetchTickets]);
-
-  function selectProject(projId) {
-    setSelectedProjectId(projId);
-    setPage(1);
-    setSidebarOpen(false);
-  }
-
-  function selectPredefined(item) {
-    setFilters({ ...item.filters });
-    setActiveKey(item.key);
-    setQ("");
-    setPage(1);
-    setSidebarOpen(false);
-  }
-
-  function selectSavedView(view) {
-    const f = view.filters;
-    setFilters({
-      internal_status: f.internal_status || "",
-      external_status: f.external_status || "",
-      effective_priority: f.effective_priority || "",
-      blocker_type: f.blocker_type || "",
-      flagged_for_review: f.flagged_for_review || "",
-      has_fix: f.has_fix || "",
-    });
-    setQ(f.q || "");
-    setSortBy(f.sort_by || "updated_at");
-    setSortDir(f.sort_dir || "desc");
-    // Restore project context if the view captured one. Older views
-    // (saved before project_id was tracked) leave the field absent — in
-    // that case keep whatever project the user has currently selected.
-    if (Object.prototype.hasOwnProperty.call(f, "project_id")) {
-      setSelectedProjectId(f.project_id ?? null);
-    }
-    setActiveKey(`saved_${view.id}`);
-    setPage(1);
-    setSidebarOpen(false);
-  }
-
-  async function saveView() {
-    if (!viewName.trim()) {
+  async function persistView() {
+    const name = saveName.trim();
+    if (!name) {
       toast.error("Name required");
       return;
     }
-    setSavingView(true);
     try {
       const v = await api.post("/api/views", {
-        name: viewName.trim(),
-        filters: {
-          q,
-          ...filters,
-          sort_by: sortBy,
-          sort_dir: sortDir,
-          project_id: selectedProjectId ?? null,
-        },
+        name,
+        filters: { v2: true, ...filters, q: q.trim() || "" },
       });
-      setSavedViews((prev) =>
-        [...prev, v].sort((a, b) => a.name.localeCompare(b.name)),
-      );
-      setViewName("");
-      setSaveOpen(false);
-      toast.success(`View "${v.name}" saved`);
-    } catch (err) {
-      toast.error(err.message);
-    } finally {
-      setSavingView(false);
+      setSavedViews((prev) => [...prev, v].sort((a, b) => a.name.localeCompare(b.name)));
+      setSaveName("");
+      toast.success(`Saved "${v.name}"`);
+    } catch (e) {
+      toast.error(e.message);
     }
+  }
+
+  function loadView(view) {
+    const f = view.filters || {};
+    if (f.v2) {
+      const { q: viewQ, v2, ...rest } = f;
+      setFilters({ ...DEFAULT_TICKET_FILTERS, ...rest });
+      setQ(viewQ || "");
+    } else {
+      // Legacy view shape — best-effort translation into v2.
+      const next = { ...DEFAULT_TICKET_FILTERS };
+      if (f.internal_status) next.statuses = [f.internal_status];
+      if (f.effective_priority) next.priorities = [Number(f.effective_priority)];
+      if (f.flagged_for_review === "true") next.flagged = true;
+      if (f.has_fix === "1") next.hasFix = true;
+      if (f.project_id) next.projectIds = [Number(f.project_id)];
+      setFilters(next);
+      setQ(f.q || "");
+    }
+    setSavedMenuOpen(false);
   }
 
   async function deleteView(e, id) {
@@ -489,418 +278,362 @@ export default function TicketList() {
     try {
       await api.delete(`/api/views/${id}`);
       setSavedViews((prev) => prev.filter((v) => v.id !== id));
-      if (activeKey === `saved_${id}`) {
-        selectPredefined(PREDEFINED[0].items[1]);
-      }
       toast.success("View deleted");
-    } catch (err) {
-      toast.error(err.message);
+    } catch (e) {
+      toast.error(e.message);
     }
+  }
+
+  const summary = useMemo(
+    () => summarizeFilters(filters, projects, statuses),
+    [filters, projects, statuses],
+  );
+
+  // The first project's has_external_vendor flag drives vendor column
+  // visibility when the filter narrows to one project. With no project
+  // filter (or multiple) — show vendor columns.
+  const singleProject =
+    filters.projectIds.length === 1
+      ? projects.find((p) => p.id === filters.projectIds[0])
+      : null;
+  const showVendorCols =
+    !singleProject || singleProject.has_external_vendor !== false;
+
+  function onRowOpen(t) {
+    pushRecentTicket({ id: t.id, ref: t.internal_ref, title: t.title });
   }
 
   function handleSort(col) {
-    if (sortBy === col) setSortDir((d) => (d === "asc" ? "desc" : "asc"));
-    else {
-      setSortBy(col);
-      setSortDir("desc");
-    }
-    setPage(1);
+    // Translate column sort clicks into the filters.sort token so the
+    // modal + breadcrumb stay coherent.
+    const map = {
+      effective_priority: "priority",
+      updated_at: filters.sort === "updated_desc" ? "updated_asc" : "updated_desc",
+      created_at: filters.sort === "created_desc" ? "created_asc" : "created_desc",
+    };
+    const next = map[col];
+    if (next) setFilters((f) => ({ ...f, sort: next }));
   }
 
   function SortHeader({ col, label }) {
-    const active = sortBy === col;
+    const tokens = {
+      effective_priority: "priority",
+      updated_at: ["updated_desc", "updated_asc"],
+      created_at: ["created_desc", "created_asc"],
+    };
+    const t = tokens[col];
+    const active = Array.isArray(t) ? t.includes(filters.sort) : filters.sort === t;
     return (
       <button
         onClick={() => handleSort(col)}
-        className={`text-left font-medium text-xs uppercase tracking-wide hover:text-brand transition-colors ${active ? "text-brand" : "text-fg-muted"}`}
+        className={`text-left font-medium text-xs uppercase tracking-wide hover:text-brand transition-colors ${
+          active ? "text-brand" : "text-fg-muted"
+        }`}
       >
-        {label} {active ? (sortDir === "asc" ? "↑" : "↓") : ""}
+        {label}{" "}
+        {active
+          ? Array.isArray(t)
+            ? filters.sort.endsWith("_asc")
+              ? "↑"
+              : "↓"
+            : "↑"
+          : ""}
       </button>
     );
   }
 
-  // Sidebar link style
-  function sidebarItemClass(key) {
-    const base =
-      "flex items-center gap-2 w-full px-3 py-1.5 rounded-md text-sm transition-colors text-left";
-    return activeKey === key
-      ? `${base} bg-brand text-brand-fg font-medium`
-      : `${base} text-fg-muted hover:bg-surface-2`;
-  }
+  const filterCount =
+    (filters.mine ? 1 : 0) +
+    (filters.flagged ? 1 : 0) +
+    (filters.hasFix !== null ? 1 : 0) +
+    filters.projectIds.length +
+    filters.statuses.length +
+    filters.priorities.length;
+
+  // Mobile drawer toggle for the Recently opened rail. Desktop hides
+  // the hamburger and just renders the rail inline.
+  const [drawerOpen, setDrawerOpen] = useState(false);
 
   return (
     <PageShell variant="wide" className="flex gap-5 items-start">
-      {/* ── Mobile backdrop ── */}
-      {sidebarOpen && (
+      {/* Mobile backdrop */}
+      {drawerOpen && (
         <div
-          className="fixed inset-0 bg-black/40 z-40 md:hidden"
-          onClick={() => setSidebarOpen(false)}
+          className="fixed inset-0 z-40 bg-black/40 md:hidden"
+          onClick={() => setDrawerOpen(false)}
         />
       )}
 
-      {/* ── Sidebar ── */}
+      {/* ── Left rail: Recently opened ── */}
       <aside
         className={`
- space-y-4 p-4 md:p-0 md:pr-2
- md:block md:relative md:w-52 md:flex-shrink-0 md:self-start md:sticky md:top-14 md:max-h-[calc(100vh-6.5rem)] md:overflow-y-auto md:shadow-none md:bg-transparent
- ${
-   sidebarOpen
-     ? "fixed inset-y-0 left-0 z-50 w-72 bg-surface shadow-xl overflow-y-auto"
-     : "hidden"
- }
- `}
+          space-y-2 md:block md:w-52 md:flex-shrink-0 md:self-start md:sticky md:top-14 md:max-h-[calc(100vh-6.5rem)] md:overflow-y-auto md:pr-2 md:relative md:bg-transparent md:shadow-none
+          ${
+            drawerOpen
+              ? "fixed inset-y-0 left-0 z-50 w-72 bg-surface shadow-xl overflow-y-auto p-4"
+              : "hidden md:block"
+          }
+        `}
       >
-        {/* Close button — mobile only */}
         <div className="flex items-center justify-between mb-2 md:hidden">
-          <span className="font-semibold text-fg text-sm">Filters</span>
-          <button
-            onClick={() => setSidebarOpen(false)}
-            className="text-fg-dim hover:text-fg-muted text-2xl leading-none"
-          >
-            ×
-          </button>
-        </div>
-        {PREDEFINED.filter(
-          (group) => showVendorCols || group.group !== "External",
-        ).map((group) => (
-          <div key={group.group}>
-            <div className="text-xs font-semibold uppercase tracking-wider text-fg-dim px-3 mb-1">
-              {group.group}
-            </div>
-            <div className="space-y-0.5">
-              {group.items.map((item) => {
-                const count = counts[item.countKey];
-                const urgent = URGENT_KEYS.has(item.key);
-                return (
-                  <button
-                    key={item.key}
-                    onClick={() => selectPredefined(item)}
-                    className={sidebarItemClass(item.key)}
-                  >
-                    <span className="flex-1 text-left">{item.label}</span>
-                    <CountBadge count={count} urgent={urgent} />
-                  </button>
-                );
-              })}
-            </div>
-          </div>
-        ))}
-
-        {/* Projects */}
-        {projects.length > 0 && (
-          <div>
-            <div className="text-xs font-semibold uppercase tracking-wider text-fg-dim px-3 mb-1">
-              Projects
-            </div>
-            <div className="space-y-0.5">
-              <div
-                className={`flex items-center gap-1 rounded-md ${selectedProjectId === null ? "bg-brand text-brand-fg" : "text-fg-muted hover:bg-surface-2"}`}
+          <span className="font-semibold text-fg text-sm">Recently opened</span>
+          <div className="flex items-center gap-2">
+            {recents.length > 0 && (
+              <button
+                onClick={() => clearRecentTickets()}
+                className="text-[11px] text-fg-dim hover:text-fg"
               >
-                <button
-                  onClick={() => selectProject(null)}
-                  className="flex items-center gap-2 flex-1 px-3 py-1.5 text-sm text-left"
-                >
-                  <span className="flex-1">All Projects</span>
-                </button>
-                {user?.defaultProjectId && (
-                  <button
-                    title="Clear default project"
-                    onClick={() => setDefaultProject(null)}
-                    className={`pr-2 text-xs hover:opacity-75 ${selectedProjectId === null ? "text-brand-bright" : "text-fg-dim"}`}
-                  >
-                    ✕
-                  </button>
-                )}
-              </div>
-              {projects.map((proj) => {
-                const isActive = selectedProjectId === proj.id;
-                const isDefault = user?.defaultProjectId === proj.id;
-                const cls = `flex items-center gap-1 rounded-md ${isActive ? "bg-brand text-brand-fg font-medium" : "text-fg-muted hover:bg-surface-2"}`;
-                return (
-                  <div key={proj.id} className={cls}>
-                    <button
-                      onClick={() => selectProject(proj.id)}
-                      className="flex items-center gap-2 flex-1 px-3 py-1.5 text-sm text-left min-w-0"
-                    >
-                      <span
-                        className={`font-mono text-xs px-1.5 py-0.5 rounded flex-shrink-0 ${isActive ? "bg-brand text-brand-fg" : "bg-surface-2 text-fg-muted"}`}
-                      >
-                        {proj.prefix}
-                      </span>
-                      <span className="flex-1 truncate">{proj.name}</span>
-                      {isDefault && (
-                        <span
-                          className={`text-xs flex-shrink-0 ${isActive ? "text-brand-bright" : "text-fg-dim"}`}
-                        >
-                          ★
-                        </span>
-                      )}
-                    </button>
-                    <button
-                      title={
-                        isDefault ? "Clear default" : "Set as default project"
-                      }
-                      onClick={() =>
-                        setDefaultProject(isDefault ? null : proj.id)
-                      }
-                      className={`pr-2 text-xs flex-shrink-0 hover:opacity-75 ${isDefault ? (isActive ? "text-brand-bright" : "text-amber-500") : isActive ? "text-brand opacity-50 hover:opacity-100" : "text-fg-dim hover:text-fg-muted"}`}
-                    >
-                      {isDefault ? "★" : "☆"}
-                    </button>
-                  </div>
-                );
-              })}
-            </div>
-          </div>
-        )}
-
-        {/* Saved views */}
-        <div>
-          <div className="text-xs font-semibold uppercase tracking-wider text-fg-dim px-3 mb-1">
-            Saved Views
-          </div>
-          <div className="space-y-0.5">
-            {savedViews.length === 0 && (
-              <p className="text-xs text-fg-dim px-3 py-1">None yet</p>
+                clear
+              </button>
             )}
-            {savedViews.map((v) => (
-              <div
-                key={v.id}
-                className={`${sidebarItemClass(`saved_${v.id}`)}`}
-              >
-                <button
-                  className="flex-1 text-left truncate"
-                  onClick={() => selectSavedView(v)}
-                  title={v.name}
-                >
-                  {v.name}
-                </button>
-                {(["Admin", "Manager"].includes(user?.role) ||
-                  v.user_id === user?.id) && (
-                  <button
-                    onClick={(e) => deleteView(e, v.id)}
-                    className={`flex-shrink-0 text-base leading-none ${activeKey === `saved_${v.id}` ? "text-brand-bright hover:text-white" : "text-fg-dim hover:text-red-500"}`}
-                  >
-                    ×
-                  </button>
-                )}
-              </div>
-            ))}
-            {canManageViews &&
-              (saveOpen ? (
-                <div className="px-1 pt-1 space-y-1">
-                  <input
-                    autoFocus
-                    type="text"
-                    value={viewName}
-                    onChange={(e) => setViewName(e.target.value)}
-                    onKeyDown={(e) => {
-                      if (e.key === "Enter") saveView();
-                      if (e.key === "Escape") {
-                        setSaveOpen(false);
-                        setViewName("");
-                      }
-                    }}
-                    placeholder="View name…"
-                    className="w-full border border-border-strong rounded px-2 py-1 text-xs focus:outline-none focus:ring-1 focus:ring-brand/40"
-                  />
-                  <div className="flex gap-1">
-                    <button
-                      onClick={saveView}
-                      disabled={savingView}
-                      className="btn-primary btn btn-sm text-xs flex-1 disabled:opacity-50"
-                    >
-                      Save
-                    </button>
-                    <button
-                      onClick={() => {
-                        setSaveOpen(false);
-                        setViewName("");
-                      }}
-                      className="btn-secondary btn btn-sm text-xs"
-                    >
-                      ✕
-                    </button>
-                  </div>
-                </div>
-              ) : (
-                <button
-                  onClick={() => setSaveOpen(true)}
-                  className="flex items-center gap-1.5 w-full px-3 py-1.5 text-xs text-fg-dim hover:text-brand transition-colors"
-                >
-                  <svg
-                    className="w-3 h-3"
-                    fill="none"
-                    stroke="currentColor"
-                    viewBox="0 0 24 24"
-                  >
-                    <path
-                      strokeLinecap="round"
-                      strokeLinejoin="round"
-                      strokeWidth={2}
-                      d="M12 4v16m8-8H4"
-                    />
-                  </svg>
-                  Save current view
-                </button>
-              ))}
+            <button
+              onClick={() => setDrawerOpen(false)}
+              className="text-fg-dim hover:text-fg-muted text-2xl leading-none"
+            >
+              ×
+            </button>
           </div>
         </div>
+        <div className="hidden md:flex items-center justify-between px-3 mb-1">
+          <span className="text-xs font-semibold uppercase tracking-wider text-fg-dim">
+            Recently opened
+          </span>
+          {recents.length > 0 && (
+            <button
+              onClick={() => clearRecentTickets()}
+              className="text-[10px] text-fg-dim hover:text-fg"
+              title="Clear history"
+            >
+              clear
+            </button>
+          )}
+        </div>
+        {recents.length === 0 ? (
+          <p className="px-3 py-2 text-xs text-fg-dim italic">
+            Open a ticket to start building history.
+          </p>
+        ) : (
+          <ul className="space-y-0.5">
+            {recents.map((r) => (
+              <li key={r.id}>
+                <Link
+                  to={`/tickets/${r.id}`}
+                  className="block px-3 py-1.5 rounded-md text-sm text-fg-muted hover:bg-surface-2 hover:text-fg transition-colors"
+                  title={r.title}
+                >
+                  <div className="flex items-center gap-2">
+                    <span className="font-mono text-xs text-brand shrink-0">
+                      {r.ref}
+                    </span>
+                    <span className="truncate">{r.title || "(no title)"}</span>
+                  </div>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        )}
       </aside>
 
       {/* ── Main content ── */}
       <div className="flex-1 min-w-0 space-y-4 md:self-start md:max-h-[calc(100vh-6.5rem)] md:overflow-y-auto md:pr-1">
-        {/* Header row */}
-        <div className="flex items-center justify-between gap-3 flex-wrap">
-          <div className="flex items-center gap-2">
-            {/* Mobile sidebar toggle */}
-            <button
-              onClick={() => setSidebarOpen(true)}
-              className="md:hidden p-1.5 rounded-md text-fg-muted hover:bg-surface-2 hover:text-fg transition-colors"
-              aria-label="Open filters"
-            >
-              <svg
-                className="w-5 h-5"
-                fill="none"
-                stroke="currentColor"
-                viewBox="0 0 24 24"
+        {/* Header */}
+        <div className="space-y-2">
+          {/* Row 1: title + primary actions (Mine, Filters, +). Compact
+              on mobile; the rest goes to row 2 / desktop-only. */}
+          <div className="flex items-center justify-between gap-2 flex-wrap">
+            <div className="flex items-center gap-2 min-w-0">
+              <button
+                onClick={() => setDrawerOpen(true)}
+                className="md:hidden p-1.5 rounded-md text-fg-muted hover:bg-surface-2 hover:text-fg transition-colors"
+                aria-label="Open recently opened drawer"
               >
-                <path
+                <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M4 6h16M4 12h16M4 18h7" />
+                </svg>
+              </button>
+              <h1 className="text-xl font-semibold text-fg truncate">
+                Tickets <span className="text-base font-normal text-fg-dim">({total})</span>
+              </h1>
+            </div>
+            <div className="flex items-center gap-2 flex-wrap">
+              <button
+                onClick={() => setFilters((f) => ({ ...f, mine: !f.mine }))}
+                className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                  filters.mine
+                    ? "bg-brand text-brand-fg hover:bg-brand-bright"
+                    : "bg-surface border border-border text-fg hover:bg-surface-2"
+                }`}
+                title="Show tickets assigned to me"
+              >
+                Mine
+              </button>
+              <button
+                onClick={() => setFiltersOpen(true)}
+                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm bg-surface border border-border text-fg hover:bg-surface-2"
+                title="Edit ticket filters"
+              >
+                <svg
+                  viewBox="0 0 24 24"
+                  fill="none"
+                  stroke="currentColor"
+                  strokeWidth="2"
                   strokeLinecap="round"
                   strokeLinejoin="round"
-                  strokeWidth={2}
-                  d="M4 6h16M4 12h16M4 18h7"
-                />
-              </svg>
-            </button>
-            <h1 className="text-xl font-semibold text-fg">
-              Tickets{" "}
-              <span className="text-base font-normal text-fg-dim">
-                ({total})
-              </span>
-            </h1>
-            {isAdmin && !bulkMode && (
-              <button
-                onClick={() => setBulkMode(true)}
-                className="btn-secondary btn btn-sm whitespace-nowrap ml-2"
-                title="Apply status, assignee, or project changes to many tickets at once"
-              >
-                Bulk Edit
-              </button>
-            )}
-            {bulkMode && (
-              <span className="ml-2 text-sm text-fg-muted">
-                {selectedIds.size} selected
-              </span>
-            )}
-          </div>
-          {bulkMode ? (
-            <div className="flex items-center gap-2 flex-wrap">
-              <select
-                value={bulkStatus}
-                onChange={(e) => setBulkStatus(e.target.value)}
-                disabled={bulkBusy}
-                className="border border-border-strong rounded-md px-2 py-1.5 text-sm"
-              >
-                <option value="">Status — no change</option>
-                {(internalStatuses || []).map((s) => (
-                  <option key={s.id} value={s.name}>{s.name}</option>
-                ))}
-              </select>
-              <select
-                value={bulkAssignee}
-                onChange={(e) => setBulkAssignee(e.target.value)}
-                disabled={bulkBusy}
-                className="border border-border-strong rounded-md px-2 py-1.5 text-sm"
-              >
-                <option value="">Assignee — no change</option>
-                <option value="0">Unassign</option>
-                {bulkUsers.map((u) => (
-                  <option key={u.id} value={u.id}>{u.display_name || u.email}</option>
-                ))}
-              </select>
-              <select
-                value={bulkProject}
-                onChange={(e) => setBulkProject(e.target.value)}
-                disabled={bulkBusy}
-                className="border border-border-strong rounded-md px-2 py-1.5 text-sm"
-              >
-                <option value="">Project — no change</option>
-                {projects.map((p) => (
-                  <option key={p.id} value={p.id}>{p.name}</option>
-                ))}
-              </select>
-              <button
-                onClick={applyBulk}
-                disabled={bulkBusy || !selectedIds.size}
-                className="btn-primary btn btn-sm whitespace-nowrap disabled:opacity-50"
-              >
-                {bulkBusy ? "Applying…" : `Apply${selectedIds.size ? ` (${selectedIds.size})` : ""}`}
-              </button>
-              <button
-                onClick={exitBulkMode}
-                disabled={bulkBusy}
-                className="btn-secondary btn btn-sm whitespace-nowrap"
-              >
-                Cancel
-              </button>
-            </div>
-          ) : (
-            <div className="flex items-center gap-2">
-              <div className="relative">
-                <input
-                  type="text"
-                  value={q}
-                  onChange={(e) => {
-                    setQ(e.target.value);
-                    setPage(1);
-                    setActiveKey("");
-                  }}
-                  placeholder="Search…"
-                  className="border border-border-strong rounded-md px-3 py-1.5 pr-7 text-sm w-48 focus:outline-none focus:ring-2 focus:ring-brand/40"
-                />
-                {q && (
-                  <button
-                    onClick={() => {
-                      setQ("");
-                      setSearchParams({});
-                      setPage(1);
-                    }}
-                    className="absolute right-2 top-1/2 -translate-y-1/2 text-fg-dim hover:text-fg-muted text-lg leading-none"
-                  >
-                    ×
-                  </button>
+                  className="w-4 h-4 text-fg-muted"
+                >
+                  <polygon points="22 3 2 3 10 12.46 10 19 14 21 14 12.46 22 3" />
+                </svg>
+                Filters
+                {filterCount > 0 && (
+                  <span className="bg-brand/15 text-brand rounded-full text-[10px] font-semibold px-1.5 py-0.5">
+                    {filterCount}
+                  </span>
                 )}
-              </div>
-              <Link
-                to={
-                  user?.preferences?.scope_follows_filter !== false &&
-                  selectedProjectId &&
-                  selectedProjectId !== user?.defaultProjectId
-                    ? `/tickets/new?project_id=${selectedProjectId}&from_filter=1`
-                    : "/tickets/new"
-                }
-                className="btn-primary btn btn-sm whitespace-nowrap"
-              >
-                + New Ticket
+              </button>
+              <Link to="/tickets/new" className="btn-primary btn btn-sm whitespace-nowrap">
+                + New
               </Link>
+            </div>
+          </div>
+
+          {/* Row 2: search (full width on mobile) + secondary actions
+              (desktop-only — keep mobile clean). */}
+          <div className="flex items-center gap-2 flex-wrap">
+            <div className="relative flex-1 min-w-[160px] md:flex-initial">
+              <input
+                type="text"
+                value={q}
+                onChange={(e) => setQ(e.target.value)}
+                placeholder="Search…"
+                className="w-full md:w-56 border border-border-strong rounded-md px-3 py-1.5 pr-7 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40"
+              />
+              {q && (
+                <button
+                  onClick={() => {
+                    setQ("");
+                    const next = new URLSearchParams(searchParams);
+                    next.delete("q");
+                    setSearchParams(next, { replace: true });
+                  }}
+                  className="absolute right-2 top-1/2 -translate-y-1/2 text-fg-dim hover:text-fg-muted text-lg leading-none"
+                >
+                  ×
+                </button>
+              )}
+            </div>
+            <div className="hidden md:flex items-center gap-2">
+              <SavedViewsButton
+                open={savedMenuOpen}
+                setOpen={setSavedMenuOpen}
+                views={savedViews}
+                onLoad={loadView}
+                onDelete={deleteView}
+                saveName={saveName}
+                setSaveName={setSaveName}
+                onSave={persistView}
+              />
+              {isAdmin && !bulkMode && (
+                <button
+                  onClick={() => setBulkMode(true)}
+                  className="btn-secondary btn btn-sm whitespace-nowrap"
+                  title="Apply status / assignee / project changes to many tickets"
+                >
+                  Bulk Edit
+                </button>
+              )}
               <ColumnPicker
                 columns={TICKET_COLUMNS}
                 hiddenIds={cols.hiddenIds}
                 onToggle={cols.toggle}
               />
             </div>
-          )}
+          </div>
+
+          {/* Breadcrumb — describes the current filter set in plain text */}
+          <div className="flex items-center gap-2 text-xs text-fg-muted flex-wrap">
+            <span className="text-fg-dim uppercase tracking-wider">Showing:</span>
+            <span className="text-fg-muted">{summary}</span>
+            {(filterCount > 0 || filters.days !== 60 || filters.sort !== "priority" || !filters.excludeClosed) && (
+              <button
+                onClick={() => {
+                  reset();
+                  setQ("");
+                }}
+                className="text-fg-dim hover:text-fg underline underline-offset-2"
+              >
+                reset
+              </button>
+            )}
+          </div>
         </div>
+
+        {/* Bulk edit bar */}
+        {bulkMode && (
+          <div className="flex items-center gap-2 flex-wrap p-3 rounded-md bg-surface-2 border border-border">
+            <span className="text-sm text-fg-muted">{selectedIds.size} selected</span>
+            <select
+              value={bulkStatus}
+              onChange={(e) => setBulkStatus(e.target.value)}
+              disabled={bulkBusy}
+              className="border border-border-strong rounded-md px-2 py-1.5 text-sm"
+            >
+              <option value="">Status — no change</option>
+              {(internalStatuses || []).map((s) => (
+                <option key={s.id} value={s.name}>
+                  {s.name}
+                </option>
+              ))}
+            </select>
+            <select
+              value={bulkAssignee}
+              onChange={(e) => setBulkAssignee(e.target.value)}
+              disabled={bulkBusy}
+              className="border border-border-strong rounded-md px-2 py-1.5 text-sm"
+            >
+              <option value="">Assignee — no change</option>
+              <option value="0">Unassign</option>
+              {bulkUsers.map((u) => (
+                <option key={u.id} value={u.id}>
+                  {u.display_name || u.email}
+                </option>
+              ))}
+            </select>
+            <select
+              value={bulkProject}
+              onChange={(e) => setBulkProject(e.target.value)}
+              disabled={bulkBusy}
+              className="border border-border-strong rounded-md px-2 py-1.5 text-sm"
+            >
+              <option value="">Project — no change</option>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.name}
+                </option>
+              ))}
+            </select>
+            <button
+              onClick={applyBulk}
+              disabled={bulkBusy || !selectedIds.size}
+              className="btn-primary btn btn-sm disabled:opacity-50"
+            >
+              {bulkBusy ? "Applying…" : `Apply${selectedIds.size ? ` (${selectedIds.size})` : ""}`}
+            </button>
+            <button
+              onClick={exitBulkMode}
+              disabled={bulkBusy}
+              className="btn-secondary btn btn-sm"
+            >
+              Cancel
+            </button>
+          </div>
+        )}
 
         {/* Table */}
         <div className="bg-surface rounded-lg border border-border shadow-sm overflow-hidden">
           {loading ? (
             <div className="text-center text-fg-dim py-12">Loading…</div>
           ) : tickets.length === 0 ? (
-            <div className="text-center text-fg-dim py-12">
-              No tickets found
-            </div>
+            <div className="text-center text-fg-dim py-12">No tickets found</div>
           ) : (
             <div className="overflow-x-auto">
               <table className="min-w-full divide-y divide-border">
@@ -925,12 +658,12 @@ export default function TicketList() {
                     )}
                     {cols.isVisible("ref") && (
                       <th className="px-4 py-2.5">
-                        <SortHeader col="internal_ref" label="Ref" />
+                        <span className="text-xs font-medium text-fg-muted uppercase tracking-wide">Ref</span>
                       </th>
                     )}
                     {cols.isVisible("title") && (
                       <th className="px-4 py-2.5 text-left">
-                        <SortHeader col="title" label="Title" />
+                        <span className="text-xs font-medium text-fg-muted uppercase tracking-wide">Title</span>
                       </th>
                     )}
                     {cols.isVisible("priority") && (
@@ -996,6 +729,7 @@ export default function TicketList() {
                           <PhoneticPopover value={t.internal_ref}>
                             <Link
                               to={`/tickets/${t.id}`}
+                              onClick={() => onRowOpen(t)}
                               className="text-brand hover:underline"
                             >
                               {t.internal_ref}
@@ -1007,6 +741,7 @@ export default function TicketList() {
                         <td className="px-4 py-3 text-sm text-fg w-48">
                           <Link
                             to={`/tickets/${t.id}`}
+                            onClick={() => onRowOpen(t)}
                             className="hover:text-brand leading-snug"
                           >
                             {t.title}
@@ -1080,9 +815,7 @@ export default function TicketList() {
                       {cols.isVisible("flagged") && (
                         <td className="px-4 py-3 text-center">
                           {t.flagged_for_review ? (
-                            <span className="text-purple-600 dark:text-purple-400 font-bold">
-                              ★
-                            </span>
+                            <span className="text-purple-600 dark:text-purple-400 font-bold">★</span>
                           ) : null}
                         </td>
                       )}
@@ -1103,8 +836,7 @@ export default function TicketList() {
         {total > LIMIT && (
           <div className="flex items-center justify-between text-sm text-fg-muted">
             <span>
-              Showing {(page - 1) * LIMIT + 1}–{Math.min(page * LIMIT, total)}{" "}
-              of {total}
+              Showing {(page - 1) * LIMIT + 1}–{Math.min(page * LIMIT, total)} of {total}
             </span>
             <div className="flex gap-2">
               <button
@@ -1125,6 +857,89 @@ export default function TicketList() {
           </div>
         )}
       </div>
+
+      <TicketFiltersModal
+        open={filtersOpen}
+        filters={filters}
+        setFilters={setFilters}
+        projects={projects}
+        statuses={statuses}
+        onClose={() => setFiltersOpen(false)}
+      />
     </PageShell>
+  );
+}
+
+function SavedViewsButton({ open, setOpen, views, onLoad, onDelete, saveName, setSaveName, onSave }) {
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen(!open)}
+        className="inline-flex items-center gap-1 px-3 py-1.5 rounded-md text-sm bg-surface border border-border text-fg hover:bg-surface-2"
+      >
+        Saved views
+        <svg
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="currentColor"
+          strokeWidth="2"
+          strokeLinecap="round"
+          strokeLinejoin="round"
+          className="w-3 h-3 text-fg-muted"
+        >
+          <path d="m6 9 6 6 6-6" />
+        </svg>
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-10" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 mt-1 w-64 bg-surface border border-border rounded-md shadow-xl z-20 overflow-hidden">
+            <div className="p-2 border-b border-border">
+              <div className="flex gap-1">
+                <input
+                  type="text"
+                  value={saveName}
+                  onChange={(e) => setSaveName(e.target.value)}
+                  placeholder="Save current as…"
+                  className="flex-1 border border-border-strong rounded px-2 py-1 text-xs"
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") onSave();
+                  }}
+                />
+                <button
+                  onClick={onSave}
+                  className="text-xs px-2 py-1 rounded bg-brand text-brand-fg hover:bg-brand-bright"
+                >
+                  Save
+                </button>
+              </div>
+            </div>
+            {views.length === 0 ? (
+              <p className="px-3 py-3 text-xs text-fg-dim italic">No saved views yet.</p>
+            ) : (
+              <ul className="max-h-72 overflow-y-auto">
+                {views.map((v) => (
+                  <li key={v.id}>
+                    <button
+                      onClick={() => onLoad(v)}
+                      className="w-full text-left px-3 py-1.5 text-sm hover:bg-surface-2 transition-colors flex items-center justify-between gap-2"
+                    >
+                      <span className="truncate">{v.name}</span>
+                      <span
+                        onClick={(e) => onDelete(e, v.id)}
+                        className="text-fg-dim hover:text-red-500 text-xs"
+                        title="Delete view"
+                      >
+                        ×
+                      </span>
+                    </button>
+                  </li>
+                ))}
+              </ul>
+            )}
+          </div>
+        </>
+      )}
+    </div>
   );
 }
