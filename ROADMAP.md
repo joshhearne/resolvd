@@ -91,37 +91,33 @@ Site explicitly tags these as "launching soon" or part of paid hosted tiers. Bui
 - Auto-resume `awaiting_input` → `in_progress` on inbound vendor reply (mirror the gratitude reopen path on the resolved state).
 - Inbound queue match flow could detect `awaiting_input` status and surface "this likely unblocks ticket X" hint to admin reviewer.
 - [ ] Statuses with 1:many, offer progression for external flow. External Escalation: `Unack` → `In Progress` (when given a ticket ref, ack). Statuses gain optional multiple next-status candidates instead of today's single linear "Advance to {next}" chain; the external-escalation path auto-advances from `Unack` to `In Progress` once a vendor ticket ref lands on the ticket (acknowledgement signal).
+- **Agent-forwarded helpdesk submissions** — when an agent (internal user) forwards an external email into a scoped inbox, parse the embedded `From:` / `Sent:` / `Subject:` block from the forwarded body and treat the original sender as the ticket submitter (auto-create contact if not internal). Today the forward attributes the ticket to the agent. Default project = the inbox's single approved scope (existing helpdesk routing in `inboundProcessor.tryAutoCreate` step 2). Agent can prepend `#PREFIX ` to the forwarded subject to redirect into a different project; same `#PREFIX` token on a reply / re-forward of an existing ticket triggers a project-move (re-issues `internal_ref`, detaches vendor contacts — mirrors UI move-ticket semantics). Detection heuristics: `Fwd:` / `FW:` subject + `---------- Forwarded message ----------` / `Begin forwarded message:` / `From: ... Sent: ... To: ... Subject:` block in body. Internal-user-sender + matching forward-header pattern is required — guards against external senders spoofing a "forwarded" payload to impersonate someone else.
 
 ### SLA follow-ups
-- **Business hours awareness** — per-policy calendar. Clocks only count working hours, skip weekends + holidays. Required before SLAs work for teams that don't run 24/7. Schema: `sla_policies.business_hours_calendar_id` → new `business_hours_calendars` table (weekly schedule + holiday exception dates, timezone-bound). Pause/resume + due-at math both need to clamp to working windows.
-- ~~**Escalations** — on breach, auto-bump priority by 1 and reassign to a per-policy escalation chain (Manager → next-level Manager → org Admin pool). Configurable per-policy. Re-uses the existing breach scheduler tick.~~ Shipped: `escalation_chain_steps` with multi-action steps (`notify_*`, `reassign_*`, `bump_priority`), 4 SLA triggers (warning/breach × response/resolve), per-priority + per-project rows with `priority_op` ranges + Org-Wide additive matching, `delay_minutes` grace per step. `bump_priority` locks `tickets.escalation_priority_snapshot` to prevent cascade into the new tier's chain. Admin UI at **Admin → Escalation policies**. See README → *Escalation chains* for the action-kind reference.
-- **Pre-breach warnings** — fire a softer in-app + email notification at 80% of the clock so the assignee can engage before the formal breach pings everyone.
 - **Custom breach destinations** — webhook out on breach for Slack / Teams / PagerDuty. Today only the in-app + email fanout fires.
+- **Holiday exception dates on business hours** — `business_hours_policies` covers weekly schedule + tz, but no holiday/exception-date overlay yet. Required for teams that need clocks paused on observed holidays.
 
 ### Reporting
-- Time-in-status histogram (extend the just-shipped SLA tracker — group time spent per status, not just first-response / resolve timers).
-- "Time blocked by vendor vs internal" breakdown using `awaiting_input` / `on_hold`.
+- Per-agent + per-project SLA compliance trend (rolling 90d). Today MTD-only on the SLA card.
+- Asset-aware reporting: tickets-per-asset, MTTR by asset type, repeat-offender endpoints (groundwork laid by Inventory module).
 
 ### Notifications (post-matrix follow-ups)
-- **Daily digest hour configurability** — currently hardcoded 09:00 user-local. Surface as a per-user pref or org-wide `auth_settings.notification_digest_local_hour`.
-- **Outbox cleanup sweep** — rows with `email_digest=off` set after buffering sit forever. Add a once-a-day `DELETE FROM notification_outbox WHERE created_at < NOW() - INTERVAL '30 days' AND sent_at IS NULL`.
-- **Audit log entry on AI-assisted comment** (open from BYO-AI shipment) — record provider + model name on the comment row when it was rewritten via AI Assist before posting. Not the raw prompt/response.
-- **AI rewrite token cost display** — surface estimated tokens per call so the user knows what their key is burning. Cumulative per-user counter optional.
-- **AI rewrite streaming** — current adapter calls are full-shot; streaming would feel snappier but multiplies provider-quirk surface area. Defer until a complaint surfaces.
+- **Daily digest hour configurability** — currently hardcoded 09:00 user-local in `notificationFanout.js:95`. Surface as per-user pref or org-wide `auth_settings.notification_digest_local_hour`.
+- **Outbox cleanup sweep** — rows with `email_digest=off` set after buffering sit forever. Add once-a-day `DELETE FROM notification_outbox WHERE created_at < NOW() - INTERVAL '30 days' AND sent_at IS NULL`.
+- **AI rewrite streaming** — adapter calls full-shot; streaming would feel snappier but multiplies provider-quirk surface. Defer until a complaint surfaces.
+- **Cumulative AI token cost per user** — per-call tokens already shown in badge; aggregate counter on AccountPreferences → AI Assist next.
 
 ### UX small wins
 - (none currently queued — see "Recently shipped" for bulk actions, hybrid tooltips, and per-user locale overrides.)
 
 ### MSP / RMM integrations (post-Action1)
 
-Context: Action1 preset just shipped (Phase 5 second preset, alongside Zabbix). Pattern proven for inbound RMM webhooks at MSP/internal-IT scale. The pieces below build on it.
+Context: v0.7.0 shipped the Inventory module (assets table + `tickets.asset_id`), Action1 inventory pull (endpoints + software sync), and the multi-vendor adapter registry. Items below are what's left.
 
-- **ConnectWise ScreenConnect — deep-link launcher.** New small table `external_remote_tool` (id, name, kind=`screenconnect`, base_url, enabled). Admin page under **Admin → Integrations → Remote tools**. Ticket detail gets a "Launch remote session" button that builds `${base}/Host#Access/All%20Machines//${hostname}/Join` and opens a new tab — browser handles SC auth via existing SSO/login. No backend API auth, no stored GUIDs, no SC credential storage. Endpoint identity for v1 comes from a new `tickets.endpoint_hostname` column populated by the Action1 mapper (and free-edit by admins). Effort: ~1 day. Replaces the NinjaOne remote-support flow for HearneTech-sized MSP.
-- **Assets table (CMDB-lite).** Once multiple alerts hit the same host, the "every alert is an island" model breaks down. Minimal `assets` table: id, hostname, external_id, integration_source (`action1`/`screenconnect`/manual), company_id, last_seen_at, plus `tickets.asset_id` FK. Action1 mapper resolves/creates an asset by `endpoint_id` + hostname, attaches it to the ticket. Per-company asset list on the company detail page. Enables: dedup repeated alerts by host, history view per endpoint, prefill for ScreenConnect launcher. Effort: ~3-5 days.
-- **Action1 inventory pull.** Distinct from the alert webhook — Action1's REST API exposes endpoint inventory (OS, patches installed, software, last-online). Periodic (hourly?) pull enriches the assets table beyond just "saw an alert from this host." Reuses the encrypted `api_token_enc` storage pattern already on `external_alert_source`. Effort: ~2 days after assets table lands.
-- **ScreenConnect — full API session creation (optional upgrade).** Mode B from the planning doc. Backend authenticates to SC REST, generates a join URL on the fly, returns to UI. Cleaner audit trail and works even when admin isn't already in SC. Skipped for v1 — complexity not justified at 2-customer MSP scale. Revisit if hosted multi-tenant lands and per-tenant SC auth becomes a requirement.
-- **MSP billing — Xero export / time tracking / agreements.** Real PSA gap. No `time_entries`, no `agreement` / contract model, no invoice export today. Out of scope for the RMM-replacement work above; gating decision tied to whether Resolvd ever pivots from "internal ticketing" to "PSA replacement." Probably a separate paid module if it happens.
-- **Action1 webhook HMAC verification.** Existing webhook receiver (`backend/routes/webhooks.js`) is TODO on signature verification — same gap as the Zabbix preset. Worth closing when either preset adds a real signing secret to the source row.
+- **ConnectWise ScreenConnect — deep-link launcher.** New small table `external_remote_tool` (id, name, kind=`screenconnect`, base_url, enabled). Admin page under **Admin → Integrations → Remote tools**. Ticket detail + Asset detail get "Launch remote session" button that builds `${base}/Host#Access/All%20Machines//${hostname}/Join` and opens new tab — browser handles SC auth via existing SSO. No backend API auth, no stored GUIDs. Endpoint identity from `assets.hostname` (already on `tickets.asset_id`). Effort: ~1 day.
+- **ScreenConnect — full API session creation (optional upgrade).** Backend authenticates to SC REST, generates join URL on the fly. Cleaner audit trail. Skipped for v1 — complexity not justified at 2-customer MSP scale. Revisit if hosted multi-tenant lands.
+- **Webhook HMAC verification.** `backend/routes/webhooks.js` TODO on signature verification across all presets (Zabbix, Action1, generic). Close when either preset adds real signing secret to source row.
+- **MSP billing — Xero export / time tracking / agreements.** Real PSA gap. No `time_entries`, no `agreement` / contract model, no invoice export. Out of scope; gating decision tied to whether Resolvd pivots from internal-ticketing to PSA-replacement. Likely separate paid module.
 
 ### Plumbing / debt
 - `ROADMAP.md` (this file) — keep current.
@@ -185,14 +181,15 @@ First real plugin. Fixes Snipe-IT's consumable inventory gap as the headline dra
 ### Phase 5 — Generic alert webhook ingestion (~2 weeks)
 Direct receiver for monitoring tools. No Zapier middleman. First real "Resolvd as alert hub" capability.
 
-**Status:** Zabbix preset shipped (live webhook + bidirectional API for backfill, full mapper + ingest pipeline + admin UI). Alertmanager + generic JSONPath mapper still pending.
+**Status (v0.7.0):** Zabbix + Action1 presets shipped. Generic webhook intake + tabular field-map editor shipped — covers any vendor not yet wrapped in a named adapter. Multi-vendor adapter registry (`services/integrations/registry.js`) is source of truth. Alertmanager native preset still pending.
 
-**Endpoint:** `POST /api/webhooks/<preset>/<token>` — preset routes to payload mapper, token auths the source. Optional `X-Resolvd-Signature: sha256=...` HMAC deferred to v1.1.
+**Endpoint:** `POST /api/webhooks/<preset>/<token>` — preset routes to payload mapper, token auths the source. Optional `X-Resolvd-Signature: sha256=...` HMAC deferred (see MSP/RMM section).
 
 **Tier 1 — ship at v1 (covers ~70% of installs):**
-- ✅ `zabbix` — official Webhook media type (one-paste script template in admin UI), w/ optional API connection for backfill of currently-open problems
-- `alertmanager` — Prometheus AlertManager v4 payload
-- `generic` — schema-flexible mapper, JSONPath field selectors configurable in admin (covers anything with a JSON POST)
+- ✅ `zabbix` — official Webhook media type, optional API connection for backfill
+- ✅ `action1` — partner-approved preset (Phase 5 second preset)
+- ✅ `generic` — tabular field-map editor; covers any JSON POST without a named adapter
+- `alertmanager` — Prometheus AlertManager v4 payload (next)
 
 **Tier 2 — fast-follow (cover most remaining IT shops):**
 - `grafana` — Grafana unified alerting (v9+) webhook contact point
