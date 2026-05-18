@@ -1,23 +1,62 @@
 // Internal handler-only notes on a ticket. Distinct from comments:
-// never reach Submitters or Vendors and never get sent outbound. The
-// whole module is role-gated to Admin/Manager/Tech — even GET. A
-// Submitter who somehow guessed the URL would get 403.
+// never reach Submitters or Vendors and never get sent outbound. Access
+// is gated to "handlers" — global Admin/Manager/Tech, OR a project
+// member whose role_override resolves to Admin/Manager/Tech, OR a
+// project member with is_agent=TRUE. A Submitter who somehow guessed
+// the URL still gets 403 unless they have an agent flag on the ticket's
+// project.
 //
 // Body is encrypted via the standard fields helper (FIELD_MAP entry
 // ticket_notes.body -> body_enc).
 
 const express = require('express');
 const { pool } = require('../db/pool');
-const { requireAuth, requireRole } = require('../middleware/auth');
+const { requireAuth } = require('../middleware/auth');
 const { buildWritePatch, decryptRows } = require('../services/fields');
 const { resolveMentions } = require('../services/mentions');
 const { fanoutMention } = require('../services/notificationFanout');
 
 const router = express.Router();
-const NOTE_ROLES = ['Admin', 'Manager', 'Tech'];
+const GLOBAL_HANDLER_ROLES = new Set(['Admin', 'Manager', 'Tech']);
+
+// Allow if global role is a handler, OR the user is a member of this
+// ticket's project with role_override in handler set or is_agent=TRUE.
+// Resolves the ticket -> project once, attaches `req.ticket` so the
+// handler can reuse it without a second query.
+async function requireNoteAccess(req, res, next) {
+  try {
+    const user = req.session?.user;
+    if (!user) return res.status(401).json({ error: 'Unauthenticated' });
+    const ticketId = Number(req.params.id);
+    if (!Number.isInteger(ticketId) || ticketId <= 0) {
+      return res.status(400).json({ error: 'Invalid ticket id' });
+    }
+    const t = await pool.query(
+      'SELECT id, internal_ref, title, title_enc, project_id FROM tickets WHERE id = $1',
+      [ticketId]
+    );
+    if (!t.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
+    req.ticket = t.rows[0];
+
+    if (GLOBAL_HANDLER_ROLES.has(user.role)) return next();
+
+    const m = await pool.query(
+      'SELECT role_override, is_agent FROM project_members WHERE project_id = $1 AND user_id = $2',
+      [t.rows[0].project_id, user.id]
+    );
+    const row = m.rows[0];
+    if (row && (row.is_agent === true || GLOBAL_HANDLER_ROLES.has(row.role_override))) {
+      return next();
+    }
+    return res.status(403).json({ error: 'Forbidden' });
+  } catch (err) {
+    console.error('note access check:', err);
+    return res.status(500).json({ error: 'Database error' });
+  }
+}
 
 // GET /api/tickets/:id/notes
-router.get('/:id/notes', requireAuth, requireRole(...NOTE_ROLES), async (req, res) => {
+router.get('/:id/notes', requireAuth, requireNoteAccess, async (req, res) => {
   try {
     const r = await pool.query(
       `SELECT n.id, n.ticket_id, n.user_id, n.body, n.body_enc, n.created_at,
@@ -37,16 +76,12 @@ router.get('/:id/notes', requireAuth, requireRole(...NOTE_ROLES), async (req, re
 });
 
 // POST /api/tickets/:id/notes  { body }
-router.post('/:id/notes', requireAuth, requireRole(...NOTE_ROLES), async (req, res) => {
+router.post('/:id/notes', requireAuth, requireNoteAccess, async (req, res) => {
   try {
     const body = String(req.body?.body || '').trim();
     if (!body) return res.status(400).json({ error: 'Note body required' });
-    const ticketId = Number(req.params.id);
-    const t = await pool.query(
-      'SELECT id, internal_ref, title, title_enc, project_id FROM tickets WHERE id = $1',
-      [ticketId]
-    );
-    if (!t.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
+    const ticketId = req.ticket.id;
+    const t = { rows: [req.ticket] };
 
     const patch = await buildWritePatch(pool, 'ticket_notes', { body });
     const cols = ['ticket_id', 'user_id', ...patch.cols];
@@ -97,7 +132,7 @@ router.post('/:id/notes', requireAuth, requireRole(...NOTE_ROLES), async (req, r
 });
 
 // DELETE /api/tickets/:id/notes/:noteId — author or Admin
-router.delete('/:id/notes/:noteId', requireAuth, requireRole(...NOTE_ROLES), async (req, res) => {
+router.delete('/:id/notes/:noteId', requireAuth, requireNoteAccess, async (req, res) => {
   try {
     const noteId = Number(req.params.noteId);
     const ticketId = Number(req.params.id);

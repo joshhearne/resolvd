@@ -181,6 +181,64 @@ function fileIcon(name, mime) {
   return "📎";
 }
 
+function isImageAttachment(a) {
+  if (!a) return false;
+  const mime = (a.mimetype || "").toLowerCase();
+  if (mime.startsWith("image/")) return true;
+  const ext = (a.original_name || "").split(".").pop().toLowerCase();
+  return ["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"].includes(ext);
+}
+
+function Lightbox({ attachment, onClose }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [onClose]);
+  if (!attachment) return null;
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[200] bg-black/85 flex items-center justify-center p-6 cursor-zoom-out"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label={attachment.original_name || "Image preview"}
+    >
+      <img
+        src={`/api/attachments/${attachment.id}/view`}
+        alt={attachment.original_name || ""}
+        className="max-h-full max-w-full object-contain shadow-2xl cursor-default"
+        onClick={(e) => e.stopPropagation()}
+      />
+      <div className="absolute top-4 left-4 right-16 truncate text-xs text-white/80">
+        {attachment.original_name}
+      </div>
+      <a
+        href={`/api/attachments/${attachment.id}`}
+        download={attachment.original_name}
+        onClick={(e) => e.stopPropagation()}
+        className="absolute bottom-4 right-4 text-xs px-3 py-1.5 rounded bg-white/10 text-white/90 hover:bg-white/20"
+      >
+        Download
+      </a>
+      <button
+        type="button"
+        onClick={onClose}
+        aria-label="Close preview"
+        className="absolute top-3 right-4 text-white/80 hover:text-white text-3xl leading-none"
+      >
+        ×
+      </button>
+    </div>,
+    document.body,
+  );
+}
+
 function CommentActionDropdown({ disabled, onPostAndClose, onPostAndReopen }) {
   const [open, setOpen] = useState(false);
   return (
@@ -295,11 +353,14 @@ export default function TicketDetail() {
   const [addFollowerId, setAddFollowerId] = useState("");
   const [showMobileActions, setShowMobileActions] = useState(false);
 
-  // Internal notes (Admin/Manager/Tech only). Server enforces visibility;
-  // we just don't render the tab for other roles. Vendor-filter dropdown
-  // on the Comments tab lives in this same client state so the toggle
-  // survives tab switches.
+  // Internal notes are open to handlers — global Admin/Manager/Tech OR
+  // project members with a handler role_override / is_agent. Server
+  // gate is authoritative; canHandleNotes is set when the notes GET
+  // returns 2xx so the tab and composer only render for users the
+  // server lets through.
   const [notes, setNotes] = useState([]);
+  const [canHandleNotes, setCanHandleNotes] = useState(false);
+  const [lightboxAttachment, setLightboxAttachment] = useState(null);
   const [noteDraft, setNoteDraft] = useState("");
   const [savingNote, setSavingNote] = useState(false);
   const [commentFilter, setCommentFilter] = useState("all"); // all | vendor | internal
@@ -400,20 +461,25 @@ export default function TicketDetail() {
       api.get(`/api/tickets/${id}/attachments`).catch(() => []),
       api.get(`/api/tickets/${id}/followers`).catch(() => []),
       api.get(`/api/tickets/${id}/contacts`).catch(() => []),
-      // Notes route is role-gated server-side; non-handlers get 403 and
-      // we silently swallow so the rest of the page still renders.
-      isAdmin ? api.get(`/api/tickets/${id}/notes`).catch(() => []) : Promise.resolve([]),
+      // Notes route is gated server-side. Attempt unconditionally — a
+      // 403 just means the user isn't a handler on this project; we
+      // hide the tab in that case. { granted, notes } shape lets the
+      // .then() distinguish "no access" from "access but empty".
+      api.get(`/api/tickets/${id}/notes`)
+        .then((n) => ({ granted: true, notes: Array.isArray(n) ? n : [] }))
+        .catch(() => ({ granted: false, notes: [] })),
     ])
       .then(([, audit, atts, fols, vcs, nts]) => {
         setAuditLog(audit);
         setAttachments(atts);
         setFollowers(fols);
         setVendorContacts(vcs);
-        setNotes(Array.isArray(nts) ? nts : []);
+        setNotes(nts.notes);
+        setCanHandleNotes(nts.granted);
         setLoading(false);
       })
       .catch(() => setLoading(false));
-  }, [id, loadTicket, isAdmin]);
+  }, [id, loadTicket]);
 
   async function addNote() {
     const body = noteDraft.trim();
@@ -1424,7 +1490,7 @@ export default function TicketDetail() {
               >
                 Comments ({comments.length})
               </button>
-              {isAdmin && (
+              {canHandleNotes && (
                 <button
                   onClick={() => setActiveTab("notes")}
                   className={`px-4 py-3 text-sm font-medium transition-colors ${activeTab === "notes" ? "border-b-2 border-brand text-brand" : "text-fg-muted hover:text-fg"}`}
@@ -1547,14 +1613,31 @@ export default function TicketDetail() {
                       {attachments.filter((a) => a.comment_id === c.id).length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-1.5">
                           {attachments.filter((a) => a.comment_id === c.id).map((a) => (
-                            <a key={a.id} href={`/api/attachments/${a.id}`}
-                              className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded bg-surface border border-border hover:border-border-strong hover:bg-surface-2 text-fg-muted hover:text-fg transition-colors">
-                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                                  d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 10-5.656-5.656L4.586 11.172a6 6 0 108.486 8.486L19.07 13.7" />
-                              </svg>
-                              <span className="truncate max-w-[180px]">{a.original_name}</span>
-                            </a>
+                            isImageAttachment(a) ? (
+                              <button
+                                key={a.id}
+                                type="button"
+                                onClick={() => setLightboxAttachment(a)}
+                                title={`${a.original_name} — click to preview`}
+                                className="block rounded border border-border hover:border-border-strong overflow-hidden bg-surface focus:outline-none focus:ring-2 focus:ring-brand/40"
+                              >
+                                <img
+                                  src={`/api/attachments/${a.id}/view`}
+                                  alt={a.original_name || ""}
+                                  loading="lazy"
+                                  className="max-h-32 max-w-[200px] object-contain bg-black/5 dark:bg-white/5"
+                                />
+                              </button>
+                            ) : (
+                              <a key={a.id} href={`/api/attachments/${a.id}`}
+                                className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded bg-surface border border-border hover:border-border-strong hover:bg-surface-2 text-fg-muted hover:text-fg transition-colors">
+                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                    d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 10-5.656-5.656L4.586 11.172a6 6 0 108.486 8.486L19.07 13.7" />
+                                </svg>
+                                <span className="truncate max-w-[180px]">{a.original_name}</span>
+                              </a>
+                            )
                           ))}
                         </div>
                       )}
@@ -1722,7 +1805,7 @@ export default function TicketDetail() {
                           }
                         />
                       )}
-                      {isAdmin && (
+                      {canHandleNotes && (
                         <button
                           type="button"
                           onClick={commentDraftToNote}
@@ -1739,7 +1822,7 @@ export default function TicketDetail() {
               </div>
             )}
 
-            {activeTab === "notes" && isAdmin && (
+            {activeTab === "notes" && canHandleNotes && (
               <div className="p-4 space-y-3">
                 <div className="text-xs text-fg-muted bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded px-2 py-1.5">
                   Internal notes are visible only to handlers (Admin / Manager / Tech).
@@ -1855,21 +1938,59 @@ export default function TicketDetail() {
                   <ul className="divide-y divide-border">
                     {attachments.map((a) => (
                       <li key={a.id} className="flex items-center gap-3 py-2.5">
-                        <span className="text-xl">
-                          {fileIcon(a.original_name, a.mimetype)}
-                        </span>
-                        <div className="flex-1 min-w-0">
-                          <a
-                            href={`/api/attachments/${a.id}`}
-                            className="text-sm font-medium text-brand hover:underline truncate block"
-                            download={a.original_name}
+                        {isImageAttachment(a) ? (
+                          <button
+                            type="button"
+                            onClick={() => setLightboxAttachment(a)}
+                            title="Click to preview"
+                            className="block w-14 h-14 rounded border border-border hover:border-border-strong overflow-hidden bg-surface-2 flex-shrink-0 focus:outline-none focus:ring-2 focus:ring-brand/40"
                           >
-                            {a.original_name}
-                          </a>
+                            <img
+                              src={`/api/attachments/${a.id}/view`}
+                              alt={a.original_name || ""}
+                              loading="lazy"
+                              className="w-full h-full object-cover"
+                            />
+                          </button>
+                        ) : (
+                          <span className="text-xl w-14 text-center flex-shrink-0">
+                            {fileIcon(a.original_name, a.mimetype)}
+                          </span>
+                        )}
+                        <div className="flex-1 min-w-0">
+                          {isImageAttachment(a) ? (
+                            <button
+                              type="button"
+                              onClick={() => setLightboxAttachment(a)}
+                              className="text-sm font-medium text-brand hover:underline truncate block text-left w-full"
+                            >
+                              {a.original_name}
+                            </button>
+                          ) : (
+                            <a
+                              href={`/api/attachments/${a.id}`}
+                              className="text-sm font-medium text-brand hover:underline truncate block"
+                              download={a.original_name}
+                            >
+                              {a.original_name}
+                            </a>
+                          )}
                           <span className="text-xs text-fg-dim">
                             {formatBytes(a.size)} ·{" "}
                             {a.uploaded_by_name || "Unknown"} ·{" "}
                             <HybridTime dt={a.created_at} />
+                            {isImageAttachment(a) && (
+                              <>
+                                {" · "}
+                                <a
+                                  href={`/api/attachments/${a.id}`}
+                                  download={a.original_name}
+                                  className="text-fg-muted hover:text-fg underline-offset-2 hover:underline"
+                                >
+                                  Download
+                                </a>
+                              </>
+                            )}
                           </span>
                         </div>
                         {(["Admin", "Manager"].includes(user?.role) ||
@@ -2794,6 +2915,13 @@ export default function TicketDetail() {
           </div>
         </div>,
         document.body,
+      )}
+
+      {lightboxAttachment && (
+        <Lightbox
+          attachment={lightboxAttachment}
+          onClose={() => setLightboxAttachment(null)}
+        />
       )}
     </PageShell>
   );
