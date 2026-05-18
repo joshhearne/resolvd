@@ -341,6 +341,11 @@ function SectionTicketDetail({ role }) {
         <Feature name="@mention a user" roles={["Admin","Manager","Tech","Submitter"]} note="Dropdown scoped to project members. Triggers in-app and email notification." />
         <Feature name="Attach files to comment" roles={["Admin","Manager","Tech","Submitter"]} />
         <Feature name="Preview image attachments inline" roles="all" note="Image attachments render as thumbnails on the comment and Attachments tab. Click to open a fullscreen lightbox (Esc / click outside / × to close, Download button bottom-right)." />
+      </div>
+
+      <HelpScreenshot src="/help/ticket-detail-image-lightbox.png" alt="Fullscreen image lightbox over a ticket — filename label top-left, Download button bottom-right, close × top-right" caption="Click any image attachment to open it fullscreen." />
+
+      <div className="space-y-0">
         <Feature name="Mark comment vendor-visible" roles={PRIV} note="Sends comment to attached vendor contacts via email." />
         <Feature name="Insert canned response" roles={["Admin","Manager","Tech","Submitter"]} note="📋 popover next to the composer. Tags like {ticket.ref}, {submitter.firstName} render server-side at insert time." />
         <Feature name="Post & Close / Post & Reopen" roles={HANDLER} note="Change ticket status in the same action as posting." />
