@@ -171,9 +171,14 @@ function SectionOverview({ role }) {
       <div className="bg-surface-2 border border-border rounded-lg p-3 text-xs text-fg-muted space-y-1">
         <p className="font-semibold text-fg">Project-level role overrides</p>
         <p>
-          An Admin can assign a <em>role_override</em> to any user on a specific project (e.g. give a Submitter Manager-level access within one project).
+          An Admin can assign a <em>role_override</em> to any user on a specific project (e.g. give a Submitter Tech-level access within one project).
           The override only applies to that project — your global role is unchanged elsewhere.
-          Valid project override roles: Admin, Submitter, Viewer.
+          Valid project override roles: Admin, Manager, Tech, Submitter, Viewer.
+        </p>
+        <p>
+          A separate <em>Agent</em> flag on each project member controls ticket assignability and access to handler-only features
+          (Notes, escalation rotation, agent-mentions). Setting the override to Tech auto-ticks Agent; you can untick it afterwards
+          if a Tech-level member should not receive assignments on this project.
         </p>
       </div>
 
@@ -323,7 +328,8 @@ function SectionTicketDetail({ role }) {
       <h3 className="text-sm font-semibold text-fg">Tabs (v0.7.0)</h3>
       <p className="text-sm text-fg leading-relaxed">
         Ticket detail is tabbed. <b>Comments</b> + the metadata sidebar are visible to anyone with access.
-        <b> Notes</b> (handler-only — see the Notes section) and <b>Resolution</b> appear for Admin / Manager / Tech.
+        <b> Notes</b> (handler-only — see the Notes section) and <b>Resolution</b> appear for handlers
+        (Admin / Manager / Tech globally, or anyone with a handler role override / Agent flag on the ticket's project).
         <b> Activity</b> shows the audit log. Knowledge-base suggestions surface on the Resolution tab when the
         ranker matches an article to the ticket title.
       </p>
@@ -334,6 +340,7 @@ function SectionTicketDetail({ role }) {
         <Feature name="Post a comment" roles={["Admin","Manager","Tech","Submitter"]} note="Supports markdown and @mentions." />
         <Feature name="@mention a user" roles={["Admin","Manager","Tech","Submitter"]} note="Dropdown scoped to project members. Triggers in-app and email notification." />
         <Feature name="Attach files to comment" roles={["Admin","Manager","Tech","Submitter"]} />
+        <Feature name="Preview image attachments inline" roles="all" note="Image attachments render as thumbnails on the comment and Attachments tab. Click to open a fullscreen lightbox (Esc / click outside / × to close, Download button bottom-right)." />
         <Feature name="Mark comment vendor-visible" roles={PRIV} note="Sends comment to attached vendor contacts via email." />
         <Feature name="Insert canned response" roles={["Admin","Manager","Tech","Submitter"]} note="📋 popover next to the composer. Tags like {ticket.ref}, {submitter.firstName} render server-side at insert time." />
         <Feature name="Post & Close / Post & Reopen" roles={HANDLER} note="Change ticket status in the same action as posting." />
@@ -396,8 +403,9 @@ function SectionProjects({ role }) {
           <Feature name="View all projects" roles={PRIV} />
           <Feature name="Create / archive project" roles={PRIV} />
           <Feature name="Set project prefix and name" roles={PRIV} note="E.g. 'IT' → tickets become IT-0001, IT-0002…" />
-          <Feature name="Manage project members" roles={PRIV} note="Add users; optionally assign a role override per user." />
-          <Feature name="Set role override per member" roles={PRIV} note="Valid overrides: Admin, Submitter, Viewer. Elevates or restricts access within this project only." />
+          <Feature name="Manage project members" roles={PRIV} note="Add users; optionally assign a role override and/or Agent flag per user." />
+          <Feature name="Set role override per member" roles={PRIV} note="Valid overrides: Admin, Manager, Tech, Submitter, Viewer. Elevates or restricts access within this project only." />
+          <Feature name="Mark member as Agent" roles={PRIV} note="Eligible for ticket assignment, agent-mentions, escalation rotation, and handler-only features (e.g. Notes) on this project. Tech overrides auto-tick this." />
           <Feature name="Enable external vendor workflow" roles={PRIV} note="Unlocks external status field and vendor email features on all tickets in this project." />
         </div>
       </>}
@@ -752,16 +760,19 @@ function SectionNotes({ role }) {
   const isHandler = HANDLER.includes(role);
   return (
     <div className="space-y-4">
-      {isHandler ? <FullAccess /> : <NoAccess note="Notes are handler-only (Admin / Manager / Tech). You won't see the Notes tab on tickets." />}
+      {isHandler
+        ? <FullAccess />
+        : <PartialAccess note="Notes are handler-tier. You'll see the Notes tab on tickets in projects where an Admin has given you a Tech / Manager / Admin role override OR ticked the Agent flag for you. Otherwise the tab is hidden." />}
       <p className="text-sm text-fg leading-relaxed">
-        Every ticket carries a <b>Notes</b> tab visible only to Admin / Manager / Tech.
-        Notes never reach the submitter or vendor — they're a triage / shift-handoff scratchpad
-        separate from the comment thread.
+        Every ticket carries a <b>Notes</b> tab visible only to handlers — global Admin / Manager / Tech, or any user
+        elevated on the ticket's project (role override of Admin / Manager / Tech, or the Agent flag).
+        Notes never reach the submitter or vendor — they're a triage / shift-handoff scratchpad separate from the
+        comment thread.
       </p>
       <div className="space-y-0">
-        <Feature name="Post handler-only note" roles={HANDLER} />
+        <Feature name="Post handler-only note" roles={HANDLER} note="Also available to lower-tier users with a project-level handler override or Agent flag on the ticket's project." />
         <Feature name="@mention project agents" roles={HANDLER} note="Mentions resolve only against active agents on the ticket's project." />
-        <Feature name="Read notes" roles={HANDLER} />
+        <Feature name="Read notes" roles={HANDLER} note="Plus per-project handler overrides + Agent-flagged members on the ticket's project." />
         <Feature name="Notes visible to submitter / vendor" roles={[]} note="Never. By design — notes don't fan out via email or push to non-handlers." />
       </div>
     </div>
