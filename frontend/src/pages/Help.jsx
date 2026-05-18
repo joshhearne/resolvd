@@ -345,10 +345,13 @@ function SectionTicketDetail({ role }) {
 
       <HelpScreenshot src="/help/ticket-detail-image-lightbox.png" alt="Fullscreen image lightbox over a ticket — filename label top-left, Download button bottom-right, close × top-right" caption="Click any image attachment to open it fullscreen." />
 
+      <HelpScreenshot src="/help/ticket-detail-edit-comment.png" alt="A comment in edit mode — textarea with the existing body, Save / Cancel buttons, hint text explaining AI provenance is cleared and vendor outbound is not re-sent" caption="Author / handler can edit a posted comment in-place." />
+
       <div className="space-y-0">
         <Feature name="Mark comment vendor-visible" roles={PRIV} note="Sends comment to attached vendor contacts via email." />
         <Feature name="Insert canned response" roles={["Admin","Manager","Tech","Submitter"]} note="📋 popover next to the composer. Tags like {ticket.ref}, {submitter.firstName} render server-side at insert time." />
         <Feature name="Post & Close / Post & Reopen" roles={HANDLER} note="Change ticket status in the same action as posting." />
+        <Feature name="Edit a posted comment" roles={["Admin","Manager","Tech","Submitter"]} note="Author can edit own; Admin / Manager can edit anyone's. System comments and inbound vendor replies are locked. Editing stamps an '(edited)' indicator, clears AI provenance, and is audited. Vendor outbound is not re-sent — post a follow-up comment if the correction needs to reach the vendor." />
         <Feature name="Mute / delete comments" roles={PRIV} note="Muting hides vendor replies without deleting." />
       </div>
 
