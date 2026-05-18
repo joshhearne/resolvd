@@ -324,6 +324,11 @@ export default function TicketDetail() {
   const [attachments, setAttachments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [commentBody, setCommentBody] = useState("");
+  // Inline comment edit — only one open at a time. editCommentDraft holds
+  // the in-progress text so the textarea stays controlled.
+  const [editingCommentId, setEditingCommentId] = useState(null);
+  const [editCommentDraft, setEditCommentDraft] = useState("");
+  const [savingCommentEdit, setSavingCommentEdit] = useState(false);
   // Captured when the AI modal applies a rewrite to commentBody. Sent
   // up with the next comment POST + cleared. One-shot — discarded if
   // the user edits the body further before submitting.
@@ -646,6 +651,41 @@ export default function TicketDetail() {
       setComments(prev => prev.filter(c => c.id !== commentId));
     } catch (err) {
       toast.error(err.message);
+    }
+  }
+
+  function startEditComment(c) {
+    setEditingCommentId(c.id);
+    setEditCommentDraft(c.body || "");
+  }
+
+  function cancelEditComment() {
+    setEditingCommentId(null);
+    setEditCommentDraft("");
+  }
+
+  async function saveCommentEdit(commentId) {
+    const body = editCommentDraft.trim();
+    if (!body) {
+      toast.error("Comment body cannot be empty");
+      return;
+    }
+    setSavingCommentEdit(true);
+    try {
+      const r = await api.patch(`/api/comments/${commentId}`, { body });
+      setComments(prev => prev.map(c => c.id === commentId
+        ? { ...c, body, edited_at: r.edited_at,
+            ai_provider: null, ai_model: null, ai_input_tokens: null,
+            ai_output_tokens: null, ai_tone: null, ai_verbosity: null,
+            ai_eli5: null, ai_publish_consent: null, ai_project_context_used: null }
+        : c));
+      setEditingCommentId(null);
+      setEditCommentDraft("");
+      toast.success("Comment updated");
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setSavingCommentEdit(false);
     }
   }
 
@@ -1594,6 +1634,12 @@ export default function TicketDetail() {
                             eli5={c.ai_eli5}
                             projectContextUsed={c.ai_project_context_used}
                           />
+                          {!c.is_system && !c.vendor_contact_id && (c.user_id === user?.id || isAdmin) && editingCommentId !== c.id && (
+                            <button onClick={() => startEditComment(c)}
+                              className="text-[11px] text-fg-dim hover:text-brand transition-colors">
+                              Edit
+                            </button>
+                          )}
                           {isAdmin && !c.is_system && (
                             <>
                               <button onClick={() => setCommentMuted(c.id, !c.is_muted)}
@@ -1607,9 +1653,47 @@ export default function TicketDetail() {
                             </>
                           )}
                           <HybridTime dt={c.created_at} className="text-xs text-fg-dim" />
+                          {c.edited_at && (
+                            <span className="text-[10px] text-fg-dim italic" title={`Edited ${new Date(c.edited_at).toLocaleString()}`}>
+                              (edited)
+                            </span>
+                          )}
                         </span>
                       </div>
-                      <MarkdownContent>{c.body}</MarkdownContent>
+                      {editingCommentId === c.id ? (
+                        <div className="space-y-2">
+                          <textarea
+                            value={editCommentDraft}
+                            onChange={(e) => setEditCommentDraft(e.target.value)}
+                            rows={Math.max(3, editCommentDraft.split('\n').length)}
+                            className="w-full border border-border-strong rounded px-2 py-1.5 text-sm bg-bg focus:outline-none focus:ring-1 focus:ring-brand/40"
+                            autoFocus
+                          />
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => saveCommentEdit(c.id)}
+                              disabled={savingCommentEdit || !editCommentDraft.trim()}
+                              className="btn btn-primary btn-xs disabled:opacity-60"
+                            >
+                              {savingCommentEdit ? "Saving…" : "Save"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={cancelEditComment}
+                              disabled={savingCommentEdit}
+                              className="text-xs text-fg-muted hover:text-fg"
+                            >
+                              Cancel
+                            </button>
+                            <span className="text-[10px] text-fg-dim ml-auto">
+                              Edits clear AI provenance · vendor outbound is not re-sent
+                            </span>
+                          </div>
+                        </div>
+                      ) : (
+                        <MarkdownContent>{c.body}</MarkdownContent>
+                      )}
                       {attachments.filter((a) => a.comment_id === c.id).length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-1.5">
                           {attachments.filter((a) => a.comment_id === c.id).map((a) => (

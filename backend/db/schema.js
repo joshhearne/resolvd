@@ -2049,6 +2049,11 @@ async function initSchema() {
     await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS ai_publish_consent BOOLEAN`);
     await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS ai_project_context_used BOOLEAN`);
 
+    // v0.8.0 — author / handler can edit a posted comment. edited_at NULL
+    // means "never edited". Editing clears the ai_* snapshot above because
+    // the comment is no longer purely AI output once a human revises it.
+    await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ`);
+
     // Same metadata for tickets (description / title rewrites).
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS ai_provider TEXT`);
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS ai_model TEXT`);
