@@ -1832,7 +1832,7 @@ export default function TicketDetail() {
                       placeholder="Add a comment... (Ctrl+Enter to post)"
                       mentionProjectId={ticket?.project_id}
                     />
-                    {isAdmin && vendorContacts.length > 0 && (
+                    {(isAdmin || canHandleNotes) && vendorContacts.length > 0 && (
                       <label className="flex items-center gap-2 text-xs text-fg-muted">
                         <input type="checkbox" checked={shareWithVendor}
                           onChange={(e) => setShareWithVendor(e.target.checked)} />

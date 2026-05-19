@@ -7,6 +7,7 @@ const { buildWritePatch, decryptRow, decryptRows } = require('../services/fields
 const { sendVendorEmail } = require('../services/vendorOutbound');
 const { resolveMentions } = require('../services/mentions');
 const { applyCommentToTerminalTicket } = require('../services/autoResolve');
+const { isProjectHandler } = require('../services/ticketHelpers');
 
 const router = express.Router();
 
@@ -116,11 +117,20 @@ router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Tech'
     if (!ticket.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
     await decryptRow('tickets', ticket.rows[0]);
 
-    // Vendor-visible comments require a privileged role — submitters can
-    // log internal comments but not flag content as outbound to vendors.
+    // Vendor-visible comments require a handler role — global
+    // Admin/Manager/Tech, OR a project member with a handler
+    // role_override / is_agent=TRUE on this ticket's project. Submitters
+    // can log internal comments but not flag content as outbound.
     const wantsExternal = !!is_external_visible;
-    if (wantsExternal && !['Admin', 'Manager'].includes(req.session.user.role)) {
-      return res.status(403).json({ error: 'Only Admin/Manager can mark a comment as vendor-visible' });
+    if (wantsExternal) {
+      const allowed = await isProjectHandler(pool, {
+        userId: req.session.user.id,
+        role: req.session.user.role,
+        projectId: ticket.rows[0].project_id,
+      });
+      if (!allowed) {
+        return res.status(403).json({ error: 'Not authorised to mark comment as vendor-visible' });
+      }
     }
 
     const trimmedBody = body.trim();
