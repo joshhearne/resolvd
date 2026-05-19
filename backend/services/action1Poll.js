@@ -389,6 +389,7 @@ async function upsertAssets(sourceId, sourceSystem, endpoints, attributeMap = {}
            missing_updates_critical, missing_updates_other,
            vulnerabilities_critical, vulnerabilities_other,
            update_status, vulnerability_status, reboot_required,
+           asset_tag,
            updated_at)
          VALUES
           ($1, $2, $3,
@@ -396,6 +397,7 @@ async function upsertAssets(sourceId, sourceSystem, endpoints, attributeMap = {}
            $11, $12, $13, $14, $15,
            $16, $17::jsonb, $18, $19, $20,
            $21, $22, $23, $24, $25, $26, $27,
+           $28,
            NOW())
          ON CONFLICT (source_system, source_external_id) DO UPDATE SET
            source_alert_source_id = EXCLUDED.source_alert_source_id,
@@ -423,6 +425,7 @@ async function upsertAssets(sourceId, sourceSystem, endpoints, attributeMap = {}
            update_status = EXCLUDED.update_status,
            vulnerability_status = EXCLUDED.vulnerability_status,
            reboot_required = EXCLUDED.reboot_required,
+           asset_tag = COALESCE(EXCLUDED.asset_tag, assets.asset_tag),
            updated_at = NOW()
          RETURNING id`,
         [
@@ -438,6 +441,7 @@ async function upsertAssets(sourceId, sourceSystem, endpoints, attributeMap = {}
           mapped.vulnerabilities_critical, mapped.vulnerabilities_other,
           mapped.update_status, mapped.vulnerability_status,
           mapped.reboot_required,
+          mapped.asset_tag || null,
         ]
       );
       const assetId = inserted.rows[0]?.id;

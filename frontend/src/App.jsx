@@ -37,6 +37,7 @@ import PrintExport from "./pages/PrintExport";
 import Projects from "./pages/Projects";
 import ProjectDetail from "./pages/ProjectDetail";
 import Inventory from "./pages/Inventory";
+import Consumables from "./pages/Consumables";
 import Alerts from "./pages/Alerts";
 import AlertDetail from "./pages/AlertDetail";
 import Login from "./pages/Login";
@@ -180,6 +181,22 @@ function AppRoutes() {
           element={
             <ProtectedRoute handlerOnly>
               <Inventory />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="consumables"
+          element={
+            <ProtectedRoute handlerOnly>
+              <Consumables />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="consumables/:id"
+          element={
+            <ProtectedRoute handlerOnly>
+              <Consumables />
             </ProtectedRoute>
           }
         />

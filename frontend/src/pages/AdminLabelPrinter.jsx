@@ -107,10 +107,10 @@ export default function AdminLabelPrinter() {
           {field("dpi", "DPI", "number", { min: 100, max: 600 })}
           {field("media_w_dots", "Media width (dots)", "number", { min: 1 })}
           {field("media_h_dots", "Media height (dots)", "number", { min: 1 })}
-          {field("top_offset_dots", "Top offset (dots)", "number", { min: 0 })}
+          {field("top_offset_dots", "Top offset (dots)", "number", { min: -120, max: 120 })}
         </div>
         <p className="text-xs text-fg-dim">
-          2"×0.75" @ 203dpi = 406×152 dots. 300dpi = 600×226. Top offset shifts the entire label down to fight a printhead that prints too high.
+          2"×0.75" @ 203dpi = 406×152 dots. 300dpi = 600×226. Top offset accepts -120 to +120 — positive shifts the label down on the media, negative shifts up. Use the sign that pulls the print onto your label stock.
         </p>
 
         {field("property_line", "Property line (asset label footer)", "text", {

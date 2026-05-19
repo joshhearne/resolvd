@@ -2412,6 +2412,48 @@ async function initSchema() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_asset_checkouts_asset ON asset_checkouts(asset_id, out_at DESC)`);
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_asset_checkouts_active ON asset_checkouts(asset_id) WHERE in_at IS NULL`);
 
+    // Consumables — inventory of supplies (toner, drums, batteries, etc.)
+    // separate from durable assets so the navbar surfaces are distinct
+    // and the stock-movement model doesn't pollute the assets table.
+    // Stock is materialised on the row (current_stock) for fast list
+    // queries; consumable_movements is the ledger of every adjustment
+    // so the trail is reconstructable. Movements always run in the same
+    // transaction as the row UPDATE — no drift.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS consumables (
+        id SERIAL PRIMARY KEY,
+        part_no TEXT NOT NULL,
+        title TEXT,
+        category TEXT,
+        vendor_company_id INTEGER REFERENCES companies(id) ON DELETE SET NULL,
+        current_stock INTEGER NOT NULL DEFAULT 0,
+        low_stock_threshold INTEGER NOT NULL DEFAULT 0,
+        notes TEXT,
+        is_archived BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(part_no)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_consumables_category ON consumables(category) WHERE category IS NOT NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_consumables_vendor ON consumables(vendor_company_id) WHERE vendor_company_id IS NOT NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_consumables_active ON consumables(is_archived) WHERE is_archived = FALSE`);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS consumable_movements (
+        id SERIAL PRIMARY KEY,
+        consumable_id INTEGER NOT NULL REFERENCES consumables(id) ON DELETE CASCADE,
+        delta INTEGER NOT NULL,
+        reason TEXT,
+        ticket_id INTEGER REFERENCES tickets(id) ON DELETE SET NULL,
+        by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        note TEXT
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_consumable_movements_consumable ON consumable_movements(consumable_id, at DESC)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_consumable_movements_ticket ON consumable_movements(ticket_id) WHERE ticket_id IS NOT NULL`);
+
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');

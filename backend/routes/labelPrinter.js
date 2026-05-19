@@ -36,7 +36,7 @@ router.patch('/', requireAuth, requireRole('Admin', 'Manager'), async (req, res)
     if (body.property_line !== undefined) {
       patch.property_line = body.property_line ? String(body.property_line).trim() : null;
     }
-    for (const f of ['dpi', 'media_w_dots', 'media_h_dots', 'top_offset_dots']) {
+    for (const f of ['dpi', 'media_w_dots', 'media_h_dots']) {
       if (body[f] !== undefined) {
         const n = Number(body[f]);
         if (!Number.isFinite(n) || n < 0) {
@@ -44,6 +44,16 @@ router.patch('/', requireAuth, requireRole('Admin', 'Manager'), async (req, res)
         }
         patch[f] = Math.round(n);
       }
+    }
+    // top_offset_dots allows negatives — ZPL ^LT accepts -120..+120 to
+    // shift up or down. Printers with a high natural bias need a
+    // negative value to drag the print back onto the media.
+    if (body.top_offset_dots !== undefined) {
+      const n = Number(body.top_offset_dots);
+      if (!Number.isFinite(n) || n < -120 || n > 120) {
+        return res.status(400).json({ error: 'top_offset_dots must be between -120 and 120' });
+      }
+      patch.top_offset_dots = Math.round(n);
     }
     const cfg = await labelPrinter.updateConfig(patch);
     res.json(cfg);
