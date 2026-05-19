@@ -56,6 +56,7 @@ router.get('/', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req
 
     const r = await pool.query(
       `SELECT a.id, a.source_system, a.source_external_id, a.hostname, a.serial,
+              a.asset_tag,
               a.manufacturer, a.model, a.os, a.os_version, a.organization,
               a.linked_user_id, a.company_id, a.asset_type_id,
               at.slug AS asset_type_slug, at.label AS asset_type_label,
@@ -116,19 +117,19 @@ router.get('/:id(\\d+)', requireAuth, requireRole('Admin', 'Manager', 'Tech'), a
 
 // Fields editable on RMM-managed assets — sync overrides these on every
 // pull, so only the cross-reference cols are useful to override here.
-const RMM_EDITABLE = ['linked_user_id', 'company_id', 'asset_type_id'];
+const RMM_EDITABLE = ['linked_user_id', 'company_id', 'asset_type_id', 'asset_tag'];
 
 // Fields editable on manual assets — admin owns the data, so the full
 // structural set is fair game.
 const MANUAL_EDITABLE = [
   'hostname', 'serial', 'mac', 'manufacturer', 'model', 'os', 'os_version',
   'cpu', 'ip_address', 'organization', 'linked_user_id', 'company_id',
-  'ram_bytes', 'storage_bytes', 'asset_type_id',
+  'ram_bytes', 'storage_bytes', 'asset_type_id', 'asset_tag',
 ];
 
 const TEXT_FIELDS = new Set([
   'hostname', 'serial', 'mac', 'manufacturer', 'model',
-  'os', 'os_version', 'cpu', 'ip_address', 'organization',
+  'os', 'os_version', 'cpu', 'ip_address', 'organization', 'asset_tag',
 ]);
 const INT_FIELDS = new Set(['linked_user_id', 'company_id', 'ram_bytes', 'storage_bytes', 'asset_type_id']);
 
@@ -440,7 +441,7 @@ router.post('/:id(\\d+)/sync-software', requireAuth, requireRole('Admin', 'Manag
 router.post('/:id(\\d+)/print-label', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const r = await pool.query(
-      `SELECT id, hostname, serial, model, manufacturer FROM assets WHERE id = $1`,
+      `SELECT id, hostname, serial, model, manufacturer, asset_tag FROM assets WHERE id = $1`,
       [Number(req.params.id)]
     );
     if (!r.rows[0]) return res.status(404).json({ error: 'Asset not found' });
@@ -455,6 +456,94 @@ router.post('/:id(\\d+)/print-label', requireAuth, requireRole('Admin', 'Manager
   } catch (err) {
     console.error('asset print-label:', err);
     res.status(500).json({ error: err.message || 'Print failed' });
+  }
+});
+
+// POST /api/assets/:id/checkout — Admin/Manager/Tech. Opens a custody
+// row to a user. 409 if asset already has an active checkout (caller
+// should check in first). Auto-syncs assets.linked_user_id so the
+// existing "linked user" column reflects the current holder.
+router.post('/:id(\\d+)/checkout', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+  const assetId = Number(req.params.id);
+  const { user_id, note } = req.body || {};
+  const userId = user_id != null ? Number(user_id) : null;
+  if (!Number.isInteger(userId) || userId <= 0) {
+    return res.status(400).json({ error: 'user_id required' });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const asset = await client.query('SELECT id FROM assets WHERE id = $1', [assetId]);
+    if (!asset.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'asset not found' }); }
+    const u = await client.query(`SELECT id FROM users WHERE id = $1 AND status = 'active'`, [userId]);
+    if (!u.rows[0]) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'user not found or inactive' }); }
+    const active = await client.query(
+      'SELECT id FROM asset_checkouts WHERE asset_id = $1 AND in_at IS NULL',
+      [assetId]
+    );
+    if (active.rows[0]) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'Asset already checked out — check in first' }); }
+    const ins = await client.query(
+      `INSERT INTO asset_checkouts (asset_id, user_id, out_by, out_note)
+       VALUES ($1, $2, $3, $4) RETURNING id, out_at`,
+      [assetId, userId, req.session.user.id, note ? String(note).trim() : null]
+    );
+    await client.query('UPDATE assets SET linked_user_id = $1, updated_at = NOW() WHERE id = $2', [userId, assetId]);
+    await client.query('COMMIT');
+    res.status(201).json({ ok: true, checkout_id: ins.rows[0].id, out_at: ins.rows[0].out_at });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('asset checkout error:', err);
+    res.status(500).json({ error: 'Database error' });
+  } finally {
+    client.release();
+  }
+});
+
+// POST /api/assets/:id/checkin — close the active checkout. Optional
+// note. No-ops with 404 if there's no active row. Leaves
+// assets.linked_user_id alone so the most-recent holder is still
+// visible on the detail page; admin can clear it explicitly via PATCH.
+router.post('/:id(\\d+)/checkin', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+  const assetId = Number(req.params.id);
+  const { note } = req.body || {};
+  try {
+    const r = await pool.query(
+      `UPDATE asset_checkouts
+          SET in_at = NOW(), in_by = $1, in_note = $2
+        WHERE asset_id = $3 AND in_at IS NULL
+        RETURNING id, in_at`,
+      [req.session.user.id, note ? String(note).trim() : null, assetId]
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'No active checkout' });
+    res.json({ ok: true, checkout_id: r.rows[0].id, in_at: r.rows[0].in_at });
+  } catch (err) {
+    console.error('asset checkin error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// GET /api/assets/:id/checkouts — chronological custody history.
+// Newest first. Decorates with holder + actor display names.
+router.get('/:id(\\d+)/checkouts', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT c.id, c.asset_id, c.user_id, c.out_at, c.out_by, c.out_note,
+              c.in_at, c.in_by, c.in_note,
+              uh.display_name AS holder_name, uh.email AS holder_email,
+              ob.display_name AS out_by_name,
+              ib.display_name AS in_by_name
+         FROM asset_checkouts c
+         LEFT JOIN users uh ON uh.id = c.user_id
+         LEFT JOIN users ob ON ob.id = c.out_by
+         LEFT JOIN users ib ON ib.id = c.in_by
+        WHERE c.asset_id = $1
+        ORDER BY c.out_at DESC`,
+      [Number(req.params.id)]
+    );
+    res.json(r.rows);
+  } catch (err) {
+    console.error('asset checkouts list:', err);
+    res.status(500).json({ error: 'Database error' });
   }
 });
 

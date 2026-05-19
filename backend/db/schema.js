@@ -1316,6 +1316,8 @@ async function initSchema() {
     // from the source system's organization label when names match).
     // Both nullable; matcher leaves them NULL when ambiguous so the
     // admin can correct manually later.
+    await client.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS asset_tag TEXT`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_assets_asset_tag ON assets(asset_tag) WHERE asset_tag IS NOT NULL`);
     await client.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS linked_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL`);
     await client.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS company_id INTEGER REFERENCES companies(id) ON DELETE SET NULL`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_assets_linked_user ON assets(linked_user_id) WHERE linked_user_id IS NOT NULL`);
@@ -2386,6 +2388,29 @@ async function initSchema() {
     `);
     await client.query(`INSERT INTO label_printer_config (id) VALUES (1) ON CONFLICT DO NOTHING`);
     await client.query(`ALTER TABLE label_printer_config ADD COLUMN IF NOT EXISTS property_line TEXT`);
+
+    // Asset checkouts — lightweight custody log. One row per
+    // checkout/checkin pair. Holder is users.id; admin/tech who recorded
+    // the action is captured separately in out_by / in_by so we can
+    // tell "I handed the laptop to Jane" apart from "Jane took it from
+    // the closet". Partial unique index keeps only one active row per
+    // asset — re-checking out an already-out asset 4xx's at the route
+    // layer.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS asset_checkouts (
+        id SERIAL PRIMARY KEY,
+        asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        out_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        out_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        out_note TEXT,
+        in_at TIMESTAMPTZ,
+        in_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        in_note TEXT
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_asset_checkouts_asset ON asset_checkouts(asset_id, out_at DESC)`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_asset_checkouts_active ON asset_checkouts(asset_id) WHERE in_at IS NULL`);
 
     await client.query('COMMIT');
   } catch (err) {

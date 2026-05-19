@@ -56,16 +56,22 @@ function renderTestLabel(cfg) {
 }
 
 // Asset label layout (2"×0.75" @203dpi base, 406×152 dots):
+//   Asset Tag (faux-bold)                 [QR]
 //   Hostname                              [QR]
 //   S/N: serial                           [QR]
-//                                         [QR]
-//   Property of: <org>                    [QR]
+//   (blank spacer)                        [QR]
+//   Property of: <org>
+//
+// Asset tag is the operator-facing identifier (stickered/engraved
+// inventory number); hostname is the OS-reported name. The tag should
+// be unambiguous at a glance, so it goes top and bold. Falls back to
+// hostname when no tag is set.
 //
 // QR is right-justified inside the die-cut radius (~10 dot margin).
-// Magnification 3 keeps the code small enough to clear the hostname /
-// serial baseline at 2" wide. Hostname renders twice with a 1-dot
-// horizontal offset for a faux-bold weight (ZPL has no native bold on
-// the default scalable font).
+// Magnification 3 keeps the code small enough to clear text at 2"
+// wide. The lead line renders twice with a 1-dot horizontal offset
+// for a faux-bold weight (ZPL has no native bold on the default
+// scalable font).
 function renderAssetLabel({ asset, qrPayload }, cfg) {
   const lines = [header(cfg)];
   const payload = qrPayload || assetDeepLink(asset.id);
@@ -73,31 +79,38 @@ function renderAssetLabel({ asset, qrPayload }, cfg) {
   // QR — magnification 3. Anchor near the right edge with ~10 dot
   // margin so it sits inside the die-cut curve.
   const qrMargin = scale(cfg, 10);
-  // Empirical width of a v3 QR @ mag 3 = ~87 dots at 203dpi. Anchor
-  // x relative to media width so it scales with cfg.
   const qrWidth = scale(cfg, 87);
   const qrX = Math.max(0, cfg.media_w_dots - qrWidth - qrMargin);
   lines.push(`^FO${qrX},${scale(cfg, 8)}^BQN,2,3^FDLA,${zplEsc(payload)}^FS`);
 
-  // Text column — bounded so long hostnames/serials don't run under
-  // the QR. Field block (^FB) with width = qrX - leftPad - small gap.
+  // Text column — bounded so long values don't run under the QR.
   const xText = scale(cfg, 15);
   const textBlockW = Math.max(80, qrX - xText - scale(cfg, 8));
 
-  const host = zplEsc(asset.hostname || `Asset #${asset.id}`);
-  // Faux-bold: print hostname twice, offset by 1 dot horizontally.
-  const hostSize = scale(cfg, 28);
-  lines.push(`^FO${xText},${scale(cfg, 8)}^A0N,${hostSize},${hostSize}^FB${textBlockW},1,0,L^FD${host}^FS`);
-  lines.push(`^FO${xText + 1},${scale(cfg, 8)}^A0N,${hostSize},${hostSize}^FB${textBlockW},1,0,L^FD${host}^FS`);
+  const tagSource = (asset.asset_tag && asset.asset_tag.trim())
+    || asset.hostname
+    || `Asset #${asset.id}`;
+  const tag = zplEsc(tagSource);
+  const tagSize = scale(cfg, 28);
+  // Faux-bold via 1-dot horizontal double-strike.
+  lines.push(`^FO${xText},${scale(cfg, 4)}^A0N,${tagSize},${tagSize}^FB${textBlockW},1,0,L^FD${tag}^FS`);
+  lines.push(`^FO${xText + 1},${scale(cfg, 4)}^A0N,${tagSize},${tagSize}^FB${textBlockW},1,0,L^FD${tag}^FS`);
+
+  // Hostname appears as a second line only when distinct from the tag,
+  // otherwise it duplicates the lead.
+  if (asset.hostname && asset.hostname.trim() && asset.hostname.trim() !== tagSource.trim()) {
+    const hSize = scale(cfg, 20);
+    lines.push(`^FO${xText},${scale(cfg, 40)}^A0N,${hSize},${hSize}^FB${textBlockW},1,0,L^FD${zplEsc(asset.hostname)}^FS`);
+  }
 
   if (asset.serial) {
-    const sSize = scale(cfg, 22);
-    lines.push(`^FO${xText},${scale(cfg, 48)}^A0N,${sSize},${sSize}^FB${textBlockW},1,0,L^FDS/N: ${zplEsc(asset.serial)}^FS`);
+    const sSize = scale(cfg, 20);
+    lines.push(`^FO${xText},${scale(cfg, 66)}^A0N,${sSize},${sSize}^FB${textBlockW},1,0,L^FDS/N: ${zplEsc(asset.serial)}^FS`);
   }
 
   if (cfg.property_line) {
     const pSize = scale(cfg, 16);
-    lines.push(`^FO${xText},${scale(cfg, 128)}^A0N,${pSize},${pSize}^FB${textBlockW},1,0,L^FD${zplEsc(cfg.property_line)}^FS`);
+    lines.push(`^FO${xText},${scale(cfg, 128)}^A0N,${pSize},${pSize}^FB${cfg.media_w_dots - scale(cfg, 30)},1,0,L^FD${zplEsc(cfg.property_line)}^FS`);
   }
 
   lines.push(footer());

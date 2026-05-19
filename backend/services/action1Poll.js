@@ -237,7 +237,7 @@ function parseYesNo(v) {
 // (no FK columns, no timestamps, no raw_data).
 const MAPPABLE_ASSET_COLUMNS = new Set([
   'hostname', 'serial', 'mac', 'manufacturer', 'model',
-  'os', 'os_version', 'cpu', 'ip_address',
+  'os', 'os_version', 'cpu', 'ip_address', 'asset_tag',
 ]);
 
 // Walk ep.custom[] against the source's attribute_map. Returns

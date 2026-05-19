@@ -1125,7 +1125,7 @@ function SourceDetail({ source, projects, presets, adapters, onBack, onPatch, on
 // inventory-enabled — otherwise the data path doesn't exist.
 const MAPPABLE_COLUMNS = [
   "hostname", "serial", "mac", "manufacturer", "model",
-  "os", "os_version", "cpu", "ip_address",
+  "os", "os_version", "cpu", "ip_address", "asset_tag",
 ];
 
 function AttributeMappingSection({ source, onReload }) {

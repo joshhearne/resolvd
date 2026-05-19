@@ -69,58 +69,10 @@ async function markError(id, message) {
   ).catch((err) => console.error('webhook: mark error failed:', err.message));
 }
 
-// Legacy preset-in-URL route. Kept so existing vendor configs don't
-// break on upgrade. New deployments are encouraged to use /in/:token.
-router.post('/:preset/:token', async (req, res) => {
-  const { preset: presetName, token } = req.params;
-  // Bail early on the new generic route slipping into this handler —
-  // 'in' isn't a real preset, route order should prevent it, but
-  // belt-and-suspenders.
-  if (presetName === 'in') return res.status(404).json({ error: 'Unknown preset: in' });
-  const preset = getPreset(presetName);
-  if (!preset) {
-    return res.status(404).json({ error: `Unknown preset: ${presetName}` });
-  }
-
-  let source;
-  try {
-    const r = await pool.query(
-      `SELECT * FROM external_alert_source
-        WHERE token_hash = $1 AND preset = $2 AND enabled = TRUE`,
-      [hashToken(token), presetName]
-    );
-    source = r.rows[0];
-  } catch (err) {
-    console.error('webhook source lookup error:', err);
-    return res.status(500).json({ error: 'Database error' });
-  }
-  if (!source) return res.status(401).json({ error: 'Invalid token or source disabled' });
-  if (!source.default_project_id) {
-    return res.status(400).json({ error: 'Source has no default project configured' });
-  }
-
-  const inboundId = await logInbound(source.id, req.body);
-  let event;
-  try {
-    event = preset.mapper(req.body);
-  } catch (err) {
-    await markError(inboundId, `map: ${err.message}`);
-    return res.status(400).json({ error: err.message });
-  }
-
-  try {
-    const result = await ingestAlertEvent({ source, preset, event, rawPayload: req.body });
-    await markProcessed(inboundId, result?.ticket_id);
-    res.status(202).json({ ok: true, ...result });
-  } catch (err) {
-    console.error('webhook process error:', err);
-    await markError(inboundId, `ingest: ${err.message}`);
-    res.status(500).json({ error: 'Processing error' });
-  }
-});
-
 // Generic intake. Resolves the vendor from the token, runs whichever
-// of (adapter mapper, field_map resolver) is available.
+// of (adapter mapper, field_map resolver) is available. Declared FIRST
+// so Express matches '/in/:token' before the legacy '/:preset/:token'
+// catch-all below.
 router.post('/in/:token', async (req, res) => {
   const { token } = req.params;
   let source;
@@ -201,6 +153,52 @@ router.post('/in/:token', async (req, res) => {
     const preset = adapter
       ? { defaultSeverityMap: adapter.defaultSeverityMap || {}, mapper: adapter.mapAlertPayload }
       : { defaultSeverityMap: {}, mapper: () => event };
+    const result = await ingestAlertEvent({ source, preset, event, rawPayload: req.body });
+    await markProcessed(inboundId, result?.ticket_id);
+    res.status(202).json({ ok: true, ...result });
+  } catch (err) {
+    console.error('webhook process error:', err);
+    await markError(inboundId, `ingest: ${err.message}`);
+    res.status(500).json({ error: 'Processing error' });
+  }
+});
+
+// Legacy preset-in-URL route. Kept so existing vendor configs don't
+// break on upgrade. New deployments use /in/:token above.
+router.post('/:preset/:token', async (req, res) => {
+  const { preset: presetName, token } = req.params;
+  const preset = getPreset(presetName);
+  if (!preset) {
+    return res.status(404).json({ error: `Unknown preset: ${presetName}` });
+  }
+
+  let source;
+  try {
+    const r = await pool.query(
+      `SELECT * FROM external_alert_source
+        WHERE token_hash = $1 AND preset = $2 AND enabled = TRUE`,
+      [hashToken(token), presetName]
+    );
+    source = r.rows[0];
+  } catch (err) {
+    console.error('webhook source lookup error:', err);
+    return res.status(500).json({ error: 'Database error' });
+  }
+  if (!source) return res.status(401).json({ error: 'Invalid token or source disabled' });
+  if (!source.default_project_id) {
+    return res.status(400).json({ error: 'Source has no default project configured' });
+  }
+
+  const inboundId = await logInbound(source.id, req.body);
+  let event;
+  try {
+    event = preset.mapper(req.body);
+  } catch (err) {
+    await markError(inboundId, `map: ${err.message}`);
+    return res.status(400).json({ error: err.message });
+  }
+
+  try {
     const result = await ingestAlertEvent({ source, preset, event, rawPayload: req.body });
     await markProcessed(inboundId, result?.ticket_id);
     res.status(202).json({ ok: true, ...result });

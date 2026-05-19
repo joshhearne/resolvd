@@ -322,6 +322,7 @@ function AssetDetailPage({ id, types, onBack }) {
           />
         </div>
         <div className="lg:col-span-2 space-y-4">
+          <CheckoutPanel assetId={detail.id} />
           <TicketsPanel tickets={tickets} />
           <VulnerabilitiesPanel vulns={vulns} />
           <RawPayloadPanel raw={detail.raw_data} />
@@ -334,6 +335,162 @@ function AssetDetailPage({ id, types, onBack }) {
 // Tickets across all projects this asset has appeared on. Admin /
 // Manager see every row; everyone else only their project_members
 // scope (server enforces).
+function CheckoutPanel({ assetId }) {
+  const [rows, setRows] = useState(null);
+  const [users, setUsers] = useState([]);
+  const [picker, setPicker] = useState({ user_id: "", note: "" });
+  const [busy, setBusy] = useState(false);
+  const [showCheckin, setShowCheckin] = useState(false);
+  const [checkinNote, setCheckinNote] = useState("");
+
+  async function load() {
+    try {
+      setRows(await api.get(`/api/assets/${assetId}/checkouts`));
+    } catch {
+      setRows([]);
+    }
+  }
+  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [assetId]);
+
+  useEffect(() => {
+    api.get("/api/users")
+      .then((r) => setUsers((r || []).filter((u) => u.status === "active")))
+      .catch(() => setUsers([]));
+  }, []);
+
+  const active = rows?.find((r) => !r.in_at);
+
+  async function checkout() {
+    if (!picker.user_id) { toast.error("Pick a user"); return; }
+    setBusy(true);
+    try {
+      await api.post(`/api/assets/${assetId}/checkout`, {
+        user_id: Number(picker.user_id),
+        note: picker.note || undefined,
+      });
+      toast.success("Checked out");
+      setPicker({ user_id: "", note: "" });
+      await load();
+    } catch (e) { toast.error(e.message || "Failed"); }
+    finally { setBusy(false); }
+  }
+
+  async function checkin() {
+    setBusy(true);
+    try {
+      await api.post(`/api/assets/${assetId}/checkin`, { note: checkinNote || undefined });
+      toast.success("Checked in");
+      setShowCheckin(false);
+      setCheckinNote("");
+      await load();
+    } catch (e) { toast.error(e.message || "Failed"); }
+    finally { setBusy(false); }
+  }
+
+  if (rows == null) return null;
+
+  return (
+    <div className="bg-surface border border-border rounded-lg p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-fg">Custody</h2>
+        <span className="text-xs text-fg-muted">{rows.length} event{rows.length === 1 ? "" : "s"}</span>
+      </div>
+
+      {active ? (
+        <div className="bg-amber-500/10 border border-amber-500/30 rounded p-2.5 text-xs space-y-1.5">
+          <div className="font-medium text-fg">
+            Out to {active.holder_name || active.holder_email || `user #${active.user_id}`}
+            <span className="text-fg-muted"> · since </span>
+            <HybridTime value={active.out_at} />
+          </div>
+          {active.out_note && <div className="text-fg-muted">"{active.out_note}"</div>}
+          {!showCheckin ? (
+            <button onClick={() => setShowCheckin(true)} className="btn btn-secondary btn-sm">
+              Check in
+            </button>
+          ) : (
+            <div className="flex flex-col gap-1.5">
+              <input
+                value={checkinNote}
+                onChange={(e) => setCheckinNote(e.target.value)}
+                placeholder="Note (optional, e.g. condition / location returned)"
+                className="bg-surface border border-border-strong rounded px-2 py-1 text-xs"
+              />
+              <div className="flex gap-2">
+                <button onClick={checkin} disabled={busy} className="btn btn-primary btn-sm disabled:opacity-50">
+                  {busy ? "Saving…" : "Confirm check in"}
+                </button>
+                <button onClick={() => { setShowCheckin(false); setCheckinNote(""); }} className="btn btn-secondary btn-sm">
+                  Cancel
+                </button>
+              </div>
+            </div>
+          )}
+        </div>
+      ) : (
+        <div className="flex flex-wrap gap-2 items-center">
+          <select
+            value={picker.user_id}
+            onChange={(e) => setPicker((p) => ({ ...p, user_id: e.target.value }))}
+            className="border border-border-strong rounded px-2 py-1 text-xs flex-1 min-w-[10rem]"
+          >
+            <option value="">— pick holder —</option>
+            {users.map((u) => (
+              <option key={u.id} value={u.id}>{u.display_name || u.email}</option>
+            ))}
+          </select>
+          <input
+            value={picker.note}
+            onChange={(e) => setPicker((p) => ({ ...p, note: e.target.value }))}
+            placeholder="Note (optional)"
+            className="border border-border-strong rounded px-2 py-1 text-xs flex-1 min-w-[10rem]"
+          />
+          <button onClick={checkout} disabled={busy || !picker.user_id} className="btn btn-primary btn-sm disabled:opacity-50">
+            {busy ? "…" : "Check out"}
+          </button>
+        </div>
+      )}
+
+      {rows.length > 0 && (
+        <div className="overflow-x-auto">
+          <table className="min-w-full divide-y divide-border text-xs">
+            <thead className="bg-surface-2 text-fg-dim">
+              <tr>
+                <th className="px-3 py-1.5 text-left font-medium">Out</th>
+                <th className="px-3 py-1.5 text-left font-medium">Holder</th>
+                <th className="px-3 py-1.5 text-left font-medium">In</th>
+                <th className="px-3 py-1.5 text-left font-medium">By</th>
+                <th className="px-3 py-1.5 text-left font-medium">Notes</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y divide-border">
+              {rows.map((r) => (
+                <tr key={r.id} className={!r.in_at ? "bg-amber-500/5" : ""}>
+                  <td className="px-3 py-1.5 whitespace-nowrap"><HybridTime value={r.out_at} /></td>
+                  <td className="px-3 py-1.5">
+                    {r.holder_name || r.holder_email || <span className="text-fg-dim">—</span>}
+                  </td>
+                  <td className="px-3 py-1.5 whitespace-nowrap">
+                    {r.in_at ? <HybridTime value={r.in_at} /> : <span className="text-amber-700 dark:text-amber-300 font-medium">active</span>}
+                  </td>
+                  <td className="px-3 py-1.5 text-fg-muted">
+                    <div>{r.out_by_name || "?"} → out</div>
+                    {r.in_by_name && <div>{r.in_by_name} → in</div>}
+                  </td>
+                  <td className="px-3 py-1.5 text-fg-muted">
+                    {r.out_note && <div>↑ {r.out_note}</div>}
+                    {r.in_note && <div>↓ {r.in_note}</div>}
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function TicketsPanel({ tickets }) {
   return (
     <div className="bg-surface border border-border rounded-lg p-4 space-y-2">
@@ -513,6 +670,7 @@ function AssetDetail({ detail, types, onBack, onReload, hideTicketsList, hideRaw
   }
   const rows = [
     ["Type", detail.asset_type_label || null],
+    ["Asset tag", detail.asset_tag],
     ["Hostname", detail.hostname],
     ["Serial", detail.serial],
     ["MAC", detail.mac],
@@ -761,16 +919,33 @@ function AssetEditForm({ detail, edits, setField, isManual, types }) {
     </>
   );
 
+  // Asset tag — operator-facing inventory id. Editable on both RMM and
+  // manual rows because RMM systems rarely expose a tag field cleanly.
+  const tagInput = (
+    <>
+      <dt className="text-fg-muted">Asset tag</dt>
+      <dd>
+        <input
+          value={cur("asset_tag") || ""}
+          onChange={(e) => setField("asset_tag", e.target.value)}
+          placeholder="MOT-0142"
+          className="w-full border border-border-strong rounded px-2 py-1 text-xs"
+        />
+      </dd>
+    </>
+  );
+
   if (!isManual) {
     return (
       <dl className="grid grid-cols-[7rem_1fr] gap-y-1.5 text-xs items-center">
         {typePicker}
+        {tagInput}
         <dt className="text-fg-muted">Note</dt>
         <dd className="text-fg-muted italic text-[11px]">
           Structural fields on RMM-managed assets sync from the source on
-          every pull — only type, linked user, and company are mutable here.
-          Edit hostname / serial / etc. in the source system or change the
-          source's mapping under Admin → Alert sources.
+          every pull — only type, linked user, company, and asset tag are
+          mutable here. Edit hostname / serial / etc. in the source system
+          or change the source's mapping under Admin → Alert sources.
         </dd>
       </dl>
     );
@@ -779,6 +954,7 @@ function AssetEditForm({ detail, edits, setField, isManual, types }) {
   return (
     <dl className="grid grid-cols-[7rem_1fr] gap-y-1.5 text-xs items-center">
       {typePicker}
+      {tagInput}
       {fieldList.map((f) => (
         <React.Fragment key={f.builtin_key}>
           <dt className="text-fg-muted">
