@@ -122,6 +122,9 @@ const PREF_DEFAULTS = Object.freeze({
   compact_mode: false,
   phonetic_readback: true,
   default_ticket_sort: 'updated_at_desc',
+  // Local hour-of-day (0-23) for the daily digest cadence. 9 = 09:00
+  // user-local. Honored when email_digest === 'daily'.
+  notification_digest_local_hour: 9,
   // Locale overrides — empty string means "inherit org branding".
   date_style_override: '',
   time_style_override: '',
@@ -189,6 +192,13 @@ router.patch('/me/prefs', requireAuth, async (req, res) => {
     // pattern for QoL toggles).
     if (patch.email_digest !== undefined && !CADENCES.includes(patch.email_digest)) {
       return res.status(400).json({ error: 'Invalid email_digest' });
+    }
+    if (patch.notification_digest_local_hour !== undefined) {
+      const h = Number(patch.notification_digest_local_hour);
+      if (!Number.isInteger(h) || h < 0 || h > 23) {
+        return res.status(400).json({ error: 'notification_digest_local_hour must be 0-23' });
+      }
+      patch.notification_digest_local_hour = h;
     }
     if (patch.notification_prefs !== undefined) {
       const np = patch.notification_prefs;

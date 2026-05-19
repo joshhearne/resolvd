@@ -372,6 +372,15 @@ router.post('/:id/match', requireAuth, requireRole('Admin', 'Manager'), async (r
     );
     await pool.query(`UPDATE tickets SET updated_at = NOW() WHERE id = $1`, [Number(ticket_id)]);
 
+    // If the manual reviewer is matching a reply onto a ticket sitting
+    // in awaiting_input, transition it back to in_progress automatically.
+    try {
+      const { applyReplyToWaitingTicket } = require('../services/autoResolve');
+      await applyReplyToWaitingTicket({ ticketId: Number(ticket_id), actorUserId: req.session.user.id });
+    } catch (e) {
+      console.error('awaiting_input auto-resume (manual match) failed:', e.message);
+    }
+
     res.status(201).json({ ok: true, comment_id: ins.rows[0].id, muted: muteByDefault });
 
     // Followers only get pinged for non-muted comments — the whole point

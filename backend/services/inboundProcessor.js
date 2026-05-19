@@ -28,7 +28,7 @@ const { encrypt } = require('./crypto');
 const blindIndex = require('./blindIndex');
 const { hashWhole } = blindIndex;
 const { sendVendorEmail } = require('./vendorOutbound');
-const { applyReplyToResolvedTicket } = require('./autoResolve');
+const { applyReplyToResolvedTicket, applyReplyToWaitingTicket } = require('./autoResolve');
 const tpl = require('./emailTemplate');
 const { sendMail } = require('./email');
 const { getBranding } = require('./branding');
@@ -824,6 +824,13 @@ async function tryAutoReply({ candidateRef, body, fromAddress, queueRowId }) {
   const reopen = await applyReplyToResolvedTicket({
     ticketId: ticket.id, replyBody: cleanedBody, actorUserId: ticket.submitted_by,
   });
+  // Vendor / inbound replies that hit awaiting_input get auto-resumed
+  // to in_progress — the thing we were waiting for just landed. Skipped
+  // if the resolved-grace path already moved the ticket out of an
+  // awaiting state.
+  const resume = reopen?.reopened
+    ? null
+    : await applyReplyToWaitingTicket({ ticketId: ticket.id, actorUserId: ticket.submitted_by });
 
   // Display label for follower notifications. Prefer "Name (Company)"
   // when both are known, fall back to whichever is non-empty, then to
@@ -844,6 +851,7 @@ async function tryAutoReply({ candidateRef, body, fromAddress, queueRowId }) {
       title: ticket.title,
     },
     reopen,
+    resume,
     cleanedBody,
     actorLabel,
     contactId: contact.id,

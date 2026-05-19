@@ -503,6 +503,12 @@ function SectionNotifications({ role }) {
         Empty buckets are skipped — no email at the boundary if nothing happened. Pending-review and follow-up bypass the cadence and always email instantly.
       </p>
       <HelpScreenshot src="/help/notification-tray.png" alt="Notification tray dropdown showing rows for all 6 event types" />
+
+      <h3 className="text-sm font-semibold text-fg">Digest cadence + delivery hour</h3>
+      <div className="space-y-0">
+        <Feature name="Email digest cadence" roles="all" note="Instant / Hourly / 12h / Daily / Off. Daily groups events by ticket into a single email at your preferred local hour." />
+        <Feature name="Daily digest delivery hour" roles="all" note="Pick the 24-hour local hour the daily digest fires (defaults to 09:00). Honors your timezone override if set." />
+      </div>
       <div className="space-y-0">
         <Feature name="6×3 channel matrix" roles="all" note="Per-event toggles for in-app / email / push. Account → Preferences → Notifications." />
         <Feature name="Email digest cadence" roles="all" note="Instant / hourly / 12h / daily / off. Pending review + follow-up bypass." />

@@ -31,6 +31,15 @@ async function tickOnce() {
        AND s.is_terminal = TRUE
   `).catch((err) => console.error('outbox terminal-suppress failed:', err.message));
 
+  // Cleanup sweep: rows that sat unsent for 30 days are almost certainly
+  // orphans (digest toggled off post-insert, scheduled_flush_at never
+  // matched, user deactivated, etc). Hard-delete so the table stays
+  // bounded. Sent rows are preserved for audit lookback.
+  await pool.query(
+    `DELETE FROM notification_outbox
+       WHERE sent_at IS NULL AND created_at < NOW() - INTERVAL '30 days'`
+  ).catch((err) => console.error('outbox cleanup sweep failed:', err.message));
+
   const r = await pool.query(`
     SELECT o.id, o.user_id, o.event_type, o.ticket_id, o.payload, o.created_at,
            u.email AS user_email, u.display_name AS user_name

@@ -91,8 +91,11 @@ function nextFlushBoundary(prefsBlob, brandingTz) {
     return nextLocalHour(now, tz, [0, 12]);
   }
   if (cadence === 'daily') {
-    // 09:00 user-local. Org-configurable hour piggybacks later if needed.
-    return nextLocalHour(now, tz, [9]);
+    // User can pick their preferred delivery hour (0-23 local) via
+    // AccountPreferences. Falls back to 09:00 when unset / out of range.
+    const raw = prefsBlob && prefsBlob.notification_digest_local_hour;
+    const hr = Number.isInteger(raw) && raw >= 0 && raw <= 23 ? raw : 9;
+    return nextLocalHour(now, tz, [hr]);
   }
   return null;
 }

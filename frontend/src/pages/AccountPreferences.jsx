@@ -203,6 +203,7 @@ function AiAssistCard() {
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState(null);
   const [liveCount, setLiveCount] = useState(0);
+  const [usage, setUsage] = useState(null);
 
   useEffect(() => {
     Promise.all([
@@ -214,6 +215,10 @@ function AiAssistCard() {
       setVerbosities(provs.verbosities);
       setCfg(c);
     }).catch(e => console.error("ai config load:", e.message));
+    // Lifetime token ledger — best effort, hide the card if it errors.
+    api.get("/api/ai/usage")
+      .then(setUsage)
+      .catch(() => setUsage(null));
   }, []);
 
   // Curated model list refreshes whenever provider changes. Live fetch
@@ -582,6 +587,31 @@ function AiAssistCard() {
           </>
         )}
       </div>
+
+      {usage && usage.calls > 0 && (
+        <div className="mt-4 pt-4 border-t border-border">
+          <h3 className="text-sm font-semibold text-fg mb-1">Lifetime AI usage</h3>
+          <p className="text-xs text-fg-muted mb-2">
+            Cumulative tokens spent through AI Assist on your account, across
+            comments and ticket descriptions. Snapshotted at apply time — edits
+            and deletes don't subtract.
+          </p>
+          <div className="grid grid-cols-3 gap-2 text-sm">
+            <div className="bg-surface-2 rounded-md border border-border px-2 py-1.5">
+              <div className="text-[10px] uppercase tracking-wide text-fg-dim">Calls</div>
+              <div className="font-mono text-fg">{usage.calls.toLocaleString()}</div>
+            </div>
+            <div className="bg-surface-2 rounded-md border border-border px-2 py-1.5">
+              <div className="text-[10px] uppercase tracking-wide text-fg-dim">Input tok.</div>
+              <div className="font-mono text-fg">{usage.input_tokens.toLocaleString()}</div>
+            </div>
+            <div className="bg-surface-2 rounded-md border border-border px-2 py-1.5">
+              <div className="text-[10px] uppercase tracking-wide text-fg-dim">Output tok.</div>
+              <div className="font-mono text-fg">{usage.output_tokens.toLocaleString()}</div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -750,6 +780,32 @@ export default function AccountPreferences() {
             <option value="off">Off (no notification emails)</option>
           </select>
         </label>
+
+        {prefs.email_digest === "daily" && (
+          <label className="block mb-4 pb-4 border-b border-border">
+            <span className="block text-sm font-medium text-fg mb-1">
+              Daily digest delivery hour
+            </span>
+            <span className="block text-xs text-fg-muted mb-2">
+              Local hour (24-hour clock) when the daily digest is sent.
+              Honors your timezone override if set; otherwise the org default.
+            </span>
+            <select
+              value={Number.isInteger(prefs.notification_digest_local_hour)
+                ? prefs.notification_digest_local_hour
+                : 9}
+              onChange={(e) => set("notification_digest_local_hour", Number(e.target.value))}
+              disabled={busy}
+              className="border border-border-strong rounded-md px-2 py-1 text-sm"
+            >
+              {Array.from({ length: 24 }, (_, h) => (
+                <option key={h} value={h}>
+                  {String(h).padStart(2, "0")}:00
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
 
         <NotificationMatrix
           value={prefs.notification_prefs || DEFAULT_MATRIX}
