@@ -54,7 +54,7 @@ import KbProject from "./pages/KbProject";
 import KbArticle from "./pages/KbArticle";
 import KbEditor from "./pages/KbEditor";
 
-function ProtectedRoute({ children, adminOnly = false }) {
+function ProtectedRoute({ children, adminOnly = false, handlerOnly = false }) {
   const { user, loading } = useAuth();
   if (loading)
     return (
@@ -64,6 +64,8 @@ function ProtectedRoute({ children, adminOnly = false }) {
     );
   if (!user) return <Navigate to="/login" replace />;
   if (adminOnly && !["Admin", "Manager"].includes(user.role))
+    return <Navigate to="/" replace />;
+  if (handlerOnly && !["Admin", "Manager", "Tech"].includes(user.role))
     return <Navigate to="/" replace />;
   return children;
 }
@@ -167,7 +169,7 @@ function AppRoutes() {
         <Route
           path="inventory/:id"
           element={
-            <ProtectedRoute>
+            <ProtectedRoute handlerOnly>
               <Inventory />
             </ProtectedRoute>
           }
@@ -175,7 +177,7 @@ function AppRoutes() {
         <Route
           path="inventory"
           element={
-            <ProtectedRoute>
+            <ProtectedRoute handlerOnly>
               <Inventory />
             </ProtectedRoute>
           }

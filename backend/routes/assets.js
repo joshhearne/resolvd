@@ -9,7 +9,7 @@ const router = express.Router();
 // surface for smoke testing the Action1 sync before the dedicated UI
 // lands. project_id query param scopes results to assets eligible for
 // linking on that project (used by the ticket asset picker).
-router.get('/', requireAuth, async (req, res) => {
+router.get('/', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const limit = Math.max(1, Math.min(500, Number(req.query.limit) || 100));
     const offset = Math.max(0, Number(req.query.offset) || 0);
@@ -81,7 +81,7 @@ router.get('/', requireAuth, async (req, res) => {
 
 // GET /api/assets/:id — single asset incl. raw_data + linked user
 // details + tickets[]. Tickets decrypted via the standard helper.
-router.get('/:id(\\d+)', requireAuth, async (req, res) => {
+router.get('/:id(\\d+)', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const r = await pool.query(
       `SELECT a.*, u.display_name AS linked_user_name, u.email AS linked_user_email,
@@ -261,7 +261,7 @@ function csvEscape(v) {
   if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
   return s;
 }
-router.get('/export.csv', requireAuth, async (req, res) => {
+router.get('/export.csv', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const q = (req.query.q || '').trim();
     const offlineRaw = Number(req.query.offline_days);
@@ -323,7 +323,7 @@ router.get('/export.csv', requireAuth, async (req, res) => {
 // Returns canonical_name + canonical_vendor + last_alias_id so the UI
 // can show "Adobe Acrobat (was: Adobe Acrobat Pro DC 64-bit)" and link
 // the alias rule that won the match.
-router.get('/:id(\\d+)/software', requireAuth, async (req, res) => {
+router.get('/:id(\\d+)/software', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const id = Number(req.params.id);
     const q = (req.query.q || '').trim().toLowerCase();
@@ -356,7 +356,7 @@ router.get('/:id(\\d+)/software', requireAuth, async (req, res) => {
 // projects. Admin / Manager see every row; others are scoped to
 // projects they're members of. Useful for the asset detail page's
 // "what tickets touched this machine" panel.
-router.get('/:id(\\d+)/tickets', requireAuth, async (req, res) => {
+router.get('/:id(\\d+)/tickets', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const id = Number(req.params.id);
     const user = req.session.user;
@@ -398,7 +398,7 @@ router.get('/:id(\\d+)/tickets', requireAuth, async (req, res) => {
 // per-CVE data. Today returns the count columns the assets table
 // already carries; future vendors that ship per-CVE rows will
 // populate an asset_vulnerabilities table the UI is already reading.
-router.get('/:id(\\d+)/vulnerabilities', requireAuth, async (req, res) => {
+router.get('/:id(\\d+)/vulnerabilities', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const id = Number(req.params.id);
     const a = await pool.query(

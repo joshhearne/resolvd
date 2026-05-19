@@ -322,7 +322,12 @@ function Sidebar({ collapsed, transientOpen, onSetCollapsed, onSetTransient, use
       icon: Icon.AlertTriangle,
       show: ["Admin", "Manager", "Tech"].includes(user?.role),
     },
-    { to: "/inventory", label: "Inventory", icon: Icon.Boxes, show: true },
+    {
+      to: "/inventory",
+      label: "Inventory",
+      icon: Icon.Boxes,
+      show: ["Admin", "Manager", "Tech"].includes(user?.role),
+    },
     { to: "/kb", label: "Knowledge Base", icon: Icon.Book, show: true },
     {
       to: "/admin",

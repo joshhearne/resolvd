@@ -158,13 +158,26 @@ export default function TicketList() {
   const [bulkReplyExternal, setBulkReplyExternal] = useState(false);
   const [bulkReplyBusy, setBulkReplyBusy] = useState(false);
 
+  // Restrict the bulk-assignee dropdown to eligible handlers: global
+  // Admin/Manager/Tech plus any user with is_agent on a project. When the
+  // selection is scoped to a single project, restrict to that project's
+  // agents; otherwise fall back to the org-wide eligible set.
   useEffect(() => {
-    if (!bulkMode || !isAdmin || bulkUsers.length) return;
+    if (!bulkMode || !isAdmin) return;
+    const projectIds = new Set(
+      tickets
+        .filter((t) => selectedIds.has(t.id))
+        .map((t) => t.project_id)
+        .filter(Boolean)
+    );
+    const scope = projectIds.size === 1
+      ? `?project_id=${[...projectIds][0]}`
+      : "";
     api
-      .get("/api/users")
-      .then((rows) => setBulkUsers((rows || []).filter((u) => u.status === "active")))
+      .get(`/api/agents/eligible${scope}`)
+      .then((rows) => setBulkUsers(rows || []))
       .catch(() => {});
-  }, [bulkMode, isAdmin, bulkUsers.length]);
+  }, [bulkMode, isAdmin, selectedIds, tickets]);
 
   function exitBulkMode() {
     setBulkMode(false);
