@@ -1005,6 +1005,16 @@ async function initSchema() {
     // no per-account stripping.
     await client.query(`ALTER TABLE email_backend_accounts ADD COLUMN IF NOT EXISTS inbound_banner_strip_patterns TEXT[] NOT NULL DEFAULT '{}'`);
 
+    // v0.8.0 — default landing project for multi-scoped inboxes. When
+    // an inbox is scoped to >1 project, a #PREFIX-less email currently
+    // falls to the manual queue. Admins can pin a default landing
+    // project here; the inbound processor uses it as the implicit
+    // route when no prefix is given. Must be among the account's
+    // approved + recv_enabled scopes — enforced when the column is
+    // set, not at lookup time, so a later scope removal degrades
+    // gracefully to "no route".
+    await client.query(`ALTER TABLE email_backend_accounts ADD COLUMN IF NOT EXISTS default_inbound_project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL`);
+
     // Many-to-many scope between email accounts and projects. An account
     // can serve N projects; a project can be served by N accounts.
     // send_enabled / recv_enabled toggle the direction independently.

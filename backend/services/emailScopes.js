@@ -51,11 +51,16 @@ async function projectScopeCount(accountId, client = pool) {
   return r.rows[0].cnt;
 }
 
-// Resolve the inbound auto-route target for an account: only fires
-// when the account is scoped to exactly one project AND that scope is
-// approved AND recv_enabled. Returns the project row or null. Used by
-// inbound ingestion to skip the #PREFIX requirement when a mailbox is
-// dedicated to one helpdesk queue.
+// Resolve the inbound auto-route target for an account when an email
+// arrives with no #PREFIX. Two paths:
+//   1. The account is scoped to exactly ONE approved+recv_enabled
+//      project — that's the helpdesk pattern, auto-route there.
+//   2. The account is scoped to multiple projects but has a pinned
+//      default_inbound_project_id that itself sits in an approved +
+//      recv_enabled scope. Used when a single inbox handles several
+//      queues and the admin wants unrouted mail to land somewhere
+//      specific instead of dropping to the manual queue.
+// Returns the project row or null.
 async function resolveInboundProject(accountId, client = pool) {
   const r = await client.query(`
     SELECT p.id, p.name, p.prefix, p.status
@@ -65,9 +70,20 @@ async function resolveInboundProject(accountId, client = pool) {
        AND s.recv_enabled = TRUE
        AND s.approved_at IS NOT NULL
   `, [accountId]);
-  if (r.rows.length !== 1) return null;
-  if (r.rows[0].status !== 'active') return null;
-  return r.rows[0];
+  const eligible = r.rows.filter((row) => row.status === 'active');
+  if (eligible.length === 1) return eligible[0];
+  if (eligible.length > 1) {
+    const acct = await client.query(
+      `SELECT default_inbound_project_id FROM email_backend_accounts WHERE id = $1`,
+      [accountId]
+    );
+    const def = acct.rows[0]?.default_inbound_project_id;
+    if (def) {
+      const match = eligible.find((row) => row.id === def);
+      if (match) return match;
+    }
+  }
+  return null;
 }
 
 // Resolve outbound account for a given project. Picks the active

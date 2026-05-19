@@ -190,6 +190,45 @@ router.delete('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
   catch (e) { res.status(500).json({ error: e.message }); }
 });
 
+// PUT /api/email-backends/:id/default-inbound-project  body: { project_id: number|null }
+// Pin a default landing project for inbound mail that lacks a #PREFIX.
+// Only meaningful when the account is scoped to >1 project; single-
+// scope accounts already auto-route. project_id must be among the
+// account's approved+recv_enabled scopes — anything else is rejected.
+// Send null to clear the default (revert to manual-queue fallback).
+router.put('/:id/default-inbound-project', requireAuth, requireRole('Admin'), async (req, res) => {
+  try {
+    const raw = req.body?.project_id;
+    const projectId = raw === null || raw === undefined ? null : Number(raw);
+    if (projectId !== null && !Number.isInteger(projectId)) {
+      return res.status(400).json({ error: 'project_id must be an integer or null' });
+    }
+    if (projectId !== null) {
+      const ok = await pool.query(
+        `SELECT 1 FROM email_account_project_scopes
+          WHERE account_id = $1 AND project_id = $2
+            AND recv_enabled = TRUE AND approved_at IS NOT NULL`,
+        [req.params.id, projectId]
+      );
+      if (!ok.rows[0]) {
+        return res.status(400).json({ error: 'project must be an approved + recv-enabled scope on this account' });
+      }
+    }
+    const r = await pool.query(
+      `UPDATE email_backend_accounts
+          SET default_inbound_project_id = $1, updated_at = NOW()
+        WHERE id = $2
+        RETURNING id, default_inbound_project_id`,
+      [projectId, req.params.id]
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'Not found' });
+    res.json({ ok: true, default_inbound_project_id: r.rows[0].default_inbound_project_id });
+  } catch (e) {
+    console.error('default inbound project save failed:', e);
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // GET /api/email-backends/:id/scopes — list project scopes for an account.
 router.get('/:id/scopes', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
