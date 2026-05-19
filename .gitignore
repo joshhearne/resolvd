@@ -41,8 +41,10 @@ backup-*.sql
 # Claude Code workspace (local only)
 .claude/
 
-# Screenshot tooling (local-only — runner + plan + git hooks + root-level npm)
-scripts/
+# Screenshot tooling (local-only — runner + plan + git hooks + root-level npm).
+# scripts/build-with-version.sh is shipped; other contents stay local-only.
+scripts/*
+!scripts/build-with-version.sh
 .githooks/
 /package.json
 /package-lock.json
