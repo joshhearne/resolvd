@@ -232,6 +232,20 @@ router.post('/generic', async (req, res) => {
       });
     }
 
+    // If neither auto-flow attached the row, persist whichever reason
+    // we have so the admin queue isn't a blank-reason mystery. Prefer
+    // the auto-reply reason when a candidate_ref was present — that's
+    // the more relevant path for vendor-thread replies.
+    const fallbackReason = (autoReply?.reason && autoReply.reason !== 'no_ref')
+      ? autoReply.reason
+      : (autoResult?.reason && autoResult.reason !== 'no_prefix' ? autoResult.reason : null);
+    if (fallbackReason) {
+      await pool.query(
+        `UPDATE inbound_email_queue SET reject_reason = COALESCE(reject_reason, $1) WHERE id = $2`,
+        [fallbackReason, queueRowId]
+      );
+    }
+
     res.status(201).json({
       ok: true, id: queueRowId,
       candidate_ref: result.rows[0].candidate_ticket_ref,

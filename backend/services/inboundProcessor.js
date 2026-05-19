@@ -270,29 +270,21 @@ async function findInternalSubmitter(email) {
 
 // Resolve a CC address to an existing active contact under the given
 // project. Never creates new contacts — admin curates that explicitly.
+// Matches by blind index when populated OR plaintext email; either path
+// alone misses rows depending on encryption mode + backfill state.
 async function findContactInProject(email, projectId) {
   const blind = hashWhole(email);
-  if (!blind) {
-    // No master key configured — fall back to plaintext lookup.
-    const r = await pool.query(
-      `SELECT c.id, c.company_id
-         FROM contacts c
-         JOIN companies co ON co.id = c.company_id
-        WHERE LOWER(c.email) = LOWER($1)
-          AND co.project_id = $2 AND c.is_active = TRUE
-        LIMIT 1`,
-      [email, projectId]
-    );
-    return r.rows[0] || null;
-  }
   const r = await pool.query(
     `SELECT c.id, c.company_id
        FROM contacts c
        JOIN companies co ON co.id = c.company_id
-      WHERE c.email_blind_idx = $1
-        AND co.project_id = $2 AND c.is_active = TRUE
+      WHERE co.project_id = $2 AND c.is_active = TRUE
+        AND (
+          ($1::text IS NOT NULL AND c.email_blind_idx = $1)
+          OR LOWER(c.email) = LOWER($3)
+        )
       LIMIT 1`,
-    [blind, projectId]
+    [blind, projectId, email]
   );
   return r.rows[0] || null;
 }
@@ -768,41 +760,28 @@ async function tryAutoReply({ candidateRef, body, fromAddress, queueRowId }) {
   if (!t.rows[0]) return { ok: false, reason: `ticket_not_found:${candidateRef}` };
   const ticket = t.rows[0];
 
-  // Sender must be an active contact attached to this ticket. Pulls
-  // name + name_enc and company name so we can decrypt under standard
-  // mode and use the vendor's actual name as the comment author label
-  // + a signature-cut anchor.
+  // Sender must be an active contact attached to this ticket. Match by
+  // email_blind_idx when populated (encryption mode flipped on) OR by
+  // plaintext email — covers off-mode rows, pre-encryption legacy rows,
+  // and rows where the blind backfill hasn't run yet. The OR means the
+  // lookup can't silently miss because of a NULL index column.
   const blind = hashWhole(fromAddress);
-  let contactRow;
-  if (blind) {
-    contactRow = await pool.query(`
-      SELECT c.id, c.name, c.name_enc, c.email, c.email_enc,
-             co.name AS company_name, co.name_enc AS company_name_enc,
-             u.id AS submitter_id
-        FROM ticket_contacts tc
-        JOIN contacts c ON c.id = tc.contact_id
-        LEFT JOIN companies co ON co.id = c.company_id
-   LEFT JOIN users u ON u.id = $2
-       WHERE tc.ticket_id = $1
-         AND c.is_active = TRUE
-         AND c.email_blind_idx = $3
-       LIMIT 1
-    `, [ticket.id, ticket.submitted_by, blind]);
-  } else {
-    contactRow = await pool.query(`
-      SELECT c.id, c.name, c.name_enc, c.email, c.email_enc,
-             co.name AS company_name, co.name_enc AS company_name_enc,
-             u.id AS submitter_id
-        FROM ticket_contacts tc
-        JOIN contacts c ON c.id = tc.contact_id
-        LEFT JOIN companies co ON co.id = c.company_id
-   LEFT JOIN users u ON u.id = $2
-       WHERE tc.ticket_id = $1
-         AND c.is_active = TRUE
-         AND LOWER(c.email) = LOWER($3)
-       LIMIT 1
-    `, [ticket.id, ticket.submitted_by, fromAddress]);
-  }
+  const contactRow = await pool.query(`
+    SELECT c.id, c.name, c.name_enc, c.email, c.email_enc,
+           co.name AS company_name, co.name_enc AS company_name_enc,
+           u.id AS submitter_id
+      FROM ticket_contacts tc
+      JOIN contacts c ON c.id = tc.contact_id
+      LEFT JOIN companies co ON co.id = c.company_id
+ LEFT JOIN users u ON u.id = $2
+     WHERE tc.ticket_id = $1
+       AND c.is_active = TRUE
+       AND (
+         ($3::text IS NOT NULL AND c.email_blind_idx = $3)
+         OR LOWER(c.email) = LOWER($4)
+       )
+     LIMIT 1
+  `, [ticket.id, ticket.submitted_by, blind, fromAddress]);
   if (!contactRow.rows[0]) return { ok: false, reason: 'sender_not_on_ticket' };
 
   const contact = contactRow.rows[0];
