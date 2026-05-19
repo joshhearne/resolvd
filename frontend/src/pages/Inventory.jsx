@@ -16,6 +16,31 @@ function isOffline(lastSeenAt) {
   return ageMs > OFFLINE_DAYS * 86400_000;
 }
 
+function PrintLabelButton({ assetId }) {
+  const [busy, setBusy] = useState(false);
+  async function print() {
+    setBusy(true);
+    try {
+      await api.post(`/api/assets/${assetId}/print-label`);
+      toast.success("Label sent to printer");
+    } catch (e) {
+      toast.error(e.message || "Print failed");
+    } finally {
+      setBusy(false);
+    }
+  }
+  return (
+    <button
+      onClick={print}
+      disabled={busy}
+      className="btn btn-secondary btn-sm disabled:opacity-50"
+      title="Print an asset label on the configured Zebra"
+    >
+      {busy ? "Printing…" : "Print label"}
+    </button>
+  );
+}
+
 function PatchBadge({ crit, other }) {
   const c = Number(crit) || 0;
   const o = Number(other) || 0;
@@ -278,8 +303,11 @@ function AssetDetailPage({ id, types, onBack }) {
     <div className="space-y-4">
       <div className="flex items-center justify-between gap-3 flex-wrap">
         <button onClick={onBack} className="text-xs text-fg-muted hover:text-fg">← Back to inventory</button>
-        <div className="text-xs text-fg-dim">
-          {detail.last_seen_at ? <>Last seen <HybridTime value={detail.last_seen_at} /></> : "Never seen"}
+        <div className="flex items-center gap-3">
+          <PrintLabelButton assetId={detail.id} />
+          <div className="text-xs text-fg-dim">
+            {detail.last_seen_at ? <>Last seen <HybridTime value={detail.last_seen_at} /></> : "Never seen"}
+          </div>
         </div>
       </div>
       <div className="grid grid-cols-1 lg:grid-cols-3 gap-4 items-start">

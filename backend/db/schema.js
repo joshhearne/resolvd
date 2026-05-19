@@ -2364,6 +2364,29 @@ async function initSchema() {
     // so the "(edited)" badge always reflects something useful.
     await client.query(`ALTER TABLE ticket_notes ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ`);
 
+    // Label printer config — single row, admin-edited. Used by the
+    // asset/consumable label print flow over raw TCP :9100 to a Zebra
+    // (or compatible) ZPL printer. media_*_dots match the calibrated
+    // label size in dots at the configured DPI; top_offset_dots nudges
+    // every render down so the printhead's natural high-bias is
+    // corrected without rewriting every template.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS label_printer_config (
+        id INTEGER PRIMARY KEY DEFAULT 1,
+        enabled BOOLEAN NOT NULL DEFAULT FALSE,
+        host TEXT,
+        port INTEGER NOT NULL DEFAULT 9100,
+        dpi INTEGER NOT NULL DEFAULT 203,
+        media_w_dots INTEGER NOT NULL DEFAULT 406,
+        media_h_dots INTEGER NOT NULL DEFAULT 152,
+        top_offset_dots INTEGER NOT NULL DEFAULT 15,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CHECK (id = 1)
+      )
+    `);
+    await client.query(`INSERT INTO label_printer_config (id) VALUES (1) ON CONFLICT DO NOTHING`);
+    await client.query(`ALTER TABLE label_printer_config ADD COLUMN IF NOT EXISTS property_line TEXT`);
+
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');

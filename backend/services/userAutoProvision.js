@@ -40,6 +40,28 @@ async function lookupEntraByEmail(email) {
   }
 }
 
+// Decline auto-provisioning when the sender's domain belongs to a
+// vendor company. Vendor reps shouldn't become Submitter accounts on
+// our org — they reply to tickets as contacts. Internal / customer
+// companies are still allowed (in MSP setups customers do submit), and
+// unknown domains fall through to "allow" so internal staff onboarding
+// via inbound email still works.
+async function isVendorDomain(client, email) {
+  const at = email.lastIndexOf('@');
+  if (at < 0) return false;
+  const domain = email.slice(at + 1).toLowerCase().trim();
+  if (!domain) return false;
+  const r = await client.query(
+    `SELECT 1 FROM companies
+      WHERE LOWER(domain) = $1
+        AND kind = 'vendor'
+        AND is_archived = FALSE
+      LIMIT 1`,
+    [domain]
+  );
+  return r.rows.length > 0;
+}
+
 // Look up an existing active user (case-insensitive) regardless of role.
 async function findExistingUserByEmail(client, email) {
   const r = await (client || pool).query(
@@ -65,6 +87,13 @@ async function autoProvisionSubmitter({ email, source }, client) {
 
   const existing = await findExistingUserByEmail(db, cleanEmail);
   if (existing) return existing;
+
+  if (await isVendorDomain(db, cleanEmail)) {
+    // Email belongs to a known vendor domain — they reply as contacts,
+    // not users. Skip provisioning silently; the inbound queue / alert
+    // ingest still records the underlying event.
+    return null;
+  }
 
   const directory = await lookupEntraByEmail(cleanEmail);
   const displayName = directory?.displayName || null;
@@ -109,4 +138,5 @@ module.exports = {
   autoProvisionSubmitter,
   findExistingUserByEmail,
   lookupEntraByEmail,
+  isVendorDomain,
 };

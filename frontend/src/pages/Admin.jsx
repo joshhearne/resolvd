@@ -37,6 +37,7 @@ const NAV_GROUPS = [
       { to: "/admin/inbound", label: "Inbound email", manager: true },
       { to: "/admin/email-backends", label: "Email backends" },
       { to: "/admin/email-templates", label: "Email templates" },
+      { to: "/admin/label-printer", label: "Label printer" },
     ],
   },
   {

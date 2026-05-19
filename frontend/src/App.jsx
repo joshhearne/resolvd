@@ -28,6 +28,7 @@ import AdminAlertSources from "./pages/AdminAlertSources";
 import AdminSoftwareAliases from "./pages/AdminSoftwareAliases";
 import AdminSystemHealth from "./pages/AdminSystemHealth";
 import AdminCannedResponses from "./pages/AdminCannedResponses";
+import AdminLabelPrinter from "./pages/AdminLabelPrinter";
 import AdminSlaPolicies from "./pages/AdminSlaPolicies";
 import AdminAssignmentPolicies from "./pages/AdminAssignmentPolicies";
 import AdminEscalationPolicies from "./pages/AdminEscalationPolicies";
@@ -214,6 +215,7 @@ function AppRoutes() {
           <Route path="software-aliases" element={<AdminSoftwareAliases />} />
           <Route path="system-health" element={<AdminSystemHealth />} />
           <Route path="canned-responses" element={<AdminCannedResponses />} />
+          <Route path="label-printer" element={<AdminLabelPrinter />} />
           <Route path="sla" element={<AdminSlaPolicies />} />
           <Route path="assignment" element={<AdminAssignmentPolicies />} />
           <Route path="escalations" element={<AdminEscalationPolicies />} />

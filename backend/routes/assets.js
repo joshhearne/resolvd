@@ -434,4 +434,28 @@ router.post('/:id(\\d+)/sync-software', requireAuth, requireRole('Admin', 'Manag
   }
 });
 
+// POST /api/assets/:id/print-label — render + send an asset label to
+// the configured Zebra. QR payload is `asset:<id>` so a scanner can
+// deep-link back to the inventory row.
+router.post('/:id(\\d+)/print-label', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT id, hostname, serial, model, manufacturer FROM assets WHERE id = $1`,
+      [Number(req.params.id)]
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'Asset not found' });
+    const labelPrinter = require('../services/labelPrinter');
+    const labelTemplates = require('../services/labelTemplates');
+    const cfg = await labelPrinter.getConfig();
+    if (!cfg?.enabled) return res.status(400).json({ error: 'Label printer disabled' });
+    if (!cfg.host) return res.status(400).json({ error: 'Label printer host not configured' });
+    const zpl = labelTemplates.renderAssetLabel({ asset: r.rows[0] }, cfg);
+    await labelPrinter.print(zpl);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('asset print-label:', err);
+    res.status(500).json({ error: err.message || 'Print failed' });
+  }
+});
+
 module.exports = router;
