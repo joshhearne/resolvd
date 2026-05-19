@@ -539,10 +539,10 @@ export default function TicketList() {
             <div className="flex items-center gap-2 flex-wrap">
               <button
                 onClick={() => setFilters((f) => ({ ...f, mine: !f.mine }))}
-                className={`px-3 py-1.5 rounded-md text-sm font-medium transition-colors ${
+                className={`btn ${
                   filters.mine
                     ? "bg-brand text-brand-fg hover:bg-brand-bright"
-                    : "bg-surface border border-border text-fg hover:bg-surface-2"
+                    : "btn-secondary"
                 }`}
                 title="Show tickets assigned to me"
               >
@@ -550,7 +550,7 @@ export default function TicketList() {
               </button>
               <button
                 onClick={() => setFiltersOpen(true)}
-                className="inline-flex items-center gap-1.5 px-3 py-1.5 rounded-md text-sm bg-surface border border-border text-fg hover:bg-surface-2"
+                className="btn btn-secondary"
                 title="Edit ticket filters"
               >
                 <svg
@@ -571,7 +571,7 @@ export default function TicketList() {
                   </span>
                 )}
               </button>
-              <Link to="/tickets/new" className="btn-primary btn btn-sm whitespace-nowrap">
+              <Link to="/tickets/new" className="btn btn-primary whitespace-nowrap">
                 + New
               </Link>
             </div>
