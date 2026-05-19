@@ -74,13 +74,13 @@ function Feature({ name, roles, note }) {
 
   return (
     <div className="flex items-start justify-between gap-3 py-2 border-b border-border last:border-0">
-      <div className="flex-1">
+      <div className="flex-1 min-w-0">
         <span className="text-sm text-fg font-medium">{name}</span>
-        {note && <p className="text-xs text-fg-muted mt-0.5">{note}</p>}
+        {note && <p className="text-xs text-fg-muted mt-0.5 break-words">{note}</p>}
       </div>
-      <div className="flex gap-1 flex-shrink-0 flex-wrap justify-end items-center">
+      <div className="flex flex-col sm:flex-row sm:flex-wrap items-end sm:items-center gap-1 flex-shrink-0 sm:justify-end">
         {isAll
-          ? <span className="text-xs text-fg-muted italic">All roles</span>
+          ? <span className="text-xs text-fg-muted italic whitespace-nowrap">All roles</span>
           : (Array.isArray(roles) ? roles : [roles]).map(r => <RolePill key={r} role={r} />)
         }
       </div>
