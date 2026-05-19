@@ -154,11 +154,40 @@ function companyAllows(contact, eventType, ticketStatusName) {
   return true; // new_ticket, new_comment always allowed
 }
 
+const { marked } = require('marked');
+const sanitizeHtml = require('sanitize-html');
+
+const MD_ALLOWED_TAGS = [
+  'p', 'br', 'strong', 'em', 'code', 'pre', 'blockquote',
+  'ul', 'ol', 'li', 'a', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+  'hr', 'span', 'div',
+];
+const MD_ALLOWED_ATTRS = {
+  a: ['href', 'title', 'target', 'rel'],
+};
+
 function htmlify(body) {
-  // Plaintext template body → minimally-formatted HTML for backends that
-  // expect content-type text/html (Graph default).
-  const escaped = body.replace(/[&<>]/g, (c) => c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;');
-  return `<div style="font-family:system-ui,-apple-system,sans-serif;white-space:pre-wrap;font-size:14px;color:#111827">${escaped}</div>`;
+  // Render markdown so canned responses + comments composed in markdown
+  // (e.g. hyperlinks via [label](url)) reach vendor inboxes as real HTML.
+  // Raw HTML in the source is stripped by sanitizeHtml so only the tag
+  // set produced by marked survives. Falls back to escaped pre-wrap on
+  // any rendering error so the vendor still gets the body content.
+  let rendered;
+  try {
+    rendered = marked.parse(String(body || ''), { breaks: true, gfm: true });
+  } catch (err) {
+    console.error('vendor outbound markdown render failed:', err.message);
+    const escaped = String(body || '').replace(/[&<>]/g, (c) => c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;');
+    return `<div style="font-family:system-ui,-apple-system,sans-serif;white-space:pre-wrap;font-size:14px;color:#111827">${escaped}</div>`;
+  }
+  const safe = sanitizeHtml(rendered, {
+    allowedTags: MD_ALLOWED_TAGS,
+    allowedAttributes: MD_ALLOWED_ATTRS,
+    transformTags: {
+      a: sanitizeHtml.simpleTransform('a', { target: '_blank', rel: 'noopener noreferrer' }),
+    },
+  });
+  return `<div style="font-family:system-ui,-apple-system,sans-serif;font-size:14px;color:#111827;line-height:1.5">${safe}</div>`;
 }
 
 // Visible marker prepended to every outbound vendor email body. The
