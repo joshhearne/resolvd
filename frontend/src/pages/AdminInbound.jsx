@@ -33,13 +33,14 @@ export default function AdminInbound() {
   }
 
   async function match() {
-    if (!ticketId) return toast.error("Ticket id required");
+    const v = ticketId.trim();
+    if (!v) return toast.error("Ticket id or ref required");
+    const body = { contact_id: detail?.suggested_contact?.id };
+    if (/^\d+$/.test(v)) body.ticket_id = Number(v);
+    else body.ticket_ref = v;
     setMatching(true);
     try {
-      const r = await api.post(`/api/inbound/${openId}/match`, {
-        ticket_id: Number(ticketId),
-        contact_id: detail?.suggested_contact?.id,
-      });
+      const r = await api.post(`/api/inbound/${openId}/match`, body);
       toast.success(r.muted ? "Matched (muted on ticket)" : "Matched");
       setOpenId(null);
       await reload();
@@ -190,8 +191,8 @@ export default function AdminInbound() {
                       <input
                         value={ticketId}
                         onChange={(e) => setTicketId(e.target.value)}
-                        placeholder="Target ticket id"
-                        className="bg-surface border border-border rounded px-2 py-1 text-sm w-48"
+                        placeholder="Ticket id or ref (e.g. SUP-0042)"
+                        className="bg-surface border border-border rounded px-2 py-1 text-sm w-64"
                       />
                       <button
                         onClick={match}

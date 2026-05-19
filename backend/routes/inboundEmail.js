@@ -311,8 +311,10 @@ router.get('/:id', requireAuth, requireRole('Admin', 'Manager'), async (req, res
 // POST /api/inbound/:id/match — turn an unmatched message into a comment
 router.post('/:id/match', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
-    const { ticket_id, contact_id } = req.body || {};
-    if (!ticket_id) return res.status(400).json({ error: 'ticket_id required' });
+    const { ticket_id, ticket_ref, contact_id } = req.body || {};
+    if (!ticket_id && !ticket_ref) {
+      return res.status(400).json({ error: 'ticket_id or ticket_ref required' });
+    }
 
     const queue = await pool.query(`SELECT * FROM inbound_email_queue WHERE id = $1`, [req.params.id]);
     if (!queue.rows[0]) return res.status(404).json({ error: 'Not found' });
@@ -320,11 +322,17 @@ router.post('/:id/match', requireAuth, requireRole('Admin', 'Manager'), async (r
       return res.status(409).json({ error: `Already ${queue.rows[0].status}` });
     }
 
-    const ticket = await pool.query(
-      `SELECT id, internal_ref, title, title_enc, auto_mute_vendor_replies FROM tickets WHERE id = $1`,
-      [Number(ticket_id)]
-    );
+    const ticket = ticket_id
+      ? await pool.query(
+          `SELECT id, internal_ref, title, title_enc, auto_mute_vendor_replies FROM tickets WHERE id = $1`,
+          [Number(ticket_id)]
+        )
+      : await pool.query(
+          `SELECT id, internal_ref, title, title_enc, auto_mute_vendor_replies FROM tickets WHERE internal_ref ILIKE $1`,
+          [String(ticket_ref).trim()]
+        );
     if (!ticket.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
+    const resolvedTicketId = ticket.rows[0].id;
     await decryptRow('tickets', ticket.rows[0]);
     // Ticket-level mute does NOT block the match — the comment still
     // lands in the thread so nothing is lost in a separate bucket. It
@@ -348,7 +356,7 @@ router.post('/:id/match', requireAuth, requireRole('Admin', 'Manager'), async (r
     const cols = ['ticket_id', 'user_id', 'is_external_visible', 'is_internal',
       'is_muted', 'vendor_contact_id', 'source_inbound_email_id', ...patch.cols];
     const values = [
-      Number(ticket_id), null, true, false,
+      resolvedTicketId, null, true, false,
       muteByDefault,
       contact_id ? Number(contact_id) : null,
       queueRow.id,
@@ -368,15 +376,15 @@ router.post('/:id/match', requireAuth, requireRole('Admin', 'Manager'), async (r
               matched_at = NOW(),
               matched_by_user_id = $3
         WHERE id = $4`,
-      [Number(ticket_id), contact_id ? Number(contact_id) : null, req.session.user.id, queueRow.id]
+      [resolvedTicketId, contact_id ? Number(contact_id) : null, req.session.user.id, queueRow.id]
     );
-    await pool.query(`UPDATE tickets SET updated_at = NOW() WHERE id = $1`, [Number(ticket_id)]);
+    await pool.query(`UPDATE tickets SET updated_at = NOW() WHERE id = $1`, [resolvedTicketId]);
 
     // If the manual reviewer is matching a reply onto a ticket sitting
     // in awaiting_input, transition it back to in_progress automatically.
     try {
       const { applyReplyToWaitingTicket } = require('../services/autoResolve');
-      await applyReplyToWaitingTicket({ ticketId: Number(ticket_id), actorUserId: req.session.user.id });
+      await applyReplyToWaitingTicket({ ticketId: resolvedTicketId, actorUserId: req.session.user.id });
     } catch (e) {
       console.error('awaiting_input auto-resume (manual match) failed:', e.message);
     }
