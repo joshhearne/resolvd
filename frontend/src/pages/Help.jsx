@@ -367,6 +367,7 @@ function SectionTicketDetail({ role }) {
         <Feature name="Priority override" roles={HANDLER} note="Manually pin priority regardless of computed score." />
         <Feature name="Assign ticket" roles={HANDLER} />
         <Feature name="Set blocker" roles={HANDLER} note="Block on another ticket or flag as awaiting team input." />
+        <Feature name="Auto-resume on inbound reply" roles="all" note="A ticket in an `awaiting_input` status automatically transitions to `in_progress` when any inbound email reply lands on it (vendor reply or matched inbound queue entry). Audited as status_change_auto." />
         <Feature name="Schedule follow-up reminder" roles={HANDLER} />
         <Feature name="Link asset (Inventory)" roles={HANDLER} note="Surfaces the asset hostname in place of an opaque id and feeds cross-project history on the asset detail page." />
         <Feature name="Resolution summary" roles={HANDLER} note="One-line summary captured at close time. Drives the 'Fix applied' ticket-list filter together with linked KB articles." />
@@ -616,6 +617,7 @@ function SectionAiAssist({ role }) {
         <Feature name="Project context glossary" roles="all" note="Admin-authored per-project markdown blob ships with rewrites in that project's tickets." />
         <Feature name="Usage disclosure badge" roles="all" note="Inline ✨ AI pill on AI-rewritten posts. Hover for details, click to copy." />
         <Feature name="Publish my AI usage" roles="all" note="Per-user opt-in to make own AI badge org-wide visible — for cost transparency when on personal keys." />
+        <Feature name="Lifetime AI token ledger" roles="all" note="Small 3-cell card on Account → Preferences → AI Assist showing total calls, input tokens, output tokens across your comments + tickets. Snapshot at apply time — edits / deletes don't subtract." />
         <Feature name="Admin org AI integration" roles={["Admin"]} note="Admin → Integrations → AI Assist. Configure org provider + lock + audience tier." />
       </div>
     </div>
