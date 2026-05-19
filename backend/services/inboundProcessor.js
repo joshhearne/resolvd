@@ -711,10 +711,11 @@ async function tryAutoReply({ candidateRef, body, fromAddress, queueRowId }) {
   const values = [ticket.id, ticket.submitted_by, true, false,
     contact.id, queueRowId || null, ...patch.values];
   const placeholders = cols.map((_, i) => `$${i + 1}`).join(', ');
-  await pool.query(
-    `INSERT INTO comments (${cols.join(', ')}) VALUES (${placeholders})`,
+  const ins = await pool.query(
+    `INSERT INTO comments (${cols.join(', ')}) VALUES (${placeholders}) RETURNING id`,
     values
   );
+  const commentId = ins.rows[0].id;
   await pool.query(`UPDATE tickets SET updated_at = NOW() WHERE id = $1`, [ticket.id]);
   await pool.query(
     `INSERT INTO audit_log (ticket_id, user_id, action, note)
@@ -748,6 +749,7 @@ async function tryAutoReply({ candidateRef, body, fromAddress, queueRowId }) {
     cleanedBody,
     actorLabel,
     contactId: contact.id,
+    commentId,
   };
 }
 

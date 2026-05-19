@@ -298,10 +298,19 @@ async function fanoutStatusChange(_unusedPool, { ticket, oldStatus, newStatus, a
   }
 }
 
-async function fanoutNewComment(_unusedPool, { ticket, comment, actorId, actorName, excludeUserIds = [] }) {
+async function fanoutNewComment(_unusedPool, { ticket, comment, commentId = null, actorId, actorName, excludeUserIds = [] }) {
   if (await isTicketTerminal(ticket.id)) return;
   const recipients = await getFollowerRecipients(null, ticket.id, actorId, excludeUserIds);
   if (!recipients.length) return;
+  // First internal exposure to non-author recipients — stamp once so the
+  // "(edited)" badge can later distinguish "edits before anyone saw it"
+  // from "edits after distribution". No-op if already stamped or no id.
+  if (commentId) {
+    await pool.query(
+      'UPDATE comments SET distributed_at = NOW() WHERE id = $1 AND distributed_at IS NULL',
+      [commentId]
+    );
+  }
   const ticketRef = ticket.internal_ref;
   const ticketTitle = ticket.title || '';
   const preview = String(comment || '').length > 300 ? String(comment).slice(0, 300) + '…' : String(comment || '');
@@ -331,12 +340,23 @@ async function fanoutNewComment(_unusedPool, { ticket, comment, actorId, actorNa
   }
 }
 
-async function fanoutMention(_unusedPool, { ticket, comment, commentId, mentionedUsers, actorId, actorName }) {
+async function fanoutMention(_unusedPool, { ticket, comment, commentId, mentionedUsers, actorId, actorName, kind = 'comment' }) {
   if (!mentionedUsers || !mentionedUsers.length) return;
   if (await isTicketTerminal(ticket.id)) return;
   const ticketRef = ticket.internal_ref;
   const ticketTitle = ticket.title || '';
   const preview = String(comment || '').length > 300 ? String(comment).slice(0, 300) + '…' : String(comment || '');
+  // Distribution stamp for comment mentions only — note mentions also
+  // route through here and would hit the wrong table by id.
+  if (kind === 'comment' && commentId) {
+    const realMentions = mentionedUsers.filter((m) => m && m.id && m.id !== actorId);
+    if (realMentions.length) {
+      await pool.query(
+        'UPDATE comments SET distributed_at = NOW() WHERE id = $1 AND distributed_at IS NULL',
+        [commentId]
+      );
+    }
+  }
   // Mention implicitly subscribes the user as a follower.
   for (const m of mentionedUsers) {
     if (!m || !m.id || m.id === actorId) continue;

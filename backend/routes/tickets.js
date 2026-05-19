@@ -1307,6 +1307,7 @@ router.post('/bulk/comment', requireAuth, requireRole('Admin', 'Manager', 'Tech'
               fanoutNewComment(pool, {
                 ticket,
                 comment: body,
+                commentId,
                 actorId: user.id,
                 actorName: user.displayName,
                 excludeUserIds: mentionedIds,

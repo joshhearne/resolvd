@@ -218,6 +218,7 @@ router.post('/generic', async (req, res) => {
       fanoutNewComment(pool, {
         ticket: autoReply.ticket,
         comment: autoReply.cleanedBody || '',
+        commentId: autoReply.commentId,
         actorId: null,
         actorName: autoReply.actorLabel || 'Vendor',
       }).catch(err => console.error('vendor-reply notification failed:', err.message));
@@ -379,6 +380,7 @@ router.post('/:id/match', requireAuth, requireRole('Admin', 'Manager'), async (r
       fanoutNewComment(pool, {
         ticket: ticket.rows[0],
         comment: commentBody,
+        commentId: ins.rows[0].id,
         actorId: req.session.user.id,
         actorName: queueRow.from_name || queueRow.from_addr,
       }).catch(() => {});

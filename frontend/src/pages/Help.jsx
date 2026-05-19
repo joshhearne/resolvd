@@ -351,7 +351,7 @@ function SectionTicketDetail({ role }) {
         <Feature name="Mark comment vendor-visible" roles={PRIV} note="Sends comment to attached vendor contacts via email." />
         <Feature name="Insert canned response" roles={["Admin","Manager","Tech","Submitter"]} note="📋 popover next to the composer. Tags like {ticket.ref}, {submitter.firstName} render server-side at insert time." />
         <Feature name="Post & Close / Post & Reopen" roles={HANDLER} note="Change ticket status in the same action as posting." />
-        <Feature name="Edit a posted comment" roles={["Admin","Manager","Tech","Submitter"]} note="Author can edit own; Admin / Manager can edit anyone's. System comments and inbound vendor replies are locked. Editing stamps an '(edited)' indicator, clears AI provenance, and is audited. Vendor outbound is not re-sent — post a follow-up comment if the correction needs to reach the vendor." />
+        <Feature name="Edit a posted comment" roles={["Admin","Manager","Tech","Submitter"]} note="Author can edit own; Admin / Manager can edit anyone's. System comments and inbound vendor replies are locked. Editing clears AI provenance and is audited. The '(edited)' indicator only appears once a non-author has either viewed the original in the UI or been fanned out to via email — quick edits before anyone sees the comment stay silent. Vendor outbound is not re-sent." />
         <Feature name="Mute / delete comments" roles={PRIV} note="Muting hides vendor replies without deleting." />
       </div>
 

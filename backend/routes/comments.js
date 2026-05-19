@@ -64,6 +64,38 @@ router.get('/:id/comments', requireAuth, async (req, res) => {
       }
     }
 
+    // Stamp distributed_at for any comment in this ticket that hasn't
+    // been distributed yet AND whose author is someone other than the
+    // viewer. Counts UI reads by non-authors as "the original got out".
+    // System comments are skipped (no editing, no badge). Vendor inbound
+    // (vendor_contact_id) is also skipped — vendor authors are out of
+    // the editing workflow.
+    if (viewer?.id) {
+      try {
+        const updated = await pool.query(
+          `UPDATE comments SET distributed_at = NOW()
+             WHERE ticket_id = $1
+               AND distributed_at IS NULL
+               AND is_system = FALSE
+               AND vendor_contact_id IS NULL
+               AND user_id IS NOT NULL
+               AND user_id <> $2
+             RETURNING id`,
+          [req.params.id, viewer.id]
+        );
+        if (updated.rowCount > 0) {
+          const stampedIds = new Set(updated.rows.map((r) => r.id));
+          const stampTime = new Date().toISOString();
+          for (const row of result.rows) {
+            if (stampedIds.has(row.id)) row.distributed_at = stampTime;
+          }
+        }
+      } catch (err) {
+        // Tracking is best-effort — never block the comment list on it.
+        console.error('comment distribution stamp failed:', err.message);
+      }
+    }
+
     res.json(result.rows);
   } catch (err) {
     console.error(err);
@@ -235,6 +267,7 @@ router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Tech'
             fanoutNewComment(pool, {
               ticket: ticket.rows[0],
               comment: trimmedBody,
+              commentId: insertResult.rows[0].id,
               actorId: req.session.user.id,
               actorName: req.session.user.displayName,
               excludeUserIds: mentionedIds,

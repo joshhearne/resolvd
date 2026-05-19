@@ -2054,6 +2054,14 @@ async function initSchema() {
     // the comment is no longer purely AI output once a human revises it.
     await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ`);
 
+    // v0.8.0 — distributed_at marks the first moment the comment was
+    // exposed to a non-author user via either internal fanout (follower /
+    // mention notification) or a non-author UI read. Used to suppress
+    // the "(edited)" badge when nobody but the author saw the original.
+    // Vendor outbound (sendVendorEmail) does NOT stamp this — vendors are
+    // out of band and the user-facing badge is for internal recipients.
+    await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS distributed_at TIMESTAMPTZ`);
+
     // Same metadata for tickets (description / title rewrites).
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS ai_provider TEXT`);
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS ai_model TEXT`);

@@ -1653,7 +1653,8 @@ export default function TicketDetail() {
                             </>
                           )}
                           <HybridTime dt={c.created_at} className="text-xs text-fg-dim" />
-                          {c.edited_at && (
+                          {c.edited_at && c.distributed_at &&
+                            new Date(c.distributed_at) <= new Date(c.edited_at) && (
                             <span className="text-[10px] text-fg-dim italic" title={`Edited ${new Date(c.edited_at).toLocaleString()}`}>
                               (edited)
                             </span>

@@ -108,6 +108,7 @@ router.post('/:id/notes', requireAuth, requireNoteAccess, async (req, res) => {
           ticket: t.rows[0],
           comment: body,
           commentId: ins.rows[0].id,
+          kind: 'note',
           mentionedUsers: mentioned,
           actorId: req.session.user.id,
           actorName: req.session.user.displayName || req.session.user.email,
