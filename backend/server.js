@@ -9,6 +9,7 @@ const { pool } = require('./db/pool');
 const { initSchema } = require('./db/schema');
 
 const authRoutes = require('./routes/auth');
+const versionRoutes = require('./routes/version');
 const inviteRoutes = require('./routes/invites');
 const authSettingsRoutes = require('./routes/authSettings');
 const ticketRoutes = require('./routes/tickets');
@@ -90,6 +91,9 @@ app.use('/auth', authRoutes);
 // Webhook receivers authenticate via URL token, not session. Mount before
 // the support JIT guard since they aren't tied to any user principal.
 app.use('/api/webhooks', webhookRoutes);
+// Build identity — public, no auth, no PII. Sits before the support
+// guard since it's not user-scoped.
+app.use('/api/version', versionRoutes);
 // Support routes mounted BEFORE the JIT guard so support principals can
 // poll their own grant status (/api/support/grants/me) and admins can
 // approve/revoke without being self-locked out.

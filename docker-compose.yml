@@ -19,7 +19,12 @@ services:
       retries: 10
 
   backend:
-    build: ./backend
+    build:
+      context: ./backend
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
+        APP_COMMIT: ${APP_COMMIT:-unknown}
+        BUILT_AT: ${BUILT_AT:-}
     container_name: resolvd-backend
     restart: unless-stopped
     env_file: .env

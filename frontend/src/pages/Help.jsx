@@ -463,7 +463,7 @@ function SectionAdmin({ role }) {
           <Feature name="AI Assist — provider, model, project context" roles={PRIV} note="BYO-AI org config + per-user keys; rewrite surfaces on comments, descriptions, canned responses." />
           <Feature name="Authentication — MFA policy, SSO / Azure AD" roles={["Admin"]} />
           <Feature name="Branding — logo, site name, colors, locale defaults" roles={PRIV} />
-          <Feature name="System health — scheduler heartbeats + DB / queue stats" roles={PRIV} note="Auto-refreshes every 30s; shows ok / stale / error / never_ran per scheduled job." />
+          <Feature name="System health — scheduler heartbeats + DB / queue stats" roles={PRIV} note="Auto-refreshes every 30s; shows ok / stale / error / never_ran per scheduled job. Build info card at the top displays the running version / commit / built-at with a manual 'Check for updates' button that polls GitHub releases for the latest published tag (admin-triggered only — no background phone-home)." />
           <Feature name="Login security — failed-login forensics" roles={["Admin"]} note="Raw + per-IP / per-email aggregates. Backed by the per-IP block + dwell timer + honeypot pipeline." />
           <Feature name="Support — issue JIT access grants" roles={["Admin"]} note="Time-limited read grants for Support role users." />
           <Feature name="Export — full data export" roles={PRIV} />

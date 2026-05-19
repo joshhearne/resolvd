@@ -32,6 +32,136 @@ function HealthDot({ health }) {
   );
 }
 
+// Parse a tag like "v0.8.0" or "v0.8.0-3-gabcdef" into [major, minor,
+// patch]. Returns null for non-semver strings ("dev", "unknown", etc).
+function parseSemver(s) {
+  const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(s || ''));
+  return m ? [+m[1], +m[2], +m[3]] : null;
+}
+
+function compareSemver(a, b) {
+  for (let i = 0; i < 3; i++) {
+    if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
+  }
+  return 0;
+}
+
+function BuildInfoCard() {
+  const [info, setInfo] = useState(null);
+  const [checking, setChecking] = useState(false);
+  const [check, setCheck] = useState(null);
+
+  useEffect(() => {
+    fetch('/api/version', { credentials: 'include' })
+      .then((r) => r.json())
+      .then(setInfo)
+      .catch(() => setInfo({ version: 'unknown', commit: 'unknown', built_at: null }));
+  }, []);
+
+  async function checkForUpdates() {
+    setChecking(true);
+    setCheck(null);
+    try {
+      const r = await fetch('https://api.github.com/repos/joshhearne/resolvd/releases/latest', {
+        headers: { Accept: 'application/vnd.github+json' },
+      });
+      if (!r.ok) throw new Error(`GitHub returned ${r.status}`);
+      const j = await r.json();
+      const remoteTag = j.tag_name || '';
+      const remoteVer = parseSemver(remoteTag);
+      const localVer = parseSemver(info?.version);
+      let status = 'unknown';
+      if (!localVer) status = 'local_unparseable';
+      else if (!remoteVer) status = 'remote_unparseable';
+      else {
+        const cmp = compareSemver(localVer, remoteVer);
+        status = cmp < 0 ? 'behind' : cmp === 0 ? 'current' : 'ahead';
+      }
+      setCheck({
+        status,
+        remoteTag,
+        remoteName: j.name || remoteTag,
+        remoteUrl: j.html_url,
+        publishedAt: j.published_at,
+      });
+    } catch (e) {
+      setCheck({ status: 'error', error: e.message });
+    } finally {
+      setChecking(false);
+    }
+  }
+
+  if (!info) {
+    return (
+      <section className="bg-surface border border-border rounded-lg p-4">
+        <div className="text-sm text-fg-dim">Loading build info…</div>
+      </section>
+    );
+  }
+
+  return (
+    <section className="bg-surface border border-border rounded-lg overflow-hidden">
+      <div className="px-4 py-2.5 border-b border-border bg-surface-2 flex items-center justify-between gap-3 flex-wrap">
+        <h2 className="text-sm font-semibold text-fg">Build info</h2>
+        <button
+          type="button"
+          onClick={checkForUpdates}
+          disabled={checking}
+          className="btn btn-secondary btn-sm"
+        >
+          {checking ? 'Checking…' : 'Check for updates'}
+        </button>
+      </div>
+      <div className="p-4 grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-fg-dim">Version</div>
+          <div className="font-mono text-fg break-all">{info.version}</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-fg-dim">Commit</div>
+          <div className="font-mono text-fg break-all">{info.commit}</div>
+        </div>
+        <div>
+          <div className="text-[10px] uppercase tracking-wide text-fg-dim">Built</div>
+          <div className="font-mono text-fg">
+            {info.built_at ? <HybridTime value={info.built_at} /> : <span className="text-fg-dim">unknown</span>}
+          </div>
+        </div>
+      </div>
+      {check && (
+        <div className="border-t border-border px-4 py-3 text-sm">
+          {check.status === 'current' && (
+            <p className="text-emerald-700 dark:text-emerald-300">✓ Up to date with the latest release <code className="font-mono text-xs">{check.remoteTag}</code>.</p>
+          )}
+          {check.status === 'behind' && (
+            <p className="text-amber-700 dark:text-amber-300">
+              ⚠ New release available:{' '}
+              <a href={check.remoteUrl} target="_blank" rel="noopener noreferrer" className="underline font-mono">
+                {check.remoteTag}
+              </a>
+              {check.publishedAt && (
+                <> · published <HybridTime value={check.publishedAt} /></>
+              )}
+            </p>
+          )}
+          {check.status === 'ahead' && (
+            <p className="text-fg-muted">You're ahead of the latest published release ({check.remoteTag}). Pre-release or local build.</p>
+          )}
+          {check.status === 'local_unparseable' && (
+            <p className="text-fg-muted">Local version <code className="font-mono">{info.version}</code> isn't a release tag — built outside the release flow. Latest on main channel: <a href={check.remoteUrl} target="_blank" rel="noopener noreferrer" className="underline font-mono">{check.remoteTag}</a>.</p>
+          )}
+          {check.status === 'remote_unparseable' && (
+            <p className="text-fg-muted">Couldn't parse remote tag {check.remoteTag}.</p>
+          )}
+          {check.status === 'error' && (
+            <p className="text-red-700 dark:text-red-400">Couldn't reach GitHub: {check.error}</p>
+          )}
+        </div>
+      )}
+    </section>
+  );
+}
+
 function StatCard({ label, value, sub }) {
   return (
     <div className="bg-surface border border-border rounded-lg p-3">
@@ -99,6 +229,8 @@ export default function AdminSystemHealth() {
           </button>
         </div>
       </div>
+
+      <BuildInfoCard />
 
       {/* Top-line counters */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">
