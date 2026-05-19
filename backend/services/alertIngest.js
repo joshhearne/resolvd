@@ -244,12 +244,37 @@ async function promoteAlertToTicket(client, source, alertRow, rule, actingUserId
   const internalRef = await nextInternalRef(client, projectId);
 
   let resolvedUserId = null;
+  let autoProvisionedUserId = null;
   if (alertRow.user_email) {
     const u = await client.query(
-      `SELECT id FROM users WHERE LOWER(email) = $1 AND status = 'active' LIMIT 1`,
+      `SELECT id FROM users WHERE LOWER(email) = LOWER($1) AND status = 'active' LIMIT 1`,
       [alertRow.user_email]
     );
     resolvedUserId = u.rows[0]?.id || null;
+    if (!resolvedUserId) {
+      // Email tied to alert payload but no matching user — auto-provision
+      // a default Submitter so the ticket has an owner. Source label
+      // includes the preset (zabbix/action1/etc) so admins can trace it.
+      const exists = await client.query(
+        `SELECT 1 FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1`,
+        [alertRow.user_email]
+      );
+      if (exists.rows.length === 0) {
+        try {
+          const { autoProvisionSubmitter } = require('./userAutoProvision');
+          const provisioned = await autoProvisionSubmitter(
+            { email: alertRow.user_email, source: `alert:${source.preset}` },
+            client
+          );
+          if (provisioned) {
+            resolvedUserId = provisioned.id;
+            autoProvisionedUserId = provisioned.id;
+          }
+        } catch (e) {
+          console.error('alert auto-provision failed:', e.message);
+        }
+      }
+    }
   }
   const assignedTo = overrides.assignee_id
     || resolvedUserId
@@ -316,6 +341,14 @@ async function promoteAlertToTicket(client, source, alertRow, rule, actingUserId
       action: 'alert_unmatched_contact',
       newValue: alertRow.user_email,
       note: 'Contact has no matching active user',
+    });
+  }
+  if (autoProvisionedUserId) {
+    await auditLog(client, {
+      ticketId,
+      action: 'submitter_auto_provisioned',
+      newValue: alertRow.user_email,
+      note: `Created Submitter user #${autoProvisionedUserId} from alert payload`,
     });
   }
   return ticketId;

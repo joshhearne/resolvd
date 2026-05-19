@@ -71,6 +71,9 @@ export default function NotificationTray() {
     } else if (item.type === "unmatched_cc" && item.data?.project_id) {
       navigate(`/projects/${item.data.project_id}/companies`);
       setOpen(false);
+    } else if (item.type === "user_auto_provisioned") {
+      navigate("/admin/users");
+      setOpen(false);
     }
   }
 
@@ -116,7 +119,7 @@ export default function NotificationTray() {
               <div
                 key={item.id}
                 onClick={() => handleAction(item)}
-                className={`px-3 py-2.5 border-b border-border last:border-0 ${!item.read_at ? "bg-brand/5" : ""} ${item.data?.ticket_id || item.type === "unmatched_cc" ? "cursor-pointer hover:bg-surface-2" : ""}`}
+                className={`px-3 py-2.5 border-b border-border last:border-0 ${!item.read_at ? "bg-brand/5" : ""} ${item.data?.ticket_id || item.type === "unmatched_cc" || item.type === "user_auto_provisioned" ? "cursor-pointer hover:bg-surface-2" : ""}`}
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0 flex-1">

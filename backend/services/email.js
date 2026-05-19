@@ -423,4 +423,5 @@ module.exports = {
   baseHtml,
   sendInviteEmail,
   sendPasswordResetEmail,
+  getGraphAppToken,
 };

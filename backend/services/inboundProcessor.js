@@ -33,6 +33,7 @@ const tpl = require('./emailTemplate');
 const { sendMail } = require('./email');
 const { getBranding } = require('./branding');
 const { notifyManagersAndAdmins } = require('./notifications');
+const { autoProvisionSubmitter } = require('./userAutoProvision');
 
 const UPLOADS_DIR = process.env.UPLOADS_DIR || '/data/uploads';
 const APP_URL = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
@@ -511,7 +512,24 @@ async function tryAutoCreate({ subject, body, fromAddress, ccAddresses, attachme
     return { ok: false, reason: 'no_prefix' };
   }
 
-  const submitter = await findInternalSubmitter(effectiveFrom);
+  let submitter = await findInternalSubmitter(effectiveFrom);
+  if (!submitter) {
+    // Auto-provision an unknown sender as a default Submitter so the
+    // ticket has a real owner. Existing users with a non-submit role
+    // (Viewer/Vendor) are left alone — we do not silently elevate them.
+    const existing = await pool.query(
+      `SELECT 1 FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1`,
+      [effectiveFrom]
+    );
+    if (existing.rows.length === 0) {
+      const provisioned = await autoProvisionSubmitter(
+        { email: effectiveFrom, source: 'inbound_email' }
+      );
+      if (provisioned && AUTHORIZED_SUBMIT_ROLES.has(provisioned.role)) {
+        submitter = provisioned;
+      }
+    }
+  }
   if (!submitter) return { ok: false, reason: `sender_not_authorized:${effectiveFrom}` };
 
   const cleanedDescription = extractFreshReply(effectiveBody) || '(no description)';
