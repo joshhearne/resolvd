@@ -178,6 +178,61 @@ function extractFreshReply(body, contactHints) {
   return dedupeParagraphs(text.slice(0, cutAt).trim()).trim();
 }
 
+// Detects an agent-forwarded email and unwraps it. Looks for the common
+// client markers (Gmail / Apple Mail / Outlook) followed by a From:
+// header. Returns null when the body doesn't look like a forward, or
+// when the marker is present but no From: address can be extracted.
+// We don't try to handle every quoted variant — only the form an agent
+// produces by clicking Forward in a standard mail client.
+const FORWARD_MARKER_RE = /(?:^|\n)[ \t>]*[-_=*]*[ \t]*(?:Begin\s+forwarded\s+message:|[- ]{0,8}Forwarded\s+message[- ]{0,8}|-{2,}\s*Original\s+Message\s*-{2,})[ \t]*[-_=*]*[ \t]*(?:\r?\n)/i;
+const FROM_HEADER_RE = /^[ \t>]*From:[ \t]*(.+)$/im;
+const SUBJECT_HEADER_RE = /^[ \t>]*Subject:[ \t]*(.+)$/im;
+const EMAIL_ADDR_RE = /([\w.+-]+@[\w-]+(?:\.[\w-]+)+)/;
+
+function detectForward(body) {
+  if (!body) return null;
+  const markerMatch = FORWARD_MARKER_RE.exec(body);
+  if (!markerMatch) return null;
+  const after = body.slice(markerMatch.index + markerMatch[0].length);
+  // Grab the next ~25 lines — header block of the wrapped message.
+  const headerSlice = after.split(/\r?\n/).slice(0, 25).join('\n');
+  const fromMatch = FROM_HEADER_RE.exec(headerSlice);
+  if (!fromMatch) return null;
+  const fromLine = fromMatch[1].trim();
+  const addrMatch = EMAIL_ADDR_RE.exec(fromLine);
+  if (!addrMatch) return null;
+  const innerEmail = addrMatch[1].toLowerCase();
+  // Name = whatever precedes the address (Common forms: "Name <addr>",
+  // "Name (addr)", or bare addr).
+  let innerName = fromLine.replace(addrMatch[0], '').replace(/[<>()]/g, '').trim();
+  innerName = innerName.replace(/^"+|"+$/g, '').trim() || null;
+  const subjMatch = SUBJECT_HEADER_RE.exec(headerSlice);
+  const innerSubject = subjMatch ? subjMatch[1].trim() : null;
+  // Inner body = everything after the header block. The header block
+  // is a contiguous run of "Header: value" lines from the marker; the
+  // first blank line ends it.
+  const headerEndIdx = after.search(/\r?\n\r?\n/);
+  const innerBody = headerEndIdx >= 0 ? after.slice(headerEndIdx).replace(/^\r?\n\r?\n/, '') : after;
+  return {
+    innerEmail,
+    innerName,
+    innerSubject,
+    innerBody: innerBody.trim() || null,
+  };
+}
+
+async function findUserByEmail(email) {
+  if (!email) return null;
+  const r = await pool.query(
+    `SELECT id, role, status, email, display_name
+       FROM users
+      WHERE LOWER(email) = LOWER($1) AND status = 'active'
+      LIMIT 1`,
+    [String(email).trim()]
+  );
+  return r.rows[0] || null;
+}
+
 function parseSubjectPrefix(subject) {
   if (!subject) return null;
   const m = SUBJECT_PREFIX_RE.exec(subject);
@@ -408,6 +463,30 @@ async function persistAttachment({ ticketId, userId, filename, mimetype, content
 // { ok: true, ticket } on success, { ok: false, reason } when the email
 // shouldn't auto-create (caller falls through to the unmatched queue).
 async function tryAutoCreate({ subject, body, fromAddress, ccAddresses, attachments, queueRowId, emailBackendAccountId }) {
+  // Forward attribution: if the body wraps a forwarded message and the
+  // outer sender is a known internal user (the agent who forwarded),
+  // re-aim the create flow at the inner sender as submitter. Forwarder
+  // is captured here and used as the auto-assignee after insert. If
+  // detection fires but the inner From can't be authorized as a
+  // submitter, the original flow is preserved (the agent themselves
+  // remains the submitter) — better to capture the ticket than to
+  // drop it because the inner address is unknown.
+  let forwarderUser = null;
+  let effectiveFrom = fromAddress;
+  let effectiveBody = body;
+  const forward = detectForward(body);
+  if (forward) {
+    const outerUser = await findUserByEmail(fromAddress);
+    if (outerUser) {
+      const innerCandidate = await findInternalSubmitter(forward.innerEmail);
+      if (innerCandidate) {
+        forwarderUser = outerUser;
+        effectiveFrom = forward.innerEmail;
+        effectiveBody = forward.innerBody || body;
+      }
+    }
+  }
+
   const parsed = parseSubjectPrefix(subject);
 
   // Routing precedence:
@@ -432,10 +511,10 @@ async function tryAutoCreate({ subject, body, fromAddress, ccAddresses, attachme
     return { ok: false, reason: 'no_prefix' };
   }
 
-  const submitter = await findInternalSubmitter(fromAddress);
-  if (!submitter) return { ok: false, reason: `sender_not_authorized:${fromAddress}` };
+  const submitter = await findInternalSubmitter(effectiveFrom);
+  if (!submitter) return { ok: false, reason: `sender_not_authorized:${effectiveFrom}` };
 
-  const cleanedDescription = extractFreshReply(body) || '(no description)';
+  const cleanedDescription = extractFreshReply(effectiveBody) || '(no description)';
 
   // Dedup: same-submitter exact-title open ticket in last 7d → append
   // body as comment instead of creating a new ticket. Strong-overlap
@@ -494,6 +573,11 @@ async function tryAutoCreate({ subject, body, fromAddress, ccAddresses, attachme
         mode === 'standard' ? blindIndex.buildIndex(titleFromSubject) : null,
         queueRowId || null,
       ];
+      // Forwarded-from-agent path: agent inherits the ticket as assignee.
+      if (forwarderUser) {
+        baseCols.push('assigned_to');
+        baseValues.push(forwarderUser.id);
+      }
       const cols = [...baseCols, ...sensitivePatch.cols];
       const values = [...baseValues, ...sensitivePatch.values];
       const placeholders = cols.map((_, i) => `$${i + 1}`).join(', ');
@@ -502,11 +586,25 @@ async function tryAutoCreate({ subject, body, fromAddress, ccAddresses, attachme
         values
       );
       // Audit + auto-follow.
+      const creationNote = forwarderUser
+        ? `Created via forward from ${forwarderUser.email} on behalf of ${submitter.email}`
+        : 'Created via inbound email';
       await c.query(
         `INSERT INTO audit_log (ticket_id, user_id, action, new_value, note)
          VALUES ($1, $2, 'ticket_created', $3, $4)`,
-        [r.rows[0].id, submitter.id, internalRef, 'Created via inbound email']
+        [r.rows[0].id, submitter.id, internalRef, creationNote]
       );
+      if (forwarderUser) {
+        await c.query(
+          `INSERT INTO audit_log (ticket_id, user_id, action, new_value, note)
+           VALUES ($1, $2, 'assigned', $3, $4)`,
+          [r.rows[0].id, forwarderUser.id, String(forwarderUser.id), 'Auto-assigned to forwarding agent']
+        );
+        await c.query(
+          `INSERT INTO ticket_followers (ticket_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+          [r.rows[0].id, forwarderUser.id]
+        );
+      }
       await c.query(
         `INSERT INTO ticket_followers (ticket_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
         [r.rows[0].id, submitter.id]

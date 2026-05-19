@@ -59,7 +59,7 @@ async function requireNoteAccess(req, res, next) {
 router.get('/:id/notes', requireAuth, requireNoteAccess, async (req, res) => {
   try {
     const r = await pool.query(
-      `SELECT n.id, n.ticket_id, n.user_id, n.body, n.body_enc, n.created_at,
+      `SELECT n.id, n.ticket_id, n.user_id, n.body, n.body_enc, n.created_at, n.edited_at,
               u.display_name AS user_name, u.email AS user_email
          FROM ticket_notes n
     LEFT JOIN users u ON u.id = n.user_id
@@ -128,6 +128,55 @@ router.post('/:id/notes', requireAuth, requireNoteAccess, async (req, res) => {
     });
   } catch (err) {
     console.error('notes create:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// PATCH /api/tickets/:id/notes/:noteId — author or Admin/Manager can
+// edit. Tech with note access can edit own notes. Notes don't fan out
+// outbound so there is no distribution gate — any edit shows "(edited)".
+router.patch('/:id/notes/:noteId', requireAuth, requireNoteAccess, async (req, res) => {
+  try {
+    const newBody = String(req.body?.body || '').trim();
+    if (!newBody) return res.status(400).json({ error: 'Note body required' });
+    const noteId = Number(req.params.noteId);
+    const ticketId = req.ticket.id;
+    const existing = await pool.query(
+      'SELECT id, user_id, body, body_enc FROM ticket_notes WHERE id = $1 AND ticket_id = $2',
+      [noteId, ticketId]
+    );
+    if (!existing.rows[0]) return res.status(404).json({ error: 'Note not found' });
+    const n = existing.rows[0];
+
+    const user = req.session.user;
+    const isAuthor = n.user_id === user.id;
+    const isPriv = ['Admin', 'Manager'].includes(user.role);
+    if (!isAuthor && !isPriv) {
+      return res.status(403).json({ error: 'Only the author, Admin, or Manager can edit this note' });
+    }
+
+    const { decryptRow } = require('../services/fields');
+    await decryptRow('ticket_notes', n);
+    if ((n.body || '') === newBody) {
+      return res.json({ id: n.id, ticket_id: ticketId, edited_at: null, body: newBody });
+    }
+
+    const patch = await buildWritePatch(pool, 'ticket_notes', { body: newBody });
+    const sets = patch.cols.map((col, i) => `${col} = $${i + 1}`);
+    sets.push('edited_at = NOW()');
+    const values = [...patch.values, noteId];
+    const result = await pool.query(
+      `UPDATE ticket_notes SET ${sets.join(', ')} WHERE id = $${values.length} RETURNING id, edited_at`,
+      values
+    );
+    await pool.query(
+      `INSERT INTO audit_log (ticket_id, user_id, action, old_value, new_value, note)
+       VALUES ($1, $2, 'note_edited', $3, $4, $5)`,
+      [ticketId, user.id, String(noteId), String(noteId), isAuthor ? null : 'edited by handler']
+    );
+    res.json({ id: result.rows[0].id, ticket_id: ticketId, edited_at: result.rows[0].edited_at, body: newBody });
+  } catch (err) {
+    console.error('note edit failed:', err);
     res.status(500).json({ error: 'Database error' });
   }
 });

@@ -351,7 +351,7 @@ function SectionTicketDetail({ role }) {
         <Feature name="Mark comment vendor-visible" roles={PRIV} note="Sends comment to attached vendor contacts via email." />
         <Feature name="Insert canned response" roles={["Admin","Manager","Tech","Submitter"]} note="📋 popover next to the composer. Tags like {ticket.ref}, {submitter.firstName} render server-side at insert time." />
         <Feature name="Post & Close / Post & Reopen" roles={HANDLER} note="Change ticket status in the same action as posting." />
-        <Feature name="Edit a posted comment" roles={["Admin","Manager","Tech","Submitter"]} note="Author can edit own; Admin / Manager can edit anyone's. System comments and inbound vendor replies are locked. Editing clears AI provenance and is audited. The '(edited)' indicator only appears once a non-author has either viewed the original in the UI or been fanned out to via email — quick edits before anyone sees the comment stay silent. Vendor outbound is not re-sent." />
+        <Feature name="Edit a posted comment" roles={["Admin","Manager","Tech","Submitter"]} note="Author can edit own; Admin / Manager can edit anyone's. System comments and inbound vendor replies are locked. The Edit action only appears on the most recent non-system comment — once anyone posts a reply, the prior comment is frozen (post a follow-up correction instead). Editing clears AI provenance and is audited as comment_edited. The '(edited)' indicator only appears once a non-author has either viewed the original in the UI or been fanned out to via email — quick edits before anyone sees the comment stay silent. Vendor outbound is not re-sent." />
         <Feature name="Mute / delete comments" roles={PRIV} note="Muting hides vendor replies without deleting." />
       </div>
 
@@ -449,6 +449,7 @@ function SectionAdmin({ role }) {
           <Feature name="Email Templates — outbound vendor email content" roles={PRIV} />
           <Feature name="Email Backends — SMTP / Graph / Gmail with project scope" roles={PRIV} note="Many-to-many account-to-project scoping for helpdesk routing." />
           <Feature name="Inbound email — parse replies into comments" roles={PRIV} />
+          <Feature name="Inbound — agent-forwarded submissions" roles={PRIV} note="When an internal agent forwards an external email into a scoped inbox, Resolvd unwraps the forwarded headers and treats the inner sender as the submitter — not the forwarding agent. The agent becomes the auto-assignee and an audit entry records who forwarded on whose behalf. Standard `Begin forwarded message:` / `Forwarded message` / `Original Message` markers are detected. Inner sender must already be an active internal user; #PREFIX in the outer subject still routes the project." />
           <Feature name="Alert sources — Zabbix / Action1 / generic webhook" roles={PRIV} note="Registry-driven add form. Capabilities picker per source: alerts / inventory / software / vulnerabilities / companies. Tabular field-map editor for generic intake." />
           <Feature name="SLA policies — response + resolve targets" roles={PRIV} note="Per-priority defaults; per-project overrides. Default targets seeded P1 30m/4h … P5 1d/7d." />
           <Feature name="Business-hours policies" roles={PRIV} note="Per-project work windows (tz / days / start / end). SLA pauses outside business hours." />
@@ -781,6 +782,7 @@ function SectionNotes({ role }) {
         <Feature name="Post handler-only note" roles={HANDLER} note="Also available to lower-tier users with a project-level handler override or Agent flag on the ticket's project." />
         <Feature name="@mention project agents" roles={HANDLER} note="Mentions resolve only against active agents on the ticket's project." />
         <Feature name="Read notes" roles={HANDLER} note="Plus per-project handler overrides + Agent-flagged members on the ticket's project." />
+        <Feature name="Edit a posted note" roles={HANDLER} note="Author edits own; Admin / Manager can edit anyone's. Always shows an '(edited)' indicator on change — no distribution gating because notes are handler-only by definition. Audited as note_edited." />
         <Feature name="Notes visible to submitter / vendor" roles={[]} note="Never. By design — notes don't fan out via email or push to non-handlers." />
       </div>
     </div>

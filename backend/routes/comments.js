@@ -355,6 +355,24 @@ router.patch('/comments/:id', requireAuth, async (req, res) => {
       return res.status(403).json({ error: 'Only the author, Admin, or Manager can edit this comment' });
     }
 
+    // Lock comments once anyone has replied. The thread reading order
+    // matters — a stealth edit after a reply could rewrite the context
+    // the next comment was responding to. Admins / Managers aren't
+    // exempted: the lock is about thread integrity, not permission.
+    // System comments are skipped (auto status / merge bookkeeping
+    // shouldn't lock human comments).
+    const newer = await pool.query(
+      `SELECT 1 FROM comments
+        WHERE ticket_id = $1
+          AND id > $2
+          AND is_system = FALSE
+        LIMIT 1`,
+      [c.ticket_id, c.id]
+    );
+    if (newer.rows.length) {
+      return res.status(409).json({ error: 'Comment locked — a newer reply has been posted on this ticket. Add a follow-up comment with the correction instead.' });
+    }
+
     await decryptRow('comments', c);
     const oldBody = c.body || '';
     if (oldBody === newBody) {

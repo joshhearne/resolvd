@@ -367,6 +367,9 @@ export default function TicketDetail() {
   const [canHandleNotes, setCanHandleNotes] = useState(false);
   const [lightboxAttachment, setLightboxAttachment] = useState(null);
   const [noteDraft, setNoteDraft] = useState("");
+  const [editingNoteId, setEditingNoteId] = useState(null);
+  const [editNoteDraft, setEditNoteDraft] = useState("");
+  const [savingNoteEdit, setSavingNoteEdit] = useState(false);
   const [savingNote, setSavingNote] = useState(false);
   const [commentFilter, setCommentFilter] = useState("all"); // all | vendor | internal
 
@@ -506,6 +509,33 @@ export default function TicketDetail() {
       await api.delete(`/api/tickets/${id}/notes/${noteId}`);
       setNotes((prev) => prev.filter((n) => n.id !== noteId));
     } catch (e) { toast.error(e.message); }
+  }
+
+  function startEditNote(n) {
+    setEditingNoteId(n.id);
+    setEditNoteDraft(n.body || "");
+  }
+
+  function cancelEditNote() {
+    setEditingNoteId(null);
+    setEditNoteDraft("");
+  }
+
+  async function saveNoteEdit(noteId) {
+    const body = editNoteDraft.trim();
+    if (!body) { toast.error("Note body cannot be empty"); return; }
+    setSavingNoteEdit(true);
+    try {
+      const r = await api.patch(`/api/tickets/${id}/notes/${noteId}`, { body });
+      setNotes(prev => prev.map(n => n.id === noteId ? { ...n, body, edited_at: r.edited_at } : n));
+      setEditingNoteId(null);
+      setEditNoteDraft("");
+      toast.success("Note updated");
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setSavingNoteEdit(false);
+    }
   }
 
   // Mode-switch helpers — let an agent flip a draft from one composer
@@ -1598,6 +1628,13 @@ export default function TicketDetail() {
                       : !c.vendor_contact_id;
                   const visible = comments.filter(c => !c.is_muted && matchesFilter(c));
                   const muted   = comments.filter(c =>  c.is_muted && matchesFilter(c));
+                  // Lock editing after a newer non-system comment lands —
+                  // server enforces; frontend mirrors so the action just
+                  // disappears instead of erroring on click. System rows
+                  // don't lock the thread.
+                  const latestCommentId = comments
+                    .filter(c => !c.is_system)
+                    .reduce((max, c) => c.id > max ? c.id : max, 0);
                   const renderComment = (c) => (
                     <div
                       key={c.id}
@@ -1634,7 +1671,7 @@ export default function TicketDetail() {
                             eli5={c.ai_eli5}
                             projectContextUsed={c.ai_project_context_used}
                           />
-                          {!c.is_system && !c.vendor_contact_id && (c.user_id === user?.id || isAdmin) && editingCommentId !== c.id && (
+                          {!c.is_system && !c.vendor_contact_id && (c.user_id === user?.id || isAdmin) && editingCommentId !== c.id && c.id === latestCommentId && (
                             <button onClick={() => startEditComment(c)}
                               className="text-[11px] text-fg-dim hover:text-brand transition-colors">
                               Edit
@@ -1918,7 +1955,9 @@ export default function TicketDetail() {
                     No internal notes yet.
                   </p>
                 )}
-                {notes.map((n) => (
+                {notes.map((n) => {
+                  const canEditNote = n.user_id === user?.id || ["Admin","Manager"].includes(user?.role);
+                  return (
                   <div key={n.id} className="rounded-lg p-3 bg-amber-50/40 dark:bg-amber-950/20 border border-amber-200/60 dark:border-amber-800/60">
                     <div className="flex items-center justify-between mb-1 gap-2 flex-wrap">
                       <span className="text-xs font-semibold text-fg-muted">
@@ -1926,6 +1965,12 @@ export default function TicketDetail() {
                         <span className="ml-1.5 text-[10px] px-1 py-0.5 rounded bg-amber-200/70 dark:bg-amber-800/60 text-amber-900 dark:text-amber-100 uppercase">internal</span>
                       </span>
                       <span className="flex items-center gap-2">
+                        {canEditNote && editingNoteId !== n.id && (
+                          <button
+                            onClick={() => startEditNote(n)}
+                            className="text-[11px] text-fg-dim hover:text-brand"
+                          >Edit</button>
+                        )}
                         {(n.user_id === user?.id || user?.role === "Admin") && (
                           <button
                             onClick={() => deleteNote(n.id)}
@@ -1933,11 +1978,45 @@ export default function TicketDetail() {
                           >Delete</button>
                         )}
                         <HybridTime dt={n.created_at} className="text-xs text-fg-dim" />
+                        {n.edited_at && (
+                          <span className="text-[10px] text-fg-dim italic" title={`Edited ${new Date(n.edited_at).toLocaleString()}`}>
+                            (edited)
+                          </span>
+                        )}
                       </span>
                     </div>
-                    <MarkdownContent>{n.body}</MarkdownContent>
+                    {editingNoteId === n.id ? (
+                      <div className="space-y-2">
+                        <textarea
+                          value={editNoteDraft}
+                          onChange={(e) => setEditNoteDraft(e.target.value)}
+                          rows={Math.max(3, editNoteDraft.split('\n').length)}
+                          className="w-full border border-amber-300 dark:border-amber-700 rounded px-2 py-1.5 text-sm bg-bg focus:outline-none focus:ring-1 focus:ring-amber-400/40"
+                          autoFocus
+                        />
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => saveNoteEdit(n.id)}
+                            disabled={savingNoteEdit || !editNoteDraft.trim()}
+                            className="btn btn-primary btn-xs disabled:opacity-60"
+                          >
+                            {savingNoteEdit ? "Saving…" : "Save"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={cancelEditNote}
+                            disabled={savingNoteEdit}
+                            className="text-xs text-fg-muted hover:text-fg"
+                          >Cancel</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <MarkdownContent>{n.body}</MarkdownContent>
+                    )}
                   </div>
-                ))}
+                  );
+                })}
                 <div className="border-t border-border pt-3 space-y-2">
                   <MentionTextarea
                     value={noteDraft}

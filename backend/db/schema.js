@@ -2061,6 +2061,17 @@ async function initSchema() {
     // Vendor outbound (sendVendorEmail) does NOT stamp this — vendors are
     // out of band and the user-facing badge is for internal recipients.
     await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS distributed_at TIMESTAMPTZ`);
+    // Backfill: pre-existing comments were all visible to everyone before
+    // the column existed, so an edit on an old comment must surface
+    // "(edited)". The 1-minute floor avoids stamping rows that landed
+    // moments before startup — those genuinely may not have been seen
+    // yet and the live read/fanout paths will stamp them organically.
+    await client.query(`
+      UPDATE comments
+         SET distributed_at = created_at
+       WHERE distributed_at IS NULL
+         AND created_at < NOW() - INTERVAL '1 minute'
+    `);
 
     // Same metadata for tickets (description / title rewrites).
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS ai_provider TEXT`);
@@ -2338,6 +2349,10 @@ async function initSchema() {
       )
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_notes_ticket ON ticket_notes(ticket_id, created_at)`);
+    // v0.8.0 — author / handler can edit a note in place. No distribution
+    // gating: notes never fan out outbound and are only seen by handlers,
+    // so the "(edited)" badge always reflects something useful.
+    await client.query(`ALTER TABLE ticket_notes ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ`);
 
     await client.query('COMMIT');
   } catch (err) {
