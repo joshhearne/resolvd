@@ -2,7 +2,7 @@ import React, { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
 import { useAuth } from "../context/AuthContext";
-import AiRewriteButton from "../components/AiRewriteButton";
+import MarkdownEditor from "../components/MarkdownEditor";
 
 const TAG_HINTS = [
   "{ticket.ref}",
@@ -303,25 +303,19 @@ function Editor({ form, isPriv, projects, onCancel, onSubmit }) {
           </select>
         </label>
       </div>
-      <label className="text-xs text-fg-muted flex flex-col gap-1">
-        <span className="flex items-center justify-between">
-          <span>Body</span>
-          <AiRewriteButton
-            value={local.body}
-            surface="comment_internal"
-            size="xs"
-            onChange={(t) => setLocal((l) => ({ ...l, body: t }))}
-          />
-        </span>
-        <textarea
+      <div className="text-xs text-fg-muted flex flex-col gap-1">
+        <span>Body</span>
+        <MarkdownEditor
           value={local.body}
           onChange={(e) => setLocal((l) => ({ ...l, body: e.target.value }))}
-          rows={8}
-          className="bg-surface-2 border border-border rounded px-2 py-1.5 text-sm font-mono"
-          placeholder={"Hi,\n\nWe scheduled a toner replacement for {ticket.ref}.\n\n— {actor.name}"}
-          required
+          rows={10}
+          placeholder={"Hi,\n\nWe scheduled a toner replacement for {ticket.ref}.\n\nMore info: [vendor portal](https://example.com)\n\n— {actor.name}"}
+          aiSurface="comment_internal"
         />
-      </label>
+        <span className="text-fg-dim">
+          Markdown supported — use <code>[label](https://...)</code> for hyperlinks. Preview tab renders the body; tag substitution still happens at send time.
+        </span>
+      </div>
       <div className="text-xs text-fg-muted">
         <span>Insert tag:</span>
         {TAG_HINTS.map((t) => (
