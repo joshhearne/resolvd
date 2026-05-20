@@ -349,7 +349,7 @@ function SectionTicketDetail({ role }) {
       <HelpScreenshot src="/help/ticket-detail-edit-comment.png" alt="A comment in edit mode — textarea with the existing body, Save / Cancel buttons, hint text explaining AI provenance is cleared and vendor outbound is not re-sent" caption="Author / handler can edit a posted comment in-place." />
 
       <div className="space-y-0">
-        <Feature name="Mark comment vendor-visible" roles={PRIV} note="Sends comment to attached vendor contacts via email." />
+        <Feature name="Mark comment vendor-visible" roles={HANDLER} note="(v0.9.0) Any project handler can share a comment with the attached vendor contacts — same gate as Notes. Previously Admin / Manager only." />
         <Feature name="Insert canned response" roles={["Admin","Manager","Tech","Submitter"]} note="📋 popover next to the composer. Tags like {ticket.ref}, {submitter.firstName} render server-side at insert time." />
         <Feature name="Post & Close / Post & Reopen" roles={HANDLER} note="Change ticket status in the same action as posting." />
         <Feature name="Edit a posted comment" roles={["Admin","Manager","Tech","Submitter"]} note="Author can edit own; Admin / Manager can edit anyone's. System comments and inbound vendor replies are locked. The Edit action only appears on the most recent non-system comment — once anyone posts a reply, the prior comment is frozen (post a follow-up correction instead). Editing clears AI provenance and is audited as comment_edited. The '(edited)' indicator only appears once a non-author has either viewed the original in the UI or been fanned out to via email — quick edits before anyone sees the comment stay silent. Vendor outbound is not re-sent." />
@@ -446,13 +446,17 @@ function SectionAdmin({ role }) {
           <Feature name="Users — invite, deactivate, reset passwords" roles={["Admin"]} note="Manager role cannot manage other users." />
           <Feature name="Companies — vendor / customer / internal directories" roles={PRIV} note="Three kinds: vendors keep project-scoped contacts; customers link to projects via a join table; internal companies model your org with members + auto-add domains for SSO first-login." />
           <Feature name="Statuses — workflow status configuration" roles={PRIV} note="Semantic tags, transitions, sort order." />
-          <Feature name="Canned responses — reusable comment templates" roles={PRIV} note="Tag substitution ({ticket.ref}, {submitter.name}, etc) rendered server-side; project-scoped picker." />
+          <Feature name="Canned responses — reusable comment templates" roles={PRIV} note="Tag substitution ({ticket.ref}, {submitter.name}, etc) rendered server-side; project-scoped picker. (v0.9.0) Body editor is the same MarkdownEditor as the comment composer — write/preview tabs, formatting toolbar, AI rewrite. Hyperlinks via [label](url) render at display time." />
+          <Feature name="Email Templates render markdown" roles={PRIV} note="(v0.9.0) Vendor outbound runs the template body through marked with a paragraph/list/heading/anchor allowlist; anchors get target=_blank + rel=noopener noreferrer. Raw HTML is sanitized out." />
           <Feature name="Merge tickets — search-driven duplicate consolidation" roles={PRIV} note="Two-slot picker by ref/title/description, swap-winner toggle, project locks to first pick." />
           <Feature name="Email Templates — outbound vendor email content" roles={PRIV} />
           <Feature name="Email Backends — SMTP / Graph / Gmail with project scope" roles={PRIV} note="Many-to-many account-to-project scoping for helpdesk routing." />
           <Feature name="Inbound email — parse replies into comments" roles={PRIV} />
           <Feature name="Inbound — agent-forwarded submissions" roles={PRIV} note="When an internal agent forwards an external email into a scoped inbox, Resolvd unwraps the forwarded headers and treats the inner sender as the submitter — not the forwarding agent. The agent becomes the auto-assignee and an audit entry records who forwarded on whose behalf. Standard `Begin forwarded message:` / `Forwarded message` / `Original Message` markers are detected. Inner sender must already be an active internal user; #PREFIX in the outer subject still routes the project." />
           <Feature name="Inbound — default landing project on multi-scope inboxes" roles={["Admin"]} note="Pick a fallback project for prefix-less mail when an inbox serves several projects. Auto-routes there instead of dropping to the manual queue. Single-scope inboxes already auto-route; the picker only appears when an inbox has 2+ approved + recv-enabled scopes." />
+          <Feature name="Inbound — match by ticket ref" roles={PRIV} note="(v0.9.0) Admin → Inbound queue match flow accepts either a numeric id or a ticket reference (ACME-0042). Case-insensitive, ignores leading #." />
+          <Feature name="Auto-provision Submitter accounts" roles={PRIV} note="(v0.9.0) Unknown senders arriving via inbound email or alert integrations mint a default Submitter user instead of falling to the manual queue. When Entra is configured, Graph /users/{email} populates display_name + entra_oid + upn so SSO works immediately. Vendor-domain senders are declined and land as contacts." />
+          <Feature name="Label printer — Zebra :9100" roles={["Admin"]} note="(v0.9.0) Admin → Site → Label printer. Single-row config (host / port / dpi / media / top-offset / property-line). Print test button. Drives the Print label actions on asset + consumable detail pages. Raw TCP open with 800ms post-write hold." />
           <Feature name="Alert sources — Zabbix / Action1 / generic webhook" roles={PRIV} note="Registry-driven add form. Capabilities picker per source: alerts / inventory / software / vulnerabilities / companies. Tabular field-map editor for generic intake." />
           <Feature name="SLA policies — response + resolve targets" roles={PRIV} note="Per-priority defaults; per-project overrides. Default targets seeded P1 30m/4h … P5 1d/7d." />
           <Feature name="Business-hours policies" roles={PRIV} note="Per-project work windows (tz / days / start / end). SLA pauses outside business hours." />
@@ -799,11 +803,34 @@ function SectionNotes({ role }) {
   );
 }
 
+function SectionConsumables({ role }) {
+  const isHandler = HANDLER.includes(role);
+  return (
+    <div className="space-y-4">
+      {isHandler ? <FullAccess /> : <NoAccess note="Consumables is handler-only — same as Inventory." />}
+      <p className="text-sm text-fg leading-relaxed">
+        <b>Consumables</b> (v0.9.0) tracks supply inventory — toner, drums, batteries, spare keyboards, anything
+        interchangeable that Inventory shouldn't store per-serial. Stock changes always run UPDATE + ledger INSERT in
+        the same transaction so every adjustment carries actor + reason + timestamp.
+      </p>
+      <HelpScreenshot src="/help/consumables-list.png" alt="Consumables list with low-stock chips and archive toggle" />
+      <div className="space-y-0">
+        <Feature name="View consumables list" roles={HANDLER} note="Search box, low-stock chip, archive toggle, per-vendor counts." />
+        <Feature name="Create / edit / archive a consumable" roles={HANDLER} note="part_no unique. vendor_company_id links to a vendor for reorder context." />
+        <Feature name="Adjust stock with reason + note" roles={HANDLER} note="POST /:id/move atomic; reasons: received / issued / returned / disposed / count_correction / loss. ticket_id optional — link an issuance back to the ticket that consumed it." />
+        <Feature name="Per-item ledger" roles={HANDLER} note="Newest-first list of every movement. Append-only — corrections happen via a new count_correction row, not by editing history." />
+        <Feature name="Low-stock badge" roles={HANDLER} note="Red chip when current_stock <= low_stock_threshold. Informational only; no notification fires yet." />
+        <Feature name="Print consumable label" roles={HANDLER} note="Zebra :9100. Lead line = part_no, vendor on the property line, QR encodes /consumables/<id> deep-link." />
+      </div>
+    </div>
+  );
+}
+
 function SectionInventory({ role }) {
   const isHandler = HANDLER.includes(role);
   return (
     <div className="space-y-4">
-      {isHandler ? <FullAccess /> : <PartialAccess note="You can view inventory data but cannot create / edit assets." />}
+      {isHandler ? <FullAccess /> : <NoAccess note="Inventory is handler-only (v0.9.0). Ask an Admin to grant you Tech or a project-level role override / Agent flag if you need access." />}
       <p className="text-sm text-fg leading-relaxed">
         <b>Inventory</b> is Resolvd's CMDB-lite — every managed endpoint (laptop, server, printer, network device)
         appears as an <b>asset</b> with per-type fields. Tickets can link to an asset so its hostname appears in
@@ -811,13 +838,16 @@ function SectionInventory({ role }) {
       </p>
       <HelpScreenshot src="/help/inventory-list.png" alt="Inventory list with asset types, last-seen badges, and the offline filter" />
       <div className="space-y-0">
-        <Feature name="View inventory list" roles="all" />
-        <Feature name="Filter offline (>14 days no check-in)" roles="all" />
+        <Feature name="View inventory list" roles={HANDLER} />
+        <Feature name="Filter offline (>14 days no check-in)" roles={HANDLER} />
         <Feature name="Create / edit / archive assets" roles={HANDLER} />
         <Feature name="Per-type field schemas" roles={HANDLER} note="Admin → Asset types defines which fields each type carries (laptop, server, printer, generic)." />
         <Feature name="On-demand software sync" roles={HANDLER} note="Computer-type assets sourced from Action1 expose a 'Pull software inventory now' button on the asset detail page." />
-        <Feature name="Cross-project ticket history" roles="all" note="Asset detail lists every ticket that linked this asset, across every project the viewer has access to." />
-        <Feature name="Vulnerability + patch counts" roles="all" note="Pulled from the source's reports endpoint when the source has the 'vulnerabilities' capability enabled." />
+        <Feature name="Asset tag" roles={HANDLER} note="Operator-facing inventory ID (v0.9.0) distinct from the OS hostname. Admin-owned, survives RMM syncs (COALESCE on update). Printed as the lead line on asset labels." />
+        <Feature name="Custody log — check-out / check-in" roles={HANDLER} note="Per-asset possession trail (v0.9.0). One row per check-out / check-in pair with separate holder + actor + free-text notes. Partial unique index enforces one active checkout per asset. linked_user_id auto-tracks the active holder." />
+        <Feature name="Print asset label" roles={HANDLER} note="Zebra :9100 raw TCP. Lead line = asset_tag, hostname only if distinct, then property-line. QR encodes the inventory deep-link so an iPhone scan opens the right row. Configure via Admin → Site → Label printer." />
+        <Feature name="Cross-project ticket history" roles={HANDLER} note="Asset detail lists every ticket that linked this asset, across every project the viewer has access to." />
+        <Feature name="Vulnerability + patch counts" roles={HANDLER} note="Pulled from the source's reports endpoint when the source has the 'vulnerabilities' capability enabled." />
         <Feature name="CSV export" roles={HANDLER} />
       </div>
       <div className="bg-surface-2 border border-border rounded-lg p-3 text-xs text-fg-muted space-y-1">
@@ -940,6 +970,7 @@ const SECTIONS = [
   { id: "notes",          label: "Notes (handler-only)", icon: "📝" },
   { id: "projects",       label: "Projects",             icon: "📁" },
   { id: "inventory",      label: "Inventory + Assets",   icon: "🖥" },
+  { id: "consumables",    label: "Consumables",          icon: "🧰" },
   { id: "kb",             label: "Knowledge Base",       icon: "📚" },
   { id: "alerts",         label: "Alerts",               icon: "🚨" },
   { id: "admin",          label: "Admin Panel",          icon: "⚙" },
@@ -964,6 +995,7 @@ function renderSection(id, role) {
     case "notes":         return <SectionNotes role={role} />;
     case "projects":      return <SectionProjects role={role} />;
     case "inventory":     return <SectionInventory role={role} />;
+    case "consumables":   return <SectionConsumables role={role} />;
     case "kb":            return <SectionKb role={role} />;
     case "alerts":        return <SectionAlerts role={role} />;
     case "admin":         return <SectionAdmin role={role} />;
