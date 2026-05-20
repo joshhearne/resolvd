@@ -17,21 +17,40 @@ function flattenInline(node) {
   return "";
 }
 
-// Splits text on `@canned:<title>` tokens. Title runs until end of line
-// or a sentinel char (`,` `.` `;` `)` `]` `\n`). Trailing whitespace
-// trimmed. Returns [{ kind: 'text'|'canned', value }].
+// Splits text on `@canned:<title>` tokens. Multi-word titles are
+// supported — convention is that the canned reference is the LAST
+// thing on a step line (BlockNote stores each step as one block, so
+// "end of line" = end of the rendered text run). Title eats up to
+// the end of the string; trim whitespace. Author wraps with a
+// bracket pair `@canned:[Vendor escalation]` if they need text to
+// follow the pill on the same step.
 function tokenizeCannedPills(text) {
   if (!text) return [];
-  const out = [];
-  const re = /@canned:([^,\n;\)\]]+?)(?=(?:\s*$|[\s,.;\)\]]))/gi;
+  // Bracketed form `@canned:[Title]` — explicit boundary, can sit
+  // mid-line. Pull these out first.
+  const bracketRe = /@canned:\[([^\]\n]+)\]/g;
+  const parts = [];
   let lastIdx = 0;
   let m;
-  while ((m = re.exec(text)) !== null) {
-    if (m.index > lastIdx) out.push({ kind: "text", value: text.slice(lastIdx, m.index) });
-    out.push({ kind: "canned", value: m[1].trim() });
+  while ((m = bracketRe.exec(text)) !== null) {
+    if (m.index > lastIdx) parts.push({ kind: "text", value: text.slice(lastIdx, m.index) });
+    parts.push({ kind: "canned", value: m[1].trim() });
     lastIdx = m.index + m[0].length;
   }
-  if (lastIdx < text.length) out.push({ kind: "text", value: text.slice(lastIdx) });
+  if (lastIdx < text.length) parts.push({ kind: "text", value: text.slice(lastIdx) });
+
+  // Bare form `@canned:Title text` — title runs to end-of-string
+  // within the same text run. BlockNote step blocks render as a
+  // single line so "end of string" = "end of step".
+  const tailRe = /@canned:(.+?)\s*$/;
+  const out = [];
+  for (const part of parts) {
+    if (part.kind !== "text") { out.push(part); continue; }
+    const tail = tailRe.exec(part.value);
+    if (!tail) { out.push(part); continue; }
+    if (tail.index > 0) out.push({ kind: "text", value: part.value.slice(0, tail.index) });
+    out.push({ kind: "canned", value: tail[1].trim() });
+  }
   return out;
 }
 
