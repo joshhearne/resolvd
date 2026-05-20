@@ -63,7 +63,7 @@ async function projectScopeCount(accountId, client = pool) {
 // Returns the project row or null.
 async function resolveInboundProject(accountId, client = pool) {
   const r = await client.query(`
-    SELECT p.id, p.name, p.prefix, p.status
+    SELECT p.id, p.name, p.prefix, p.status, p.default_assignee_id
       FROM email_account_project_scopes s
       JOIN projects p ON p.id = s.project_id
      WHERE s.account_id = $1

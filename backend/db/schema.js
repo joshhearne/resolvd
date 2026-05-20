@@ -1977,6 +1977,13 @@ async function initSchema() {
     // target. Tickets already past due will be flagged on the next
     // breach tick. Updates only rows where the column is currently null
     // — re-running the migration is a no-op once stamped.
+    //
+    // WARNING: this stamps WALL-CLOCK (no business-hours math). It is a
+    // safety net for pre-A3 rows only; create paths (POST /api/tickets,
+    // inboundProcessor) must call sla.applyPolicyOnCreate so new tickets
+    // never reach this backfill with NULL columns. If you see a recent
+    // ticket getting wall-clock timers, fix the create path — do not
+    // teach this backfill about business hours.
     await client.query(`
       UPDATE tickets t
          SET sla_response_due_at = t.created_at + (sp.response_target_minutes || ' minutes')::interval,

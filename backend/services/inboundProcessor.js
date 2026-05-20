@@ -34,6 +34,8 @@ const { sendMail } = require('./email');
 const { getBranding } = require('./branding');
 const { notifyManagersAndAdmins } = require('./notifications');
 const { autoProvisionSubmitter } = require('./userAutoProvision');
+const sla = require('./sla');
+const assignmentPolicies = require('./assignmentPolicies');
 
 const UPLOADS_DIR = process.env.UPLOADS_DIR || '/data/uploads';
 const APP_URL = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
@@ -246,7 +248,7 @@ function parseSubjectPrefix(subject) {
 
 async function findProjectByPrefix(prefix) {
   const r = await pool.query(
-    `SELECT id, name, prefix, has_external_vendor, status
+    `SELECT id, name, prefix, has_external_vendor, status, default_assignee_id
        FROM projects WHERE prefix = $1`,
     [prefix]
   );
@@ -595,6 +597,36 @@ async function tryAutoCreate({ subject, body, fromAddress, ccAddresses, attachme
         `INSERT INTO tickets (${cols.join(', ')}) VALUES (${placeholders}) RETURNING *`,
         values
       );
+      const t = r.rows[0];
+
+      // Stamp SLA due/warn timestamps with business-hours math. Mirrors
+      // the REST POST /api/tickets path so inbound-created tickets get
+      // the same clock semantics as form-created ones.
+      await sla.applyPolicyOnCreate(c, {
+        ticketId: t.id,
+        priority: t.effective_priority || computed,
+        projectId: t.project_id,
+        createdAt: t.created_at,
+      });
+
+      // Auto-assignment. Forwarder path already pinned assigned_to to the
+      // forwarding agent — leave it. Otherwise run policy → fall back to
+      // project default_assignee_id.
+      if (!t.assigned_to) {
+        const policyPick = await assignmentPolicies.applyOnCreate(c, {
+          priority: t.effective_priority || computed,
+          projectId: t.project_id,
+        });
+        const finalAssignee = policyPick || project.default_assignee_id || null;
+        if (finalAssignee) {
+          await c.query(
+            `UPDATE tickets SET assigned_to = $1 WHERE id = $2`,
+            [finalAssignee, t.id]
+          );
+          t.assigned_to = finalAssignee;
+        }
+      }
+
       // Audit + auto-follow.
       const creationNote = forwarderUser
         ? `Created via forward from ${forwarderUser.email} on behalf of ${submitter.email}`
@@ -602,25 +634,35 @@ async function tryAutoCreate({ subject, body, fromAddress, ccAddresses, attachme
       await c.query(
         `INSERT INTO audit_log (ticket_id, user_id, action, new_value, note)
          VALUES ($1, $2, 'ticket_created', $3, $4)`,
-        [r.rows[0].id, submitter.id, internalRef, creationNote]
+        [t.id, submitter.id, internalRef, creationNote]
       );
       if (forwarderUser) {
         await c.query(
           `INSERT INTO audit_log (ticket_id, user_id, action, new_value, note)
            VALUES ($1, $2, 'assigned', $3, $4)`,
-          [r.rows[0].id, forwarderUser.id, String(forwarderUser.id), 'Auto-assigned to forwarding agent']
+          [t.id, forwarderUser.id, String(forwarderUser.id), 'Auto-assigned to forwarding agent']
         );
         await c.query(
           `INSERT INTO ticket_followers (ticket_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-          [r.rows[0].id, forwarderUser.id]
+          [t.id, forwarderUser.id]
+        );
+      } else if (t.assigned_to) {
+        await c.query(
+          `INSERT INTO audit_log (ticket_id, user_id, action, new_value, note)
+           VALUES ($1, $2, 'assigned', $3, $4)`,
+          [t.id, submitter.id, String(t.assigned_to), 'Auto-assigned by policy']
+        );
+        await c.query(
+          `INSERT INTO ticket_followers (ticket_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+          [t.id, t.assigned_to]
         );
       }
       await c.query(
         `INSERT INTO ticket_followers (ticket_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
-        [r.rows[0].id, submitter.id]
+        [t.id, submitter.id]
       );
       await c.query('COMMIT');
-      return r.rows[0];
+      return t;
     } catch (e) {
       await c.query('ROLLBACK');
       throw e;
