@@ -1475,8 +1475,10 @@ export default function TicketDetail() {
         )}
 
       <div className="grid lg:grid-cols-3 gap-6">
-        {/* Left: main details */}
-        <div className="lg:col-span-2 space-y-4">
+        {/* Left: main details. min-w-0 keeps long descriptions /
+            markdown content from forcing the grid track wider than
+            the viewport on narrow screens. */}
+        <div className="lg:col-span-2 space-y-4 min-w-0">
           {/* Description */}
           <div className="bg-surface rounded-lg border border-border shadow-sm p-4">
             <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
@@ -1552,62 +1554,68 @@ export default function TicketDetail() {
             )}
           </div>
 
-          {/* Comments + Attachments + Resolution + Audit tabs */}
-          <div className="bg-surface rounded-lg border border-border shadow-sm">
-            <div className="flex border-b border-border">
-              <button
-                onClick={() => setActiveTab("comments")}
-                className={`px-4 py-3 text-sm font-medium transition-colors ${activeTab === "comments" ? "border-b-2 border-brand text-brand" : "text-fg-muted hover:text-fg"}`}
-              >
-                Comments ({comments.length})
-              </button>
-              {canHandleNotes && (
-                <button
-                  onClick={() => setActiveTab("notes")}
-                  className={`px-4 py-3 text-sm font-medium transition-colors ${activeTab === "notes" ? "border-b-2 border-brand text-brand" : "text-fg-muted hover:text-fg"}`}
-                  title="Internal notes — hidden from Submitters and Vendors"
-                >
-                  Notes{notes.length > 0 && ` (${notes.length})`}
-                  <span className="ml-1 text-[10px] text-fg-dim normal-case">internal</span>
-                </button>
-              )}
-              {canHandleNotes && (
-                <button
-                  onClick={() => setActiveTab("runbook")}
-                  className={`px-4 py-3 text-sm font-medium transition-colors ${activeTab === "runbook" ? "border-b-2 border-brand text-brand" : "text-fg-muted hover:text-fg"}`}
-                  title="Run a step-by-step KB runbook against this ticket"
-                >
-                  Runbook
-                  <span className="ml-1 text-[10px] text-fg-dim normal-case">internal</span>
-                </button>
-              )}
-              <button
-                onClick={() => setActiveTab("attachments")}
-                className={`px-4 py-3 text-sm font-medium transition-colors ${activeTab === "attachments" ? "border-b-2 border-brand text-brand" : "text-fg-muted hover:text-fg"}`}
-              >
-                Attachments{" "}
-                {attachments.length > 0 && `(${attachments.length})`}
-              </button>
-              <button
-                onClick={() => setActiveTab("resolution")}
-                className={`relative px-4 py-3 text-sm font-medium transition-colors ${activeTab === "resolution" ? "border-b-2 border-brand text-brand" : "text-fg-muted hover:text-fg"}`}
-                title="Record how this was fixed and link KB articles"
-              >
-                Resolution
-                {canEdit && !!ticket.resolved_at && !ticket.resolution_summary && (
-                  <span
-                    className="ml-1.5 inline-flex h-2 w-2 rounded-full bg-amber-500 animate-pulse align-middle"
-                    aria-label="Fix not yet recorded"
-                  />
-                )}
-              </button>
-              <button
-                onClick={() => setActiveTab("audit")}
-                className={`px-4 py-3 text-sm font-medium transition-colors ${activeTab === "audit" ? "border-b-2 border-brand text-brand" : "text-fg-muted hover:text-fg"}`}
-              >
-                Audit Log
-              </button>
-            </div>
+          {/* Comments + Attachments + Resolution + Audit tabs. Two
+              presentations: a real tab strip from sm and up, a
+              <select> dropdown on mobile so 4+ tabs don't overflow
+              the header and bleed sibling layout. */}
+          <div className="bg-surface rounded-lg border border-border shadow-sm min-w-0">
+            {(() => {
+              const resolutionUrgent = canEdit && !!ticket.resolved_at && !ticket.resolution_summary;
+              const tabs = [
+                { id: "comments", label: `Comments (${comments.length})`, show: true },
+                { id: "notes", label: `Notes${notes.length > 0 ? ` (${notes.length})` : ""}`, sub: "internal", show: canHandleNotes },
+                { id: "runbook", label: "Runbook", sub: "internal", show: canHandleNotes },
+                { id: "attachments", label: `Attachments${attachments.length > 0 ? ` (${attachments.length})` : ""}`, show: true },
+                { id: "resolution", label: "Resolution", show: true, urgent: resolutionUrgent },
+                { id: "audit", label: "Audit Log", show: true },
+              ].filter((t) => t.show);
+              return (
+                <>
+                  {/* Mobile: compact select. No overflow, no truncation. */}
+                  <div className="sm:hidden border-b border-border p-2">
+                    <label className="block">
+                      <span className="sr-only">Section</span>
+                      <select
+                        value={activeTab}
+                        onChange={(e) => setActiveTab(e.target.value)}
+                        className="w-full bg-surface border border-border-strong text-fg rounded-md px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40"
+                      >
+                        {tabs.map((t) => (
+                          <option key={t.id} value={t.id}>
+                            {t.urgent ? "• " : ""}{t.label}{t.sub ? ` — ${t.sub}` : ""}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  {/* Tablet+: tab strip. flex-wrap on md and below so a
+                      handler ticket with all six tabs wraps onto two
+                      rows instead of overflowing. */}
+                  <div className="hidden sm:flex flex-wrap border-b border-border">
+                    {tabs.map((t) => (
+                      <button
+                        key={t.id}
+                        type="button"
+                        onClick={() => setActiveTab(t.id)}
+                        className={`relative px-4 py-3 text-sm font-medium transition-colors ${activeTab === t.id ? "border-b-2 border-brand text-brand" : "text-fg-muted hover:text-fg"}`}
+                        title={t.sub === "internal" ? "Handler-only — hidden from Submitters and Vendors" : undefined}
+                      >
+                        {t.label}
+                        {t.sub && (
+                          <span className="ml-1 text-[10px] text-fg-dim normal-case">{t.sub}</span>
+                        )}
+                        {t.urgent && (
+                          <span
+                            className="ml-1.5 inline-flex h-2 w-2 rounded-full bg-amber-500 animate-pulse align-middle"
+                            aria-label="Fix not yet recorded"
+                          />
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              );
+            })()}
 
             {activeTab === "comments" && (
               <div className="p-4 space-y-4">
