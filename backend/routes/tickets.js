@@ -1642,4 +1642,205 @@ router.get('/:id/audit', requireAuth, async (req, res) => {
   }
 });
 
+// POST /api/tickets/:id/print-consumable-label
+//
+// Print a delivery label for a consumable tied to this ticket. Resolves:
+//   - ticket.internal_ref (SR-####)
+//   - requestor: Graph displayName for submitter.email → users.display_name
+//   - location:  Graph officeLocation matched ILIKE to locations.name|code
+//                → company_members.location_id linked location → raw
+//                Graph string → blank
+//   - consumable: part_no + title from consumables row
+//
+// Body: { consumable_id, requestor_override?, location_override? }
+//
+// The overrides let the print modal pre-fill from resolved values but
+// still accept a manual edit before fire. Server uses the override when
+// non-empty, otherwise the resolved value.
+router.post('/:id(\\d+)/print-consumable-label',
+  requireAuth, requireRole('Admin', 'Manager', 'Tech'),
+  async (req, res) => {
+    try {
+      const ticketId = Number(req.params.id);
+      const consumableId = Number(req.body?.consumable_id);
+      if (!Number.isInteger(consumableId) || consumableId <= 0) {
+        return res.status(400).json({ error: 'consumable_id required' });
+      }
+
+      const tr = await pool.query(
+        `SELECT t.id, t.internal_ref, t.submitted_by,
+                u.email AS submitter_email, u.display_name AS submitter_name
+           FROM tickets t
+           LEFT JOIN users u ON u.id = t.submitted_by
+          WHERE t.id = $1`,
+        [ticketId]
+      );
+      const ticket = tr.rows[0];
+      if (!ticket) return res.status(404).json({ error: 'ticket not found' });
+
+      const cr = await pool.query(
+        `SELECT id, part_no, title FROM consumables WHERE id = $1`,
+        [consumableId]
+      );
+      const cons = cr.rows[0];
+      if (!cons) return res.status(404).json({ error: 'consumable not found' });
+
+      // Graph user lookup. Silently null on failure / missing scope.
+      const graphUsers = require('../services/graphUsers');
+      const graphUser = ticket.submitter_email
+        ? await graphUsers.lookupUserByEmail(ticket.submitter_email).catch(() => null)
+        : null;
+
+      // Requestor: Graph displayName beats local; both fall back to email
+      // local-part. Override always wins.
+      let requestor = (req.body?.requestor_override || '').trim();
+      if (!requestor) {
+        requestor = graphUser?.displayName
+          || ticket.submitter_name
+          || (ticket.submitter_email ? String(ticket.submitter_email).split('@')[0] : '');
+      }
+
+      // Location ranking: Graph officeLocation wins (per admin choice).
+      // If Graph string matches an internal location row by name or code,
+      // expand to "Name [CODE]" for label clarity. Otherwise use the raw
+      // Graph string. Fall back to company_members → locations join.
+      let location = (req.body?.location_override || '').trim();
+      if (!location) {
+        const graphLoc = (graphUser?.officeLocation || '').trim();
+        if (graphLoc) {
+          const lr = await pool.query(
+            `SELECT name, location_code FROM locations
+              WHERE is_archived = FALSE
+                AND (name ILIKE $1 OR location_code ILIKE $1)
+              ORDER BY (CASE WHEN location_code ILIKE $1 THEN 0 ELSE 1 END)
+              LIMIT 1`,
+            [graphLoc]
+          );
+          if (lr.rows[0]) {
+            location = lr.rows[0].location_code
+              ? `${lr.rows[0].name} [${lr.rows[0].location_code}]`
+              : lr.rows[0].name;
+          } else {
+            location = graphLoc;
+          }
+        } else if (ticket.submitted_by) {
+          const dbLoc = await pool.query(
+            `SELECT l.name, l.location_code
+               FROM company_members cm
+               JOIN locations l ON l.id = cm.location_id
+              WHERE cm.user_id = $1 AND l.is_archived = FALSE
+              ORDER BY cm.id ASC
+              LIMIT 1`,
+            [ticket.submitted_by]
+          );
+          if (dbLoc.rows[0]) {
+            location = dbLoc.rows[0].location_code
+              ? `${dbLoc.rows[0].name} [${dbLoc.rows[0].location_code}]`
+              : dbLoc.rows[0].name;
+          }
+        }
+      }
+
+      const labelPrinter = require('../services/labelPrinter');
+      const labelTemplates = require('../services/labelTemplates');
+      const cfg = await labelPrinter.getConfig();
+      if (!cfg?.enabled) return res.status(400).json({ error: 'Label printer disabled' });
+      if (!cfg.host) return res.status(400).json({ error: 'Label printer host not configured' });
+
+      const zpl = labelTemplates.renderConsumableLabel({
+        ticket: { id: ticket.id, internal_ref: ticket.internal_ref },
+        requestor,
+        location,
+        consumable: { part_number: cons.part_no, title: cons.title },
+      }, cfg);
+      await labelPrinter.print(zpl);
+
+      res.json({
+        ok: true,
+        resolved: { requestor, location, ticket_ref: ticket.internal_ref,
+                    consumable: { part_no: cons.part_no, title: cons.title } },
+      });
+    } catch (err) {
+      console.error('ticket print-consumable-label:', err);
+      res.status(500).json({ error: err.message || 'Print failed' });
+    }
+  }
+);
+
+// GET /api/tickets/:id/print-label-resolve — preview the resolved label
+// fields without actually printing. Used by the modal to pre-fill the
+// override inputs.
+router.get('/:id(\\d+)/print-label-resolve',
+  requireAuth, requireRole('Admin', 'Manager', 'Tech'),
+  async (req, res) => {
+    try {
+      const ticketId = Number(req.params.id);
+      const tr = await pool.query(
+        `SELECT t.id, t.internal_ref, t.submitted_by,
+                u.email AS submitter_email, u.display_name AS submitter_name
+           FROM tickets t
+           LEFT JOIN users u ON u.id = t.submitted_by
+          WHERE t.id = $1`,
+        [ticketId]
+      );
+      const ticket = tr.rows[0];
+      if (!ticket) return res.status(404).json({ error: 'ticket not found' });
+
+      const graphUsers = require('../services/graphUsers');
+      const graphUser = ticket.submitter_email
+        ? await graphUsers.lookupUserByEmail(ticket.submitter_email).catch(() => null)
+        : null;
+
+      const requestor = graphUser?.displayName
+        || ticket.submitter_name
+        || (ticket.submitter_email ? String(ticket.submitter_email).split('@')[0] : '');
+
+      let location = '';
+      const graphLoc = (graphUser?.officeLocation || '').trim();
+      if (graphLoc) {
+        const lr = await pool.query(
+          `SELECT name, location_code FROM locations
+            WHERE is_archived = FALSE
+              AND (name ILIKE $1 OR location_code ILIKE $1)
+            ORDER BY (CASE WHEN location_code ILIKE $1 THEN 0 ELSE 1 END)
+            LIMIT 1`,
+          [graphLoc]
+        );
+        if (lr.rows[0]) {
+          location = lr.rows[0].location_code
+            ? `${lr.rows[0].name} [${lr.rows[0].location_code}]`
+            : lr.rows[0].name;
+        } else {
+          location = graphLoc;
+        }
+      } else if (ticket.submitted_by) {
+        const dbLoc = await pool.query(
+          `SELECT l.name, l.location_code
+             FROM company_members cm
+             JOIN locations l ON l.id = cm.location_id
+            WHERE cm.user_id = $1 AND l.is_archived = FALSE
+            ORDER BY cm.id ASC
+            LIMIT 1`,
+          [ticket.submitted_by]
+        );
+        if (dbLoc.rows[0]) {
+          location = dbLoc.rows[0].location_code
+            ? `${dbLoc.rows[0].name} [${dbLoc.rows[0].location_code}]`
+            : dbLoc.rows[0].name;
+        }
+      }
+
+      res.json({
+        ticket_ref: ticket.internal_ref,
+        requestor,
+        location,
+        graph_available: !!graphUser,
+      });
+    } catch (err) {
+      console.error('print-label-resolve:', err);
+      res.status(500).json({ error: 'Database error' });
+    }
+  }
+);
+
 module.exports = router;

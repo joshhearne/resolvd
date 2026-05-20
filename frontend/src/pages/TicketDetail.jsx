@@ -361,6 +361,9 @@ export default function TicketDetail() {
   const [showFollowerMgr, setShowFollowerMgr] = useState(false);
   const [addFollowerId, setAddFollowerId] = useState("");
   const [showMobileActions, setShowMobileActions] = useState(false);
+  const [labelModal, setLabelModal] = useState(null);
+  // labelModal shape: { loading, resolved: {requestor, location, ticket_ref, graph_available},
+  //                     consumables: [{id, part_no, title, on_hand}], consumableId, requestor, location, printing }
 
   // Internal notes are open to handlers — global Admin/Manager/Tech OR
   // project members with a handler role_override / is_agent. Server
@@ -986,6 +989,50 @@ export default function TicketDetail() {
     }
   }
 
+  async function openLabelModal() {
+    setLabelModal({ loading: true });
+    try {
+      const [resolved, consList] = await Promise.all([
+        api.get(`/api/tickets/${id}/print-label-resolve`),
+        api.get(`/api/consumables`),
+      ]);
+      const consumables = (Array.isArray(consList) ? consList : consList?.items || [])
+        .filter((c) => !c.is_archived);
+      setLabelModal({
+        loading: false,
+        resolved,
+        consumables,
+        consumableId: consumables[0]?.id ? String(consumables[0].id) : "",
+        requestor: resolved.requestor || "",
+        location: resolved.location || "",
+        graphAvailable: resolved.graph_available,
+      });
+    } catch (e) {
+      toast.error(e.message || "Failed to load label data");
+      setLabelModal(null);
+    }
+  }
+
+  async function sendLabelPrint() {
+    if (!labelModal?.consumableId) {
+      toast.error("Pick a consumable");
+      return;
+    }
+    setLabelModal((m) => ({ ...m, printing: true }));
+    try {
+      await api.post(`/api/tickets/${id}/print-consumable-label`, {
+        consumable_id: Number(labelModal.consumableId),
+        requestor_override: labelModal.requestor || "",
+        location_override: labelModal.location || "",
+      });
+      toast.success("Label sent to printer");
+      setLabelModal(null);
+    } catch (e) {
+      toast.error(e.message || "Print failed");
+      setLabelModal((m) => ({ ...m, printing: false }));
+    }
+  }
+
   return (
     <PageShell variant="standard" className="space-y-6">
       {/* Breadcrumb — Tickets > [Project prefix · Name] > REF. The
@@ -1299,6 +1346,15 @@ export default function TicketDetail() {
               </span>
             )}
           </button>
+          {isAdmin && project?.prefix === "SR" && (
+            <button
+              onClick={openLabelModal}
+              className="btn-secondary btn btn-sm"
+              title="Print a delivery label for a consumable on this ticket"
+            >
+              Print delivery label
+            </button>
+          )}
           {isAdmin && (
             <div className="relative">
               <button
@@ -3209,6 +3265,103 @@ export default function TicketDetail() {
           attachment={lightboxAttachment}
           onClose={() => setLightboxAttachment(null)}
         />
+      )}
+
+      {labelModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          onClick={() => !labelModal.printing && setLabelModal(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-surface border border-border-strong rounded-lg shadow-xl w-full max-w-md p-5 space-y-4"
+          >
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-fg">Print delivery label</h2>
+              <button
+                onClick={() => !labelModal.printing && setLabelModal(null)}
+                className="text-fg-muted hover:text-fg text-xl leading-none"
+              >×</button>
+            </div>
+
+            {labelModal.loading ? (
+              <div className="text-sm text-fg-dim py-6 text-center">Loading…</div>
+            ) : (
+              <>
+                <div className="text-xs text-fg-dim">
+                  Ticket{" "}
+                  <span className="font-mono font-semibold text-fg">
+                    {labelModal.resolved?.ticket_ref}
+                  </span>
+                  {labelModal.graphAvailable ? null : (
+                    <span className="ml-2 text-amber-600 dark:text-amber-400">
+                      · Graph lookup unavailable — fill in fields manually
+                    </span>
+                  )}
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-fg-muted">Consumable</label>
+                  <select
+                    value={labelModal.consumableId}
+                    onChange={(e) =>
+                      setLabelModal((m) => ({ ...m, consumableId: e.target.value }))
+                    }
+                    className="w-full bg-surface-2 border border-border rounded px-2 py-1.5 text-sm"
+                  >
+                    <option value="">— pick consumable —</option>
+                    {labelModal.consumables.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.part_no ? `${c.part_no} — ${c.title}` : c.title}
+                      </option>
+                    ))}
+                  </select>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-fg-muted">Requestor</label>
+                  <input
+                    type="text"
+                    value={labelModal.requestor}
+                    onChange={(e) =>
+                      setLabelModal((m) => ({ ...m, requestor: e.target.value }))
+                    }
+                    placeholder="(blank)"
+                    className="w-full bg-surface-2 border border-border rounded px-2 py-1.5 text-sm"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-fg-muted">Location</label>
+                  <input
+                    type="text"
+                    value={labelModal.location}
+                    onChange={(e) =>
+                      setLabelModal((m) => ({ ...m, location: e.target.value }))
+                    }
+                    placeholder="(blank)"
+                    className="w-full bg-surface-2 border border-border rounded px-2 py-1.5 text-sm"
+                  />
+                </div>
+
+                <div className="flex items-center justify-end gap-2 pt-2">
+                  <button
+                    onClick={() => setLabelModal(null)}
+                    disabled={labelModal.printing}
+                    className="btn btn-sm btn-secondary"
+                  >Cancel</button>
+                  <button
+                    onClick={sendLabelPrint}
+                    disabled={labelModal.printing || !labelModal.consumableId}
+                    className="btn btn-sm btn-primary"
+                  >
+                    {labelModal.printing ? "Printing…" : "Print"}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
       )}
     </PageShell>
   );
