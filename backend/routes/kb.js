@@ -1,10 +1,24 @@
 const express = require('express');
 const { pool } = require('../db/pool');
 const { requireAuth } = require('../middleware/auth');
+const { isProjectHandler } = require('../services/ticketHelpers');
 
 const router = express.Router();
 
 const EDIT_ROLES = ['Admin', 'Manager', 'Tech'];
+
+// Agent-only articles use the same gate as the Notes feature: global
+// Admin/Manager/Tech, or any project member with a handler role_override
+// or is_agent=TRUE on the article's project. Anyone outside that set
+// can't see the row at all, nor read/write it. Delete on an agent_only
+// article is further restricted to global Admin (see DELETE handler).
+async function canReadAgentOnly(user, projectId) {
+  return isProjectHandler(pool, {
+    userId: user.id,
+    role: user.role,
+    projectId,
+  });
+}
 
 // Normalize + validate a tag list. Lowercase, trim, dedup. Returns
 // { ok: true, value } or { ok: false, error }. Used by both POST and
@@ -126,6 +140,7 @@ router.get('/projects/:projectId/articles', requireAuth, async (req, res) => {
     if (!(await userCanReadProject(req.session.user, projectId))) {
       return res.status(403).json({ error: 'Forbidden' });
     }
+    const isHandler = await canReadAgentOnly(req.session.user, projectId);
     const { q, status, tag } = req.query;
     const params = [projectId];
     const where = ['a.project_id = $1'];
@@ -134,6 +149,10 @@ router.get('/projects/:projectId/articles', requireAuth, async (req, res) => {
     } else {
       where.push(`a.status <> 'archived'`);
     }
+    // Hide agent_only rows from non-handlers entirely — list omission,
+    // not 403. Mirrors how the Notes tab simply doesn't render for
+    // unauthorized viewers.
+    if (!isHandler) where.push('a.agent_only = FALSE');
     if (q && String(q).trim()) {
       params.push(`%${String(q).trim().toLowerCase()}%`);
       where.push(`(LOWER(a.title) LIKE $${params.length} OR LOWER(a.content_text) LIKE $${params.length})`);
@@ -148,7 +167,7 @@ router.get('/projects/:projectId/articles', requireAuth, async (req, res) => {
     }
     const r = await pool.query(
       `SELECT a.id, a.project_id, a.slug, a.title, a.status, a.updated_at, a.published_at,
-              a.view_count, a.tags,
+              a.view_count, a.tags, a.agent_only,
               u.display_name AS last_edited_by_name,
               LEFT(a.content_text, 240) AS excerpt
          FROM kb_articles a
@@ -183,6 +202,11 @@ router.get('/projects/:projectId/articles/:slug', requireAuth, async (req, res) 
       [projectId, req.params.slug]
     );
     if (r.rowCount === 0) return res.status(404).json({ error: 'Not found' });
+    // Agent-only articles are invisible to non-handlers — return 404
+    // rather than 403 so we don't leak the slug's existence.
+    if (r.rows[0].agent_only && !(await canReadAgentOnly(req.session.user, projectId))) {
+      return res.status(404).json({ error: 'Not found' });
+    }
     // bump view count (best-effort, don't block response)
     pool.query('UPDATE kb_articles SET view_count = view_count + 1 WHERE id = $1', [r.rows[0].id]).catch(() => {});
     res.json(r.rows[0]);
@@ -201,7 +225,7 @@ router.post('/projects/:projectId/articles', requireAuth, async (req, res) => {
   if (!(await userCanReadProject(user, projectId))) {
     return res.status(403).json({ error: 'Forbidden' });
   }
-  const { title, slug: slugIn, content_json, status, tags, keywords } = req.body || {};
+  const { title, slug: slugIn, content_json, status, tags, keywords, agent_only } = req.body || {};
   if (!title || !String(title).trim()) return res.status(400).json({ error: 'title required' });
   const tg = normalizeTags(tags, 'tags');
   if (!tg.ok) return res.status(400).json({ error: tg.error });
@@ -212,15 +236,20 @@ router.post('/projects/:projectId/articles', requireAuth, async (req, res) => {
   const slug = await uniqueSlug(projectId, slugBase);
   const text = extractText(blocks);
   const st = ['draft','published','archived'].includes(status) ? status : 'draft';
+  // Only project handlers can mark a new article as agent-only.
+  const wantsAgentOnly = !!agent_only;
+  if (wantsAgentOnly && !(await canReadAgentOnly(user, projectId))) {
+    return res.status(403).json({ error: 'Agent-only KB requires handler access on this project' });
+  }
 
   const client = await pool.connect();
   try {
     await client.query('BEGIN');
     const ins = await client.query(
-      `INSERT INTO kb_articles (project_id, slug, title, content_json, content_text, status, tags, keywords, author_id, last_edited_by, published_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7::text[],$8::text[],$9,$9, CASE WHEN $6 = 'published' THEN NOW() ELSE NULL END)
+      `INSERT INTO kb_articles (project_id, slug, title, content_json, content_text, status, tags, keywords, agent_only, author_id, last_edited_by, published_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7::text[],$8::text[],$9,$10,$10, CASE WHEN $6 = 'published' THEN NOW() ELSE NULL END)
        RETURNING *`,
-      [projectId, slug, String(title).trim(), JSON.stringify(blocks), text, st, tg.value || [], kw.value || [], user.id]
+      [projectId, slug, String(title).trim(), JSON.stringify(blocks), text, st, tg.value || [], kw.value || [], wantsAgentOnly, user.id]
     );
     const art = ins.rows[0];
     await client.query(
@@ -253,14 +282,24 @@ router.patch('/articles/:id', requireAuth, async (req, res) => {
   if (!(await userCanReadProject(user, art.project_id))) {
     return res.status(403).json({ error: 'Forbidden' });
   }
+  // Agent-only articles: only project handlers can edit (and even see).
+  // Editor role is necessary but not sufficient — a Tech without agent
+  // access on this project can't read or write the article.
+  if (art.agent_only && !(await canReadAgentOnly(user, art.project_id))) {
+    return res.status(404).json({ error: 'Not found' });
+  }
 
-  const { title, slug: slugIn, content_json, status, change_summary, tags, keywords } = req.body || {};
+  const { title, slug: slugIn, content_json, status, change_summary, tags, keywords, agent_only } = req.body || {};
   const tg = normalizeTags(tags, 'tags');
   if (!tg.ok) return res.status(400).json({ error: tg.error });
   const kw = normalizeTags(keywords, 'keywords');
   if (!kw.ok) return res.status(400).json({ error: kw.error });
   const nextTags = tg.value !== undefined ? tg.value : art.tags;
   const nextKeywords = kw.value !== undefined ? kw.value : art.keywords;
+  // agent_only toggle requires the same handler gate. Caller can flip
+  // it either way — non-handlers can't see the article at all (404
+  // above), so we know the caller is a handler if they reach here.
+  const nextAgentOnly = typeof agent_only === 'boolean' ? agent_only : art.agent_only;
   const nextTitle = (title && String(title).trim()) || art.title;
   let nextSlug = art.slug;
   if (slugIn && slugify(slugIn) !== art.slug) {
@@ -279,11 +318,12 @@ router.patch('/articles/:id', requireAuth, async (req, res) => {
       `UPDATE kb_articles
           SET title = $1, slug = $2, content_json = $3, content_text = $4,
               status = $5, tags = $6::text[], keywords = $7::text[],
-              last_edited_by = $8, updated_at = NOW(),
-              published_at = CASE WHEN $9 THEN NOW() ELSE published_at END
-        WHERE id = $10
+              agent_only = $8,
+              last_edited_by = $9, updated_at = NOW(),
+              published_at = CASE WHEN $10 THEN NOW() ELSE published_at END
+        WHERE id = $11
         RETURNING *`,
-      [nextTitle, nextSlug, nextJson, nextText, nextStatus, nextTags || [], nextKeywords || [], user.id, publishingNow, art.id]
+      [nextTitle, nextSlug, nextJson, nextText, nextStatus, nextTags || [], nextKeywords || [], nextAgentOnly, user.id, publishingNow, art.id]
     );
     const nextArt = upd.rows[0];
     // Snapshot version only if content/title actually changed.
@@ -317,10 +357,16 @@ router.delete('/articles/:id', requireAuth, async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ error: 'Bad id' });
 
-  const cur = await pool.query('SELECT project_id FROM kb_articles WHERE id = $1', [id]);
+  const cur = await pool.query('SELECT project_id, agent_only FROM kb_articles WHERE id = $1', [id]);
   if (cur.rowCount === 0) return res.status(404).json({ error: 'Not found' });
   if (!(await userCanReadProject(user, cur.rows[0].project_id))) {
     return res.status(403).json({ error: 'Forbidden' });
+  }
+  // Agent-only article: only global Admin can delete. Tech / Manager
+  // with project-handler access can read and write, but deletion is
+  // an Admin-only ceiling per the agent-only policy.
+  if (cur.rows[0].agent_only && user.role !== 'Admin') {
+    return res.status(403).json({ error: 'Only Admin can delete an agent-only article' });
   }
   const hard = String(req.query.hard || '') === '1';
   try {
@@ -344,10 +390,13 @@ router.delete('/articles/:id', requireAuth, async (req, res) => {
 router.get('/articles/:id/versions', requireAuth, async (req, res) => {
   const id = Number(req.params.id);
   if (!Number.isFinite(id)) return res.status(400).json({ error: 'Bad id' });
-  const cur = await pool.query('SELECT project_id FROM kb_articles WHERE id = $1', [id]);
+  const cur = await pool.query('SELECT project_id, agent_only FROM kb_articles WHERE id = $1', [id]);
   if (cur.rowCount === 0) return res.status(404).json({ error: 'Not found' });
   if (!(await userCanReadProject(req.session.user, cur.rows[0].project_id))) {
     return res.status(403).json({ error: 'Forbidden' });
+  }
+  if (cur.rows[0].agent_only && !(await canReadAgentOnly(req.session.user, cur.rows[0].project_id))) {
+    return res.status(404).json({ error: 'Not found' });
   }
   const r = await pool.query(
     `SELECT v.id, v.version_no, v.title, v.change_summary, v.created_at,
@@ -366,10 +415,13 @@ router.get('/articles/:id/versions/:n', requireAuth, async (req, res) => {
   const id = Number(req.params.id);
   const n = Number(req.params.n);
   if (!Number.isFinite(id) || !Number.isFinite(n)) return res.status(400).json({ error: 'Bad id' });
-  const cur = await pool.query('SELECT project_id FROM kb_articles WHERE id = $1', [id]);
+  const cur = await pool.query('SELECT project_id, agent_only FROM kb_articles WHERE id = $1', [id]);
   if (cur.rowCount === 0) return res.status(404).json({ error: 'Not found' });
   if (!(await userCanReadProject(req.session.user, cur.rows[0].project_id))) {
     return res.status(403).json({ error: 'Forbidden' });
+  }
+  if (cur.rows[0].agent_only && !(await canReadAgentOnly(req.session.user, cur.rows[0].project_id))) {
+    return res.status(404).json({ error: 'Not found' });
   }
   const r = await pool.query(
     `SELECT v.*, u.display_name AS author_name
@@ -390,10 +442,13 @@ router.post('/articles/:id/restore/:n', requireAuth, async (req, res) => {
   const n = Number(req.params.n);
   if (!Number.isFinite(id) || !Number.isFinite(n)) return res.status(400).json({ error: 'Bad id' });
 
-  const cur = await pool.query('SELECT project_id FROM kb_articles WHERE id = $1', [id]);
+  const cur = await pool.query('SELECT project_id, agent_only FROM kb_articles WHERE id = $1', [id]);
   if (cur.rowCount === 0) return res.status(404).json({ error: 'Not found' });
   if (!(await userCanReadProject(user, cur.rows[0].project_id))) {
     return res.status(403).json({ error: 'Forbidden' });
+  }
+  if (cur.rows[0].agent_only && !(await canReadAgentOnly(user, cur.rows[0].project_id))) {
+    return res.status(404).json({ error: 'Not found' });
   }
 
   const client = await pool.connect();
@@ -460,10 +515,16 @@ router.get('/tags', requireAuth, async (req, res) => {
       params.push(`%${q}%`);
       qClause = `AND t LIKE $${params.length}`;
     }
+    // Agent-only articles' tags are intentionally excluded from the
+    // global tag aggregation to avoid leaking topic hints. Within a
+    // project an authorised handler still gets the per-project article
+    // list filter (which honours agent_only correctly).
     const r = await pool.query(
       `SELECT t AS tag, COUNT(*)::int AS article_count
          FROM kb_articles a, unnest(a.tags) AS t
-        WHERE a.status <> 'archived' ${scope} ${projectClause} ${qClause}
+        WHERE a.status <> 'archived'
+          AND a.agent_only = FALSE
+          ${scope} ${projectClause} ${qClause}
         GROUP BY t
         ORDER BY article_count DESC, t ASC
         LIMIT 100`,
@@ -588,10 +649,16 @@ async function loadTicketAndArticle({ user, ticketId, articleId }) {
     throw { status: 403, error: 'forbidden (ticket)' };
   }
   if (articleId == null) return { ticket: t.rows[0], article: null };
-  const a = await pool.query(`SELECT id, project_id, slug, title FROM kb_articles WHERE id = $1`, [articleId]);
+  const a = await pool.query(`SELECT id, project_id, slug, title, agent_only FROM kb_articles WHERE id = $1`, [articleId]);
   if (!a.rows[0]) throw { status: 404, error: 'article not found' };
   if (!(await userCanReadProject(user, a.rows[0].project_id))) {
     throw { status: 403, error: 'forbidden (article)' };
+  }
+  // Agent-only article: non-handlers can't reach it via the
+  // ticket↔article endpoints either. 404 (same shape as the direct
+  // article fetch) to keep the slug invisible.
+  if (a.rows[0].agent_only && !(await canReadAgentOnly(user, a.rows[0].project_id))) {
+    throw { status: 404, error: 'article not found' };
   }
   return { ticket: t.rows[0], article: a.rows[0] };
 }
@@ -601,16 +668,18 @@ router.get('/tickets/:id/links', requireAuth, async (req, res) => {
   try {
     const ticketId = Number(req.params.id);
     const { ticket } = await loadTicketAndArticle({ user: req.session.user, ticketId });
+    const isHandler = await canReadAgentOnly(req.session.user, ticket.project_id);
     const r = await pool.query(
-      `SELECT l.article_id, a.slug, a.title, a.project_id, a.tags,
+      `SELECT l.article_id, a.slug, a.title, a.project_id, a.tags, a.agent_only,
               l.kind, l.created_at,
               u.display_name AS created_by_name
          FROM ticket_kb_links l
          JOIN kb_articles a ON a.id = l.article_id
          LEFT JOIN users u ON u.id = l.created_by
         WHERE l.ticket_id = $1
+          AND (a.agent_only = FALSE OR $2 = TRUE)
         ORDER BY l.created_at ASC`,
-      [ticket.id]
+      [ticket.id, isHandler]
     );
     res.json(r.rows);
   } catch (err) {
@@ -685,6 +754,7 @@ router.get('/tickets/:id/suggestions', requireAuth, async (req, res) => {
     const ticketId = Number(req.params.id);
     const limit = Math.max(1, Math.min(20, Number(req.query.limit) || 5));
     const { ticket } = await loadTicketAndArticle({ user: req.session.user, ticketId });
+    const isHandler = await canReadAgentOnly(req.session.user, ticket.project_id);
     // Decrypt ticket title under standard mode for matching. matchable
     // is the cheap bag-of-words on the article side.
     const { decryptRows } = require('../services/fields');
@@ -692,7 +762,7 @@ router.get('/tickets/:id/suggestions', requireAuth, async (req, res) => {
     const titleQ = String(ticket.title || '').trim();
     if (!titleQ) return res.json([]);
     const r = await pool.query(
-      `SELECT a.id AS article_id, a.slug, a.title, a.tags, a.project_id,
+      `SELECT a.id AS article_id, a.slug, a.title, a.tags, a.project_id, a.agent_only,
               similarity(
                 a.title || ' ' || array_to_string(a.tags, ' ') || ' ' || array_to_string(a.keywords, ' '),
                 $2
@@ -700,6 +770,7 @@ router.get('/tickets/:id/suggestions', requireAuth, async (req, res) => {
          FROM kb_articles a
         WHERE a.status = 'published'
           AND (a.project_id = $1 OR a.project_id IS NULL)
+          AND (a.agent_only = FALSE OR $5 = TRUE)
           AND NOT EXISTS (
             SELECT 1 FROM ticket_kb_links l
              WHERE l.ticket_id = $3 AND l.article_id = a.id
@@ -708,7 +779,7 @@ router.get('/tickets/:id/suggestions', requireAuth, async (req, res) => {
           (CASE WHEN a.project_id = $1 THEN 0 ELSE 1 END),
           sim DESC
         LIMIT $4`,
-      [ticket.project_id, titleQ, ticket.id, limit]
+      [ticket.project_id, titleQ, ticket.id, limit, isHandler]
     );
     res.json(r.rows);
   } catch (err) {

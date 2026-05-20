@@ -37,6 +37,7 @@ export default function KbEditor() {
   const [title, setTitle] = useState("");
   const [slugInput, setSlugInput] = useState("");
   const [status, setStatus] = useState("draft");
+  const [agentOnly, setAgentOnly] = useState(false);
   const [changeSummary, setChangeSummary] = useState("");
   const [tags, setTags] = useState([]);
   const [tagDraft, setTagDraft] = useState("");
@@ -56,6 +57,7 @@ export default function KbEditor() {
         setTitle(a.title);
         setSlugInput(a.slug);
         setStatus(a.status);
+        setAgentOnly(!!a.agent_only);
         setTags(a.tags || []);
         setKeywords(a.keywords || []);
       })
@@ -107,6 +109,7 @@ export default function KbEditor() {
           status: nextStatus,
           tags,
           keywords,
+          agent_only: agentOnly,
         });
         toast.success("Created");
         navigate(`/kb/${projectId}/${created.slug}`);
@@ -119,6 +122,7 @@ export default function KbEditor() {
           change_summary: changeSummary.trim() || null,
           tags,
           keywords,
+          agent_only: agentOnly,
         });
         toast.success("Saved");
         navigate(`/kb/${projectId}/${updated.slug}`);
@@ -257,6 +261,20 @@ export default function KbEditor() {
             <option value="published">Published</option>
             <option value="archived">Archived</option>
           </select>
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-fg-muted text-xs uppercase tracking-wider">Visibility</span>
+          <label
+            className="inline-flex items-center gap-1.5 px-2 py-1 rounded bg-surface border border-border text-fg text-sm cursor-pointer select-none"
+            title="When on, only project handlers (global Admin/Manager/Tech or project agent/handler-override) can read or write this article. Only an Admin can delete it."
+          >
+            <input
+              type="checkbox"
+              checked={agentOnly}
+              onChange={(e) => setAgentOnly(e.target.checked)}
+            />
+            <span>Agent only</span>
+          </label>
         </label>
       </div>
 

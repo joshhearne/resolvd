@@ -182,6 +182,14 @@ export default function KbProject() {
                       {a.status}
                     </span>
                   )}
+                  {a.agent_only && (
+                    <span
+                      className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded-full font-mono bg-amber-200/70 dark:bg-amber-800/60 text-amber-900 dark:text-amber-100"
+                      title="Agent-only: only project handlers see this article."
+                    >
+                      Agent only
+                    </span>
+                  )}
                   {a.tags?.length > 0 && (
                     <span className="flex flex-wrap gap-1">
                       {a.tags.map((t) => (

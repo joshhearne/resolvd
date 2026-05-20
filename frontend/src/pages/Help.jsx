@@ -847,6 +847,7 @@ function SectionKb({ role }) {
         <Feature name="Browse project articles" roles="all" />
         <Feature name="Tag filter chips (AND across tags)" roles="all" />
         <Feature name="Create / edit / archive articles" roles={HANDLER} />
+        <Feature name="Agent-only article visibility" roles={HANDLER} note="Toggle on an article to restrict both read AND write to project handlers — same gate as the Notes feature (global Admin/Manager/Tech, or an Agent / handler-override on the project). Non-handlers don't see the article in lists, suggestions, or ticket links. Only a global Admin can delete an agent-only article." />
         <Feature name="Version history + restore" roles={HANDLER} note="Every save snapshots a version with optional change_summary; restore writes a fresh version marked 'Restored from vN'." />
         <Feature name="Promote ticket to KB" roles={PRIV} note="Drafts a new article seeded from the ticket title + description + resolution_summary. Admin / Manager only." />
         <Feature name="Suggested article on ticket open" roles="all" note="pg_trgm ranker over title + tags + keywords. Auto-surfaces high-confidence matches; manual picker for the long tail." />

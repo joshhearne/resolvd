@@ -127,7 +127,7 @@ export default function KbArticle() {
       </div>
 
       <header className="space-y-2 border-b border-border pb-5">
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
           {article.status !== "published" && (
             <span
               className={`text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded-full font-mono ${
@@ -137,6 +137,14 @@ export default function KbArticle() {
               }`}
             >
               {article.status}
+            </span>
+          )}
+          {article.agent_only && (
+            <span
+              className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded-full font-mono bg-amber-200/70 dark:bg-amber-800/60 text-amber-900 dark:text-amber-100"
+              title="Visible only to project handlers (Admin / Manager / Tech globally, or agent / handler override on this project)."
+            >
+              Agent only
             </span>
           )}
         </div>

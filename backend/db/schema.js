@@ -2197,6 +2197,15 @@ async function initSchema() {
     // rules without a migration.
     await client.query(`ALTER TABLE kb_articles ADD COLUMN IF NOT EXISTS tags TEXT[] NOT NULL DEFAULT '{}'::text[]`);
     await client.query(`ALTER TABLE kb_articles ADD COLUMN IF NOT EXISTS keywords TEXT[] NOT NULL DEFAULT '{}'::text[]`);
+    // v0.8.x — agent_only restricts both read AND write of the article
+    // to "handlers" on the article's project — same gate as Notes
+    // (global Admin/Manager/Tech, OR a project member with a handler
+    // role_override / is_agent=TRUE on that project). Submitters /
+    // Viewers / non-agent project members can't see the row at all.
+    // Delete on an agent_only article is further restricted to global
+    // Admin.
+    await client.query(`ALTER TABLE kb_articles ADD COLUMN IF NOT EXISTS agent_only BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_kb_articles_agent_only ON kb_articles(project_id) WHERE agent_only = TRUE`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_kb_articles_tags ON kb_articles USING GIN(tags)`);
     // Trigram index on plain title for the suggestion ranker. Postgres
     // refuses to index expressions containing array_to_string (STABLE,
