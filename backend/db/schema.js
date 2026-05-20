@@ -2206,6 +2206,38 @@ async function initSchema() {
     // Admin.
     await client.query(`ALTER TABLE kb_articles ADD COLUMN IF NOT EXISTS agent_only BOOLEAN NOT NULL DEFAULT FALSE`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_kb_articles_agent_only ON kb_articles(project_id) WHERE agent_only = TRUE`);
+
+    // v0.8.x — runbook variant of KB articles. kind='runbook' marks an
+    // article whose content is a step-by-step checklist (BlockNote
+    // checkListItem blocks) with optional @canned:<slug> pill insertions
+    // that prefill the comment composer when clicked from a ticket.
+    // Editing / version history / agent_only / suggestion ranker all
+    // ride existing kb_articles plumbing — kind is just a flag the
+    // ticket-side runbook panel uses to filter the picker.
+    await client.query(`ALTER TABLE kb_articles ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'article'
+      CHECK (kind IN ('article','runbook'))`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_kb_articles_runbooks ON kb_articles(project_id) WHERE kind = 'runbook'`);
+
+    // Per-ticket runbook execution state. One row per (ticket, runbook)
+    // — opening the same runbook on two tickets has independent
+    // checkbox state. step_states is { "<blockId>": { checked: bool,
+    // checked_by: int, checked_at: tsISO } } so we don't have to
+    // schema-up every block id. started_by/_at stamp the first
+    // toggle; completed_at flips when all known steps are checked
+    // (computed client-side, server stamps when caller POSTs complete).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ticket_runbook_runs (
+        id SERIAL PRIMARY KEY,
+        ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+        article_id INTEGER NOT NULL REFERENCES kb_articles(id) ON DELETE CASCADE,
+        step_states JSONB NOT NULL DEFAULT '{}'::jsonb,
+        started_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        completed_at TIMESTAMPTZ,
+        UNIQUE(ticket_id, article_id)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_runbook_runs_ticket ON ticket_runbook_runs(ticket_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_kb_articles_tags ON kb_articles USING GIN(tags)`);
     // Trigram index on plain title for the suggestion ranker. Postgres
     // refuses to index expressions containing array_to_string (STABLE,

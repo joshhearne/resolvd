@@ -153,6 +153,12 @@ router.get('/projects/:projectId/articles', requireAuth, async (req, res) => {
     // not 403. Mirrors how the Notes tab simply doesn't render for
     // unauthorized viewers.
     if (!isHandler) where.push('a.agent_only = FALSE');
+    // Optional kind filter (?kind=article|runbook). Defaults to all so
+    // the existing KB index keeps showing both.
+    const kind = req.query.kind;
+    if (kind === 'article' || kind === 'runbook') {
+      params.push(kind); where.push(`a.kind = $${params.length}`);
+    }
     if (q && String(q).trim()) {
       params.push(`%${String(q).trim().toLowerCase()}%`);
       where.push(`(LOWER(a.title) LIKE $${params.length} OR LOWER(a.content_text) LIKE $${params.length})`);
@@ -167,7 +173,7 @@ router.get('/projects/:projectId/articles', requireAuth, async (req, res) => {
     }
     const r = await pool.query(
       `SELECT a.id, a.project_id, a.slug, a.title, a.status, a.updated_at, a.published_at,
-              a.view_count, a.tags, a.agent_only,
+              a.view_count, a.tags, a.agent_only, a.kind,
               u.display_name AS last_edited_by_name,
               LEFT(a.content_text, 240) AS excerpt
          FROM kb_articles a
@@ -225,7 +231,7 @@ router.post('/projects/:projectId/articles', requireAuth, async (req, res) => {
   if (!(await userCanReadProject(user, projectId))) {
     return res.status(403).json({ error: 'Forbidden' });
   }
-  const { title, slug: slugIn, content_json, status, tags, keywords, agent_only } = req.body || {};
+  const { title, slug: slugIn, content_json, status, tags, keywords, agent_only, kind } = req.body || {};
   if (!title || !String(title).trim()) return res.status(400).json({ error: 'title required' });
   const tg = normalizeTags(tags, 'tags');
   if (!tg.ok) return res.status(400).json({ error: tg.error });
@@ -236,6 +242,7 @@ router.post('/projects/:projectId/articles', requireAuth, async (req, res) => {
   const slug = await uniqueSlug(projectId, slugBase);
   const text = extractText(blocks);
   const st = ['draft','published','archived'].includes(status) ? status : 'draft';
+  const articleKind = kind === 'runbook' ? 'runbook' : 'article';
   // Only project handlers can mark a new article as agent-only.
   const wantsAgentOnly = !!agent_only;
   if (wantsAgentOnly && !(await canReadAgentOnly(user, projectId))) {
@@ -246,10 +253,10 @@ router.post('/projects/:projectId/articles', requireAuth, async (req, res) => {
   try {
     await client.query('BEGIN');
     const ins = await client.query(
-      `INSERT INTO kb_articles (project_id, slug, title, content_json, content_text, status, tags, keywords, agent_only, author_id, last_edited_by, published_at)
-       VALUES ($1,$2,$3,$4,$5,$6,$7::text[],$8::text[],$9,$10,$10, CASE WHEN $6 = 'published' THEN NOW() ELSE NULL END)
+      `INSERT INTO kb_articles (project_id, slug, title, content_json, content_text, status, tags, keywords, agent_only, kind, author_id, last_edited_by, published_at)
+       VALUES ($1,$2,$3,$4,$5,$6,$7::text[],$8::text[],$9,$10,$11,$11, CASE WHEN $6 = 'published' THEN NOW() ELSE NULL END)
        RETURNING *`,
-      [projectId, slug, String(title).trim(), JSON.stringify(blocks), text, st, tg.value || [], kw.value || [], wantsAgentOnly, user.id]
+      [projectId, slug, String(title).trim(), JSON.stringify(blocks), text, st, tg.value || [], kw.value || [], wantsAgentOnly, articleKind, user.id]
     );
     const art = ins.rows[0];
     await client.query(
@@ -289,7 +296,7 @@ router.patch('/articles/:id', requireAuth, async (req, res) => {
     return res.status(404).json({ error: 'Not found' });
   }
 
-  const { title, slug: slugIn, content_json, status, change_summary, tags, keywords, agent_only } = req.body || {};
+  const { title, slug: slugIn, content_json, status, change_summary, tags, keywords, agent_only, kind } = req.body || {};
   const tg = normalizeTags(tags, 'tags');
   if (!tg.ok) return res.status(400).json({ error: tg.error });
   const kw = normalizeTags(keywords, 'keywords');
@@ -300,6 +307,7 @@ router.patch('/articles/:id', requireAuth, async (req, res) => {
   // it either way — non-handlers can't see the article at all (404
   // above), so we know the caller is a handler if they reach here.
   const nextAgentOnly = typeof agent_only === 'boolean' ? agent_only : art.agent_only;
+  const nextKind = kind === 'article' || kind === 'runbook' ? kind : art.kind;
   const nextTitle = (title && String(title).trim()) || art.title;
   let nextSlug = art.slug;
   if (slugIn && slugify(slugIn) !== art.slug) {
@@ -318,12 +326,12 @@ router.patch('/articles/:id', requireAuth, async (req, res) => {
       `UPDATE kb_articles
           SET title = $1, slug = $2, content_json = $3, content_text = $4,
               status = $5, tags = $6::text[], keywords = $7::text[],
-              agent_only = $8,
-              last_edited_by = $9, updated_at = NOW(),
-              published_at = CASE WHEN $10 THEN NOW() ELSE published_at END
-        WHERE id = $11
+              agent_only = $8, kind = $9,
+              last_edited_by = $10, updated_at = NOW(),
+              published_at = CASE WHEN $11 THEN NOW() ELSE published_at END
+        WHERE id = $12
         RETURNING *`,
-      [nextTitle, nextSlug, nextJson, nextText, nextStatus, nextTags || [], nextKeywords || [], nextAgentOnly, user.id, publishingNow, art.id]
+      [nextTitle, nextSlug, nextJson, nextText, nextStatus, nextTags || [], nextKeywords || [], nextAgentOnly, nextKind, user.id, publishingNow, art.id]
     );
     const nextArt = upd.rows[0];
     // Snapshot version only if content/title actually changed.
@@ -786,6 +794,149 @@ router.get('/tickets/:id/suggestions', requireAuth, async (req, res) => {
     if (err.status) return res.status(err.status).json({ error: err.error });
     console.warn('kb suggestions:', err.message);
     res.json([]);
+  }
+});
+
+// ─── Runbooks ───────────────────────────────────────────────────────────
+//
+// A "runbook" is a kb_articles row with kind='runbook'. Its content is
+// a checklist (BlockNote checkListItem blocks) plus optional
+// @canned:<slug> inline pills that the ticket-side runbook panel
+// turns into one-click prefills for the comment composer. Read /
+// write rules ride the article's agent_only flag exactly like any KB
+// article — runbooks are usually agent-only but don't have to be.
+// Per-ticket execution state lives in ticket_runbook_runs.
+
+// GET /api/kb/tickets/:ticketId/runbook-runs — list runs on this ticket
+router.get('/tickets/:ticketId/runbook-runs', requireAuth, async (req, res) => {
+  try {
+    const ticketId = Number(req.params.ticketId);
+    const { ticket } = await loadTicketAndArticle({ user: req.session.user, ticketId });
+    const isHandler = await canReadAgentOnly(req.session.user, ticket.project_id);
+    const r = await pool.query(
+      `SELECT rr.id, rr.ticket_id, rr.article_id, rr.step_states,
+              rr.started_at, rr.completed_at,
+              u.display_name AS started_by_name,
+              a.slug, a.title, a.tags, a.agent_only, a.content_json, a.kind
+         FROM ticket_runbook_runs rr
+         JOIN kb_articles a ON a.id = rr.article_id
+         LEFT JOIN users u ON u.id = rr.started_by
+        WHERE rr.ticket_id = $1
+          AND (a.agent_only = FALSE OR $2 = TRUE)
+        ORDER BY rr.started_at ASC`,
+      [ticket.id, isHandler]
+    );
+    res.json(r.rows);
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.error });
+    console.error('runbook runs list:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// POST /api/kb/tickets/:ticketId/runbook-runs  { article_id }
+// Start (or reuse) a run for this runbook on this ticket. Idempotent —
+// returns the existing run if one exists. Caller must be a project
+// handler on the ticket's project (writes here mutate per-ticket
+// state).
+router.post('/tickets/:ticketId/runbook-runs', requireAuth, async (req, res) => {
+  try {
+    const ticketId = Number(req.params.ticketId);
+    const articleId = Number(req.body?.article_id);
+    if (!Number.isInteger(articleId) || articleId <= 0) {
+      return res.status(400).json({ error: 'article_id required' });
+    }
+    const { ticket, article } = await loadTicketAndArticle({
+      user: req.session.user, ticketId, articleId,
+    });
+    if (!(await canReadAgentOnly(req.session.user, ticket.project_id))) {
+      return res.status(403).json({ error: 'Only project handlers can start a runbook' });
+    }
+    const a = await pool.query('SELECT kind FROM kb_articles WHERE id = $1', [article.id]);
+    if (a.rows[0]?.kind !== 'runbook') {
+      return res.status(400).json({ error: 'Article is not a runbook' });
+    }
+    const r = await pool.query(
+      `INSERT INTO ticket_runbook_runs (ticket_id, article_id, started_by)
+       VALUES ($1, $2, $3)
+       ON CONFLICT (ticket_id, article_id) DO UPDATE
+         SET started_by = COALESCE(ticket_runbook_runs.started_by, EXCLUDED.started_by)
+       RETURNING id, ticket_id, article_id, step_states, started_at, completed_at`,
+      [ticket.id, article.id, req.session.user.id]
+    );
+    res.status(201).json(r.rows[0]);
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.error });
+    console.error('runbook run start:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// PATCH /api/kb/tickets/:ticketId/runbook-runs/:articleId
+//   body: { step_states?: {...}, completed?: bool }
+// Step-state merge: incoming keys overwrite, omitted keys preserved
+// (so two handlers ticking different boxes don't clobber each other).
+// completed:true stamps completed_at NOW; false clears it.
+router.patch('/tickets/:ticketId/runbook-runs/:articleId', requireAuth, async (req, res) => {
+  try {
+    const ticketId = Number(req.params.ticketId);
+    const articleId = Number(req.params.articleId);
+    const { ticket } = await loadTicketAndArticle({
+      user: req.session.user, ticketId, articleId,
+    });
+    if (!(await canReadAgentOnly(req.session.user, ticket.project_id))) {
+      return res.status(403).json({ error: 'Only project handlers can update runbook progress' });
+    }
+    const body = req.body || {};
+    const sets = [];
+    const values = [];
+    let p = 1;
+    if (body.step_states && typeof body.step_states === 'object' && !Array.isArray(body.step_states)) {
+      // jsonb merge so partial patches don't clobber sibling keys.
+      sets.push(`step_states = COALESCE(step_states, '{}'::jsonb) || $${p++}::jsonb`);
+      values.push(JSON.stringify(body.step_states));
+    }
+    if (typeof body.completed === 'boolean') {
+      sets.push(`completed_at = ${body.completed ? 'NOW()' : 'NULL'}`);
+    }
+    if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
+    values.push(ticket.id, articleId);
+    const r = await pool.query(
+      `UPDATE ticket_runbook_runs
+          SET ${sets.join(', ')}
+        WHERE ticket_id = $${p++} AND article_id = $${p}
+        RETURNING id, ticket_id, article_id, step_states, started_at, completed_at`,
+      values
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'Runbook run not found — POST to start one first' });
+    res.json(r.rows[0]);
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.error });
+    console.error('runbook run patch:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// DELETE /api/kb/tickets/:ticketId/runbook-runs/:articleId — reset run.
+router.delete('/tickets/:ticketId/runbook-runs/:articleId', requireAuth, async (req, res) => {
+  try {
+    const ticketId = Number(req.params.ticketId);
+    const articleId = Number(req.params.articleId);
+    const { ticket } = await loadTicketAndArticle({
+      user: req.session.user, ticketId, articleId,
+    });
+    if (!(await canReadAgentOnly(req.session.user, ticket.project_id))) {
+      return res.status(403).json({ error: 'Only project handlers can reset a runbook' });
+    }
+    await pool.query(
+      `DELETE FROM ticket_runbook_runs WHERE ticket_id = $1 AND article_id = $2`,
+      [ticket.id, articleId]
+    );
+    res.json({ ok: true });
+  } catch (err) {
+    if (err.status) return res.status(err.status).json({ error: err.error });
+    console.error('runbook run delete:', err);
+    res.status(500).json({ error: 'Database error' });
   }
 });
 

@@ -190,6 +190,14 @@ export default function KbProject() {
                       Agent only
                     </span>
                   )}
+                  {a.kind === "runbook" && (
+                    <span
+                      className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded-full font-mono bg-brand/15 text-brand"
+                      title="Runbook — checklist with canned-response pills."
+                    >
+                      Runbook
+                    </span>
+                  )}
                   {a.tags?.length > 0 && (
                     <span className="flex flex-wrap gap-1">
                       {a.tags.map((t) => (

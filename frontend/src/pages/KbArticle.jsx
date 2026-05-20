@@ -147,6 +147,14 @@ export default function KbArticle() {
               Agent only
             </span>
           )}
+          {article.kind === "runbook" && (
+            <span
+              className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded-full font-mono bg-brand/15 text-brand"
+              title="Runbook — show on the ticket Runbook tab with checkboxes + canned-response pills."
+            >
+              Runbook
+            </span>
+          )}
         </div>
         <h1 className="text-3xl font-bold tracking-tight text-fg">{article.title}</h1>
         {article.tags?.length > 0 && (

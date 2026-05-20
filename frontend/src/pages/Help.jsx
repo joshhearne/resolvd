@@ -328,8 +328,9 @@ function SectionTicketDetail({ role }) {
       <h3 className="text-sm font-semibold text-fg">Tabs (v0.7.0)</h3>
       <p className="text-sm text-fg leading-relaxed">
         Ticket detail is tabbed. <b>Comments</b> + the metadata sidebar are visible to anyone with access.
-        <b> Notes</b> (handler-only — see the Notes section) and <b>Resolution</b> appear for handlers
-        (Admin / Manager / Tech globally, or anyone with a handler role override / Agent flag on the ticket's project).
+        <b> Notes</b> (handler-only — see the Notes section), <b>Runbook</b> (handler-only, see Knowledge Base),
+        and <b>Resolution</b> appear for handlers (Admin / Manager / Tech globally, or anyone with a handler
+        role override / Agent flag on the ticket's project).
         <b> Activity</b> shows the audit log. Knowledge-base suggestions surface on the Resolution tab when the
         ranker matches an article to the ticket title.
       </p>
@@ -848,6 +849,7 @@ function SectionKb({ role }) {
         <Feature name="Tag filter chips (AND across tags)" roles="all" />
         <Feature name="Create / edit / archive articles" roles={HANDLER} />
         <Feature name="Agent-only article visibility" roles={HANDLER} note="Toggle on an article to restrict both read AND write to project handlers — same gate as the Notes feature (global Admin/Manager/Tech, or an Agent / handler-override on the project). Non-handlers don't see the article in lists, suggestions, or ticket links. Only a global Admin can delete an agent-only article." />
+        <Feature name="Runbook kind (checklist articles)" roles={HANDLER} note="Set Kind=Runbook on an article to mark it as a step-by-step checklist. Step bodies use BlockNote check-list-item blocks; any @canned:<title> token inside a step becomes a clickable pill on the ticket Runbook tab that prefills the Comment composer with the rendered template. Boxes persist per-ticket so handoffs resume where the last handler left off." />
         <Feature name="Version history + restore" roles={HANDLER} note="Every save snapshots a version with optional change_summary; restore writes a fresh version marked 'Restored from vN'." />
         <Feature name="Promote ticket to KB" roles={PRIV} note="Drafts a new article seeded from the ticket title + description + resolution_summary. Admin / Manager only." />
         <Feature name="Suggested article on ticket open" roles="all" note="pg_trgm ranker over title + tags + keywords. Auto-surfaces high-confidence matches; manual picker for the long tail." />

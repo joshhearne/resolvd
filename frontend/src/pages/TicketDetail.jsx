@@ -33,6 +33,7 @@ import MergePicker from "../components/MergePicker";
 import { vendorPillStyle, VENDOR_PILL_CLASSES } from "../utils/vendorColor";
 import PageShell from "../components/PageShell";
 import CannedPicker from "../components/CannedPicker";
+import RunbookPanel from "../components/RunbookPanel";
 
 // External ticket refs may hold multiple vendor IDs separated by comma
 // or semicolon (e.g. "VND-1234, VND-5678" or "VND-1234;VND-5678").
@@ -1570,6 +1571,16 @@ export default function TicketDetail() {
                   <span className="ml-1 text-[10px] text-fg-dim normal-case">internal</span>
                 </button>
               )}
+              {canHandleNotes && (
+                <button
+                  onClick={() => setActiveTab("runbook")}
+                  className={`px-4 py-3 text-sm font-medium transition-colors ${activeTab === "runbook" ? "border-b-2 border-brand text-brand" : "text-fg-muted hover:text-fg"}`}
+                  title="Run a step-by-step KB runbook against this ticket"
+                >
+                  Runbook
+                  <span className="ml-1 text-[10px] text-fg-dim normal-case">internal</span>
+                </button>
+              )}
               <button
                 onClick={() => setActiveTab("attachments")}
                 className={`px-4 py-3 text-sm font-medium transition-colors ${activeTab === "attachments" ? "border-b-2 border-brand text-brand" : "text-fg-muted hover:text-fg"}`}
@@ -2047,6 +2058,18 @@ export default function TicketDetail() {
                   </div>
                 </div>
               </div>
+            )}
+
+            {activeTab === "runbook" && canHandleNotes && (
+              <RunbookPanel
+                ticket={ticket}
+                user={user}
+                projectMembers={projectMembers}
+                onApplyCanned={(rendered) => {
+                  setCommentBody(rendered);
+                  setActiveTab("comments");
+                }}
+              />
             )}
 
             {activeTab === "attachments" && (

@@ -38,6 +38,7 @@ export default function KbEditor() {
   const [slugInput, setSlugInput] = useState("");
   const [status, setStatus] = useState("draft");
   const [agentOnly, setAgentOnly] = useState(false);
+  const [kind, setKind] = useState("article");
   const [changeSummary, setChangeSummary] = useState("");
   const [tags, setTags] = useState([]);
   const [tagDraft, setTagDraft] = useState("");
@@ -58,6 +59,7 @@ export default function KbEditor() {
         setSlugInput(a.slug);
         setStatus(a.status);
         setAgentOnly(!!a.agent_only);
+        setKind(a.kind || "article");
         setTags(a.tags || []);
         setKeywords(a.keywords || []);
       })
@@ -110,6 +112,7 @@ export default function KbEditor() {
           tags,
           keywords,
           agent_only: agentOnly,
+          kind,
         });
         toast.success("Created");
         navigate(`/kb/${projectId}/${created.slug}`);
@@ -123,6 +126,7 @@ export default function KbEditor() {
           tags,
           keywords,
           agent_only: agentOnly,
+          kind,
         });
         toast.success("Saved");
         navigate(`/kb/${projectId}/${updated.slug}`);
@@ -260,6 +264,18 @@ export default function KbEditor() {
             <option value="draft">Draft</option>
             <option value="published">Published</option>
             <option value="archived">Archived</option>
+          </select>
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-fg-muted text-xs uppercase tracking-wider">Kind</span>
+          <select
+            value={kind}
+            onChange={(e) => setKind(e.target.value)}
+            className="px-2 py-1 rounded bg-surface border border-border text-fg text-sm"
+            title="Article = freeform docs. Runbook = checklist + canned-response pills, shown on the ticket Runbook tab."
+          >
+            <option value="article">Article</option>
+            <option value="runbook">Runbook</option>
           </select>
         </label>
         <label className="flex flex-col gap-1">
