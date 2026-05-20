@@ -355,6 +355,9 @@ export default function TicketDetail() {
   const [allUsers, setAllUsers] = useState([]);
   const [editingSubmitter, setEditingSubmitter] = useState(false);
   const [submitterDraft, setSubmitterDraft] = useState("");
+  const [editingAssignee, setEditingAssignee] = useState(false);
+  const [assigneeDraft, setAssigneeDraft] = useState("");
+  const [eligibleAssignees, setEligibleAssignees] = useState([]);
   const [showFollowerMgr, setShowFollowerMgr] = useState(false);
   const [addFollowerId, setAddFollowerId] = useState("");
   const [showMobileActions, setShowMobileActions] = useState(false);
@@ -425,6 +428,30 @@ export default function TicketDetail() {
       toast.success('Article linked to ticket');
       setTopKbHit(null);
     } catch (e) { toast.error(e.message); }
+  }
+
+  // Eligible assignees on this project — Admin/Manager/Tech globally
+  // OR is_agent project members. Server union endpoint, scoped to the
+  // current project so the picker matches the assignment-policy pool.
+  useEffect(() => {
+    if (!canEdit || !ticket?.project_id) return;
+    api
+      .get(`/api/agents/eligible?project_id=${ticket.project_id}`)
+      .then((rows) => setEligibleAssignees(rows || []))
+      .catch(() => setEligibleAssignees([]));
+  }, [canEdit, ticket?.project_id]);
+
+  async function saveAssignee(nextId) {
+    try {
+      const updated = await api.patch(`/api/tickets/${id}`, {
+        assigned_to: nextId == null ? null : Number(nextId),
+      });
+      setTicket(updated);
+      setEditingAssignee(false);
+      toast.success(nextId ? "Assigned" : "Unassigned");
+    } catch (err) {
+      toast.error(err.message || "Failed");
+    }
   }
 
   const [project, setProject] = useState(null);
@@ -1169,8 +1196,73 @@ export default function TicketDetail() {
               </>
             )}{" "}
             · <HybridTime dt={ticket.created_at} />
-            {ticket.assigned_to_name &&
-              ` · Assigned: ${ticket.assigned_to_name}`}
+            {" · Assigned: "}
+            {editingAssignee ? (
+              <span className="inline-flex items-center gap-1">
+                <select
+                  value={assigneeDraft}
+                  onChange={(e) => setAssigneeDraft(e.target.value)}
+                  className="bg-surface border border-border-strong rounded px-1 py-0.5 text-xs"
+                >
+                  <option value="">— Unassigned —</option>
+                  {eligibleAssignees.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.display_name || u.email}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={() => saveAssignee(assigneeDraft || null)}
+                  className="text-brand hover:underline text-xs"
+                >
+                  save
+                </button>
+                <button
+                  onClick={() => setEditingAssignee(false)}
+                  className="text-fg-muted hover:text-fg text-xs"
+                >
+                  ×
+                </button>
+              </span>
+            ) : (
+              <>
+                <span className={ticket.assigned_to_name ? "" : "text-fg-dim italic"}>
+                  {ticket.assigned_to_name || "Unassigned"}
+                </span>
+                {canEdit && (
+                  <>
+                    {" "}
+                    {ticket.assigned_to !== user?.id && (
+                      <button
+                        onClick={() => saveAssignee(user?.id)}
+                        className="ml-1 text-brand hover:underline"
+                        title="Assign this ticket to me"
+                      >
+                        (assign to me)
+                      </button>
+                    )}
+                    <button
+                      onClick={() => {
+                        setAssigneeDraft(String(ticket.assigned_to || ""));
+                        setEditingAssignee(true);
+                      }}
+                      className="ml-1 text-brand hover:underline"
+                    >
+                      (change)
+                    </button>
+                    {ticket.assigned_to_name && (
+                      <button
+                        onClick={() => saveAssignee(null)}
+                        className="ml-1 text-fg-muted hover:text-red-600"
+                        title="Unassign"
+                      >
+                        (clear)
+                      </button>
+                    )}
+                  </>
+                )}
+              </>
+            )}
           </p>
           <div className="mt-1.5">
             <SlaTimer ticket={ticket} />
