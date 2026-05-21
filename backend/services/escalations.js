@@ -48,6 +48,8 @@
 const { pool } = require('../db/pool');
 const { getUserById } = require('./notificationFanout');
 const { auditLog } = require('./ticketHelpers');
+const sla = require('./sla');
+const businessHours = require('./businessHours');
 
 const PRIORITY_MIN = 1;
 const PRIORITY_MAX = 5;
@@ -343,6 +345,18 @@ async function tickEscalations() {
       [trigger]
     );
     for (const ticket of candidates.rows) {
+      // Business-hours gate: when the matching SLA policy pins a
+      // business_hours_id, walk delay_minutes through addBusinessMinutes
+      // so a "30 min after breach" step doesn't fire 30 wall-clock
+      // minutes after a breach that happened at 4:55 PM. Falls back to
+      // wall-clock interval math when no bh policy applies (24/7 SLA).
+      const slaPolicy = await sla.policyForTicket(
+        null, ticket.chain_priority || 3, ticket.project_id
+      ).catch(() => null);
+      const bh = slaPolicy?.business_hours_id
+        ? await businessHours.policyById(null, slaPolicy.business_hours_id).catch(() => null)
+        : null;
+
       const steps = await pool.query(
         `SELECT s.* FROM escalation_chain_steps s
           WHERE s.trigger = $1
@@ -350,11 +364,21 @@ async function tickEscalations() {
             AND ${opMatch('$2')}
             AND (s.project_id = $3 OR s.project_id IS NULL)
             AND s.id <> ALL($4::int[])
-            AND $5::timestamptz + (s.delay_minutes || ' minutes')::interval <= NOW()
           ORDER BY s.step_order, s.id`,
-        [trigger, ticket.chain_priority || 3, ticket.project_id, ticket.escalation_steps_fired, ticket.triggered_at]
+        [trigger, ticket.chain_priority || 3, ticket.project_id, ticket.escalation_steps_fired]
       );
+      const now = new Date();
       for (const step of steps.rows) {
+        const baseDelayMs = (Number(step.delay_minutes) || 0) * 60_000;
+        let fireAt;
+        if (bh && Number(step.delay_minutes) > 0) {
+          fireAt = businessHours.addBusinessMinutes(
+            ticket.triggered_at, Number(step.delay_minutes), bh
+          );
+        } else {
+          fireAt = new Date(new Date(ticket.triggered_at).getTime() + baseDelayMs);
+        }
+        if (fireAt > now) continue;
         const result = await fireStep({ step, ticket }).catch((err) => {
           console.error(`escalation fire step ${step.id} failed:`, err.message);
           return { ok: false, reason: err.message };
