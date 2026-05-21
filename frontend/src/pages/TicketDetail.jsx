@@ -240,8 +240,23 @@ function Lightbox({ attachment, onClose }) {
   );
 }
 
-function CommentActionDropdown({ disabled, onPostAndClose, onPostAndReopen }) {
+// Dynamic "Post & …" menu. Pulls every status the ticket can legally
+// transition to from its current status (per status_transitions),
+// including admin-defined custom statuses (e.g. "Escalated"). Caller
+// supplies a single onPostAndStatus(name); confirm-before-close UX is
+// owned by the parent.
+function CommentActionDropdown({ disabled, statuses, currentStatus, onPostAndStatus }) {
   const [open, setOpen] = useState(false);
+  const items = (statuses || []).filter((s) => s.name !== currentStatus);
+  if (!items.length) return null;
+  // Terminal statuses (Closed / Resolved equivalents) render in fg
+  // colour; "Reopened" / non-terminal renders accent so the admin can
+  // visually distinguish destructive-ish actions from forward motion.
+  function rowClass(s) {
+    if (s.is_terminal) return "text-fg hover:bg-surface-2";
+    if (s.semantic_tag === "reopened") return "text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 dark:bg-red-950/40";
+    return "text-fg hover:bg-surface-2";
+  }
   return (
     <div className="relative">
       <button
@@ -266,27 +281,20 @@ function CommentActionDropdown({ disabled, onPostAndClose, onPostAndReopen }) {
         </svg>
       </button>
       {open && (
-        <div className="absolute left-0 top-full mt-1 w-44 bg-surface rounded-md shadow-lg border border-border z-20 py-1">
-          <button
-            type="button"
-            onClick={() => {
-              setOpen(false);
-              onPostAndClose();
-            }}
-            className="w-full text-left px-4 py-2 text-sm text-fg hover:bg-surface-2"
-          >
-            Post &amp; Close
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setOpen(false);
-              onPostAndReopen();
-            }}
-            className="w-full text-left px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 dark:bg-red-950/40"
-          >
-            Post &amp; Reopen
-          </button>
+        <div className="absolute left-0 top-full mt-1 w-52 bg-surface rounded-md shadow-lg border border-border z-20 py-1 max-h-72 overflow-auto">
+          {items.map((s) => (
+            <button
+              key={s.id ?? s.name}
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                onPostAndStatus(s.name);
+              }}
+              className={`w-full text-left px-4 py-2 text-sm ${rowClass(s)}`}
+            >
+              Post &amp; {s.name}
+            </button>
+          ))}
         </div>
       )}
     </div>
@@ -2072,28 +2080,43 @@ export default function TicketDetail() {
                           }}
                         />
                       </label>
-                      {isAdmin && (
-                        <CommentActionDropdown
-                          disabled={
-                            submittingComment ||
-                            (!commentBody.trim() && commentFiles.length === 0)
-                          }
-                          onPostAndClose={() => {
-                            if (
-                              user?.preferences?.confirm_before_close &&
-                              !window.confirm(
-                                `Post this comment and close ${ticket.internal_ref}?`,
-                              )
-                            ) {
-                              return;
+                      {isAdmin && (() => {
+                        const cur = statusByName(statusCfg.internal, ticket.internal_status);
+                        const allowedIds = cur
+                          ? new Set(nextAllowedStatusIds(statusCfg.transitions, cur.id))
+                          : null;
+                        // Show every status the ticket can transition to,
+                        // including admin-defined custom ones (Escalated,
+                        // etc.). If transitions table is empty, fall back
+                        // to every status — admin gets full control rather
+                        // than a hidden menu.
+                        const items = statusCfg.internal.length
+                          ? statusCfg.internal.filter((s) =>
+                              !allowedIds || allowedIds.has(s.id) || !cur
+                            )
+                          : DEFAULT_INTERNAL_STATUSES.map((n) => ({ name: n }));
+                        return (
+                          <CommentActionDropdown
+                            disabled={
+                              submittingComment ||
+                              (!commentBody.trim() && commentFiles.length === 0)
                             }
-                            submitComment(null, "Closed");
-                          }}
-                          onPostAndReopen={() =>
-                            submitComment(null, "Reopened")
-                          }
-                        />
-                      )}
+                            statuses={items}
+                            currentStatus={ticket.internal_status}
+                            onPostAndStatus={(name) => {
+                              const def = statusByName(statusCfg.internal, name);
+                              if (def?.is_terminal &&
+                                  user?.preferences?.confirm_before_close &&
+                                  !window.confirm(
+                                    `Post this comment and move ${ticket.internal_ref} to "${name}"?`,
+                                  )) {
+                                return;
+                              }
+                              submitComment(null, name);
+                            }}
+                          />
+                        );
+                      })()}
                       {canHandleNotes && (
                         <button
                           type="button"
