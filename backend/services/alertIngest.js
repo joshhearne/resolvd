@@ -20,6 +20,8 @@ const { auditLog, systemComment } = require('./ticketHelpers');
 const { buildWritePatch, getMode } = require('./fields');
 const { pickRule, severityRank } = require('./alertEvaluator');
 const blindIndex = require('./blindIndex');
+const sla = require('./sla');
+const assignmentPolicies = require('./assignmentPolicies');
 
 // Zabbix templates frequently ship URLs containing the user macro
 // `{$ZABBIX.URL}` which Zabbix itself doesn't expand for outbound
@@ -303,10 +305,39 @@ async function promoteAlertToTicket(client, source, alertRow, rule, actingUserId
   const vals = [...baseVals, ...sensitivePatch.values];
   const placeholders = cols.map((_, i) => `$${i + 1}`).join(', ');
   const ins = await client.query(
-    `INSERT INTO tickets (${cols.join(', ')}) VALUES (${placeholders}) RETURNING id`,
+    `INSERT INTO tickets (${cols.join(', ')}) VALUES (${placeholders}) RETURNING id, created_at`,
     vals
   );
   const ticketId = ins.rows[0].id;
+  const ticketCreatedAt = ins.rows[0].created_at;
+
+  // Stamp SLA due/warn timestamps with business-hours math. Mirrors the
+  // REST and inbound create paths. Without this the timestamps stay
+  // NULL and the schema-init backfill stamps them wall-clock, ignoring
+  // business_hours_id and firing breach notifications overnight.
+  await sla.applyPolicyOnCreate(client, {
+    ticketId,
+    priority,
+    projectId,
+    createdAt: ticketCreatedAt,
+  });
+
+  // Auto-assignment fallback. Alert path already considered override →
+  // resolved-from-email → source.default_assignee_id; if all three were
+  // empty, fall through to the org/project assignment policy so admins
+  // get a deterministic owner instead of a NULL assignee.
+  if (!assignedTo) {
+    const policyPick = await assignmentPolicies.applyOnCreate(client, {
+      priority,
+      projectId,
+    });
+    if (policyPick) {
+      await client.query(
+        `UPDATE tickets SET assigned_to = $1 WHERE id = $2`,
+        [policyPick, ticketId]
+      );
+    }
+  }
 
   await client.query(
     `UPDATE alerts
