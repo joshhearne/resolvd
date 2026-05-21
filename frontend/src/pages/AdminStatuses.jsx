@@ -39,6 +39,8 @@ function FlagBadge({ active, label, tone = "gray" }) {
       "bg-amber-100 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300",
     emerald:
       "bg-emerald-100 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300",
+    indigo:
+      "bg-indigo-100 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300",
     gray: "bg-surface-2 text-fg",
   };
   return (
@@ -502,6 +504,23 @@ function StatusRow({
             />{" "}
             Blocker
           </label>
+          <label
+            className="flex items-center gap-1"
+            title="Show this status in the comment composer 'Post & …' dropdown."
+          >
+            <input
+              type="checkbox"
+              checked={
+                draft.show_in_post_actions === undefined
+                  ? true
+                  : !!draft.show_in_post_actions
+              }
+              onChange={(e) =>
+                setDraft((d) => ({ ...d, show_in_post_actions: e.target.checked }))
+              }
+            />{" "}
+            Post &amp; menu
+          </label>
         </div>
         {draft.semantic_tag === "resolved_pending_close" && (
           <label className="col-span-12 flex items-center gap-2 text-xs">
@@ -570,6 +589,11 @@ function StatusRow({
           tone="emerald"
         />
         <FlagBadge active={status.is_blocker} label="blocker" tone="amber" />
+        <FlagBadge
+          active={status.show_in_post_actions !== false}
+          label="post & menu"
+          tone="indigo"
+        />
         {status.semantic_tag && (
           <FlagBadge active label={`tag: ${status.semantic_tag}`} tone="gray" />
         )}

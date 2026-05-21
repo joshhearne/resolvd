@@ -31,7 +31,7 @@ router.get('/', requireAuth, async (req, res) => {
 // POST /api/statuses — create (Admin)
 router.post('/', requireAuth, requireRole('Admin'), async (req, res) => {
   try {
-    const { kind, name, color, sort_order, is_initial, is_terminal, is_blocker, semantic_tag, auto_close_after_days } = req.body || {};
+    const { kind, name, color, sort_order, is_initial, is_terminal, is_blocker, semantic_tag, auto_close_after_days, show_in_post_actions } = req.body || {};
     if (!VALID_KINDS.includes(kind)) return res.status(400).json({ error: 'Invalid kind' });
     if (!name || !name.trim()) return res.status(400).json({ error: 'Name required' });
     const finalColor = /^#[0-9a-fA-F]{6}$/.test(color || '') ? color : '#6b7280';
@@ -44,8 +44,8 @@ router.post('/', requireAuth, requireRole('Admin'), async (req, res) => {
       ? null
       : Math.max(0, Math.floor(Number(auto_close_after_days)));
     const r = await pool.query(
-      `INSERT INTO statuses (kind, name, color, sort_order, is_initial, is_terminal, is_blocker, semantic_tag, auto_close_after_days)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      `INSERT INTO statuses (kind, name, color, sort_order, is_initial, is_terminal, is_blocker, semantic_tag, auto_close_after_days, show_in_post_actions)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
       [
         kind,
         name.trim(),
@@ -56,6 +56,7 @@ router.post('/', requireAuth, requireRole('Admin'), async (req, res) => {
         !!is_blocker,
         semantic_tag || null,
         Number.isFinite(acDays) ? acDays : null,
+        show_in_post_actions === undefined ? true : !!show_in_post_actions,
       ]
     );
     res.status(201).json(r.rows[0]);
@@ -69,7 +70,7 @@ router.post('/', requireAuth, requireRole('Admin'), async (req, res) => {
 // PATCH /api/statuses/:id — update (Admin)
 router.patch('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
   try {
-    const { name, color, sort_order, is_initial, is_terminal, is_blocker, semantic_tag, auto_close_after_days } = req.body || {};
+    const { name, color, sort_order, is_initial, is_terminal, is_blocker, semantic_tag, auto_close_after_days, show_in_post_actions } = req.body || {};
     const cur = await pool.query('SELECT * FROM statuses WHERE id = $1', [req.params.id]);
     if (!cur.rows[0]) return res.status(404).json({ error: 'Not found' });
     const row = cur.rows[0];
@@ -94,6 +95,7 @@ router.patch('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
         updates.auto_close_after_days = Number.isFinite(n) && n >= 0 ? n : null;
       }
     }
+    if (show_in_post_actions !== undefined) updates.show_in_post_actions = !!show_in_post_actions;
 
     if (Object.keys(updates).length === 0) return res.json(row);
 

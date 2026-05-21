@@ -2094,7 +2094,8 @@ export default function TicketDetail() {
                         const restrict = allowedIds && allowedIds.size > 0;
                         const items = statusCfg.internal.length
                           ? statusCfg.internal.filter((s) =>
-                              !restrict || allowedIds.has(s.id)
+                              s.show_in_post_actions !== false &&
+                              (!restrict || allowedIds.has(s.id))
                             )
                           : DEFAULT_INTERNAL_STATUSES.map((n) => ({ name: n }));
                         return (

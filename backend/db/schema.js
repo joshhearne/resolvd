@@ -400,6 +400,12 @@ async function initSchema() {
     // Used together with semantic_tag='resolved_pending_close' to
     // auto-promote tickets to Closed after N days in that state.
     await client.query(`ALTER TABLE statuses ADD COLUMN IF NOT EXISTS auto_close_after_days INTEGER`);
+    // Per-status toggle: include in the comment composer "Post & …"
+    // dropdown. Default TRUE so existing deployments keep showing
+    // everything. Admin can uncheck statuses that shouldn't be reachable
+    // via the comment shortcut (e.g. Open, Reopened, internal-only
+    // workflow stops).
+    await client.query(`ALTER TABLE statuses ADD COLUMN IF NOT EXISTS show_in_post_actions BOOLEAN NOT NULL DEFAULT TRUE`);
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ`);
     // One-shot backfill: any ticket in a terminal status (Closed, etc.)
     // with resolved_at IS NULL gets stamped to updated_at. Without this,
