@@ -2087,12 +2087,14 @@ export default function TicketDetail() {
                           : null;
                         // Show every status the ticket can transition to,
                         // including admin-defined custom ones (Escalated,
-                        // etc.). If transitions table is empty, fall back
-                        // to every status — admin gets full control rather
-                        // than a hidden menu.
+                        // etc.). When transitions table is empty for this
+                        // status (admin hasn't drawn the graph yet), treat
+                        // as unrestricted — show every status. Mirrors
+                        // the Internal Status edit dropdown.
+                        const restrict = allowedIds && allowedIds.size > 0;
                         const items = statusCfg.internal.length
                           ? statusCfg.internal.filter((s) =>
-                              !allowedIds || allowedIds.has(s.id) || !cur
+                              !restrict || allowedIds.has(s.id)
                             )
                           : DEFAULT_INTERNAL_STATUSES.map((n) => ({ name: n }));
                         return (
