@@ -214,10 +214,19 @@ router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Tech'
       }).catch(err => console.error('auto-reopen check failed:', err.message));
     }
 
-    // SLA first-response stamp: any non-system comment by someone other
-    // than the submitter qualifies. Self-replies by the submitter
-    // shouldn't tick the response clock.
-    if (!result.is_system && req.session.user.id !== ticket.rows[0].submitted_by) {
+    // SLA first-response stamp. Two paths qualify:
+    //   1. A non-submitter posts a non-system comment (classic case —
+    //      someone other than the requestor has touched the ticket).
+    //   2. A handler (Admin / Manager / Tech) posts a non-system comment
+    //      even when they are also the submitted_by user. This happens
+    //      on alert-promoted tickets where the alert hook re-pointed
+    //      submitted_by at the on-call agent — their reply is still a
+    //      real "response" and should stop the response clock.
+    // Plain Submitter self-replies still do not tick.
+    const handlerRoles = new Set(['Admin', 'Manager', 'Tech']);
+    const isHandler = handlerRoles.has(req.session.user.role);
+    const isSelfSubmitterReply = req.session.user.id === ticket.rows[0].submitted_by;
+    if (!result.is_system && (!isSelfSubmitterReply || isHandler)) {
       sla.markResponded(null, ticket.rows[0].id)
         .catch(err => console.error('sla markResponded failed:', err.message));
     }
