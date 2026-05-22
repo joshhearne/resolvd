@@ -4,6 +4,14 @@ Living doc. Edit as priorities shift. Recent commits are authoritative for "what
 
 ## Recently shipped
 
+- **Post-v0.7.0 patches** — small follow-ups landed on the v0.7.0 line, not yet tagged:
+  - **Daily digest hour configurability** — `users.preferences.notification_digest_local_hour` (0-23). Surfaced in AccountPreferences → Notifications when digest cadence is `daily`. Validated 0-23 server-side; `notificationFanout.js` falls back to 09:00 when unset.
+  - **Outbox cleanup sweep** — `notificationOutbox.tickOnce` now `DELETE`s rows where `sent_at IS NULL AND created_at < NOW() - INTERVAL '30 days'` each 5-min tick, alongside the existing terminal-suppress sweep. Bounds the table without touching audit-preserved sent rows.
+  - **Auto-resume `awaiting_input` → `in_progress` on inbound reply** — `services/autoResolve.applyReplyToWaitingTicket`. Mirrors the resolved-grace reopen path. Called from both `inboundProcessor` (vendor reply via tryAutoReply) and `routes/inboundEmail.js` (manual queue match). Skipped if the resolved-grace path already moved the ticket.
+  - **Agent-forwarded helpdesk submissions** — `inboundProcessor.detectForward` parses the embedded `From: / Sent: / Subject:` block from a forwarded mail body. When an internal user forwards external mail into a scoped inbox, the original sender becomes the submitter (auto-creating a contact when needed), the forwarding agent inherits the ticket as assignee + follower, and `#PREFIX` on the forwarded subject redirects into a different project. Guards: internal-user sender + matching forward-header pattern required; outer/inner email mismatch → fall back to default behavior so we never drop a ticket.
+  - **1:many next-status candidates (schema + admin)** — `status_transitions` table + `routes/statuses.js` CRUD let admins wire multiple next-status candidates per source status. The external-escalation auto-advance trigger (Unack → In Progress on vendor-ref write) is still open — see "Open / candidate work".
+  - **Cumulative AI token cost per user** — `GET /api/ai/usage` aggregates `ai_input_tokens` + `ai_output_tokens` across `comments`, `tickets`, and `ticket_notes` for the calling user. AccountPreferences → AI Assist renders the lifetime ledger; card hides gracefully on error.
+
 - **v0.7.0 — Inventory + Knowledge Base + Alerts + Escalations + Tech role + ticket nav overhaul**. Cohesive release that pulls Resolvd from "ticket tracker" to "MSP/internal-IT workstation." Major pieces:
   - **Tech role** — fifth user role between Manager and Submitter. Can edit tickets, manage assets, edit KB, view all projects they're a member of. Not a global admin tier — project-scoped. `routes/users.js` adds `Tech` to `VALID_ROLES`; ticket / asset / custom-field / inventory routes accept it explicitly in `requireRole`. See README → User Roles.
   - **Inventory module** — `assets` table (id, hostname, fqdn, asset_type_id, company_id, project_id, source, source_id, last_seen_at, attributes JSONB, encrypted attribute_enc). `asset_types` + `asset_type_fields` drive per-type schema (laptop / server / printer / generic). Manual CRUD at **Inventory**, full-page asset detail with cross-project ticket list, software list, vulnerability + patch counts. Action1 inventory adapter pulls endpoints + on-demand software sync; offline detection at 14 days no-check-in; CSV export. Org→company mapping handles MSP silo case where one Action1 tenant feeds multiple Resolvd companies. Hudu-style company override per source. Tickets gain `asset_id` FK; ticket detail shows asset hostname instead of `#id`.
@@ -88,10 +96,8 @@ Site explicitly tags these as "launching soon" or part of paid hosted tiers. Bui
 ## Open / candidate work
 
 ### Status / workflow
-- Auto-resume `awaiting_input` → `in_progress` on inbound vendor reply (mirror the gratitude reopen path on the resolved state).
 - Inbound queue match flow could detect `awaiting_input` status and surface "this likely unblocks ticket X" hint to admin reviewer.
-- [ ] Statuses with 1:many, offer progression for external flow. External Escalation: `Unack` → `In Progress` (when given a ticket ref, ack). Statuses gain optional multiple next-status candidates instead of today's single linear "Advance to {next}" chain; the external-escalation path auto-advances from `Unack` to `In Progress` once a vendor ticket ref lands on the ticket (acknowledgement signal).
-- **Agent-forwarded helpdesk submissions** — when an agent (internal user) forwards an external email into a scoped inbox, parse the embedded `From:` / `Sent:` / `Subject:` block from the forwarded body and treat the original sender as the ticket submitter (auto-create contact if not internal). Today the forward attributes the ticket to the agent. Default project = the inbox's single approved scope (existing helpdesk routing in `inboundProcessor.tryAutoCreate` step 2). Agent can prepend `#PREFIX ` to the forwarded subject to redirect into a different project; same `#PREFIX` token on a reply / re-forward of an existing ticket triggers a project-move (re-issues `internal_ref`, detaches vendor contacts — mirrors UI move-ticket semantics). Detection heuristics: `Fwd:` / `FW:` subject + `---------- Forwarded message ----------` / `Begin forwarded message:` / `From: ... Sent: ... To: ... Subject:` block in body. Internal-user-sender + matching forward-header pattern is required — guards against external senders spoofing a "forwarded" payload to impersonate someone else.
+- **External-escalation auto-advance** — schema for 1:many next-status candidates shipped (`status_transitions`). Still open: the trigger that flips `external_status='Unacknowledged'` → `'Acknowledged'` (and bumps internal status accordingly via the configured transition) the first time a `tickets.external_ticket_ref` value is written. Today the admin has to flip external_status manually after pasting the vendor ref.
 
 ### SLA follow-ups
 - **Custom breach destinations** — webhook out on breach for Slack / Teams / PagerDuty. Today only the in-app + email fanout fires.
@@ -105,10 +111,7 @@ Site explicitly tags these as "launching soon" or part of paid hosted tiers. Bui
 - Asset-aware reporting: tickets-per-asset, MTTR by asset type, repeat-offender endpoints (groundwork laid by Inventory module).
 
 ### Notifications (post-matrix follow-ups)
-- **Daily digest hour configurability** — currently hardcoded 09:00 user-local in `notificationFanout.js:95`. Surface as per-user pref or org-wide `auth_settings.notification_digest_local_hour`.
-- **Outbox cleanup sweep** — rows with `email_digest=off` set after buffering sit forever. Add once-a-day `DELETE FROM notification_outbox WHERE created_at < NOW() - INTERVAL '30 days' AND sent_at IS NULL`.
 - **AI rewrite streaming** — adapter calls full-shot; streaming would feel snappier but multiplies provider-quirk surface. Defer until a complaint surfaces.
-- **Cumulative AI token cost per user** — per-call tokens already shown in badge; aggregate counter on AccountPreferences → AI Assist next.
 
 ### UX small wins
 - (none currently queued — see "Recently shipped" for bulk actions, hybrid tooltips, and per-user locale overrides.)
