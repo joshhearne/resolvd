@@ -80,45 +80,71 @@ function Toggle({ label, hint, value, onChange, disabled }) {
   );
 }
 
-// Signature editor. Keeps a local draft so typing doesn't fire a PATCH on
-// every keystroke; pushes to the server on blur OR after 800ms idle.
-// `set(key, value)` is the same updater the rest of the page uses so the
-// AuthContext + toast plumbing stays uniform.
+// Signature editor. The textarea uses an explicit Save button — debounced
+// auto-save proved annoying because it stole focus / mid-edit state. The
+// other controls (toggle + scope) still save on click since they're
+// single-action and don't take you out of an edit flow.
+//
+// Unsaved-changes guard: a `beforeunload` handler prompts on tab close,
+// reload, and external navigation. Soft-nav inside the SPA (sidebar
+// links) doesn't trigger that — we surface a very obvious amber "Unsaved
+// changes" indicator + Save / Revert buttons inline so the state is hard
+// to miss without leaving the page. (`useBlocker` would catch soft nav
+// too, but it requires a data router; we're on BrowserRouter.)
 function SignatureCard({ prefs, set, busy }) {
   const SIG_MAX = 2000;
   const [draft, setDraft] = useState(prefs.signature || "");
-  const [dirty, setDirty] = useState(false);
+  const [saving, setSaving] = useState(false);
   const lastSaved = useRef(prefs.signature || "");
 
   // Sync down when the server-side prefs change underneath us (e.g.
-  // another tab edited the same field). Only overwrite a clean draft —
-  // never clobber user input mid-typing.
+  // another tab edited the same field). Only overwrite when there's
+  // nothing dirty locally — never clobber user input mid-edit.
   useEffect(() => {
-    if (!dirty) {
-      setDraft(prefs.signature || "");
-      lastSaved.current = prefs.signature || "";
+    const incoming = prefs.signature || "";
+    if (lastSaved.current === draft) {
+      setDraft(incoming);
+      lastSaved.current = incoming;
+    } else if (incoming !== lastSaved.current) {
+      // Server-side value changed AND we have a local edit. Keep the
+      // local edit; just bump the baseline so a future Save still
+      // POSTs (last-write-wins matches the simple JSON merge anyway).
+      lastSaved.current = incoming;
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [prefs.signature]);
 
-  async function flush(next) {
-    const trimmed = (next ?? draft).slice(0, SIG_MAX);
-    if (trimmed === lastSaved.current) {
-      setDirty(false);
-      return;
+  const dirty = draft !== lastSaved.current;
+
+  async function save() {
+    if (!dirty || saving) return;
+    setSaving(true);
+    try {
+      const next = draft.slice(0, SIG_MAX);
+      await set("signature", next);
+      lastSaved.current = next;
+    } finally {
+      setSaving(false);
     }
-    await set("signature", trimmed);
-    lastSaved.current = trimmed;
-    setDirty(false);
   }
 
-  // Debounced auto-save 800ms after the last keystroke.
+  function revert() {
+    setDraft(lastSaved.current);
+  }
+
+  // beforeunload guard for hard navigations (tab close, refresh, external
+  // link). Modern browsers ignore the custom string and show their own
+  // generic prompt — setting returnValue is what triggers it.
   useEffect(() => {
     if (!dirty) return undefined;
-    const t = setTimeout(() => { flush(); }, 800);
-    return () => clearTimeout(t);
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [draft, dirty]);
+    function onBeforeUnload(e) {
+      e.preventDefault();
+      e.returnValue = "";
+      return "";
+    }
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [dirty]);
 
   const scope = prefs.append_signature_scope || "vendor_only";
   const enabled = !!prefs.append_signature;
@@ -163,34 +189,62 @@ function SignatureCard({ prefs, set, busy }) {
         </label>
 
         <div className="pt-3">
-          <label className="block text-sm font-medium text-fg mb-1">
-            Signature
-          </label>
+          <div className="flex items-center justify-between mb-1">
+            <label className="block text-sm font-medium text-fg">
+              Signature
+            </label>
+            <span className={`text-xs ${dirty ? "text-amber-500 dark:text-amber-400 font-medium" : "text-fg-muted"}`}>
+              {saving ? "Saving…" : dirty ? "Unsaved changes" : "Saved"}
+            </span>
+          </div>
           <textarea
             value={draft}
-            onChange={(e) => {
-              setDirty(true);
-              setDraft(e.target.value.slice(0, SIG_MAX));
+            onChange={(e) => setDraft(e.target.value.slice(0, SIG_MAX))}
+            onKeyDown={(e) => {
+              // Ctrl/Cmd+S saves without leaving the field — same muscle
+              // memory as a doc editor. Plain Enter still adds a newline.
+              if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+                e.preventDefault();
+                save();
+              }
             }}
-            onBlur={() => { if (dirty) flush(); }}
-            disabled={busy}
+            disabled={busy || saving}
             rows={5}
             placeholder={"— Jane Doe\nIT Support · Acme Corp\n555-1234"}
             className="w-full border border-border-strong rounded-md px-3 py-2 text-sm font-mono bg-surface focus:outline-none focus:ring-2 focus:ring-brand/40"
           />
-          <div className="flex items-center justify-between mt-1.5 text-xs text-fg-muted">
-            <span>
-              {dirty ? "Saving…" : "Saved"} · markdown supported
+          <div className="flex items-center justify-between gap-3 mt-2">
+            <span className={`text-xs ${remaining < 100 ? "text-amber-500 dark:text-amber-400" : "text-fg-muted"}`}>
+              {remaining} / {SIG_MAX} chars · markdown supported · Ctrl+S to save
             </span>
-            <span className={remaining < 100 ? "text-amber-500 dark:text-amber-400" : ""}>
-              {remaining} / {SIG_MAX} chars
-            </span>
+            <div className="flex items-center gap-2">
+              {dirty && (
+                <button
+                  type="button"
+                  onClick={revert}
+                  disabled={saving}
+                  className="px-3 py-1.5 text-sm rounded-md border border-border-strong text-fg-muted hover:text-fg hover:bg-surface-2 disabled:opacity-50"
+                >
+                  Revert
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={save}
+                disabled={!dirty || saving}
+                className="px-3 py-1.5 text-sm rounded-md bg-brand text-white hover:bg-brand/90 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {saving ? "Saving…" : "Save signature"}
+              </button>
+            </div>
           </div>
         </div>
 
         {enabled && draft.trim() && (
           <div className="mt-4 pt-3 border-t border-border">
-            <div className="text-xs text-fg-muted mb-1.5">Preview</div>
+            <div className="text-xs text-fg-muted mb-1.5">
+              Preview {dirty && <span className="text-amber-500 dark:text-amber-400">(unsaved — comments will use the saved version)</span>}
+            </div>
             <div className="rounded-md border border-border bg-surface-2 p-3 text-sm whitespace-pre-wrap font-mono">
               {`Your comment text here.\n\n${draft}`}
             </div>
