@@ -342,6 +342,7 @@ function SectionTicketDetail({ role }) {
         <Feature name="@mention a user" roles={["Admin","Manager","Tech","Submitter"]} note="Dropdown scoped to project members. Triggers in-app and email notification." />
         <Feature name="Attach files to comment" roles={["Admin","Manager","Tech","Submitter"]} />
         <Feature name="Preview image attachments inline" roles="all" note="Image attachments render as thumbnails on the comment and Attachments tab. Click to open a fullscreen lightbox (Esc / click outside / × to close, Download button bottom-right)." />
+        <Feature name="Vendor reply attachments" roles="all" note="Files attached to inbound vendor replies (subject [PREFIX-N]) are persisted to the ticket and linked to the reply comment, same as user-uploaded files. Vendor-attached files inherit the per-vendor pill color: image thumbs get a colored border, file pills get the full vendor color, and the Attachments tab shows a 'from VendorName' tag matching the comment header. Submitter-only inbound replies (matched via the admin queue) follow the same path." />
       </div>
 
       <HelpScreenshot src="/help/ticket-detail-image-lightbox.png" alt="Fullscreen image lightbox over a ticket — filename label top-left, Download button bottom-right, close × top-right" caption="Click any image attachment to open it fullscreen." />
