@@ -215,7 +215,7 @@ function SignatureCard({ prefs, set, busy }) {
           />
           <div className="flex items-center justify-between gap-3 mt-2">
             <span className={`text-xs ${remaining < 100 ? "text-amber-500 dark:text-amber-400" : "text-fg-muted"}`}>
-              {remaining} / {SIG_MAX} chars · markdown supported · Ctrl+S to save
+              {draft.length} / {SIG_MAX} chars · markdown supported · Ctrl+S to save
             </span>
             <div className="flex items-center gap-2">
               {dirty && (
