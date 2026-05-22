@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { useAuth } from "../context/AuthContext";
 import { useBranding } from "../context/BrandingContext";
@@ -77,6 +77,127 @@ function Toggle({ label, hint, value, onChange, disabled }) {
         />
       </button>
     </label>
+  );
+}
+
+// Signature editor. Keeps a local draft so typing doesn't fire a PATCH on
+// every keystroke; pushes to the server on blur OR after 800ms idle.
+// `set(key, value)` is the same updater the rest of the page uses so the
+// AuthContext + toast plumbing stays uniform.
+function SignatureCard({ prefs, set, busy }) {
+  const SIG_MAX = 2000;
+  const [draft, setDraft] = useState(prefs.signature || "");
+  const [dirty, setDirty] = useState(false);
+  const lastSaved = useRef(prefs.signature || "");
+
+  // Sync down when the server-side prefs change underneath us (e.g.
+  // another tab edited the same field). Only overwrite a clean draft —
+  // never clobber user input mid-typing.
+  useEffect(() => {
+    if (!dirty) {
+      setDraft(prefs.signature || "");
+      lastSaved.current = prefs.signature || "";
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefs.signature]);
+
+  async function flush(next) {
+    const trimmed = (next ?? draft).slice(0, SIG_MAX);
+    if (trimmed === lastSaved.current) {
+      setDirty(false);
+      return;
+    }
+    await set("signature", trimmed);
+    lastSaved.current = trimmed;
+    setDirty(false);
+  }
+
+  // Debounced auto-save 800ms after the last keystroke.
+  useEffect(() => {
+    if (!dirty) return undefined;
+    const t = setTimeout(() => { flush(); }, 800);
+    return () => clearTimeout(t);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [draft, dirty]);
+
+  const scope = prefs.append_signature_scope || "vendor_only";
+  const enabled = !!prefs.append_signature;
+  const remaining = SIG_MAX - draft.length;
+
+  return (
+    <div className="bg-surface rounded-lg border border-border shadow-sm p-5">
+      <h2 className="text-lg font-semibold text-fg mb-1">Comment signature</h2>
+      <p className="text-sm text-fg-muted mb-3">
+        Optional sign-off automatically appended to comments you post,
+        separated from the body by a single blank line. Markdown is
+        supported. Vendor outbound carries the signature in the email
+        the same way it carries the rest of the comment.
+      </p>
+
+      <div className="mt-3">
+        <Toggle
+          label="Append signature to my comments"
+          hint="Off by default. Toggle on once you've written a signature below."
+          value={enabled}
+          onChange={(v) => set("append_signature", v)}
+          disabled={busy}
+        />
+
+        <label className="flex items-start justify-between gap-4 py-3 border-b border-border">
+          <div className="flex-1">
+            <div className="text-sm font-medium text-fg">When to append</div>
+            <div className="text-xs text-fg-muted mt-0.5">
+              Vendor-only keeps internal threads clean; All comments adds
+              it to every post.
+            </div>
+          </div>
+          <select
+            value={scope}
+            onChange={(e) => set("append_signature_scope", e.target.value)}
+            disabled={busy || !enabled}
+            className="border border-border-strong rounded-md px-2 py-1 text-sm"
+          >
+            <option value="vendor_only">Vendor-visible only</option>
+            <option value="all">All comments</option>
+          </select>
+        </label>
+
+        <div className="pt-3">
+          <label className="block text-sm font-medium text-fg mb-1">
+            Signature
+          </label>
+          <textarea
+            value={draft}
+            onChange={(e) => {
+              setDirty(true);
+              setDraft(e.target.value.slice(0, SIG_MAX));
+            }}
+            onBlur={() => { if (dirty) flush(); }}
+            disabled={busy}
+            rows={5}
+            placeholder={"— Jane Doe\nIT Support · Acme Corp\n555-1234"}
+            className="w-full border border-border-strong rounded-md px-3 py-2 text-sm font-mono bg-surface focus:outline-none focus:ring-2 focus:ring-brand/40"
+          />
+          <div className="flex items-center justify-between mt-1.5 text-xs text-fg-muted">
+            <span>
+              {dirty ? "Saving…" : "Saved"} · markdown supported
+            </span>
+            <span className={remaining < 100 ? "text-amber-500 dark:text-amber-400" : ""}>
+              {remaining} / {SIG_MAX} chars
+            </span>
+          </div>
+        </div>
+
+        {enabled && draft.trim() && (
+          <div className="mt-4 pt-3 border-t border-border">
+            <div className="text-xs text-fg-muted mb-1.5">Preview</div>
+            <div className="rounded-md border border-border bg-surface-2 p-3 text-sm whitespace-pre-wrap font-mono">
+              {`Your comment text here.\n\n${draft}`}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -727,6 +848,8 @@ export default function AccountPreferences() {
           </label>
         </div>
       </div>
+
+      <SignatureCard prefs={prefs} set={set} busy={busy} />
 
       <div className="bg-surface rounded-lg border border-border shadow-sm p-5">
         <h2 className="text-lg font-semibold text-fg mb-1">Notifications</h2>

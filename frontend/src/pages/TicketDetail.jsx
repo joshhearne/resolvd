@@ -853,9 +853,21 @@ export default function TicketDetail() {
       // once the files are persisted (notify_vendor flag below).
       const hasFiles = commentFiles.length > 0;
       const deferVendorEmail = shareWithVendor && hasFiles;
-      if (commentBody.trim()) {
+      // Optional per-user signature append. Scope rules: 'vendor_only'
+      // only when this is a vendor-visible comment; 'all' always.
+      // Single blank line separator. Empty signature is a no-op even
+      // if the toggle is on (matches the AccountPreferences hint).
+      const sigEnabled = !!user?.preferences?.append_signature;
+      const sigScope = user?.preferences?.append_signature_scope || 'vendor_only';
+      const sigText = (user?.preferences?.signature || '').trim();
+      const wantSig = sigEnabled && sigText &&
+        (sigScope === 'all' || (sigScope === 'vendor_only' && shareWithVendor));
+      const bodyForPost = wantSig
+        ? `${commentBody.trim()}\n\n${sigText}`
+        : commentBody.trim();
+      if (bodyForPost) {
         c = await api.post(`/api/tickets/${id}/comments`, {
-          body: commentBody.trim(),
+          body: bodyForPost,
           is_external_visible: shareWithVendor,
           ...(shareWithVendor && send_as ? { send_as } : {}),
           ...(commentAiLogId ? { ai_rewrite_log_id: commentAiLogId } : {}),

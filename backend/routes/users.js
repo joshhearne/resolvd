@@ -125,6 +125,15 @@ const PREF_DEFAULTS = Object.freeze({
   // Local hour-of-day (0-23) for the daily digest cadence. 9 = 09:00
   // user-local. Honored when email_digest === 'daily'.
   notification_digest_local_hour: 9,
+  // Optional signature appended to outgoing comments. `signature` is the
+  // raw markdown text (max 2000 chars). When `append_signature` is on the
+  // composer appends it after a single blank line. `append_signature_scope`
+  // controls when: 'vendor_only' (default) only when Share with vendor is
+  // ticked; 'all' for every comment. Empty/falsey signature short-circuits
+  // the append regardless of the toggle.
+  signature: '',
+  append_signature: false,
+  append_signature_scope: 'vendor_only',
   // Locale overrides — empty string means "inherit org branding".
   date_style_override: '',
   time_style_override: '',
@@ -199,6 +208,22 @@ router.patch('/me/prefs', requireAuth, async (req, res) => {
         return res.status(400).json({ error: 'notification_digest_local_hour must be 0-23' });
       }
       patch.notification_digest_local_hour = h;
+    }
+    if (patch.signature !== undefined) {
+      if (typeof patch.signature !== 'string') {
+        return res.status(400).json({ error: 'signature must be a string' });
+      }
+      // Hard cap to bound DB row + outgoing email body. 2000 chars covers
+      // any reasonable plain-text or markdown sign-off (legal disclaimers
+      // belong in the org-wide vendor outbound template, not per-user).
+      if (patch.signature.length > 2000) {
+        return res.status(400).json({ error: 'signature must be 2000 chars or fewer' });
+      }
+    }
+    if (patch.append_signature_scope !== undefined) {
+      if (!['vendor_only', 'all'].includes(patch.append_signature_scope)) {
+        return res.status(400).json({ error: "append_signature_scope must be 'vendor_only' or 'all'" });
+      }
     }
     if (patch.notification_prefs !== undefined) {
       const np = patch.notification_prefs;
