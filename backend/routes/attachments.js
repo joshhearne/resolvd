@@ -33,14 +33,30 @@ const router = express.Router();
 // GET /api/tickets/:ticketId/attachments
 router.get('/tickets/:ticketId/attachments', requireAuth, async (req, res) => {
   try {
+    // Pull vendor context off the parent comment when this attachment
+    // is linked to one — lets the UI tag the chip with the vendor pill
+    // (same provenance the comment header gets) and surface "from
+    // VendorName" on the flat Attachments tab.
     const result = await pool.query(`
-      SELECT a.*, u.display_name as uploaded_by_name
+      SELECT a.*, u.display_name as uploaded_by_name,
+        c.vendor_contact_id,
+        vc.name AS vendor_contact_name, vc.name_enc AS vendor_contact_name_enc,
+        vc.company_id AS vendor_company_id,
+        vco.name AS vendor_company_name, vco.name_enc AS vendor_company_name_enc
       FROM attachments a
       LEFT JOIN users u ON a.user_id = u.id
+      LEFT JOIN comments c ON c.id = a.comment_id
+      LEFT JOIN contacts vc ON vc.id = c.vendor_contact_id
+      LEFT JOIN companies vco ON vco.id = vc.company_id
       WHERE a.ticket_id = $1
       ORDER BY a.created_at ASC
     `, [req.params.ticketId]);
-    await decryptRows('attachments', result.rows);
+    await decryptRows('attachments', result.rows, {
+      aliases: {
+        vendor_contact_name: 'contacts.name',
+        vendor_company_name: 'companies.name',
+      },
+    });
     res.json(result.rows);
   } catch (err) {
     console.error(err);

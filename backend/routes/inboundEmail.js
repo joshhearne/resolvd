@@ -192,6 +192,7 @@ router.post('/generic', async (req, res) => {
           body,
           fromAddress: String(from).toLowerCase().trim(),
           queueRowId,
+          attachments,
         });
       } catch (e) {
         console.error('auto-reply attempt failed:', e);

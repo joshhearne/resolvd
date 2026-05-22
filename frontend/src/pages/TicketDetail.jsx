@@ -1909,14 +1909,19 @@ export default function TicketDetail() {
                       )}
                       {attachments.filter((a) => a.comment_id === c.id).length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-1.5">
-                          {attachments.filter((a) => a.comment_id === c.id).map((a) => (
-                            isImageAttachment(a) ? (
+                          {attachments.filter((a) => a.comment_id === c.id).map((a) => {
+                            const fromVendor = !!a.vendor_contact_id;
+                            const vendorTitle = fromVendor
+                              ? `${a.original_name} — from ${a.vendor_company_name || a.vendor_contact_name || "vendor"}`
+                              : `${a.original_name}${a.uploaded_by_name ? ` — from ${a.uploaded_by_name}` : ""}`;
+                            return isImageAttachment(a) ? (
                               <button
                                 key={a.id}
                                 type="button"
                                 onClick={() => setLightboxAttachment(a)}
-                                title={`${a.original_name} — click to preview`}
-                                className="block rounded border border-border hover:border-border-strong overflow-hidden bg-surface focus:outline-none focus:ring-2 focus:ring-brand/40"
+                                title={`${vendorTitle} — click to preview`}
+                                className={`block rounded overflow-hidden bg-surface focus:outline-none focus:ring-2 focus:ring-brand/40 ${fromVendor ? "border-2" : "border border-border hover:border-border-strong"}`}
+                                style={fromVendor ? { ...vendorPillStyle(a.vendor_company_id ?? a.vendor_contact_id), borderColor: "var(--vendor-text)" } : undefined}
                               >
                                 <img
                                   src={`/api/attachments/${a.id}/view`}
@@ -1927,15 +1932,17 @@ export default function TicketDetail() {
                               </button>
                             ) : (
                               <a key={a.id} href={`/api/attachments/${a.id}`}
-                                className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded bg-surface border border-border hover:border-border-strong hover:bg-surface-2 text-fg-muted hover:text-fg transition-colors">
+                                title={vendorTitle}
+                                className={`inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded transition-colors ${fromVendor ? `${VENDOR_PILL_CLASSES} border border-current/30 hover:opacity-90` : "bg-surface border border-border hover:border-border-strong hover:bg-surface-2 text-fg-muted hover:text-fg"}`}
+                                style={fromVendor ? vendorPillStyle(a.vendor_company_id ?? a.vendor_contact_id) : undefined}>
                                 <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                                   <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
                                     d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 10-5.656-5.656L4.586 11.172a6 6 0 108.486 8.486L19.07 13.7" />
                                 </svg>
                                 <span className="truncate max-w-[180px]">{a.original_name}</span>
                               </a>
-                            )
-                          ))}
+                            );
+                          })}
                         </div>
                       )}
                     </div>
@@ -2346,8 +2353,18 @@ export default function TicketDetail() {
                           )}
                           <span className="text-xs text-fg-dim">
                             {formatBytes(a.size)} ·{" "}
-                            {a.uploaded_by_name || "Unknown"} ·{" "}
-                            <HybridTime dt={a.created_at} />
+                            {a.vendor_contact_id ? (
+                              <span
+                                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide ${VENDOR_PILL_CLASSES}`}
+                                style={vendorPillStyle(a.vendor_company_id ?? a.vendor_contact_id)}
+                                title={a.vendor_contact_name ? `${a.vendor_contact_name}${a.vendor_company_name ? ` (${a.vendor_company_name})` : ""}` : "From vendor"}
+                              >
+                                from {a.vendor_company_name || a.vendor_contact_name || "vendor"}
+                              </span>
+                            ) : (
+                              a.uploaded_by_name || "Unknown"
+                            )}{" "}
+                            · <HybridTime dt={a.created_at} />
                             {isImageAttachment(a) && (
                               <>
                                 {" · "}

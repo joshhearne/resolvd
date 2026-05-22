@@ -413,7 +413,8 @@ async function findDuplicateOrSimilar({ projectId, submitterId, title }) {
 // Append a comment to an existing ticket from the inbound flow. The
 // comment is internal-only (is_external_visible=FALSE) and attributes
 // the originating user. Used by the dedup "exact" branch when reusing
-// an existing ticket instead of creating a new one.
+// an existing ticket instead of creating a new one. Returns the new
+// comment id so callers can link attachments to it.
 async function appendCommentToTicket({ ticketId, submitter, body, queueRowId }) {
   const trimmed = (body || '').trim() || '(no body)';
   const patch = await buildWritePatch(pool, 'comments', { body: trimmed });
@@ -421,8 +422,8 @@ async function appendCommentToTicket({ ticketId, submitter, body, queueRowId }) 
     'source_inbound_email_id', ...patch.cols];
   const values = [ticketId, submitter.id, false, true, queueRowId || null, ...patch.values];
   const placeholders = cols.map((_, i) => `$${i + 1}`).join(', ');
-  await pool.query(
-    `INSERT INTO comments (${cols.join(', ')}) VALUES (${placeholders})`,
+  const ins = await pool.query(
+    `INSERT INTO comments (${cols.join(', ')}) VALUES (${placeholders}) RETURNING id`,
     values
   );
   await pool.query(`UPDATE tickets SET updated_at = NOW() WHERE id = $1`, [ticketId]);
@@ -431,9 +432,15 @@ async function appendCommentToTicket({ ticketId, submitter, body, queueRowId }) 
      VALUES ($1, $2, 'comment_appended_via_email', 'Email-to-ticket dedup matched this open ticket')`,
     [ticketId, submitter.id]
   );
+  return ins.rows[0].id;
 }
 
-async function persistAttachment({ ticketId, userId, filename, mimetype, contentBuffer }) {
+// Persist a single inbound attachment to disk + DB. When commentId is
+// supplied, the row is linked to that comment so the UI can render the
+// file inline under the parent comment (mirrors user-uploaded files
+// posted via the comment composer). Pass null for ticket-level files
+// (e.g. inbound that auto-created a ticket — description owns them).
+async function persistAttachment({ ticketId, userId, commentId = null, filename, mimetype, contentBuffer }) {
   const ext = filename.includes('.') ? path.extname(filename) : '';
   const onDiskName = `${randomUUID()}${ext}`;
   const filePath = path.join(UPLOADS_DIR, onDiskName);
@@ -444,8 +451,8 @@ async function persistAttachment({ ticketId, userId, filename, mimetype, content
     : contentBuffer;
   await fsp.writeFile(filePath, onDisk);
   const patch = await buildWritePatch(pool, 'attachments', { original_name: filename });
-  const cols = ['ticket_id', 'user_id', 'filename', 'mimetype', 'size', 'encrypted_at_rest', ...patch.cols];
-  const values = [ticketId, userId, onDiskName, mimetype || 'application/octet-stream',
+  const cols = ['ticket_id', 'user_id', 'comment_id', 'filename', 'mimetype', 'size', 'encrypted_at_rest', ...patch.cols];
+  const values = [ticketId, userId, commentId, onDiskName, mimetype || 'application/octet-stream',
     contentBuffer.length, encryptedAtRest, ...patch.values];
   const placeholders = cols.map((_, i) => `$${i + 1}`).join(', ');
   await pool.query(
@@ -535,17 +542,20 @@ async function tryAutoCreate({ subject, body, fromAddress, ccAddresses, attachme
     projectId: project.id, submitterId: submitter.id, title: titleFromSubject,
   });
   if (dup?.kind === 'exact') {
-    await appendCommentToTicket({
+    const appendedCommentId = await appendCommentToTicket({
       ticketId: dup.ticketId, submitter, body: cleanedDescription, queueRowId,
     });
     // Persist any attachments onto the EXISTING ticket so the email's
-    // payload still reaches the right place.
+    // payload still reaches the right place. Link to the appended
+    // comment so the UI renders them inline under that comment (same
+    // shape as user-uploaded files via the composer).
     for (const att of (attachments || [])) {
       try {
         const buf = Buffer.from(att.content_base64 || '', 'base64');
         if (buf.length === 0) continue;
         await persistAttachment({
           ticketId: dup.ticketId, userId: submitter.id,
+          commentId: appendedCommentId,
           filename: att.filename || 'attachment.bin',
           mimetype: att.mimetype, contentBuffer: buf,
         });
@@ -791,7 +801,7 @@ async function sendCreationConfirmation({ submitter, ticket, project }) {
 // reply as an external-visible comment, then — if the ticket is sitting
 // in a resolved_pending_close status — runs gratitude detection. A real
 // reply auto-reopens; "thanks" leaves the auto-close timer running.
-async function tryAutoReply({ candidateRef, body, fromAddress, queueRowId }) {
+async function tryAutoReply({ candidateRef, body, fromAddress, queueRowId, attachments }) {
   if (!candidateRef) return { ok: false, reason: 'no_ref' };
 
   const t = await pool.query(
@@ -860,6 +870,30 @@ async function tryAutoReply({ candidateRef, body, fromAddress, queueRowId }) {
     [ticket.id, ticket.submitted_by, `Vendor reply from ${fromAddress}`]
   );
 
+  // Persist any inbound attachments and link them to the vendor reply
+  // comment so the UI renders them inline (same shape as user-uploaded
+  // files). Best-effort — comment exists either way. user_id is the
+  // ticket submitter because comments are authored under a user, not a
+  // contact (matches the comment row's user_id stamp above).
+  let attachedCount = 0;
+  for (const att of (attachments || [])) {
+    try {
+      const buf = Buffer.from(att.content_base64 || '', 'base64');
+      if (buf.length === 0) continue;
+      await persistAttachment({
+        ticketId: ticket.id,
+        userId: ticket.submitted_by,
+        commentId,
+        filename: att.filename || 'attachment.bin',
+        mimetype: att.mimetype,
+        contentBuffer: buf,
+      });
+      attachedCount += 1;
+    } catch (e) {
+      console.error(`vendor-reply attachment "${att?.filename}" failed:`, e.message);
+    }
+  }
+
   const reopen = await applyReplyToResolvedTicket({
     ticketId: ticket.id, replyBody: cleanedBody, actorUserId: ticket.submitted_by,
   });
@@ -895,6 +929,7 @@ async function tryAutoReply({ candidateRef, body, fromAddress, queueRowId }) {
     actorLabel,
     contactId: contact.id,
     commentId,
+    attachmentCount: attachedCount,
   };
 }
 
