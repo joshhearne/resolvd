@@ -1,4 +1,4 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { Link, useParams, useNavigate, useLocation } from "react-router-dom";
 import toast from "react-hot-toast";
@@ -31,6 +31,7 @@ import ConfirmDialog from "../components/ConfirmDialog";
 import PhoneticPopover from "../components/PhoneticPopover";
 import MergePicker from "../components/MergePicker";
 import { vendorPillStyle, VENDOR_PILL_CLASSES } from "../utils/vendorColor";
+import { isUrlLike, truncateRef } from "../utils/externalRef";
 import PageShell from "../components/PageShell";
 import CannedPicker from "../components/CannedPicker";
 import RunbookPanel from "../components/RunbookPanel";
@@ -47,7 +48,29 @@ function ExternalRefList({ value }) {
         if (p === "," || p === ";") return <span key={i}>{p} </span>;
         const trimmed = p.trim();
         if (!trimmed) return null;
-        return <PhoneticPopover key={i} value={trimmed}>{trimmed}</PhoneticPopover>;
+        const shown = truncateRef(trimmed, 36);
+        // URL refs (alert payloads) stay reachable: wrap the truncated
+        // text in an anchor with the full URL. Non-URL refs keep their
+        // phonetic-readback popover so vendors-on-phones can be dictated.
+        if (isUrlLike(trimmed)) {
+          return (
+            <a
+              key={i}
+              href={trimmed}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={trimmed}
+              className="text-brand hover:underline break-all"
+            >
+              {shown}
+            </a>
+          );
+        }
+        return (
+          <PhoneticPopover key={i} value={trimmed}>
+            <span title={trimmed.length > shown.length ? trimmed : undefined}>{shown}</span>
+          </PhoneticPopover>
+        );
       })}
     </>
   );
@@ -247,6 +270,9 @@ function Lightbox({ attachment, onClose }) {
 // owned by the parent.
 function CommentActionDropdown({ disabled, statuses, currentStatus, onPostAndStatus }) {
   const [open, setOpen] = useState(false);
+  const [coords, setCoords] = useState({ left: 0, top: 0, maxHeight: undefined, openUp: false });
+  const triggerRef = useRef(null);
+  const panelRef = useRef(null);
   const items = (statuses || []).filter((s) => s.name !== currentStatus);
   if (!items.length) return null;
   // Terminal statuses (Closed / Resolved equivalents) render in fg
@@ -257,9 +283,69 @@ function CommentActionDropdown({ disabled, statuses, currentStatus, onPostAndSta
     if (s.semantic_tag === "reopened") return "text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 dark:bg-red-950/40";
     return "text-fg hover:bg-surface-2";
   }
+
+  const PANEL_WIDTH = 208; // matches w-52
+  const EDGE_PAD = 8;
+
+  const recompute = React.useCallback(() => {
+    const trig = triggerRef.current;
+    if (!trig) return;
+    const r = trig.getBoundingClientRect();
+    const panelH = panelRef.current?.offsetHeight || 0;
+    const vh = window.innerHeight;
+    const vw = window.innerWidth;
+    let left = r.left;
+    if (left + PANEL_WIDTH > vw - EDGE_PAD) left = vw - PANEL_WIDTH - EDGE_PAD;
+    if (left < EDGE_PAD) left = EDGE_PAD;
+    const spaceBelow = vh - r.bottom - EDGE_PAD;
+    const spaceAbove = r.top - EDGE_PAD;
+    // Composer sits near the page bottom — flip up when below is too
+    // tight OR above has materially more room. Cap max-height to the
+    // chosen side so unusually long status lists scroll internally
+    // instead of forcing page scroll.
+    const openUp = spaceBelow < Math.min(240, panelH || 240) && spaceAbove > spaceBelow;
+    const maxHeight = openUp ? spaceAbove : spaceBelow;
+    const top = openUp
+      ? Math.max(EDGE_PAD, r.top - (panelRef.current?.offsetHeight || 0) - 4)
+      : r.bottom + 4;
+    setCoords({ left, top, maxHeight, openUp });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    recompute();
+    const raf = requestAnimationFrame(recompute);
+    const onScroll = () => recompute();
+    const onResize = () => recompute();
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onResize);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [open, recompute]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDocDown = (e) => {
+      if (triggerRef.current?.contains(e.target)) return;
+      if (panelRef.current?.contains(e.target)) return;
+      setOpen(false);
+    };
+    const onKey = (e) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onDocDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDocDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
   return (
-    <div className="relative">
+    <>
       <button
+        ref={triggerRef}
         type="button"
         disabled={disabled}
         onClick={() => setOpen((o) => !o)}
@@ -280,8 +366,19 @@ function CommentActionDropdown({ disabled, statuses, currentStatus, onPostAndSta
           />
         </svg>
       </button>
-      {open && (
-        <div className="absolute left-0 top-full mt-1 w-52 bg-surface rounded-md shadow-lg border border-border z-20 py-1 max-h-72 overflow-auto">
+      {open && createPortal(
+        <div
+          ref={panelRef}
+          style={{
+            position: "fixed",
+            left: coords.left,
+            top: coords.top,
+            width: PANEL_WIDTH,
+            maxHeight: coords.maxHeight ? `${coords.maxHeight}px` : undefined,
+          }}
+          className="z-[9999] bg-surface rounded-md shadow-lg border border-border py-1 overflow-auto"
+          onClick={(e) => e.stopPropagation()}
+        >
           {items.map((s) => (
             <button
               key={s.id ?? s.name}
@@ -295,9 +392,10 @@ function CommentActionDropdown({ disabled, statuses, currentStatus, onPostAndSta
               Post &amp; {s.name}
             </button>
           ))}
-        </div>
+        </div>,
+        document.body,
       )}
-    </div>
+    </>
   );
 }
 
@@ -2022,7 +2120,7 @@ export default function TicketDetail() {
                           submitComment(e);
                         }
                       }}
-                      rows={3}
+                      rows={6}
                       placeholder="Add a comment... (Ctrl+Enter to post)"
                       mentionProjectId={ticket?.project_id}
                     />

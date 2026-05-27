@@ -8,6 +8,7 @@ import { useStatuses } from "../context/StatusesContext";
 import PriorityBadge from "../components/PriorityBadge";
 import StatusBadge from "../components/StatusBadge";
 import PhoneticPopover from "../components/PhoneticPopover";
+import { isUrlLike, truncateRef } from "../utils/externalRef";
 import PageShell from "../components/PageShell";
 import ColumnPicker, { useColumnPrefs } from "../components/ColumnPicker";
 import {
@@ -934,9 +935,17 @@ export default function TicketList() {
                       {cols.isVisible("vendor_ref") && (
                         <td className="px-4 py-3 text-xs font-mono text-fg-muted whitespace-nowrap">
                           {t.external_ticket_ref ? (
-                            <PhoneticPopover value={t.external_ticket_ref}>
-                              <span>{t.external_ticket_ref}</span>
-                            </PhoneticPopover>
+                            isUrlLike(t.external_ticket_ref) ? (
+                              <span title={t.external_ticket_ref}>
+                                {truncateRef(t.external_ticket_ref, 28)}
+                              </span>
+                            ) : (
+                              <PhoneticPopover value={t.external_ticket_ref}>
+                                <span title={t.external_ticket_ref}>
+                                  {truncateRef(t.external_ticket_ref, 28)}
+                                </span>
+                              </PhoneticPopover>
+                            )
                           ) : (
                             <span className="text-fg-dim">—</span>
                           )}
@@ -945,9 +954,17 @@ export default function TicketList() {
                       {cols.isVisible("alert_ref") && (
                         <td className="px-4 py-3 text-xs font-mono text-fg-muted whitespace-nowrap">
                           {t.external_ref ? (
-                            <PhoneticPopover value={t.external_ref}>
-                              <span>{t.external_ref}</span>
-                            </PhoneticPopover>
+                            isUrlLike(t.external_ref) ? (
+                              <span title={t.external_ref}>
+                                {truncateRef(t.external_ref, 28)}
+                              </span>
+                            ) : (
+                              <PhoneticPopover value={t.external_ref}>
+                                <span title={t.external_ref}>
+                                  {truncateRef(t.external_ref, 28)}
+                                </span>
+                              </PhoneticPopover>
+                            )
                           ) : (
                             <span className="text-fg-dim">—</span>
                           )}

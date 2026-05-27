@@ -3,6 +3,7 @@ import { useParams, Link, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { api } from "../utils/api";
 import toast from "react-hot-toast";
+import { isUrlLike, truncateRef } from "../utils/externalRef";
 
 const STATE_BADGE = {
   firing: "bg-red-100 text-red-700 border-red-300 dark:bg-red-950/40 dark:text-red-300 dark:border-red-800",
@@ -135,7 +136,19 @@ export default function AlertDetail() {
         <div className="text-sm font-medium text-fg">Identification</div>
         <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
           <Field label="Alert ID" value={alert.id} mono />
-          <Field label="External ref" value={alert.external_ref} mono />
+          <Field label="External ref" value={
+            alert.external_ref ? (
+              isUrlLike(alert.external_ref) ? (
+                <a href={alert.external_ref} target="_blank" rel="noopener noreferrer"
+                   title={alert.external_ref}
+                   className="text-brand hover:underline break-all">
+                  {truncateRef(alert.external_ref, 40)}
+                </a>
+              ) : (
+                <span title={alert.external_ref}>{truncateRef(alert.external_ref, 40)}</span>
+              )
+            ) : null
+          } mono />
           <Field label="External event ID" value={alert.external_event_id} mono />
           <Field label="Source" value={`${alert.source_name} (id ${alert.source_id})`} />
           <Field label="Source preset" value={alert.source_preset} />

@@ -24,6 +24,7 @@ const TRIGGER_LABELS = {
 
 const ACTION_KINDS = [
   { value: "notify_assignee", label: "Notify assignee" },
+  { value: "notify_submitter", label: "Notify submitter" },
   { value: "notify_user", label: "Notify user" },
   { value: "notify_role", label: "Notify role" },
   { value: "reassign_agent", label: "Reassign via assignment policy" },
@@ -77,6 +78,7 @@ function defaultAction() {
 function actionSummary(a) {
   if (!a?.kind) return "(empty)";
   if (a.kind === "notify_assignee") return "Notify assignee";
+  if (a.kind === "notify_submitter") return "Notify submitter";
   if (a.kind === "notify_user") return `Notify user #${a.target_user_id ?? "?"}`;
   if (a.kind === "notify_role") return `Notify ${a.target_role ?? "?"}`;
   if (a.kind === "reassign_agent") return "Reassign → via assignment policy";
@@ -452,7 +454,6 @@ export default function AdminEscalationPolicies() {
                 className="border border-border-strong rounded px-2 py-1 text-sm">
                 {[1, 2, 3, 4, 5].map((i) => <option key={i} value={i}>{PRIORITY_LABELS[i]}</option>)}
               </select>
-              <MatchPreview op={newRow.priority_op} priority={newRow.priority} />
             </label>
             <label className="flex flex-col gap-1">
               <span className="text-xs text-fg-muted">Trigger</span>
@@ -473,6 +474,9 @@ export default function AdminEscalationPolicies() {
                 onChange={(e) => setNewRow((p) => ({ ...p, delay_minutes: e.target.value }))}
                 className="border border-border-strong rounded px-2 py-1 text-sm font-mono w-20" />
             </label>
+          </div>
+          <div className="mb-3 -mt-1">
+            <MatchPreview op={newRow.priority_op} priority={newRow.priority} />
           </div>
           <div className="space-y-1">
             <span className="text-xs text-fg-muted">Actions (fire all on each trigger)</span>

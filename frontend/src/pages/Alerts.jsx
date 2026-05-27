@@ -3,6 +3,7 @@ import { Link } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { api } from "../utils/api";
 import toast from "react-hot-toast";
+import { truncateRef } from "../utils/externalRef";
 
 const STATE_BADGE = {
   firing: "bg-red-100 text-red-700 border-red-300 dark:bg-red-950/40 dark:text-red-300 dark:border-red-800",
@@ -226,7 +227,9 @@ export default function Alerts() {
                     <Link to={`/alerts/${r.id}`} className="text-fg font-medium hover:text-brand hover:underline truncate max-w-[40ch] block" title={r.title || ""}>
                       {r.title || <span className="text-fg-dim italic">no title</span>}
                     </Link>
-                    <div className="text-[10px] text-fg-dim font-mono">#{r.id} · {r.external_ref}</div>
+                    <div className="text-[10px] text-fg-dim font-mono" title={r.external_ref || ""}>
+                      #{r.id}{r.external_ref ? ` · ${truncateRef(r.external_ref, 32)}` : ""}
+                    </div>
                     {r.next_evaluation_at && r.state === "firing" && (
                       <div className="text-[10px] text-amber-600 dark:text-amber-400">
                         Re-eval at {new Date(r.next_evaluation_at).toLocaleString()}

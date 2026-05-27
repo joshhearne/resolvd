@@ -24,6 +24,10 @@ async function updateAuthSettings(patch) {
     'local_enabled', 'mfa_required_roles',
     'email_backend', 'smtp_host', 'smtp_port', 'smtp_user', 'smtp_password',
     'smtp_secure', 'smtp_from', 'google_mail_from', 'invite_ttl_hours',
+    'email_blocklist', 'allow_email_unknown_users',
+    'sla_notify_submitter_default',
+    'muted_digest_enabled', 'muted_digest_local_hour',
+    'muted_digest_local_minute', 'muted_digest_timezone',
   ];
   const sets = [];
   const vals = [];

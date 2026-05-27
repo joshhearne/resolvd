@@ -43,6 +43,17 @@ async function getFollowerRecipients(client, ticketId, excludeUserId, extraExclu
   return r.rows;
 }
 
+// Lightweight helper: fetch the ticket's submitter id without dragging
+// the rest of the row across the wire. Used by SLA fanout to opt
+// submitters out of the default recipient list.
+async function getTicketSubmitterId(ticketId) {
+  if (!ticketId) return null;
+  const r = await pool.query(
+    `SELECT submitted_by FROM tickets WHERE id = $1`, [ticketId]
+  );
+  return r.rows[0]?.submitted_by || null;
+}
+
 // Terminal-status gate. Returns true when the ticket's current
 // internal_status is flagged is_terminal=TRUE (Closed, etc.). Fanout
 // entry points consult this to drop notifications on already-closed
@@ -482,9 +493,20 @@ async function fanoutSlaBreach(_unusedPool, { ticket, kind }) {
   // Defense-in-depth: sla.tickBreaches already filters terminal tickets,
   // but guard here in case the helper is called from a future path.
   if (await isTicketTerminal(ticket.id)) return;
-  // Recipients: assignee (if any) + ticket followers + submitter, minus
-  // the actor (which doesn't exist for cron-fired events — pass null).
-  const recipients = await getFollowerRecipients(null, ticket.id, null);
+  // Recipients: assignee (if any) + ticket followers, minus the actor.
+  // Submitter is excluded by default — they auto-follow their own
+  // ticket so getFollowerRecipients would pull them in, but raw SLA
+  // breach copy reads poorly for customers. Tenants that genuinely
+  // want submitters paged on SLA breach flip
+  // auth_settings.sla_notify_submitter_default to TRUE; per-priority
+  // chains can also opt them in via a `notify_submitter` escalation
+  // action without touching the global default.
+  const settings = await pool.query(
+    `SELECT sla_notify_submitter_default FROM auth_settings WHERE id = 1`
+  ).then(r => r.rows[0] || {}).catch(() => ({}));
+  const submitterId = await getTicketSubmitterId(ticket.id);
+  const submitterExcludes = settings.sla_notify_submitter_default ? [] : [submitterId].filter(Boolean);
+  const recipients = await getFollowerRecipients(null, ticket.id, null, submitterExcludes);
   const assigneeId = ticket.assigned_to;
   if (assigneeId && !recipients.find(u => u.id === assigneeId)) {
     const u = await getUserById(assigneeId);
@@ -539,7 +561,15 @@ async function fanoutSlaBreach(_unusedPool, { ticket, kind }) {
 // without losing the actual breach signal.
 async function fanoutSlaWarning(_unusedPool, { ticket, kind }) {
   if (await isTicketTerminal(ticket.id)) return;
-  const recipients = await getFollowerRecipients(null, ticket.id, null);
+  // Same submitter-exclusion policy as fanoutSlaBreach. Warnings are
+  // even noisier than breaches (pre-deadline nudges), so the
+  // "submitter doesn't need this" default is even more important here.
+  const settings = await pool.query(
+    `SELECT sla_notify_submitter_default FROM auth_settings WHERE id = 1`
+  ).then(r => r.rows[0] || {}).catch(() => ({}));
+  const submitterId = await getTicketSubmitterId(ticket.id);
+  const submitterExcludes = settings.sla_notify_submitter_default ? [] : [submitterId].filter(Boolean);
+  const recipients = await getFollowerRecipients(null, ticket.id, null, submitterExcludes);
   const assigneeId = ticket.assigned_to;
   if (assigneeId && !recipients.find(u => u.id === assigneeId)) {
     const u = await getUserById(assigneeId);

@@ -699,7 +699,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
           return res.status(400).json({ error: 'submitted_by must be a user id' });
         }
         const targetUser = await client.query(
-          `SELECT id FROM users WHERE id = $1 AND status = 'active'`,
+          `SELECT id, display_name FROM users WHERE id = $1 AND status = 'active'`,
           [targetId]
         );
         if (!targetUser.rows[0]) return res.status(400).json({ error: 'submitted_by user not found or inactive' });
@@ -717,6 +717,18 @@ router.patch('/:id', requireAuth, async (req, res) => {
             'INSERT INTO ticket_followers (ticket_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
             [ticket.id, targetId]
           );
+        }
+        // If the target user still only has an email (no display_name),
+        // try to enrich from the configured directory (Graph / Google)
+        // before responding so the UI immediately renders the resolved
+        // name. Best-effort: failures degrade silently.
+        if (!targetUser.rows[0].display_name) {
+          try {
+            const { enrichExistingUser } = require('../services/userAutoProvision');
+            await enrichExistingUser(targetId);
+          } catch (err) {
+            console.warn('submitter enrich failed:', err.message);
+          }
         }
       }
 

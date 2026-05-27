@@ -69,7 +69,7 @@ async function lookupUserByEmail(email) {
     return null;
   }
 
-  const select = '$select=displayName,officeLocation,department,mail,userPrincipalName,jobTitle';
+  const select = '$select=id,displayName,officeLocation,department,mail,userPrincipalName,jobTitle';
   const url = `${GRAPH}/users/${encodeURIComponent(emailLc)}?${select}`;
   try {
     const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
@@ -88,6 +88,7 @@ async function lookupUserByEmail(email) {
     }
     const body = await r.json();
     const data = {
+      id: body.id || null,
       displayName: body.displayName || null,
       officeLocation: body.officeLocation || null,
       department: body.department || null,

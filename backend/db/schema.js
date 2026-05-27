@@ -743,6 +743,24 @@ async function initSchema() {
     // adding vendor contacts. Comma-separated local-parts (e.g. "ops,it").
     await client.query(`ALTER TABLE auth_settings ADD COLUMN IF NOT EXISTS email_blocklist TEXT NOT NULL DEFAULT ''`);
 
+    // Gate: should auto-provision mint a local-only Submitter account
+    // when an inbound email comes from an address that no configured
+    // directory (Graph / Google) recognises? Default FALSE so the
+    // ingestion mailbox isn't a spam vector — admins flip this on only
+    // when they genuinely accept submissions from arbitrary senders.
+    await client.query(`ALTER TABLE auth_settings ADD COLUMN IF NOT EXISTS allow_email_unknown_users BOOLEAN NOT NULL DEFAULT FALSE`);
+
+    // SLA breach / warning recipient policy. Submitters were getting
+    // looped into every breach email because they auto-follow their own
+    // ticket; the messages were confusing ("your ticket missed its
+    // resolve SLA" reads like a customer-side action item). Default
+    // FALSE excludes them from the flat fanout — admins who want them
+    // looped in route it through an escalation chain `notify_submitter`
+    // action instead, which makes the contract explicit per priority /
+    // project. Flip this to TRUE on tenants who genuinely want every
+    // SLA breach to reach the submitter directly.
+    await client.query(`ALTER TABLE auth_settings ADD COLUMN IF NOT EXISTS sla_notify_submitter_default BOOLEAN NOT NULL DEFAULT FALSE`);
+
     // Per-comment "share with vendor" toggle. Default FALSE keeps internal
     // discussion internal even when ticket has external contacts attached.
     // The template renderer (services/emailTemplate.js) filters

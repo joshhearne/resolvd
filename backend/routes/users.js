@@ -446,4 +446,85 @@ router.delete('/me/avatar', requireAuth, async (req, res) => {
   }
 });
 
+// POST /api/users/bulk-enrich (Admin) — fan out enrichExistingUser
+// against a list of user ids. Used by the bulk editor on the Users
+// admin page so admins can backfill display_name + entra_oid for every
+// auto-provisioned account in one click instead of opening each row's
+// kebab menu. Returns per-id outcomes so the UI can surface which rows
+// didn't resolve (no directory match) versus which actually changed.
+router.post('/bulk-enrich', requireAuth, requireRole('Admin'), async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isInteger) : null;
+    const force = !!req.body?.force;
+    const { enrichExistingUser } = require('../services/userAutoProvision');
+
+    // No ids -> select every active user that still looks unenriched.
+    // Cheap heuristic: missing display_name OR (auth_provider='local'
+    // AND email-shaped). Admins almost always want this superset when
+    // they hit the "Refresh all" button.
+    let targets;
+    if (ids && ids.length) {
+      targets = ids;
+    } else {
+      const r = await pool.query(
+        `SELECT id FROM users
+          WHERE status = 'active'
+            AND (display_name IS NULL OR display_name = ''
+                 OR (auth_provider = 'local' AND email IS NOT NULL))
+          ORDER BY id ASC`
+      );
+      targets = r.rows.map((row) => row.id);
+    }
+
+    // Cap concurrency so we don't hammer Graph/Google on large tenants;
+    // each lookup is rate-limited per-provider but we still serialise
+    // batches of 4 to keep the response time predictable.
+    const results = [];
+    const CONCURRENCY = 4;
+    for (let i = 0; i < targets.length; i += CONCURRENCY) {
+      const batch = targets.slice(i, i + CONCURRENCY);
+      const settled = await Promise.allSettled(
+        batch.map((id) => enrichExistingUser(id, { force }))
+      );
+      settled.forEach((s, j) => {
+        const id = batch[j];
+        if (s.status === 'fulfilled' && s.value) {
+          results.push({
+            id, ok: true,
+            display_name: s.value.display_name,
+            auth_provider: s.value.auth_provider,
+          });
+        } else {
+          results.push({ id, ok: false, error: s.reason?.message || 'not_found' });
+        }
+      });
+    }
+    res.json({ count: results.length, results });
+  } catch (err) {
+    console.error('bulk enrich:', err);
+    res.status(500).json({ error: err.message || 'bulk enrich failed' });
+  }
+});
+
+// POST /api/users/:id/enrich (Admin) — refresh a user record from the
+// configured directory (Microsoft Graph or Google Workspace). Used to
+// backfill display_name on accounts that were auto-provisioned from
+// inbound email / alert payloads before a directory backend was
+// connected. Returns the updated row; the front-end refreshes the
+// submitter dropdown so the resolved name takes over from the bare
+// email immediately.
+router.post('/:id/enrich', requireAuth, requireRole('Admin'), async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid id' });
+    const { enrichExistingUser } = require('../services/userAutoProvision');
+    const updated = await enrichExistingUser(id, { force: !!req.body?.force });
+    if (!updated) return res.status(404).json({ error: 'user not found' });
+    res.json(updated);
+  } catch (err) {
+    console.error('enrich user:', err);
+    res.status(500).json({ error: err.message || 'enrich failed' });
+  }
+});
+
 module.exports = router;

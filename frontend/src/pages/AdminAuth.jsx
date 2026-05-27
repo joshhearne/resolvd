@@ -239,6 +239,24 @@ export default function AdminAuth() {
         />
       </Section>
 
+      <Section title="Inbound email auto-provisioning">
+        <Toggle
+          label="Allow inbound email from unknown senders to create local accounts"
+          checked={!!s.allow_email_unknown_users}
+          onChange={(v) => update("allow_email_unknown_users", v)}
+          hint="When OFF (default), inbound email from a sender that no configured directory (Microsoft Graph / Google Workspace) recognises is rejected — keeps the ingestion mailbox from being a spam onboarding vector. When ON, an unmatched sender is minted as a local Submitter so the ticket has an owner."
+        />
+      </Section>
+
+      <Section title="SLA notifications">
+        <Toggle
+          label="Notify submitters on SLA warnings / breaches by default"
+          checked={!!s.sla_notify_submitter_default}
+          onChange={(v) => update("sla_notify_submitter_default", v)}
+          hint="OFF (default): SLA warnings + breaches fan out to the assignee and internal followers only — submitters are excluded because they auto-follow their own tickets and the raw breach copy reads poorly for customers. Opt them in per priority / project via a 'Notify submitter' action on an escalation policy. ON: every SLA event also pages the submitter directly."
+        />
+      </Section>
+
       <Section title="Vendor outbound &amp; muted-reply digest">
         <Field
           label="Generic-mailbox blocklist (extra local-parts)"

@@ -137,6 +137,21 @@ async function fireAction({ action, step, ticket }) {
     return { ok: true };
   }
 
+  if (kind === 'notify_submitter') {
+    // SLA fanout deliberately excludes the submitter by default; this
+    // action is the explicit opt-in. Looks up the ticket's submitted_by
+    // fresh so a reassignment earlier in the same step still resolves
+    // against the current owner ... wait, submitter not assignee. Pull
+    // submitted_by from the DB.
+    const r = await pool.query(`SELECT submitted_by FROM tickets WHERE id = $1`, [ticket.id]);
+    const submitterId = r.rows[0]?.submitted_by;
+    if (!submitterId) return { ok: false, reason: 'ticket has no submitter' };
+    const u = await getUserById(submitterId);
+    if (!u) return { ok: false, reason: 'submitter user not found' };
+    await fanout.dispatchPerRecipient({ user: u, ...notifyBody(step, ticket) });
+    return { ok: true };
+  }
+
   if (kind === 'reassign_user') {
     if (!action.target_user_id) return { ok: false, reason: 'no target_user_id' };
     const u = await getUserById(action.target_user_id);
