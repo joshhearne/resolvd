@@ -183,6 +183,12 @@ function stripHtml(html) {
   return String(html)
     .replace(/<style[\s\S]*?<\/style>/gi, '')
     .replace(/<script[\s\S]*?<\/script>/gi, '')
+    // Preserve code formatting: wrap <pre>...</pre> bodies in fenced
+    // backticks so they survive the rest of the tag stripper and
+    // render as a code block when re-displayed via MarkdownContent.
+    // Inline <code> gets single-backtick wrapping for the same reason.
+    .replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, (_m, body) => `\n\n\`\`\`\n${body.replace(/<[^>]+>/g, '')}\n\`\`\`\n\n`)
+    .replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, (_m, body) => `\`${body.replace(/<[^>]+>/g, '')}\``)
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/(p|div|li|h[1-6]|tr|td|th|blockquote|article|section|header|footer|pre)\s*>/gi, '\n')
     .replace(/<[^>]+>/g, '')
