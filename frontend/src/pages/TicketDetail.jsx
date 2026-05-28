@@ -960,8 +960,17 @@ export default function TicketDetail() {
       const sigText = (user?.preferences?.signature || '').trim();
       const wantSig = sigEnabled && sigText &&
         (sigScope === 'all' || (sigScope === 'vendor_only' && shareWithVendor));
+      // Signatures are written line-per-line ("Josh Hearne\nSystems
+      // Admin\n..."). Markdown collapses single newlines into spaces, so
+      // the signature renders on one line in the comment view. Force a
+      // hard break on every non-blank intra-signature newline by
+      // suffixing it with two spaces — markdown's literal "line break"
+      // marker. Blank lines (paragraph breaks) pass through untouched.
+      const sigForPost = wantSig
+        ? sigText.replace(/([^\n])\n(?!\n)/g, '$1  \n')
+        : '';
       const bodyForPost = wantSig
-        ? `${commentBody.trim()}\n\n${sigText}`
+        ? `${commentBody.trim()}\n\n${sigForPost}`
         : commentBody.trim();
       if (bodyForPost) {
         c = await api.post(`/api/tickets/${id}/comments`, {
