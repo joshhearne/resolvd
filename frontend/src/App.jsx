@@ -30,6 +30,7 @@ import AdminSystemHealth from "./pages/AdminSystemHealth";
 import AdminCannedResponses from "./pages/AdminCannedResponses";
 import AdminLabelPrinter from "./pages/AdminLabelPrinter";
 import AdminSlaPolicies from "./pages/AdminSlaPolicies";
+import AdminTicketSchedules from "./pages/AdminTicketSchedules";
 import AdminAssignmentPolicies from "./pages/AdminAssignmentPolicies";
 import AdminEscalationPolicies from "./pages/AdminEscalationPolicies";
 import AdminCustomFields from "./pages/AdminCustomFields";
@@ -237,6 +238,7 @@ function AppRoutes() {
           <Route path="assignment" element={<AdminAssignmentPolicies />} />
           <Route path="escalations" element={<AdminEscalationPolicies />} />
           <Route path="custom-fields" element={<AdminCustomFields />} />
+          <Route path="ticket-schedules" element={<AdminTicketSchedules />} />
         </Route>
       </Route>
     </Routes>

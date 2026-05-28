@@ -25,6 +25,7 @@ const NAV_GROUPS = [
       { to: "/admin/escalations", label: "Escalations", manager: true },
       { to: "/admin/custom-fields", label: "Custom fields", manager: true },
       { to: "/admin/canned-responses", label: "Canned responses", manager: true },
+      { to: "/admin/ticket-schedules", label: "Scheduled tickets", manager: true },
       { to: "/admin/merge", label: "Merge tickets" },
     ],
   },

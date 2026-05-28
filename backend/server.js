@@ -147,6 +147,7 @@ app.use('/api/ai', aiAssistRoutes);
 app.use('/api/ai-settings', aiSettingsRoutes);
 app.use('/api/security', securityRoutes);
 app.use('/api/kb', kbRoutes);
+app.use('/api/ticket-schedules', require('./routes/ticketSchedules'));
 
 // Health check
 app.get('/health', (req, res) => res.json({ ok: true }));
@@ -174,6 +175,9 @@ initSchema()
     // each source's configured cadence (Action1 has no webhook channel).
     // 30-second tick; each source fires per its poll_interval_minutes.
     require('./services/alertSourcePollScheduler').startScheduler();
+    // Recurring ticket materialiser: every 60s, fire schedules whose
+    // next_fire_at has lapsed, log the run, advance the iterator.
+    require('./services/ticketSchedules').startScheduler();
     app.listen(PORT, () => {
       console.log(`Resolvd backend running on port ${PORT}`);
     });

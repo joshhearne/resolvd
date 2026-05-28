@@ -83,6 +83,10 @@ const FIELD_MAP = {
   external_alert_source: {
     api_token: 'api_token_enc',
   },
+  ticket_schedules: {
+    title: 'title_enc',
+    description: 'description_enc',
+  },
 };
 
 // Build a column/value patch for a write. `plainObj` carries the human-

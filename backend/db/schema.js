@@ -2603,6 +2603,104 @@ Thanks,
        )
     `);
 
+    // ── Scheduled (recurring) tickets ─────────────────────────────────
+    // Cron-driven template that materialises a real ticket every time
+    // its next_fire_at lands. Tracks one schedule -> many fired tickets
+    // via ticket_schedule_runs for an audit trail. Schema:
+    //   recurrence_kind  'preset' | 'cron'
+    //   cron_expr        always populated (presets compile to cron)
+    //   preset_kind      labels the preset family for the UI when
+    //                    recurrence_kind='preset' (daily/weekly/etc).
+    //                    NULL for raw cron.
+    //   preset_config    jsonb shape varies per preset_kind. Stored so
+    //                    the UI can round-trip without re-deriving from
+    //                    the cron expression (which loses preset intent
+    //                    after "every 2nd Wednesday" round-trips).
+    //   timezone         IANA tz the cron is evaluated in. Defaults to
+    //                    the cluster's TZ. Lets a single tenant span
+    //                    timezones without each schedule drifting on DST.
+    //   end_kind         'never' | 'count' | 'date'
+    //   end_count        positive int when end_kind='count'
+    //   end_date         timestamptz when end_kind='date'
+    //   fires_count      monotonically increasing; compared to end_count
+    //   next_fire_at     scheduler poll uses <= NOW() to fire; advanced
+    //                    after each successful materialisation. NULL =
+    //                    paused / exhausted; scheduler ignores.
+    //   contact_ids      pre-pinned external contacts; copied to the
+    //                    fired ticket via ticket_contacts.
+    //   title_enc /
+    //   description_enc  matched to the existing fields encryption shape
+    //                    so PII-bearing templates respect standard mode.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ticket_schedules (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        title TEXT,
+        title_enc BYTEA,
+        description TEXT,
+        description_enc BYTEA,
+        impact INTEGER NOT NULL DEFAULT 2,
+        urgency INTEGER NOT NULL DEFAULT 2,
+        assigned_to INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        contact_ids INTEGER[] NOT NULL DEFAULT '{}'::int[],
+        recurrence_kind TEXT NOT NULL CHECK (recurrence_kind IN ('preset','cron')),
+        cron_expr TEXT NOT NULL,
+        preset_kind TEXT,
+        preset_config JSONB,
+        timezone TEXT NOT NULL DEFAULT 'UTC',
+        end_kind TEXT NOT NULL DEFAULT 'never' CHECK (end_kind IN ('never','count','date')),
+        end_count INTEGER,
+        end_date TIMESTAMPTZ,
+        fires_count INTEGER NOT NULL DEFAULT 0,
+        last_fired_at TIMESTAMPTZ,
+        next_fire_at TIMESTAMPTZ,
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_schedules_next_fire
+      ON ticket_schedules(next_fire_at) WHERE enabled = TRUE AND next_fire_at IS NOT NULL`);
+    // Pre-pinned followers (typically project members). Optional. Each
+    // fired ticket gets the listed users inserted into ticket_followers
+    // so they receive the standard fanout without re-adding them
+    // manually per occurrence.
+    await client.query(`ALTER TABLE ticket_schedules ADD COLUMN IF NOT EXISTS follower_ids INTEGER[] NOT NULL DEFAULT '{}'::int[]`);
+    // Requestor / submitted_by override. NULL = fall back to created_by
+    // (the admin who authored the schedule), preserving prior behavior.
+    // When set, every fired ticket is attributed to this user as the
+    // submitter so SLA + assignment + label resolution treat it as if
+    // they filed it themselves.
+    await client.query(`ALTER TABLE ticket_schedules ADD COLUMN IF NOT EXISTS requestor_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL`);
+
+    // Optional runbook to attach (auto-start a ticket_runbook_runs row)
+    // on every fire. Audit trail: per-fire row in ticket_runbook_runs
+    // proves the runbook was attached even if no one toggled steps.
+    // ON DELETE SET NULL so deleting the source runbook just detaches
+    // future fires without killing the schedule.
+    await client.query(`ALTER TABLE ticket_schedules ADD COLUMN IF NOT EXISTS runbook_article_id INTEGER REFERENCES kb_articles(id) ON DELETE SET NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_schedules_project
+      ON ticket_schedules(project_id)`);
+
+    // Per-fire ledger. ticket_id may be NULL when materialisation
+    // failed (project archived, encryption issue, etc.); error_message
+    // carries the reason for the admin UI's "Last 10 runs" pane.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ticket_schedule_runs (
+        id SERIAL PRIMARY KEY,
+        schedule_id INTEGER NOT NULL REFERENCES ticket_schedules(id) ON DELETE CASCADE,
+        fired_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        ticket_id INTEGER REFERENCES tickets(id) ON DELETE SET NULL,
+        status TEXT NOT NULL CHECK (status IN ('ok','error')),
+        error_message TEXT
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_schedule_runs_schedule
+      ON ticket_schedule_runs(schedule_id, fired_at DESC)`);
+    await client.query(`INSERT INTO system_jobs (name) VALUES ('ticket_schedule_tick') ON CONFLICT DO NOTHING`);
+
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');

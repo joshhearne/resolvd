@@ -106,7 +106,7 @@ async function findExistingUserByEmail(client, email) {
 //
 // source: short label (e.g. 'inbound_email', 'alert:zabbix') used in the
 //   admin notification so they can tell where the user came from.
-async function autoProvisionSubmitter({ email, source }, client) {
+async function autoProvisionSubmitter({ email, source, silent = false }, client) {
   const db = client || pool;
   if (!email || !EMAIL_RE.test(String(email).trim())) return null;
   const cleanEmail = String(email).trim();
@@ -197,7 +197,9 @@ async function autoProvisionSubmitter({ email, source }, client) {
   }
 
   // Best-effort admin alert. Notification failures must not block the
-  // ticket pipeline — swallow and log.
+  // ticket pipeline — swallow and log. Bulk import paths pass silent
+  // to avoid flooding admins with one notification per imported user.
+  if (silent) return user;
   try {
     const sourceLabel = source ? ` from ${source}` : '';
     const nameForBody = displayName || cleanEmail;
