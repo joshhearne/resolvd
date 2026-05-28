@@ -61,7 +61,7 @@ async function ingestAlertEvent({ source, preset, event, rawPayload }) {
     const externalRef = `${source.preset}:${event.external_event_id}`;
 
     if (event.event_type === 'problem') {
-      const alertRow = await upsertFiringAlert(client, source, event, externalRef);
+      const alertRow = await upsertFiringAlert(client, source, event, externalRef, rawPayload);
       let result = { alert_id: alertRow.id, deduped: isDupEvent };
       if (!alertRow.ticket_id) {
         const decision = await evaluateAndAct(client, source, alertRow);
@@ -99,7 +99,7 @@ async function ingestAlertEvent({ source, preset, event, rawPayload }) {
   });
 }
 
-async function upsertFiringAlert(client, source, event, externalRef) {
+async function upsertFiringAlert(client, source, event, externalRef, rawPayload) {
   const sev = event.severity || null;
   const sevRank = severityRank(sev);
   const mode = await getMode(client);
@@ -113,10 +113,15 @@ async function upsertFiringAlert(client, source, event, externalRef) {
     'source_id', 'external_event_id', 'external_ref', 'state',
     'severity', 'severity_rank', 'user_email', 'vendor_ref', 'raw_payload',
   ];
+  // rawPayload is the unparsed body the vendor posted (forwarded via
+  // ingestAlertEvent). Older callers (or replay paths) sometimes pass
+  // the parsed event.raw instead — keep that as a fallback so we never
+  // store an empty {} when *some* shape was available.
+  const rawForStore = rawPayload ?? event.raw ?? {};
   const baseVals = [
     source.id, event.external_event_id, externalRef, 'firing',
     sev, sevRank, event.user_email || null, event.vendor_ref || null,
-    JSON.stringify(event.raw || {}),
+    JSON.stringify(rawForStore),
   ];
   const cols = [...baseCols, ...patch.cols];
   const vals = [...baseVals, ...patch.values];

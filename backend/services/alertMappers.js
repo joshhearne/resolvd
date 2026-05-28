@@ -13,6 +13,25 @@
 // returns 400. Soft "missing field" cases get sane defaults so a
 // half-templated webhook still yields a visible ticket.
 
+// Find the first parseable email in a list of macro-substituted
+// candidates. Zabbix macros expand to *UNKNOWN* (literal string) when
+// the inventory field is unpopulated, and admins frequently stuff
+// comma- or semicolon-separated lists into a single field. Drop both
+// noise patterns and return a normalised lowercased address.
+const _EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+function pickFirstEmail(candidates) {
+  for (const raw of candidates) {
+    if (!raw) continue;
+    const s = String(raw).trim();
+    if (!s || /^\*?UNKNOWN\*?$/i.test(s)) continue;
+    for (const part of s.split(/[,;]/)) {
+      const e = part.trim().toLowerCase();
+      if (_EMAIL_RE.test(e)) return e;
+    }
+  }
+  return null;
+}
+
 // Zabbix Webhook media-type. The Zabbix admin pastes a one-script
 // template that posts the following shape (configurable in their UI but
 // the script we hand them produces this). Keys are conservative — most
@@ -55,7 +74,26 @@ function zabbix(payload) {
   const triggerDesc = payload.trigger_description || payload.description || '';
   const opdata = payload.operational_data || payload.opdata || '';
 
-  const userEmail = String(payload.user_email || '').trim().toLowerCase() || null;
+  // Zabbix exposes contact email through several macros depending on
+  // which inventory field the admin populated. Accept all of them so a
+  // template that maps either Primary POC, Secondary POC, the legacy
+  // single "Contact" field, or a custom CONTACT/notes blob still
+  // resolves a user. First non-empty wins; primary trumps secondary.
+  // Comma- or semicolon-separated lists pick the first valid address.
+  const emailCandidates = [
+    payload.user_email,
+    payload.host_contact_email,
+    payload.poc_primary_email,
+    payload.poc_secondary_email,
+    payload.inventory_contact,
+    payload.host_contact,
+  ];
+  const userEmail = pickFirstEmail(emailCandidates);
+  const contactName = String(
+    payload.host_contact_name ||
+    payload.poc_primary_name ||
+    ''
+  ).trim() || null;
 
   const titleParts = [];
   if (host) titleParts.push(`[${host}]`);
@@ -65,7 +103,12 @@ function zabbix(payload) {
   const lines = [];
   if (host) lines.push(`**Host:** ${host}`);
   lines.push(`**Severity:** ${severity}`);
-  if (userEmail) lines.push(`**Inventory contact:** ${userEmail}`);
+  if (userEmail) {
+    const display = contactName ? `${contactName} <${userEmail}>` : userEmail;
+    lines.push(`**Inventory contact:** ${display}`);
+  } else if (contactName) {
+    lines.push(`**Inventory contact:** ${contactName}`);
+  }
   lines.push(`**Event ID:** ${eventId}`);
   if (triggerDesc) lines.push('', triggerDesc);
   if (opdata) lines.push('', `Operational data: ${opdata}`);

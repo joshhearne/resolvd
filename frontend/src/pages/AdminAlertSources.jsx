@@ -41,7 +41,19 @@ function zabbixSnippet(webhookUrl) {
 //   operational_data     {EVENT.OPDATA}
 //   event_tags      {EVENT.TAGS}
 //   event_url       {\$ZABBIX.URL}/tr_events.php?triggerid={TRIGGER.ID}&eventid={EVENT.ID}
-//   user_email      {INVENTORY.POC.PRIMARY.EMAIL}   // optional — attributes ticket to that user if active in Resolvd
+//
+// Optional contact parameters (any one populates the ticket submitter
+// — first non-empty wins; matching user in Resolvd is attributed and
+// the Graph / Google directory enriches the profile on miss):
+//   user_email             {INVENTORY.POC.PRIMARY.EMAIL}
+//   poc_secondary_email    {INVENTORY.POC.SECONDARY.EMAIL}
+//   host_contact_email     {INVENTORY.CONTACT}            // legacy single-field
+//   host_contact_name      {INVENTORY.POC.PRIMARY.NAME}
+//   inventory_contact      {INVENTORY.NOTES}              // free-text fallback
+//
+// Comma- or semicolon-separated lists are tolerated; the first valid
+// address wins. *UNKNOWN* (Zabbix's literal placeholder for an empty
+// inventory field) is ignored automatically.
 try {
   var p = JSON.parse(value);
   var req = new HttpRequest();
