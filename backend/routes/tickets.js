@@ -785,6 +785,20 @@ router.patch('/:id', requireAuth, async (req, res) => {
         } else {
           updates.resolved_at = null;
         }
+        // Kill any pending response-SLA timer on resolve/close. A ticket
+        // that resolved before anyone manually replied (transient alert
+        // that recovered, duplicate that got closed, etc.) was tripping
+        // the response-breach query every minute during the grace
+        // window — surfacing a breach the team can't act on. Stamp
+        // sla_first_response_at when it's still NULL on resolve/close
+        // so the query's `sla_first_response_at IS NULL` predicate stops
+        // matching, AND clear any prior warned flag so a future reopen
+        // doesn't carry the warn state over.
+        if ((tag === 'resolved_pending_close' || isTerminal) && !ticket.sla_first_response_at) {
+          updates.sla_first_response_at = new Date().toISOString();
+          if (ticket.sla_response_warned) updates.sla_response_warned = false;
+          if (ticket.sla_response_warned_at) updates.sla_response_warned_at = null;
+        }
         // SLA pause/resume on transitions into / out of awaiting_input
         // or on_hold tagged statuses. Done in the same transaction so
         // the pause-second accounting stays consistent with the audit
@@ -1120,6 +1134,14 @@ router.post('/bulk', requireAuth, requireRole('Admin'), async (req, res) => {
               updates.resolved_at = ticket.resolved_at || new Date().toISOString();
             } else {
               updates.resolved_at = null;
+            }
+            // Mirror single-ticket PATCH: kill the response-SLA timer on
+            // resolve/close so bulk-resolved tickets don't trip the
+            // breach query during the grace window.
+            if ((tag === 'resolved_pending_close' || isTerminal) && !ticket.sla_first_response_at) {
+              updates.sla_first_response_at = new Date().toISOString();
+              if (ticket.sla_response_warned) updates.sla_response_warned = false;
+              if (ticket.sla_response_warned_at) updates.sla_response_warned_at = null;
             }
             const oldTag = await client.query(`SELECT semantic_tag FROM statuses WHERE kind='internal' AND name=$1`, [ticket.internal_status]);
             if (oldTag.rows[0]?.semantic_tag === 'pending_review' && tag !== 'pending_review') {

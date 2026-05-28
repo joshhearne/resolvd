@@ -182,6 +182,14 @@ async function tickWarnings() {
        AND s.is_terminal = TRUE
   )`;
 
+  // Response warn/breach must also bail when resolved_at is stamped.
+  // The "Resolved" status (semantic_tag=resolved_pending_close) is the
+  // grace-period state before auto-close fires; is_terminal stays FALSE
+  // so the autoClose worker can act on it. Without this extra guard a
+  // ticket that resolved before anyone manually replied keeps tripping
+  // the response timer every minute during the grace window — exactly
+  // the spurious breach reported on INC-0099 (transient ping spike that
+  // recovered on its own).
   const respWarn = await pool.query(
     `UPDATE tickets
         SET sla_response_warned = TRUE,
@@ -192,6 +200,7 @@ async function tickWarnings() {
         AND sla_response_breached = FALSE
         AND sla_paused_at IS NULL
         AND sla_response_warned = FALSE
+        AND resolved_at IS NULL
         AND ${NOT_TERMINAL}
       RETURNING id, internal_ref, title, title_enc, project_id, assigned_to, sla_response_due_at`
   );
@@ -238,6 +247,9 @@ async function tickBreaches() {
        AND s.name = tickets.internal_status
        AND s.is_terminal = TRUE
   )`;
+  // resolved_at guard: see tickWarnings. A ticket sitting in the
+  // Resolved grace state (not yet terminal) must not trip the response
+  // breach — the issue is already done, response is moot.
   const respDue = await pool.query(
     `UPDATE tickets
         SET sla_response_breached = TRUE,
@@ -247,6 +259,7 @@ async function tickBreaches() {
         AND sla_first_response_at IS NULL
         AND sla_paused_at IS NULL
         AND sla_response_breached = FALSE
+        AND resolved_at IS NULL
         AND ${NOT_TERMINAL}
       RETURNING id, internal_ref, title, title_enc, project_id, assigned_to`
   );
