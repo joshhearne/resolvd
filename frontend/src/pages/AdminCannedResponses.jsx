@@ -57,6 +57,7 @@ export default function AdminCannedResponses() {
           title: form.title,
           body: form.body,
           category: form.category,
+          project_ids: Array.isArray(form.project_ids) ? form.project_ids : [],
         });
         toast.success("Updated");
       } else {

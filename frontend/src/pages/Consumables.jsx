@@ -143,6 +143,9 @@ function NewConsumableForm({ companies, onCreated, onCancel }) {
     current_stock: 0,
     low_stock_threshold: 0,
     notes: "",
+    purchase_url: "",
+    vendor_part_no: "",
+    is_metered: false,
   });
   const [saving, setSaving] = useState(false);
   async function submit(e) {
@@ -205,6 +208,23 @@ function NewConsumableForm({ companies, onCreated, onCancel }) {
           <input type="number" min="0" value={form.low_stock_threshold}
             onChange={(e) => set("low_stock_threshold", e.target.value)}
             className="bg-surface-2 border border-border rounded px-2 py-1" />
+        </label>
+        <label className="flex flex-col gap-1">
+          Vendor P/N
+          <input value={form.vendor_part_no} onChange={(e) => set("vendor_part_no", e.target.value)}
+            className="bg-surface-2 border border-border rounded px-2 py-1"
+            placeholder="vendor's branded SKU (printed on the box)" />
+        </label>
+        <label className="flex flex-col gap-1">
+          Purchase URL
+          <input value={form.purchase_url} onChange={(e) => set("purchase_url", e.target.value)}
+            className="bg-surface-2 border border-border rounded px-2 py-1"
+            placeholder="https://… (self-serve order page)" />
+        </label>
+        <label className="flex items-center gap-2 sm:col-span-2 mt-1">
+          <input type="checkbox" checked={form.is_metered}
+            onChange={(e) => set("is_metered", e.target.checked)} />
+          <span>Metered / leased (we cannot buy this on the open market — restock via service contract)</span>
         </label>
       </div>
       <label className="text-xs text-fg-muted flex flex-col gap-1">
@@ -323,9 +343,19 @@ function ConsumableDetailPage({ id }) {
             <div className="text-xs text-fg-dim mt-0.5">
               {detail.category && <>Category: {detail.category} · </>}
               {detail.vendor_company_name && <>Vendor: {detail.vendor_company_name} · </>}
+              {detail.vendor_part_no && <>Vendor P/N: <span className="font-mono">{detail.vendor_part_no}</span> · </>}
               Updated <HybridTime value={detail.updated_at} />
               {detail.is_archived && <span className="ml-2 text-[10px] uppercase tracking-wider text-fg-dim">archived</span>}
+              {detail.is_metered && <span className="ml-2 text-[10px] uppercase tracking-wider text-amber-600 dark:text-amber-400">metered</span>}
             </div>
+            {detail.purchase_url && !detail.is_metered && (
+              <div className="text-xs mt-1">
+                <a href={detail.purchase_url} target="_blank" rel="noopener noreferrer"
+                   className="text-brand hover:underline break-all">
+                  {detail.purchase_url}
+                </a>
+              </div>
+            )}
           </div>
           <div className="flex gap-2">
             <button onClick={printLabel} disabled={busy} className="btn btn-secondary btn-sm disabled:opacity-50">Print label</button>
@@ -370,6 +400,19 @@ function ConsumableDetailPage({ id }) {
             <label className="flex flex-col gap-1">Low-stock threshold
               <input type="number" min="0" value={cur("low_stock_threshold") || 0} onChange={(e) => setField("low_stock_threshold", Number(e.target.value))}
                 className="bg-surface-2 border border-border rounded px-2 py-1" />
+            </label>
+            <label className="flex flex-col gap-1">Vendor P/N
+              <input value={cur("vendor_part_no") || ""} onChange={(e) => setField("vendor_part_no", e.target.value)}
+                className="bg-surface-2 border border-border rounded px-2 py-1" placeholder="vendor's branded SKU" />
+            </label>
+            <label className="flex flex-col gap-1">Purchase URL
+              <input value={cur("purchase_url") || ""} onChange={(e) => setField("purchase_url", e.target.value)}
+                className="bg-surface-2 border border-border rounded px-2 py-1" placeholder="https://…" />
+            </label>
+            <label className="flex items-center gap-2 sm:col-span-2">
+              <input type="checkbox" checked={!!cur("is_metered")}
+                onChange={(e) => setField("is_metered", e.target.checked)} />
+              <span>Metered / leased consumable (restock via service contract)</span>
             </label>
             <label className="flex flex-col gap-1">Archived?
               <select value={cur("is_archived") ? "1" : "0"} onChange={(e) => setField("is_archived", e.target.value === "1")}

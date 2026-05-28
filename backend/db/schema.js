@@ -2526,6 +2526,83 @@ async function initSchema() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_consumable_movements_consumable ON consumable_movements(consumable_id, at DESC)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_consumable_movements_ticket ON consumable_movements(ticket_id) WHERE ticket_id IS NOT NULL`);
 
+    // Restock + sourcing fields:
+    //   purchase_url     — self-serve order URL surfaced in OOS / low-stock
+    //                      alerts and the canned vendor RFQ template.
+    //   vendor_part_no   — vendor-branded part number (their SKU, often
+    //                      different from our internal part_no). Embedded
+    //                      in the canned RFQ so the vendor can fulfil
+    //                      without translation.
+    //   is_metered       — printer-leased / contract-supplied consumable
+    //                      that we can't buy on the open market. Toggles
+    //                      the UI between "self-serve" (purchase URL +
+    //                      RFQ template) and "metered" (no URL; restock
+    //                      template pages local/regional support).
+    await client.query(`ALTER TABLE consumables ADD COLUMN IF NOT EXISTS purchase_url TEXT`);
+    await client.query(`ALTER TABLE consumables ADD COLUMN IF NOT EXISTS vendor_part_no TEXT`);
+    await client.query(`ALTER TABLE consumables ADD COLUMN IF NOT EXISTS is_metered BOOLEAN NOT NULL DEFAULT FALSE`);
+
+    // Seed two global canned responses for consumable restock workflows.
+    // Idempotent: inserts only when no global response already carries
+    // the same category tag. Admins can edit the body freely after seed.
+    // Placeholders use the existing canned-render syntax expected by
+    // services/cannedRender.js — {ticket.ref}, {ticket.url}, etc., plus
+    // consumable-specific tokens resolved at send time.
+    await client.query(`
+      INSERT INTO canned_responses (scope, title, body, category)
+      SELECT 'global',
+             'Consumable restock — self-serve RFQ',
+             $$Hi {vendor.name},
+
+We need to restock the following consumable:
+
+- **Part:** {consumable.part_no} ({consumable.title})
+- **Vendor P/N:** {consumable.vendor_part_no}
+- **Qty:** {consumable.reorder_qty}
+- **Direct order link:** {consumable.purchase_url}
+
+Triggering ticket: {ticket.ref} — {ticket.url}
+
+Please confirm availability and ETA when you can.
+
+Thanks,
+{user.display_name}$$,
+             'consumable_restock'
+       WHERE NOT EXISTS (
+         SELECT 1 FROM canned_responses
+          WHERE scope = 'global'
+            AND category = 'consumable_restock'
+            AND title = 'Consumable restock — self-serve RFQ'
+       )
+    `);
+    await client.query(`
+      INSERT INTO canned_responses (scope, title, body, category)
+      SELECT 'global',
+             'Consumable restock — metered / leased printer',
+             $$Hi {vendor.name},
+
+We're out of the following metered consumable and need it dispatched as soon as possible:
+
+- **Printer-branded P/N:** {consumable.vendor_part_no}
+- **Internal part:** {consumable.part_no} ({consumable.title})
+- **Affected device:** {ticket.host}
+- **Urgency:** end-user is blocked
+
+Triggering ticket: {ticket.ref} — {ticket.url}
+
+Please ship a replacement under the existing service agreement.
+
+Thanks,
+{user.display_name}$$,
+             'consumable_restock'
+       WHERE NOT EXISTS (
+         SELECT 1 FROM canned_responses
+          WHERE scope = 'global'
+            AND category = 'consumable_restock'
+            AND title = 'Consumable restock — metered / leased printer'
+       )
+    `);
+
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');

@@ -70,8 +70,9 @@ router.post('/', requireAuth, requireRole(...HANDLER_ROLES), async (req, res) =>
     if (!part_no) return res.status(400).json({ error: 'part_no required' });
     const r = await pool.query(
       `INSERT INTO consumables (part_no, title, category, vendor_company_id,
-                                current_stock, low_stock_threshold, notes)
-       VALUES ($1, $2, $3, $4, $5, $6, $7)
+                                current_stock, low_stock_threshold, notes,
+                                purchase_url, vendor_part_no, is_metered)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
        RETURNING id`,
       [
         part_no,
@@ -81,6 +82,9 @@ router.post('/', requireAuth, requireRole(...HANDLER_ROLES), async (req, res) =>
         Number.isFinite(Number(b.current_stock)) ? Math.max(0, Math.trunc(Number(b.current_stock))) : 0,
         Number.isFinite(Number(b.low_stock_threshold)) ? Math.max(0, Math.trunc(Number(b.low_stock_threshold))) : 0,
         b.notes ? String(b.notes).trim() : null,
+        b.purchase_url ? String(b.purchase_url).trim() : null,
+        b.vendor_part_no ? String(b.vendor_part_no).trim() : null,
+        !!b.is_metered,
       ]
     );
     res.status(201).json({ id: r.rows[0].id });
@@ -99,14 +103,15 @@ router.patch('/:id(\\d+)', requireAuth, requireRole(...HANDLER_ROLES), async (re
     if (Object.prototype.hasOwnProperty.call(b, 'current_stock')) {
       return res.status(400).json({ error: 'Use POST /:id/move to adjust stock' });
     }
-    const fields = ['part_no', 'title', 'category', 'vendor_company_id', 'low_stock_threshold', 'notes', 'is_archived'];
+    const fields = ['part_no', 'title', 'category', 'vendor_company_id', 'low_stock_threshold', 'notes', 'is_archived',
+                    'purchase_url', 'vendor_part_no', 'is_metered'];
     const sets = [];
     const values = [];
     let p = 1;
     for (const f of fields) {
       if (!Object.prototype.hasOwnProperty.call(b, f)) continue;
       let v = b[f];
-      if (f === 'is_archived') v = !!v;
+      if (f === 'is_archived' || f === 'is_metered') v = !!v;
       else if (f === 'vendor_company_id') v = v == null ? null : Number(v);
       else if (f === 'low_stock_threshold') v = v == null ? 0 : Math.max(0, Math.trunc(Number(v)));
       else v = v == null ? null : (typeof v === 'string' ? v.trim() || null : v);

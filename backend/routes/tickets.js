@@ -1691,7 +1691,9 @@ router.post('/:id(\\d+)/print-consumable-label',
       if (!ticket) return res.status(404).json({ error: 'ticket not found' });
 
       const cr = await pool.query(
-        `SELECT id, part_no, title FROM consumables WHERE id = $1`,
+        `SELECT id, part_no, title, current_stock, low_stock_threshold,
+                purchase_url, vendor_part_no, is_metered, vendor_company_id
+           FROM consumables WHERE id = $1`,
         [consumableId]
       );
       const cons = cr.rows[0];
@@ -1753,6 +1755,105 @@ router.post('/:id(\\d+)/print-consumable-label',
         }
       }
 
+      // ── Allocation ─────────────────────────────────────────────────
+      // First dispatch decrements stock; subsequent reprints (label
+      // damaged, end-of-roll, etc.) skip the decrement so the ledger
+      // shows one allocation per ticket/consumable pair. Out-of-stock
+      // on first dispatch blocks the print and pages the admin/tech
+      // group via system comment + admin notification with the right
+      // restock CTA (self-serve URL vs metered support call).
+      const { systemComment } = require('../services/ticketHelpers');
+      const { notifyAdmins } = require('../services/notifications');
+      const transaction = require('../db/pool').transaction;
+      const userId = req.session.user.id;
+
+      // Look up an existing allocation movement on this ticket so the
+      // reprint path can fork before we hit the consumables row.
+      const prior = await pool.query(
+        `SELECT id FROM consumable_movements
+          WHERE ticket_id = $1 AND consumable_id = $2 AND delta < 0
+          LIMIT 1`,
+        [ticket.id, cons.id]
+      );
+      const isReprint = !!prior.rows[0];
+
+      // Pull a host hint from the most recent linked alert payload so
+      // the movement ledger row carries the device name + date. Best
+      // effort: tickets without an alert just get the date.
+      let hostName = null;
+      try {
+        const ar = await pool.query(
+          `SELECT raw_payload->>'host_name' AS host
+             FROM alerts
+            WHERE ticket_id = $1
+            ORDER BY last_seen_at DESC NULLS LAST, id DESC
+            LIMIT 1`,
+          [ticket.id]
+        );
+        hostName = ar.rows[0]?.host || null;
+      } catch { /* alert lookup is non-critical */ }
+      const today = new Date().toISOString().slice(0, 10);
+      const movementNote = hostName ? `${hostName} • ${today}` : today;
+
+      // OOS gate (first dispatch only). Lock the row before deciding.
+      if (!isReprint) {
+        try {
+          await transaction(async (client) => {
+            const lock = await client.query(
+              `SELECT current_stock FROM consumables WHERE id = $1 FOR UPDATE`,
+              [cons.id]
+            );
+            const stock = Number(lock.rows[0]?.current_stock || 0);
+            if (stock <= 0) {
+              const err = new Error('out_of_stock');
+              err.oos = true;
+              throw err;
+            }
+            await client.query(
+              `UPDATE consumables SET current_stock = current_stock - 1, updated_at = NOW() WHERE id = $1`,
+              [cons.id]
+            );
+            await client.query(
+              `INSERT INTO consumable_movements (consumable_id, delta, reason, ticket_id, by_user_id, note)
+               VALUES ($1, -1, 'ticket_dispatch', $2, $3, $4)`,
+              [cons.id, ticket.id, userId, movementNote]
+            );
+          });
+        } catch (e) {
+          if (e?.oos) {
+            // Post OOS comment + admin alert + return 409 so the UI
+            // can flag the situation instead of silently printing.
+            const restockCta = cons.is_metered
+              ? `**Metered consumable** — contact the vendor (${cons.vendor_part_no || cons.part_no}) for a service-agreement restock. Use canned response "Consumable restock — metered / leased printer".`
+              : (cons.purchase_url
+                  ? `**Restock URL:** ${cons.purchase_url}\n**Vendor P/N:** ${cons.vendor_part_no || cons.part_no}\nUse canned response "Consumable restock — self-serve RFQ".`
+                  : `No purchase URL on file for **${cons.part_no}**. Add one in Admin → Consumables, or use canned response "Consumable restock — self-serve RFQ".`);
+            await systemComment(
+              pool, ticket.id,
+              `⚠ **${cons.part_no} (${cons.title || ''}) is out of stock.** Label not printed.\n\n${restockCta}`
+            ).catch((cmtErr) => console.error('OOS system comment failed:', cmtErr.message));
+            await notifyAdmins(pool, {
+              type: 'consumable_out_of_stock',
+              title: `Out of stock: ${cons.part_no}`,
+              body: `Ticket ${ticket.internal_ref} requested ${cons.part_no} (${cons.title || ''}) but stock is 0.`,
+              data: {
+                ticket_id: ticket.id, ticket_ref: ticket.internal_ref,
+                consumable_id: cons.id, part_no: cons.part_no,
+                is_metered: cons.is_metered, purchase_url: cons.purchase_url,
+                vendor_part_no: cons.vendor_part_no,
+              },
+            }).catch((nErr) => console.error('OOS admin notify failed:', nErr.message));
+            return res.status(409).json({
+              error: 'out_of_stock',
+              consumable: { id: cons.id, part_no: cons.part_no, title: cons.title,
+                            is_metered: cons.is_metered, purchase_url: cons.purchase_url,
+                            vendor_part_no: cons.vendor_part_no },
+            });
+          }
+          throw e;
+        }
+      }
+
       const labelPrinter = require('../services/labelPrinter');
       const labelTemplates = require('../services/labelTemplates');
       const cfg = await labelPrinter.getConfig();
@@ -1767,8 +1868,55 @@ router.post('/:id(\\d+)/print-consumable-label',
       }, cfg);
       await labelPrinter.print(zpl);
 
+      // Reprint also logs a zero-delta movement so admins can see how
+      // many physical labels were spun off one allocation — useful when
+      // chasing why the on-hand count diverges from a roll of labels.
+      if (isReprint) {
+        await pool.query(
+          `INSERT INTO consumable_movements (consumable_id, delta, reason, ticket_id, by_user_id, note)
+           VALUES ($1, 0, 'ticket_reprint', $2, $3, $4)`,
+          [cons.id, ticket.id, userId, `reprint • ${movementNote}`]
+        ).catch((e) => console.warn('reprint movement log failed:', e.message));
+      }
+
+      // Post-decrement low-stock warning. Threshold of 0 disables this
+      // check entirely (admin opt-out). We post + alert once per
+      // crossing — repeated dispatches at low stock will fire again,
+      // which is intentional ("getting closer to zero, do something").
+      if (!isReprint) {
+        const fresh = await pool.query(
+          `SELECT current_stock, low_stock_threshold FROM consumables WHERE id = $1`,
+          [cons.id]
+        );
+        const now = Number(fresh.rows[0]?.current_stock || 0);
+        const thr = Number(fresh.rows[0]?.low_stock_threshold || 0);
+        if (thr > 0 && now <= thr) {
+          const restockCta = cons.is_metered
+            ? `**Metered consumable** — order via service agreement (${cons.vendor_part_no || cons.part_no}).`
+            : (cons.purchase_url
+                ? `**Restock URL:** ${cons.purchase_url}`
+                : `No purchase URL on file — add one in Admin → Consumables.`);
+          await systemComment(
+            pool, ticket.id,
+            `🟡 **Low stock:** ${cons.part_no} now at ${now}/${thr} (threshold). ${restockCta}`
+          ).catch((cmtErr) => console.error('low-stock system comment failed:', cmtErr.message));
+          await notifyAdmins(pool, {
+            type: 'consumable_low_stock',
+            title: `Low stock: ${cons.part_no} at ${now}/${thr}`,
+            body: `${cons.title || cons.part_no} hit the low-stock threshold after a dispatch on ${ticket.internal_ref}.`,
+            data: {
+              ticket_id: ticket.id, ticket_ref: ticket.internal_ref,
+              consumable_id: cons.id, part_no: cons.part_no, current_stock: now,
+              low_stock_threshold: thr, is_metered: cons.is_metered,
+              purchase_url: cons.purchase_url, vendor_part_no: cons.vendor_part_no,
+            },
+          }).catch((nErr) => console.error('low-stock admin notify failed:', nErr.message));
+        }
+      }
+
       res.json({
         ok: true,
+        reprint: isReprint,
         resolved: { requestor, location, ticket_ref: ticket.internal_ref,
                     consumable: { part_no: cons.part_no, title: cons.title } },
       });
@@ -1842,11 +1990,48 @@ router.get('/:id(\\d+)/print-label-resolve',
         }
       }
 
+      // Suggest a consumable when the linked alert carries a part
+      // number tag. Zabbix templates emit tags like
+      // "part.number:106R03539" on Low-cartridge triggers; we parse the
+      // alert's event_tags string (comma-separated key:value pairs) or
+      // the structured tags array, then ILIKE-match consumables.part_no
+      // / vendor_part_no. First active hit wins.
+      let suggestedConsumableId = null;
+      let suggestedFromTag = null;
+      try {
+        const ar = await pool.query(
+          `SELECT raw_payload FROM alerts
+            WHERE ticket_id = $1
+            ORDER BY last_seen_at DESC NULLS LAST, id DESC
+            LIMIT 1`,
+          [ticketId]
+        );
+        const payload = ar.rows[0]?.raw_payload || null;
+        const partTag = extractPartNumberFromPayload(payload);
+        if (partTag) {
+          suggestedFromTag = partTag;
+          const cm = await pool.query(
+            `SELECT id, part_no, title
+               FROM consumables
+              WHERE is_archived = FALSE
+                AND (part_no ILIKE $1 OR vendor_part_no ILIKE $1)
+              ORDER BY (CASE WHEN part_no ILIKE $1 THEN 0 ELSE 1 END), id ASC
+              LIMIT 1`,
+            [partTag]
+          );
+          suggestedConsumableId = cm.rows[0]?.id || null;
+        }
+      } catch (e) {
+        console.warn('print-label-resolve: consumable suggest failed:', e.message);
+      }
+
       res.json({
         ticket_ref: ticket.internal_ref,
         requestor,
         location,
         graph_available: !!graphUser,
+        suggested_consumable_id: suggestedConsumableId,
+        suggested_from_tag: suggestedFromTag,
       });
     } catch (err) {
       console.error('print-label-resolve:', err);
@@ -1854,5 +2039,29 @@ router.get('/:id(\\d+)/print-label-resolve',
     }
   }
 );
+
+// Pull a "part.number:<value>" tag out of an alert payload. Zabbix
+// renders {EVENT.TAGS} as a flat comma-separated string; structured
+// integrations may pass tags as an array of {tag, value} objects.
+// Returns the raw part number string or null.
+function extractPartNumberFromPayload(payload) {
+  if (!payload) return null;
+  const tagsRaw = payload.event_tags;
+  if (typeof tagsRaw === 'string' && tagsRaw) {
+    for (const part of tagsRaw.split(',')) {
+      const m = /^\s*part\.number\s*:\s*(.+?)\s*$/i.exec(part);
+      if (m && m[1]) return m[1];
+    }
+  }
+  // Some senders push tags as [{tag:'part.number', value:'106R...'}]
+  if (Array.isArray(payload.tags)) {
+    for (const t of payload.tags) {
+      if (t && /^part\.number$/i.test(String(t.tag || '').trim()) && t.value) {
+        return String(t.value).trim();
+      }
+    }
+  }
+  return null;
+}
 
 module.exports = router;

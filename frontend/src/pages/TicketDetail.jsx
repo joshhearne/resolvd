@@ -1125,11 +1125,23 @@ export default function TicketDetail() {
       ]);
       const consumables = (Array.isArray(consList) ? consList : consList?.items || [])
         .filter((c) => !c.is_archived);
+      // Auto-select the consumable the backend matched against the
+      // alert's part.number tag. Falls back to the first row only when
+      // there's no suggestion AND no suggestion source either — if the
+      // suggestion came back null but a tag WAS present, surface the
+      // raw tag string in the picker placeholder so the admin knows
+      // why nothing matched ("part.number:XYZ — not in inventory").
+      const suggestedId = resolved.suggested_consumable_id;
+      const defaultId = suggestedId
+        ? String(suggestedId)
+        : (consumables[0]?.id ? String(consumables[0].id) : "");
       setLabelModal({
         loading: false,
         resolved,
         consumables,
-        consumableId: consumables[0]?.id ? String(consumables[0].id) : "",
+        consumableId: defaultId,
+        suggestedFromTag: resolved.suggested_from_tag || null,
+        suggestedHit: !!suggestedId,
         requestor: resolved.requestor || "",
         location: resolved.location || "",
         graphAvailable: resolved.graph_available,
@@ -1147,15 +1159,32 @@ export default function TicketDetail() {
     }
     setLabelModal((m) => ({ ...m, printing: true }));
     try {
-      await api.post(`/api/tickets/${id}/print-consumable-label`, {
+      const r = await api.post(`/api/tickets/${id}/print-consumable-label`, {
         consumable_id: Number(labelModal.consumableId),
         requestor_override: labelModal.requestor || "",
         location_override: labelModal.location || "",
       });
-      toast.success("Label sent to printer");
+      toast.success(r?.reprint ? "Reprint sent (stock not adjusted)" : "Label sent — stock adjusted");
       setLabelModal(null);
+      // Refresh comments so the system comment from an OOS / low-stock
+      // alert (or just to reflect the allocation) appears immediately.
+      api.get(`/api/tickets/${id}/comments`).then(setComments).catch(() => {});
     } catch (e) {
-      toast.error(e.message || "Print failed");
+      // 409 = out of stock. Surface the restock CTA inline so the
+      // user can copy a canned response or hit the purchase URL
+      // without leaving the modal. Server already posted the system
+      // comment + paged admins, so we don't fire those client-side.
+      if (e?.status === 409 || /out_of_stock/.test(e?.message || "")) {
+        const c = e?.body?.consumable || {};
+        const cta = c.is_metered
+          ? `Metered — contact vendor for restock under service agreement (${c.vendor_part_no || c.part_no || ""}).`
+          : (c.purchase_url
+              ? `Restock URL: ${c.purchase_url}`
+              : `No purchase URL on file. Add one in Admin → Consumables.`);
+        toast.error(`Out of stock. ${cta}`, { duration: 8000 });
+      } else {
+        toast.error(e.message || "Print failed");
+      }
       setLabelModal((m) => ({ ...m, printing: false }));
     }
   }
@@ -3478,6 +3507,19 @@ export default function TicketDetail() {
                       </option>
                     ))}
                   </select>
+                  {labelModal.suggestedFromTag && (
+                    <div className="text-[11px] mt-1">
+                      {labelModal.suggestedHit ? (
+                        <span className="text-emerald-600 dark:text-emerald-400">
+                          Auto-matched from alert tag <code className="font-mono">part.number:{labelModal.suggestedFromTag}</code>
+                        </span>
+                      ) : (
+                        <span className="text-amber-600 dark:text-amber-400">
+                          Alert tag <code className="font-mono">part.number:{labelModal.suggestedFromTag}</code> — no matching consumable in inventory
+                        </span>
+                      )}
+                    </div>
+                  )}
                 </div>
 
                 <div className="space-y-1">
