@@ -1,4 +1,5 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { api } from "../utils/api";
 import { useAuth } from "../context/AuthContext";
@@ -276,10 +277,90 @@ function ActiveAlertsCard({ filters }) {
   );
 }
 
+// Hover-reveal popover over the "Vendor wait" total. Lists each
+// attributed vendor with their slice of the live wait time. Rows
+// where a ticket is currently paused get a pulsing dot so the
+// admin can tell the wait is still accruing. The popover portals to
+// <body> so the parent "Total SLA pause time" card's overflow-hidden
+// can't clip it.
+function VendorWaitChip({ total, byVendor }) {
+  const [open, setOpen] = useState(false);
+  const [coords, setCoords] = useState({ left: 0, top: 0 });
+  const anchorRef = useRef(null);
+  const safe = Array.isArray(byVendor) ? byVendor : [];
+
+  const recompute = React.useCallback(() => {
+    const el = anchorRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const vw = window.innerWidth;
+    // Anchor the popover's left edge to the chip; clamp to viewport.
+    let left = r.left;
+    const width = 320; // matches design budget; popover may render narrower
+    if (left + width > vw - 8) left = vw - width - 8;
+    if (left < 8) left = 8;
+    setCoords({ left, top: r.bottom + 4 });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    recompute();
+    const onScroll = () => recompute();
+    const onResize = () => recompute();
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [open, recompute]);
+
+  return (
+    <span ref={anchorRef} className="text-fg-muted"
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+      onFocus={() => setOpen(true)}
+      onBlur={() => setOpen(false)}
+      tabIndex={0}>
+      <span className="inline-block w-2 h-2 rounded-sm bg-amber-500 mr-1.5 align-middle" />
+      Vendor wait <b className="text-fg ml-1 underline decoration-dotted decoration-fg-muted/60 cursor-help">
+        {fmtSeconds(total)}
+      </b>
+      {open && createPortal(
+        <div role="tooltip"
+          style={{ position: "fixed", left: coords.left, top: coords.top, maxWidth: 320 }}
+          className="z-[9999] min-w-[18rem] rounded-md border border-border bg-surface shadow-lg p-3 text-xs space-y-1.5">
+          <div className="text-[10px] uppercase tracking-wide text-fg-dim mb-1">
+            Vendor wait by vendor
+          </div>
+          {safe.length === 0 ? (
+            <div className="text-fg-dim">No per-vendor breakdown yet.</div>
+          ) : safe.map((v) => (
+            <div key={v.vendor_company_id || "unattributed"} className="flex items-center justify-between gap-3">
+              <span className="text-fg flex items-center gap-1.5 min-w-0">
+                {v.active_paused_tickets > 0 && (
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse shrink-0"
+                    title={`${v.active_paused_tickets} ticket(s) currently paused`} />
+                )}
+                <span className="truncate">
+                  {v.vendor_name || <span className="text-fg-dim italic">(unattributed)</span>}
+                </span>
+              </span>
+              <span className="font-mono text-fg-muted shrink-0">{fmtSeconds(Number(v.vendor_wait_seconds))}</span>
+            </div>
+          ))}
+        </div>,
+        document.body,
+      )}
+    </span>
+  );
+}
+
 function SlaBreachCard({ sla }) {
   const live = sla.live || {};
   const mtd = sla.mtd_total || { response: 0, resolve: 0 };
   const byProject = sla.mtd_by_project || [];
+  const byVendor = sla.vendor_wait_by_vendor || [];
   const liveBreached = (live.breached_response || 0) + (live.breached_resolve || 0);
   const mtdTotal = (mtd.response || 0) + (mtd.resolve || 0);
   const vendor = Number(live.vendor_wait_seconds || 0);
@@ -362,10 +443,7 @@ function SlaBreachCard({ sla }) {
                   />
                 </div>
                 <div className="flex justify-between text-xs">
-                  <span className="text-fg-muted">
-                    <span className="inline-block w-2 h-2 rounded-sm bg-amber-500 mr-1.5 align-middle" />
-                    Vendor wait <b className="text-fg ml-1">{fmtSeconds(vendor)}</b>
-                  </span>
+                  <VendorWaitChip total={vendor} byVendor={byVendor} />
                   <span className="text-fg-muted">
                     <span className="inline-block w-2 h-2 rounded-sm bg-sky-500 mr-1.5 align-middle" />
                     Internal hold <b className="text-fg ml-1">{fmtSeconds(internal)}</b>

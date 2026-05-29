@@ -391,11 +391,69 @@ router.get('/dashboard', requireAuth, async (req, res) => {
     `, scopeParams);
     await decryptRows('tickets', breached.rows);
 
+    // Per-vendor breakdown of live vendor wait. A ticket attributes
+    // its entire vendor_wait_seconds to the FIRST vendor contact's
+    // company (earliest added_at, tiebreaker by contact id). When the
+    // ticket has no vendor contact, the time sits under
+    // (unattributed) so the dashboard total still reconciles with
+    // the per-vendor sum. Includes the live in-flight pause delta so
+    // a currently-paused ticket shows up before the next status flip.
+    const vendorWaitByVendor = await pool.query(`
+      WITH ticket_vendor AS (
+        SELECT t.id AS ticket_id,
+               (SELECT c.company_id
+                  FROM ticket_contacts tc
+                  JOIN contacts c ON c.id = tc.contact_id
+                  JOIN companies co ON co.id = c.company_id AND co.kind = 'vendor'
+                 WHERE tc.ticket_id = t.id
+                 ORDER BY tc.added_at ASC NULLS LAST, c.id ASC
+                 LIMIT 1) AS vendor_company_id
+          FROM tickets t
+         WHERE 1=1 ${scopeWhere ? 'AND t.project_id = ANY($1)' : ''}
+      )
+      SELECT tv.vendor_company_id,
+             co.name AS vendor_name,
+             co.name_enc AS vendor_name_enc,
+             SUM(
+               t.sla_vendor_wait_seconds
+               + CASE WHEN t.sla_pause_kind = 'vendor' AND t.sla_paused_at IS NOT NULL
+                      THEN GREATEST(0, EXTRACT(EPOCH FROM (NOW() - t.sla_paused_at))::int)
+                      ELSE 0 END
+             )::bigint AS vendor_wait_seconds,
+             COUNT(*) FILTER (
+               WHERE t.sla_pause_kind = 'vendor' AND t.sla_paused_at IS NOT NULL
+             )::int AS active_paused_tickets
+        FROM tickets t
+        JOIN ticket_vendor tv ON tv.ticket_id = t.id
+        LEFT JOIN companies co ON co.id = tv.vendor_company_id
+       WHERE 1=1 ${scopeWhere ? 'AND t.project_id = ANY($1)' : ''}
+         AND (
+           t.sla_vendor_wait_seconds > 0
+           OR (t.sla_pause_kind = 'vendor' AND t.sla_paused_at IS NOT NULL)
+         )
+       GROUP BY tv.vendor_company_id, co.name, co.name_enc
+       ORDER BY vendor_wait_seconds DESC
+    `, scopeParams);
+    // Decrypt company name column for standard-mode tenants. Vendor
+    // names live on companies.name / name_enc; the row-level helper
+    // expects the table key, so we pass the rows through with aliased
+    // columns rewritten in place.
+    for (const row of vendorWaitByVendor.rows) {
+      if (row.vendor_name_enc && !row.vendor_name) {
+        try {
+          const { decrypt } = require('../services/crypto');
+          row.vendor_name = await decrypt(row.vendor_name_enc, 'companies.name');
+        } catch { /* leave null */ }
+      }
+      delete row.vendor_name_enc;
+    }
+
     res.json({
       scope: accessible === null ? 'all' : 'project_member',
       live: counts.rows[0],
       mtd_total: mtdTotal.rows[0],
       mtd_by_project: mtdByProject.rows,
+      vendor_wait_by_vendor: vendorWaitByVendor.rows,
       at_risk: atRisk.rows,
       breached: breached.rows,
     });
