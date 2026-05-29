@@ -93,7 +93,39 @@ function contactBoundaries({ name, email } = {}) {
   }
   if (email && email.trim()) {
     const e = escapeRegex(email.trim());
-    out.push(new RegExp(`^.*${e}.*$`, 'mi'));
+    // Match the email line only when it looks like a signature line —
+    // short (<=80 chars) and not part of a sentence ending in a period
+    // BEFORE the address. This prevents the Microsoft external-sender
+    // banner ("You don't often get email from <addr>. Learn why…")
+    // from being mistaken for the contact's sig and consuming the
+    // entire reply.
+    out.push(new RegExp(`^(?!.*\\. *${e})[^\\n]{0,80}${e}[^\\n]{0,20}$`, 'mi'));
+  }
+  return out;
+}
+
+// Microsoft 365 and other mail security stacks routinely prepend a
+// "this address rarely emails you" safety notice to inbound vendor
+// replies. The banner sits ABOVE the actual reply and contains the
+// sender's email, so without stripping it the contact-email signature
+// boundary matches at the top of the body and wipes out the entire
+// reply. Patterns are anchored to line-level so a legitimate sentence
+// quoting the same words isn't clobbered. Match the surrounding blank
+// lines too so we don't leave a leading gap after removal.
+const EXTERNAL_SAFETY_BANNERS = [
+  /^[ \t]*You don't often get email from [^\n]*\n+/im,
+  /^[ \t]*Learn why this is important[^\n]*\n+/im,
+  /^[ \t]*\[EXTERNAL\][^\n]*\n+/im,
+  /^[ \t]*\*+\s*EXTERNAL EMAIL[^\n]*\n+/im,
+  /^[ \t]*CAUTION:[ \t]*This (?:e-?mail|message) originated from outside[^\n]*\n+/im,
+  /^[ \t]*This email originated from outside (?:of|the) (?:our|your) (?:organi[sz]ation|company)[^\n]*\n+/im,
+  // Mimecast / Inky-style "external sender" wrappers.
+  /^[ \t]*--+\s*External (?:Email|Sender)\s*--+[^\n]*\n+/im,
+];
+function stripExternalBanners(text) {
+  let out = String(text || '');
+  for (const re of EXTERNAL_SAFETY_BANNERS) {
+    out = out.replace(re, '');
   }
   return out;
 }
@@ -151,7 +183,10 @@ function dedupeParagraphs(text) {
 // even without an explicit "-- " delim.
 function extractFreshReply(body, contactHints) {
   if (!body) return '';
-  const text = String(body).replace(/\r\n/g, '\n');
+  // Pre-strip external-sender safety banners (M365 / Mimecast / Inky)
+  // so their boilerplate doesn't masquerade as a signature line and
+  // gobble the actual reply.
+  const text = stripExternalBanners(String(body).replace(/\r\n/g, '\n'));
   let cutAt = text.length;
   const markerMatch = REPLY_MARKER_RE.exec(text);
   if (markerMatch && markerMatch.index < cutAt) cutAt = markerMatch.index;
