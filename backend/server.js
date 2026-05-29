@@ -148,6 +148,7 @@ app.use('/api/ai-settings', aiSettingsRoutes);
 app.use('/api/security', securityRoutes);
 app.use('/api/kb', kbRoutes);
 app.use('/api/ticket-schedules', require('./routes/ticketSchedules'));
+app.use('/api/tasks', require('./routes/tasks'));
 
 // Health check
 app.get('/health', (req, res) => res.json({ ok: true }));

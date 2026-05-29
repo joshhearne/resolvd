@@ -127,6 +127,98 @@ function fmtSeconds(s) {
   return `${(n / 86400).toFixed(1)}d`;
 }
 
+// Tasks coming due. Three buckets, in priority order:
+//   Overdue   — next_due_at < now
+//   Today     — between now and end-of-local-day
+//   Tomorrow  — next calendar day in the user's local tz
+// Pulled from /api/tasks?status=pending (already owner-scoped server
+// side). Each row has an inline complete button so an admin can knock
+// items out without leaving the dashboard.
+function MyTasksCard() {
+  const [rows, setRows] = useState(null);
+  async function load() {
+    try {
+      const r = await api.get(`/api/tasks?status=pending`);
+      setRows(Array.isArray(r) ? r : []);
+    } catch { setRows([]); }
+  }
+  useEffect(() => { load(); }, []);
+  if (rows == null) return null;
+
+  const now = new Date();
+  const endToday = new Date(now); endToday.setHours(23, 59, 59, 999);
+  const endTomorrow = new Date(endToday.getTime() + 24 * 60 * 60 * 1000);
+  const buckets = { overdue: [], today: [], tomorrow: [] };
+  for (const t of rows) {
+    if (!t.next_due_at) continue;
+    const d = new Date(t.next_due_at);
+    if (d < now) buckets.overdue.push(t);
+    else if (d <= endToday) buckets.today.push(t);
+    else if (d <= endTomorrow) buckets.tomorrow.push(t);
+  }
+  const total = buckets.overdue.length + buckets.today.length + buckets.tomorrow.length;
+  if (total === 0) return null;
+
+  async function complete(id) {
+    try {
+      await api.post(`/api/tasks/${id}/complete`, {});
+      load();
+    } catch (e) { /* noop */ void e; }
+  }
+
+  function Section({ label, items, tone }) {
+    if (!items.length) return null;
+    return (
+      <div>
+        <div className={`px-4 py-2 text-[11px] uppercase tracking-wide font-semibold ${tone}`}>
+          {label} ({items.length})
+        </div>
+        <ul className="divide-y divide-border">
+          {items.map((t) => (
+            <li key={t.id} className="flex items-center gap-2 px-4 py-2 hover:bg-surface-2">
+              <button onClick={() => complete(t.id)}
+                aria-label="Mark complete"
+                className="w-4 h-4 rounded border-2 border-fg-muted hover:border-brand hover:bg-brand/10 shrink-0" />
+              <Link to="/tasks" className="text-sm text-fg flex-1 truncate hover:underline" title={t.title || ""}>
+                {t.title || <span className="text-fg-dim italic">(untitled)</span>}
+              </Link>
+              {t.ticket_ref && (
+                <Link to={`/tickets/${t.ticket_id}`}
+                  className="text-[10px] font-mono text-brand hover:underline shrink-0"
+                  title={t.ticket_title || ""}>
+                  {t.ticket_ref}
+                </Link>
+              )}
+              <span className="text-[10px] text-fg-dim shrink-0">
+                {new Date(t.next_due_at).toLocaleString(undefined, { hour: "numeric", minute: "2-digit" })}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  }
+
+  return (
+    <div className="card p-0 overflow-hidden">
+      <Link to="/tasks"
+        className="flex items-center justify-between px-4 py-3 border-b border-border hover:bg-surface-2 transition-colors">
+        <h2 className="text-sm font-semibold text-fg flex items-center gap-2">
+          <span className="inline-block w-2 h-2 rounded-full bg-amber-500" />
+          My tasks <span className="text-fg-muted font-normal">({total})</span>
+        </h2>
+        <span className="text-xs text-fg-muted">All tasks →</span>
+      </Link>
+      <Section label="Overdue" items={buckets.overdue}
+        tone="bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-300" />
+      <Section label="Due today" items={buckets.today}
+        tone="bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-300" />
+      <Section label="Tomorrow" items={buckets.tomorrow}
+        tone="bg-sky-50 dark:bg-sky-950/30 text-sky-700 dark:text-sky-300" />
+    </div>
+  );
+}
+
 // Active alerts widget. Filter integration: project_id narrows source-
 // scoped alerts; since/status don't apply (alerts aren't ticket-shaped).
 function ActiveAlertsCard({ filters }) {
@@ -499,6 +591,9 @@ export default function Dashboard() {
       {sla && <SlaBreachCard sla={sla} />}
 
       {canSeeAlerts && <ActiveAlertsCard filters={filters} />}
+
+      <MyTasksCard />
+
 
       <TimeInStatusCard filters={filters} />
 

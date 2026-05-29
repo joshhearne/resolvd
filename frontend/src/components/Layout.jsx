@@ -6,6 +6,7 @@ import { useTheme } from "../context/ThemeContext";
 import { brandingLogoFilter } from "../utils/helpers";
 import Avatar from "./Avatar";
 import NotificationTray from "./NotificationTray";
+import NewMenu from "./NewMenu";
 
 // Icon set — inline SVGs in the lucide-react visual style (stroke=2,
 // stroke-linecap/linejoin=round, 24x24 viewBox). Keeps bundle small and
@@ -115,6 +116,13 @@ const Icon = {
       strokeLinecap="round" strokeLinejoin="round" {...p}>
       <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
       <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z" />
+    </svg>
+  ),
+  CheckSquare: (p) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <polyline points="9 11 12 14 22 4" />
+      <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
     </svg>
   ),
   Sun: (p) => (
@@ -319,6 +327,7 @@ function Sidebar({ collapsed, transientOpen, onSetCollapsed, onSetTransient, use
   const items = [
     { to: "/dashboard", label: "Dashboard", icon: Icon.LayoutDashboard, show: true },
     { to: "/tickets", label: "Tickets", icon: Icon.Ticket, show: true },
+    { to: "/tasks", label: "Tasks", icon: Icon.CheckSquare, show: true },
     {
       to: "/projects",
       label: "Projects",
@@ -534,13 +543,9 @@ export default function Layout() {
               </span>
             </Link>
             {canCreateTicket && (
-              <Link
-                to="/tickets/new"
-                className="ml-1 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-brand text-brand-fg text-sm font-medium hover:bg-brand-hover transition-colors"
-              >
-                <Icon.Plus className="w-4 h-4" />
-                <span className="hidden sm:inline">New ticket</span>
-              </Link>
+              <div className="ml-1">
+                <NewMenu user={user} />
+              </div>
             )}
             <div className="hidden md:block ml-2">
               <SearchBar />

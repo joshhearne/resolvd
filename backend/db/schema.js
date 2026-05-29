@@ -2727,6 +2727,82 @@ Thanks,
       ON ticket_schedule_runs(schedule_id, fired_at DESC)`);
     await client.query(`INSERT INTO system_jobs (name) VALUES ('ticket_schedule_tick') ON CONFLICT DO NOTHING`);
 
+    // ── Personal tasks ────────────────────────────────────────────────
+    // Lightweight todo list with optional recurrence. Each row is
+    // owned by one user — no ticket fanout, no SLA, no notifications
+    // yet. Used for personal nudges ("re-check this thing on Friday")
+    // and admin-only recurring chores ("monthly cert review").
+    //
+    // recurrence_kind:
+    //   'once'   — single-shot. next_due_at is the only relevant time.
+    //              status flips to 'completed' when done.
+    //   'preset' — preset_kind + preset_config drive a cron expression
+    //              (same shape as ticket_schedules).
+    //   'cron'   — raw cron expression.
+    //
+    // status: 'pending' | 'completed' | 'cancelled'. Recurring tasks
+    // stay 'pending' between completions; per-occurrence completions
+    // live in task_completions for an audit trail.
+    //
+    // body holds markdown so admins can drop checklists / links into
+    // the note. Encrypted via FIELD_MAP (mirrors tickets).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS tasks (
+        id SERIAL PRIMARY KEY,
+        owner_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+        title TEXT,
+        title_enc BYTEA,
+        body TEXT,
+        body_enc BYTEA,
+        status TEXT NOT NULL DEFAULT 'pending'
+          CHECK (status IN ('pending','completed','cancelled')),
+        recurrence_kind TEXT NOT NULL DEFAULT 'once'
+          CHECK (recurrence_kind IN ('once','preset','cron')),
+        cron_expr TEXT,
+        preset_kind TEXT,
+        preset_config JSONB,
+        timezone TEXT NOT NULL DEFAULT 'UTC',
+        end_kind TEXT NOT NULL DEFAULT 'never'
+          CHECK (end_kind IN ('never','count','date')),
+        end_count INTEGER,
+        end_date TIMESTAMPTZ,
+        fires_count INTEGER NOT NULL DEFAULT 0,
+        next_due_at TIMESTAMPTZ,
+        last_completed_at TIMESTAMPTZ,
+        completed_at TIMESTAMPTZ,
+        cancelled_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_tasks_owner_due
+      ON tasks(owner_user_id, next_due_at) WHERE status = 'pending'`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_tasks_project
+      ON tasks(project_id) WHERE project_id IS NOT NULL`);
+
+    // Per-completion ledger. Recurring tasks complete many times; the
+    // detail page shows the run history. One-shot tasks usually have
+    // exactly one row here (the completion event).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS task_completions (
+        id SERIAL PRIMARY KEY,
+        task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        completed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        note TEXT
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_task_completions_task
+      ON task_completions(task_id, completed_at DESC)`);
+    // Optional ticket linkage — set when the task is created from a
+    // ticket's "follow up" affordance so the row carries the context
+    // (and the detail page can deep-link back). ON DELETE SET NULL
+    // keeps the personal task alive when the source ticket is hard
+    // deleted; admins almost always want the reminder preserved.
+    await client.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS ticket_id INTEGER REFERENCES tickets(id) ON DELETE SET NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_tasks_ticket ON tasks(ticket_id) WHERE ticket_id IS NOT NULL`);
+
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');

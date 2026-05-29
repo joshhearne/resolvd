@@ -87,6 +87,10 @@ const FIELD_MAP = {
     title: 'title_enc',
     description: 'description_enc',
   },
+  tasks: {
+    title: 'title_enc',
+    body: 'body_enc',
+  },
 };
 
 // Build a column/value patch for a write. `plainObj` carries the human-
