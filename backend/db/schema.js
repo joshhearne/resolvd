@@ -454,6 +454,17 @@ async function initSchema() {
       VALUES ('internal', 'On Hold', '#f59e0b', 33, FALSE, FALSE, TRUE, 'on_hold')
       ON CONFLICT (kind, name) DO NOTHING
     `);
+    // Acknowledged: the status alert-sourced tickets land in when an
+    // admin tries to Close them while the underlying alert is still
+    // firing. Distinct from Suppressed (which hides) — the ticket
+    // stays visible on boards but signals "we see it, working on it
+    // or accepting it as known". A subsequent refire of the same alert
+    // event id will reopen the ticket out of this state.
+    await client.query(`
+      INSERT INTO statuses (kind, name, color, sort_order, is_initial, is_terminal, is_blocker, semantic_tag)
+      VALUES ('internal', 'Acknowledged', '#0ea5e9', 25, FALSE, FALSE, FALSE, 'acknowledged')
+      ON CONFLICT (kind, name) DO NOTHING
+    `);
 
     // Settings store for inbound auto-reopen gratitude phrases.
     await client.query(`
@@ -1140,6 +1151,13 @@ async function initSchema() {
     // ticks. last_poll_at marks the most recent attempt (success or fail).
     await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS poll_interval_minutes INTEGER NOT NULL DEFAULT 0`);
     await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS last_poll_at TIMESTAMPTZ`);
+    // Dedup note on alert-sourced ticket creation. When enabled, the
+    // ingest path posts a system comment on the new ticket listing
+    // recent tickets from the same submitter / same consumable that
+    // could be the same physical problem. decay_days bounds the lookup
+    // window — set to 0 to disable independently of the toggle.
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS dedup_alert_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS dedup_alert_decay_days INTEGER NOT NULL DEFAULT 7`);
     // When enabled, the source also feeds the inventory module. Multiple
     // sources can feed inventory simultaneously; phase 2 adds a priority
     // list for dedup. For now the latest write wins per (source_system,
@@ -2332,7 +2350,7 @@ async function initSchema() {
         source_id INTEGER NOT NULL REFERENCES external_alert_source(id) ON DELETE CASCADE,
         external_event_id TEXT NOT NULL,
         external_ref TEXT NOT NULL,
-        state TEXT NOT NULL DEFAULT 'firing' CHECK (state IN ('firing','recovered','suppressed')),
+        state TEXT NOT NULL DEFAULT 'firing' CHECK (state IN ('firing','acknowledged','recovered','suppressed')),
         severity TEXT,
         severity_rank SMALLINT,
         title TEXT,
@@ -2357,6 +2375,14 @@ async function initSchema() {
       )
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_alerts_state_source ON alerts(state, source_id)`);
+    // Widen the state enum: 'acknowledged' was added so an alert-driven
+    // ticket leaving Open can flip its linked alert off the default
+    // Problems board without losing the link. New deployments inherit
+    // the new CHECK via the CREATE TABLE above; existing tenants get
+    // the rebuilt constraint here. Idempotent.
+    await client.query(`ALTER TABLE alerts DROP CONSTRAINT IF EXISTS alerts_state_check`);
+    await client.query(`ALTER TABLE alerts ADD CONSTRAINT alerts_state_check
+      CHECK (state IN ('firing','acknowledged','recovered','suppressed'))`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_alerts_ticket ON alerts(ticket_id) WHERE ticket_id IS NOT NULL`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_alerts_next_eval ON alerts(next_evaluation_at) WHERE next_evaluation_at IS NOT NULL`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_alerts_last_seen ON alerts(last_seen_at DESC)`);

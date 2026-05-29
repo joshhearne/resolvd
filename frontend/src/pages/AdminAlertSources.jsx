@@ -570,6 +570,10 @@ function SourceDetail({ source, projects, presets, adapters, onBack, onPatch, on
   const [inventoryCompanyId, setInventoryCompanyId] = useState(
     source.inventory_company_id ? String(source.inventory_company_id) : ""
   );
+  const [dedupEnabled, setDedupEnabled] = useState(source.dedup_alert_enabled !== false);
+  const [dedupDecayDays, setDedupDecayDays] = useState(
+    source.dedup_alert_decay_days != null ? String(source.dedup_alert_decay_days) : "7"
+  );
   const [companies, setCompanies] = useState([]);
   useEffect(() => {
     api.get('/api/companies').then(setCompanies).catch(() => setCompanies([]));
@@ -594,6 +598,8 @@ function SourceDetail({ source, projects, presets, adapters, onBack, onPatch, on
     );
     setAffectInventory(!!source.affect_inventory);
     setInventoryCompanyId(source.inventory_company_id ? String(source.inventory_company_id) : "");
+    setDedupEnabled(source.dedup_alert_enabled !== false);
+    setDedupDecayDays(source.dedup_alert_decay_days != null ? String(source.dedup_alert_decay_days) : "7");
     setBackfillResult(null);
   }, [source.id]);
 
@@ -619,6 +625,8 @@ function SourceDetail({ source, projects, presets, adapters, onBack, onPatch, on
       poll_interval_minutes: Math.max(0, Math.min(60, Number(pollInterval) || 0)),
       affect_inventory: affectInventory,
       inventory_company_id: inventoryCompanyId ? Number(inventoryCompanyId) : null,
+      dedup_alert_enabled: dedupEnabled,
+      dedup_alert_decay_days: Math.max(0, Math.min(365, Number(dedupDecayDays) || 0)),
     };
     // Only include api_token if the input has a value — empty string means
     // "leave alone". Set to null explicitly via the Clear button.
@@ -863,6 +871,29 @@ function SourceDetail({ source, projects, presets, adapters, onBack, onPatch, on
               Feed inventory module (sync managed endpoints as assets on each poll)
             </label>
           )}
+
+          <div className="bg-surface-2/40 border border-border rounded p-3 space-y-2">
+            <label className="text-xs text-fg-muted inline-flex items-center gap-2">
+              <input type="checkbox"
+                checked={dedupEnabled}
+                onChange={(e) => setDedupEnabled(e.target.checked)} />
+              <span>Post a dedup note on newly created tickets</span>
+            </label>
+            <label className="text-xs text-fg-muted flex items-center gap-2">
+              <span>Ignore tickets older than</span>
+              <input type="number" min="0" max="365" value={dedupDecayDays}
+                onChange={(e) => setDedupDecayDays(e.target.value)}
+                disabled={!dedupEnabled}
+                className="bg-surface-2 border border-border rounded px-2 py-1 text-sm font-mono w-20 disabled:opacity-50" />
+              <span>day(s) (0 = disable)</span>
+            </label>
+            <p className="text-[11px] text-fg-dim">
+              When the ingest path creates a ticket from an alert, it checks for recent tickets
+              from the same submitter in the same project. Recent consumable dispatches for the
+              same part are flagged with a 📦 marker. The comment is informational — no
+              auto-merge happens.
+            </p>
+          </div>
 
           {source.preset === "action1" && affectInventory && (
             <label className="text-xs text-fg-muted flex flex-col gap-1 max-w-md">

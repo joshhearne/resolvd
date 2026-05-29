@@ -387,7 +387,88 @@ async function promoteAlertToTicket(client, source, alertRow, rule, actingUserId
       note: `Created Submitter user #${autoProvisionedUserId} from alert payload`,
     });
   }
+
+  // Dedup note. Best-effort, post-commit-equivalent (still in the same
+  // client tx — same-tx tickets are visible to the query). Looks for
+  // recent tickets that could be the same physical problem:
+  //   - same project + same submitter, within decay_days
+  //   - consumable_movements on those tickets for the same part (when
+  //     the alert's payload carries a part.number tag — common on
+  //     Zabbix Low-cartridge triggers)
+  // Flags those as potential duplicates via a system comment so the
+  // tech can decide whether to merge / dismiss without scrolling
+  // their history.
+  if (source.dedup_alert_enabled !== false
+      && Number(source.dedup_alert_decay_days || 0) > 0
+      && resolvedUserId) {
+    try {
+      const decayDays = Math.max(1, Math.min(365, Number(source.dedup_alert_decay_days)));
+      const partTag = extractPartNumberFromAlertPayload(alertRow.raw_payload);
+      const candidates = await client.query(
+        `SELECT t.id, t.internal_ref, t.created_at, t.internal_status,
+                EXISTS (
+                  SELECT 1 FROM consumable_movements cm
+                   JOIN consumables c ON c.id = cm.consumable_id
+                   WHERE cm.ticket_id = t.id
+                     AND cm.delta < 0
+                     AND ($3::text IS NULL OR c.part_no ILIKE $3 OR c.vendor_part_no ILIKE $3)
+                ) AS same_consumable_dispatched
+           FROM tickets t
+          WHERE t.project_id = $1
+            AND t.submitted_by = $2
+            AND t.id <> $4
+            AND t.created_at >= NOW() - ($5::int * INTERVAL '1 day')
+          ORDER BY t.created_at DESC
+          LIMIT 10`,
+        [projectId, resolvedUserId, partTag, ticketId, decayDays]
+      );
+      if (candidates.rows.length) {
+        // Rank: same-consumable hits first, then plain recency.
+        const sorted = [...candidates.rows].sort((a, b) =>
+          (b.same_consumable_dispatched - a.same_consumable_dispatched)
+          || (new Date(b.created_at) - new Date(a.created_at))
+        );
+        const lines = sorted.map((r) => {
+          const flag = r.same_consumable_dispatched ? ' · 📦 consumable already dispatched' : '';
+          return `- **${r.internal_ref}** (${r.internal_status})${flag} · ${new Date(r.created_at).toISOString().slice(0, 10)}`;
+        });
+        const hot = sorted.some((r) => r.same_consumable_dispatched);
+        await systemComment(
+          client, ticketId,
+          (hot
+            ? `⚠ **Possible duplicate / recent fulfilment.** Same requestor had this consumable dispatched within the last ${decayDays} day(s):\n\n`
+            : `🔍 **Possible duplicate.** Same requestor opened these tickets in the last ${decayDays} day(s):\n\n`
+          ) + lines.join('\n') + `\n\nIf this is the same physical issue, link or close the duplicate.`
+        );
+      }
+    } catch (err) {
+      console.warn('alert dedup note failed:', err.message);
+    }
+  }
+
   return ticketId;
+}
+
+// Pull a "part.number:<value>" tag out of an alert payload. Mirrors
+// the helper in routes/tickets.js so the dedup query can match the
+// same consumable the print modal would auto-select.
+function extractPartNumberFromAlertPayload(payload) {
+  if (!payload) return null;
+  const tagsRaw = payload.event_tags;
+  if (typeof tagsRaw === 'string' && tagsRaw) {
+    for (const part of tagsRaw.split(',')) {
+      const m = /^\s*part\.number\s*:\s*(.+?)\s*$/i.exec(part);
+      if (m && m[1]) return m[1];
+    }
+  }
+  if (Array.isArray(payload.tags)) {
+    for (const t of payload.tags) {
+      if (t && /^part\.number$/i.test(String(t.tag || '').trim()) && t.value) {
+        return String(t.value).trim();
+      }
+    }
+  }
+  return null;
 }
 
 // Recovery → mark linked ticket externally resolved. Sets canonical

@@ -756,10 +756,32 @@ router.patch('/:id', requireAuth, async (req, res) => {
           );
         }
         const old = ticket.internal_status;
-        updates.internal_status = body.internal_status;
-        await auditLog(client, { ticketId: ticket.id, userId: user.id, action: 'status_change', oldValue: old, newValue: body.internal_status });
-        if (body.internal_status === 'Reopened') {
+        const nextStatus = body.internal_status;
+        updates.internal_status = nextStatus;
+        await auditLog(client, {
+          ticketId: ticket.id, userId: user.id,
+          action: 'status_change', oldValue: old, newValue: nextStatus,
+        });
+        if (nextStatus === 'Reopened') {
           await auditLog(client, { ticketId: ticket.id, userId: user.id, action: 'reopened', note: 'Ticket reopened' });
+        }
+        // Alert-side ack: an alert-driven ticket moving OUT of Open
+        // signals "human has it" — flip the linked alert from firing
+        // to acknowledged so it drops off the default Problems board.
+        // Suppressed alerts are left alone (admin explicitly hid them).
+        // Recovered/acknowledged stay where they are. The alert's
+        // refire path will lift it back to firing if the underlying
+        // condition reasserts.
+        if (old === 'Open' && nextStatus !== 'Open') {
+          try {
+            await client.query(
+              `UPDATE alerts SET state = 'acknowledged'
+                WHERE ticket_id = $1 AND state = 'firing'`,
+              [ticket.id]
+            );
+          } catch (e) {
+            console.warn('alert auto-ack on ticket transition failed:', e.message);
+          }
         }
         // Track resolved_at — drives the auto-close grace window AND
         // stops the SLA resolve clock. Stamp on entering either a
@@ -771,7 +793,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
         // status clears resolved_at so the clock resumes.
         const tagRow = await client.query(
           `SELECT semantic_tag, is_terminal FROM statuses WHERE kind='internal' AND name=$1`,
-          [body.internal_status]
+          [nextStatus]
         );
         const tag = tagRow.rows[0]?.semantic_tag || null;
         const isTerminal = !!tagRow.rows[0]?.is_terminal;
@@ -1121,6 +1143,16 @@ router.post('/bulk', requireAuth, requireRole('Admin'), async (req, res) => {
             await auditLog(client, { ticketId: ticket.id, userId: user.id, action: 'status_change', oldValue: old, newValue: newStatus, note: 'Bulk update' });
             if (newStatus === 'Reopened') {
               await auditLog(client, { ticketId: ticket.id, userId: user.id, action: 'reopened', note: 'Bulk reopen' });
+            }
+            // Alert-side ack: same as the single PATCH path. When the
+            // ticket leaves Open, mark its linked firing alert as
+            // acknowledged so it drops off the default Problems board.
+            if (old === 'Open' && newStatus !== 'Open') {
+              await client.query(
+                `UPDATE alerts SET state = 'acknowledged'
+                  WHERE ticket_id = $1 AND state = 'firing'`,
+                [ticket.id]
+              ).catch((e) => console.warn('bulk alert auto-ack failed:', e.message));
             }
             const tagRow = await client.query(`SELECT semantic_tag, is_terminal FROM statuses WHERE kind='internal' AND name=$1`, [newStatus]);
             const tag = tagRow.rows[0]?.semantic_tag || null;

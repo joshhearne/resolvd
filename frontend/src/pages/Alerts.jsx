@@ -7,12 +7,19 @@ import { truncateRef } from "../utils/externalRef";
 
 const STATE_BADGE = {
   firing: "bg-red-100 text-red-700 border-red-300 dark:bg-red-950/40 dark:text-red-300 dark:border-red-800",
+  acknowledged: "bg-sky-100 text-sky-700 border-sky-300 dark:bg-sky-950/40 dark:text-sky-300 dark:border-sky-800",
   recovered: "bg-emerald-100 text-emerald-700 border-emerald-300 dark:bg-emerald-950/40 dark:text-emerald-300 dark:border-emerald-800",
   suppressed: "bg-slate-100 text-slate-700 border-slate-300 dark:bg-slate-900/40 dark:text-slate-300 dark:border-slate-700",
 };
 // DB stores 'firing' for back-compat; UI shows "Problem" to match
 // how operators talk about active alerts.
-const STATE_LABEL = { firing: "Problem", recovered: "Recovered", suppressed: "Suppressed" };
+const STATE_LABEL = {
+  firing: "Problem",
+  acknowledged: "Acknowledged",
+  recovered: "Recovered",
+  suppressed: "Suppressed",
+};
+const STATE_OPTIONS = ["firing", "acknowledged", "recovered", "suppressed"];
 
 function StateBadge({ state }) {
   return (
@@ -46,7 +53,10 @@ export default function Alerts() {
   const isHandler = ["Admin", "Manager", "Tech"].includes(user?.role);
   const [rows, setRows] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [stateFilter, setStateFilter] = useState("firing");
+  // Multi-state filter. Default = only Problems so the page mirrors
+  // the dashboard "active alerts" view. Admins toggle chips to dig
+  // through ack'd / recovered / suppressed history.
+  const [stateFilter, setStateFilter] = useState(() => new Set(["firing"]));
   const [hasTicketFilter, setHasTicketFilter] = useState("any");
   const [q, setQ] = useState("");
   const [busy, setBusy] = useState({});
@@ -58,7 +68,10 @@ export default function Alerts() {
     setLoading(true);
     try {
       const params = new URLSearchParams();
-      if (stateFilter !== "all") params.set("state", stateFilter);
+      const states = Array.from(stateFilter);
+      if (states.length && states.length < STATE_OPTIONS.length) {
+        params.set("state", states.join(","));
+      }
       if (hasTicketFilter !== "any") params.set("has_ticket", hasTicketFilter);
       if (q.trim()) params.set("q", q.trim());
       const r = await api.get(`/api/alerts?${params.toString()}`);
@@ -141,13 +154,25 @@ export default function Alerts() {
       </div>
 
       <div className="flex items-center gap-2 flex-wrap text-sm">
-        <select value={stateFilter} onChange={(e) => setStateFilter(e.target.value)}
-          className="bg-surface-2 border border-border rounded px-2 py-1 text-xs">
-          <option value="firing">Problem</option>
-          <option value="recovered">Recovered</option>
-          <option value="suppressed">Suppressed</option>
-          <option value="all">All states</option>
-        </select>
+        <div className="flex items-center gap-1">
+          {STATE_OPTIONS.map((s) => {
+            const on = stateFilter.has(s);
+            return (
+              <button key={s} type="button"
+                onClick={() => setStateFilter((prev) => {
+                  const next = new Set(prev);
+                  if (next.has(s)) next.delete(s); else next.add(s);
+                  if (next.size === 0) next.add("firing");
+                  return next;
+                })}
+                className={`text-[11px] uppercase tracking-wide px-2 py-1 rounded border ${on
+                  ? STATE_BADGE[s] + " font-semibold"
+                  : "bg-surface-2 text-fg-muted border-border"}`}>
+                {STATE_LABEL[s]}
+              </button>
+            );
+          })}
+        </div>
         <select value={hasTicketFilter} onChange={(e) => setHasTicketFilter(e.target.value)}
           className="bg-surface-2 border border-border rounded px-2 py-1 text-xs">
           <option value="any">Any ticket status</option>
@@ -166,6 +191,14 @@ export default function Alerts() {
       {selected.size > 0 && (
         <div className="flex items-center gap-2 flex-wrap bg-brand/5 border border-brand/30 rounded px-3 py-2 text-sm">
           <span className="text-fg font-medium">{selected.size} selected</span>
+          <button onClick={() => bulk("acknowledge")} disabled={bulkBusy}
+            className="text-xs px-2 py-1 rounded bg-sky-100 dark:bg-sky-950/40 text-sky-700 dark:text-sky-300 border border-sky-300 dark:border-sky-800 hover:bg-sky-200 disabled:opacity-50">
+            Acknowledge
+          </button>
+          <button onClick={() => bulk("unacknowledge")} disabled={bulkBusy}
+            className="text-xs px-2 py-1 rounded bg-surface-2 hover:bg-surface border border-border disabled:opacity-50">
+            Unacknowledge
+          </button>
           <button onClick={() => bulk("suppress")} disabled={bulkBusy}
             className="text-xs px-2 py-1 rounded bg-surface-2 hover:bg-surface border border-border disabled:opacity-50">
             Suppress
