@@ -3,6 +3,7 @@
 // flusher so the event/channel/cadence vocabulary lives in one place.
 
 const EVENT_TYPES = [
+  'new_ticket',
   'assignment',
   'mention',
   'comment',
@@ -22,6 +23,10 @@ const CADENCES = ['instant', 'hourly', '12h', 'daily', 'off'];
 // users.preferences during migration. Sensible new defaults — no
 // legacy fold. In-app + email on for everything; push only for mention.
 const DEFAULT_NOTIFICATION_PREFS = Object.freeze({
+  // new_ticket — fans out to Admins/Managers when a ticket is created
+  // (REST, inbound email, or alert promotion). In-app on by default;
+  // email off so the default doesn't spam high-volume inboxes.
+  new_ticket:     { in_app: true, email: false, push: false },
   assignment:     { in_app: true, email: true,  push: false },
   mention:        { in_app: true, email: true,  push: true  },
   comment:        { in_app: true, email: true,  push: false },

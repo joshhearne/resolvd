@@ -154,7 +154,7 @@ router.post('/:id/render', requireAuth, async (req, res) => {
   try {
     const user = req.session.user;
     const id = Number(req.params.id);
-    const { ticket_id, record_use } = req.body || {};
+    const { ticket_id, consumable_id, record_use } = req.body || {};
     const r = await pool.query(`SELECT * FROM canned_responses WHERE id = $1`, [id]);
     const row = r.rows[0];
     if (!row) return res.status(404).json({ error: 'Not found' });
@@ -166,6 +166,7 @@ router.post('/:id/render', requireAuth, async (req, res) => {
     const rendered = await render(row.body, {
       ticketId: ticket_id ? Number(ticket_id) : null,
       actorId: user.id,
+      consumableId: consumable_id ? Number(consumable_id) : null,
     });
 
     if (record_use) {

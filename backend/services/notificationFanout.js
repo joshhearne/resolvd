@@ -230,6 +230,52 @@ async function dispatchPerRecipient({ user, eventType, inApp, push, ticketId, ti
 
 // ─── Public fanout entry points ──────────────────────────────────────────
 
+// New-ticket fanout. Recipients = all active Admins + Managers, minus
+// the actor, the assignee (covered by fanoutAssignment), and the
+// submitter (they obviously know they filed it). Default matrix has
+// email off so the firehose doesn't spam, but in_app shows up in the
+// tray for opted-in users.
+async function fanoutNewTicket(_unusedPool, { ticket, actorId, actorName, submitterId }) {
+  if (!ticket || !ticket.id) return;
+  if (await isTicketTerminal(ticket.id)) return;
+  const excludes = [actorId, ticket.assigned_to, submitterId].filter(x => x != null);
+  const r = await pool.query(
+    `SELECT id, email, display_name, preferences FROM users
+      WHERE role IN ('Admin','Manager') AND status = 'active'
+        AND NOT (id = ANY($1::int[]))`,
+    [excludes.length ? excludes : [0]]
+  );
+  const ticketRef = ticket.internal_ref;
+  const ticketTitle = ticket.title || '';
+  const payload = {
+    ticket_id: ticket.id,
+    ticket_ref: ticketRef,
+    ticket_title: ticketTitle,
+    actor_name: actorName || 'System',
+    priority: ticket.effective_priority || null,
+    source: ticket.external_source || 'web',
+  };
+  for (const user of r.rows) {
+    const matrix = await dispatchPerRecipient({
+      user,
+      eventType: 'new_ticket',
+      ticketId: ticket.id,
+      ticketRef,
+      inApp: {
+        title: `New ticket: ${ticketRef}`,
+        body: ticketTitle
+          ? `${ticketTitle}${actorName ? ` · by ${actorName}` : ''}`
+          : `Filed${actorName ? ` by ${actorName}` : ''}.`,
+      },
+      push: null,
+      payload,
+    });
+    if (matrix.email) {
+      await routeEmail({ user, eventType: 'new_ticket', payload, ticketId: ticket.id, projectId: ticket.project_id });
+    }
+  }
+}
+
 async function fanoutAssignment(_unusedPool, { ticket, assigneeId, actorId, actorName }) {
   if (!assigneeId || assigneeId === actorId) return;
   if (await isTicketTerminal(ticket.id)) return;
@@ -615,6 +661,7 @@ async function fanoutSlaWarning(_unusedPool, { ticket, kind }) {
 }
 
 module.exports = {
+  fanoutNewTicket,
   fanoutAssignment,
   fanoutStatusChange,
   fanoutNewComment,

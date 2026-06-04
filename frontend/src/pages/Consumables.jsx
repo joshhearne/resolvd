@@ -142,6 +142,7 @@ function NewConsumableForm({ companies, onCreated, onCancel }) {
     vendor_company_id: "",
     current_stock: 0,
     low_stock_threshold: 0,
+    reorder_qty: 0,
     notes: "",
     purchase_url: "",
     vendor_part_no: "",
@@ -158,6 +159,7 @@ function NewConsumableForm({ companies, onCreated, onCancel }) {
         vendor_company_id: form.vendor_company_id ? Number(form.vendor_company_id) : null,
         current_stock: Number(form.current_stock) || 0,
         low_stock_threshold: Number(form.low_stock_threshold) || 0,
+        reorder_qty: Number(form.reorder_qty) || 0,
       });
       toast.success("Created");
       onCreated?.(r.id);
@@ -208,6 +210,13 @@ function NewConsumableForm({ companies, onCreated, onCancel }) {
           <input type="number" min="0" value={form.low_stock_threshold}
             onChange={(e) => set("low_stock_threshold", e.target.value)}
             className="bg-surface-2 border border-border rounded px-2 py-1" />
+        </label>
+        <label className="flex flex-col gap-1">
+          Restock qty
+          <input type="number" min="0" value={form.reorder_qty}
+            onChange={(e) => set("reorder_qty", e.target.value)}
+            className="bg-surface-2 border border-border rounded px-2 py-1"
+            placeholder="how many we order at a time" />
         </label>
         <label className="flex flex-col gap-1">
           Vendor P/N
@@ -374,6 +383,10 @@ function ConsumableDetailPage({ id }) {
             <div className="text-[11px] uppercase tracking-wider text-fg-dim">Low at</div>
             <div className="text-2xl font-semibold text-fg-muted">{detail.low_stock_threshold || "—"}</div>
           </div>
+          <div className="bg-surface-2 rounded border border-border p-3">
+            <div className="text-[11px] uppercase tracking-wider text-fg-dim">Restock qty</div>
+            <div className="text-2xl font-semibold text-fg-muted">{detail.reorder_qty || "—"}</div>
+          </div>
         </div>
 
         {editing && (
@@ -400,6 +413,11 @@ function ConsumableDetailPage({ id }) {
             <label className="flex flex-col gap-1">Low-stock threshold
               <input type="number" min="0" value={cur("low_stock_threshold") || 0} onChange={(e) => setField("low_stock_threshold", Number(e.target.value))}
                 className="bg-surface-2 border border-border rounded px-2 py-1" />
+            </label>
+            <label className="flex flex-col gap-1">Restock qty
+              <input type="number" min="0" value={cur("reorder_qty") || 0} onChange={(e) => setField("reorder_qty", Number(e.target.value))}
+                className="bg-surface-2 border border-border rounded px-2 py-1"
+                placeholder="how many to order at a time (used in vendor RFQ)" />
             </label>
             <label className="flex flex-col gap-1">Vendor P/N
               <input value={cur("vendor_part_no") || ""} onChange={(e) => setField("vendor_part_no", e.target.value)}

@@ -277,6 +277,7 @@ function MatrixSwitch({ checked, onChange, disabled }) {
 }
 
 const NOTIFICATION_EVENTS = [
+  { key: "new_ticket", label: "New ticket filed", hint: "Any ticket gets created (REST, inbound email, alert promotion). Admin/Manager only." },
   { key: "assignment", label: "Assigned to me", hint: "Someone assigns a ticket to me." },
   { key: "mention", label: "I get @mentioned", hint: "Someone mentions me in a comment." },
   { key: "comment", label: "New comment", hint: "A comment lands on a ticket I follow." },
@@ -286,6 +287,7 @@ const NOTIFICATION_EVENTS = [
 ];
 
 const DEFAULT_MATRIX = {
+  new_ticket: { in_app: true, email: false, push: false },
   assignment: { in_app: true, email: true, push: false },
   mention: { in_app: true, email: true, push: true },
   comment: { in_app: true, email: true, push: false },
@@ -315,7 +317,7 @@ function NotificationMatrix({ value, onChange, disabled, pushAvailable }) {
         </thead>
         <tbody>
           {NOTIFICATION_EVENTS.map((ev) => {
-            const row = matrix[ev.key] || { in_app: false, email: false, push: false };
+            const row = matrix[ev.key] || DEFAULT_MATRIX[ev.key] || { in_app: false, email: false, push: false };
             return (
               <tr key={ev.key} className="border-t border-border">
                 <td className="px-3 py-3">

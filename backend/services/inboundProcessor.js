@@ -33,6 +33,7 @@ const tpl = require('./emailTemplate');
 const { sendMail } = require('./email');
 const { getBranding } = require('./branding');
 const { notifyManagersAndAdmins } = require('./notifications');
+const { fanoutNewTicket } = require('./notificationFanout');
 const { autoProvisionSubmitter } = require('./userAutoProvision');
 const sla = require('./sla');
 const assignmentPolicies = require('./assignmentPolicies');
@@ -788,6 +789,17 @@ async function tryAutoCreate({ subject, body, fromAddress, ccAddresses, attachme
       }
     }
   }
+
+  // Broadcast to opted-in Admins/Managers. Inbound has no acting user
+  // session — pass the submitter as both actor and submitter; fanout
+  // de-dups recipients (admin/manager who is also the submitter is
+  // excluded) so they don't get notified about their own ticket.
+  fanoutNewTicket(pool, {
+    ticket,
+    actorId: submitter.id,
+    actorName: submitter.display_name || submitter.email,
+    submitterId: submitter.id,
+  }).catch(err => console.error('fanoutNewTicket (inbound) failed:', err.message));
 
   return {
     ok: true,

@@ -29,7 +29,7 @@ router.get('/', requireAuth, requireRole(...HANDLER_ROLES), async (req, res) => 
     }
     const sql = `
       SELECT c.id, c.part_no, c.title, c.category, c.vendor_company_id,
-             c.current_stock, c.low_stock_threshold, c.is_archived,
+             c.current_stock, c.low_stock_threshold, c.reorder_qty, c.is_archived,
              c.created_at, c.updated_at,
              co.name AS vendor_company_name
         FROM consumables c
@@ -70,9 +70,9 @@ router.post('/', requireAuth, requireRole(...HANDLER_ROLES), async (req, res) =>
     if (!part_no) return res.status(400).json({ error: 'part_no required' });
     const r = await pool.query(
       `INSERT INTO consumables (part_no, title, category, vendor_company_id,
-                                current_stock, low_stock_threshold, notes,
+                                current_stock, low_stock_threshold, reorder_qty, notes,
                                 purchase_url, vendor_part_no, is_metered)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
        RETURNING id`,
       [
         part_no,
@@ -81,6 +81,7 @@ router.post('/', requireAuth, requireRole(...HANDLER_ROLES), async (req, res) =>
         b.vendor_company_id != null ? Number(b.vendor_company_id) : null,
         Number.isFinite(Number(b.current_stock)) ? Math.max(0, Math.trunc(Number(b.current_stock))) : 0,
         Number.isFinite(Number(b.low_stock_threshold)) ? Math.max(0, Math.trunc(Number(b.low_stock_threshold))) : 0,
+        Number.isFinite(Number(b.reorder_qty)) ? Math.max(0, Math.trunc(Number(b.reorder_qty))) : 0,
         b.notes ? String(b.notes).trim() : null,
         b.purchase_url ? String(b.purchase_url).trim() : null,
         b.vendor_part_no ? String(b.vendor_part_no).trim() : null,
@@ -103,7 +104,8 @@ router.patch('/:id(\\d+)', requireAuth, requireRole(...HANDLER_ROLES), async (re
     if (Object.prototype.hasOwnProperty.call(b, 'current_stock')) {
       return res.status(400).json({ error: 'Use POST /:id/move to adjust stock' });
     }
-    const fields = ['part_no', 'title', 'category', 'vendor_company_id', 'low_stock_threshold', 'notes', 'is_archived',
+    const fields = ['part_no', 'title', 'category', 'vendor_company_id', 'low_stock_threshold', 'reorder_qty',
+                    'notes', 'is_archived',
                     'purchase_url', 'vendor_part_no', 'is_metered'];
     const sets = [];
     const values = [];
@@ -113,7 +115,7 @@ router.patch('/:id(\\d+)', requireAuth, requireRole(...HANDLER_ROLES), async (re
       let v = b[f];
       if (f === 'is_archived' || f === 'is_metered') v = !!v;
       else if (f === 'vendor_company_id') v = v == null ? null : Number(v);
-      else if (f === 'low_stock_threshold') v = v == null ? 0 : Math.max(0, Math.trunc(Number(v)));
+      else if (f === 'low_stock_threshold' || f === 'reorder_qty') v = v == null ? 0 : Math.max(0, Math.trunc(Number(v)));
       else v = v == null ? null : (typeof v === 'string' ? v.trim() || null : v);
       sets.push(`${f} = $${p++}`);
       values.push(v);

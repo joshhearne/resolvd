@@ -8,6 +8,7 @@ const {
   fanoutAssignment,
   fanoutNewComment,
   fanoutMention,
+  fanoutNewTicket,
 } = require('../services/notificationFanout');
 const { resolveMentions } = require('../services/mentions');
 const sla = require('../services/sla');
@@ -518,6 +519,14 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter
         actorName: user.displayName,
       }).catch(err => console.error('fanoutAssignment (create) failed:', err.message));
     }
+    // Broadcast to opted-in Admins/Managers. fanoutNewTicket excludes the
+    // assignee + submitter so they don't double-notify.
+    fanoutNewTicket(pool, {
+      ticket,
+      actorId: user.id,
+      actorName: user.displayName,
+      submitterId: ticket.submitted_by,
+    }).catch(err => console.error('fanoutNewTicket (create) failed:', err.message));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Database error' });

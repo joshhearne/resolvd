@@ -13,7 +13,7 @@
 // resolved_pending_close status) so the existing 3-day grace nudge
 // takes over.
 
-const { transaction } = require('../db/pool');
+const { pool, transaction } = require('../db/pool');
 const { nextInternalRef } = require('../db/schema');
 const { resolvePriority } = require('./alertMappers');
 const { auditLog, systemComment } = require('./ticketHelpers');
@@ -22,6 +22,8 @@ const { pickRule, severityRank } = require('./alertEvaluator');
 const blindIndex = require('./blindIndex');
 const sla = require('./sla');
 const assignmentPolicies = require('./assignmentPolicies');
+const { notifyManagersAndAdmins } = require('./notifications');
+const { fanoutNewTicket } = require('./notificationFanout');
 
 // Zabbix templates frequently ship URLs containing the user macro
 // `{$ZABBIX.URL}` which Zabbix itself doesn't expand for outbound
@@ -388,6 +390,19 @@ async function promoteAlertToTicket(client, source, alertRow, rule, actingUserId
     });
   }
 
+  // Pull the alert's raw_payload once so both the dedup note and the
+  // consumable-flag block below see the part.number tag. upsertFiringAlert
+  // doesn't ship raw_payload on the in-memory alertRow, so re-fetch.
+  let alertPayload = null;
+  try {
+    const pr = await client.query(
+      `SELECT raw_payload FROM alerts WHERE id = $1`,
+      [alertRow.id]
+    );
+    alertPayload = pr.rows[0]?.raw_payload || null;
+  } catch { /* best-effort */ }
+  const partTag = extractPartNumberFromAlertPayload(alertPayload);
+
   // Dedup note. Best-effort, post-commit-equivalent (still in the same
   // client tx — same-tx tickets are visible to the query). Looks for
   // recent tickets that could be the same physical problem:
@@ -403,7 +418,6 @@ async function promoteAlertToTicket(client, source, alertRow, rule, actingUserId
       && resolvedUserId) {
     try {
       const decayDays = Math.max(1, Math.min(365, Number(source.dedup_alert_decay_days)));
-      const partTag = extractPartNumberFromAlertPayload(alertRow.raw_payload);
       const candidates = await client.query(
         `SELECT t.id, t.internal_ref, t.created_at, t.internal_status,
                 EXISTS (
@@ -445,6 +459,139 @@ async function promoteAlertToTicket(client, source, alertRow, rule, actingUserId
       console.warn('alert dedup note failed:', err.message);
     }
   }
+
+  // Consumable match at ingest. When the alert carries a part.number tag
+  // (Zabbix Low-cartridge templates, etc.), resolve the matching
+  // consumable now so techs see stock state on ticket open instead of
+  // discovering OOS / missing data only when they try to print a label.
+  if (partTag) {
+    try {
+      const cm = await client.query(
+        `SELECT id, part_no, title, current_stock, low_stock_threshold,
+                reorder_qty, purchase_url, vendor_part_no, is_metered,
+                vendor_company_id
+           FROM consumables
+          WHERE is_archived = FALSE
+            AND (part_no ILIKE $1 OR vendor_part_no ILIKE $1)
+          ORDER BY (CASE WHEN part_no ILIKE $1 THEN 0 ELSE 1 END), id ASC
+          LIMIT 1`,
+        [partTag]
+      );
+      const cons = cm.rows[0];
+      if (!cons) {
+        await systemComment(
+          client, ticketId,
+          `⚠ **Unmatched part:** alert tag \`part.number:${partTag}\` does not match any active consumable on file. Add it under Admin → Consumables so future alerts auto-link.`
+        );
+        await notifyManagersAndAdmins(client, {
+          type: 'consumable_unmatched',
+          title: `Unmatched part ${partTag}`,
+          body: `Alert on ${alertRow.external_ref} tagged ${partTag} but no consumable matches.`,
+          data: {
+            ticket_id: ticketId,
+            part_no: partTag,
+            alert_external_ref: alertRow.external_ref,
+          },
+        });
+      } else {
+        const stock = Number(cons.current_stock || 0);
+        const thr = Number(cons.low_stock_threshold || 0);
+        const isOOS = stock <= 0;
+        const isLow = !isOOS && thr > 0 && stock <= thr;
+        // Missing-data warnings — same checks the print-label flow uses,
+        // surfaced up front so admins can fix the consumable row before
+        // anyone tries to use it.
+        const gaps = [];
+        if (!cons.vendor_part_no) gaps.push('vendor P/N');
+        if (!cons.reorder_qty) gaps.push('restock qty');
+        if (!cons.is_metered && !cons.purchase_url) gaps.push('purchase URL');
+        if (!cons.vendor_company_id) gaps.push('vendor company');
+        const gapLine = gaps.length
+          ? `\n\n📝 **Missing data on the consumable record:** ${gaps.join(', ')}. Fix under Admin → Consumables → ${cons.part_no}.`
+          : '';
+        const restockCta = cons.is_metered
+          ? `Use canned response "Consumable restock — metered / leased printer" to dispatch via service agreement.`
+          : (cons.purchase_url
+              ? `**Restock URL:** ${cons.purchase_url}\n**Vendor P/N:** ${cons.vendor_part_no || cons.part_no}\nUse canned response "Consumable restock — self-serve RFQ".`
+              : `No purchase URL on file. Use canned response "Consumable restock — self-serve RFQ" or add a URL.`);
+
+        if (isOOS) {
+          await systemComment(
+            client, ticketId,
+            `⚠ **${cons.part_no} (${cons.title || ''}) is out of stock.** Auto-matched from alert tag \`part.number:${partTag}\`.\n\n${restockCta}${gapLine}`
+          );
+          await notifyManagersAndAdmins(client, {
+            type: 'consumable_out_of_stock',
+            title: `Out of stock: ${cons.part_no}`,
+            body: `Alert on ${alertRow.external_ref} matched ${cons.part_no} but stock is 0.`,
+            data: {
+              ticket_id: ticketId,
+              consumable_id: cons.id,
+              part_no: cons.part_no,
+              is_metered: cons.is_metered,
+              purchase_url: cons.purchase_url,
+              vendor_part_no: cons.vendor_part_no,
+              reorder_qty: cons.reorder_qty,
+              missing: gaps,
+            },
+          });
+        } else if (isLow) {
+          await systemComment(
+            client, ticketId,
+            `🟡 **Low stock:** ${cons.part_no} at ${stock}/${thr}. Auto-matched from alert tag \`part.number:${partTag}\`.\n\n${restockCta}${gapLine}`
+          );
+          await notifyManagersAndAdmins(client, {
+            type: 'consumable_low_stock',
+            title: `Low stock: ${cons.part_no} at ${stock}/${thr}`,
+            body: `Alert on ${alertRow.external_ref} matched ${cons.part_no} (low).`,
+            data: {
+              ticket_id: ticketId,
+              consumable_id: cons.id,
+              part_no: cons.part_no,
+              current_stock: stock,
+              low_stock_threshold: thr,
+              is_metered: cons.is_metered,
+              purchase_url: cons.purchase_url,
+              vendor_part_no: cons.vendor_part_no,
+              reorder_qty: cons.reorder_qty,
+              missing: gaps,
+            },
+          });
+        } else if (gaps.length) {
+          // Stock fine but the record's incomplete — still worth
+          // flagging once at ticket-open so admins fix it now.
+          await systemComment(
+            client, ticketId,
+            `📝 **${cons.part_no}** auto-matched from alert. Stock OK (${stock}), but the consumable record is missing: ${gaps.join(', ')}. Fix under Admin → Consumables → ${cons.part_no}.`
+          );
+        }
+      }
+    } catch (err) {
+      console.warn('alert consumable-match flag failed:', err.message);
+    }
+  }
+
+  // Broadcast new-ticket to opted-in Admins/Managers. Fire-and-forget;
+  // the fanout query runs on its own pool connection so it doesn't
+  // depend on the ingest tx committing first — defer via setImmediate
+  // so the caller's transaction commits before the recipients see it.
+  setImmediate(() => {
+    pool.query(
+      `SELECT id, internal_ref, title, assigned_to, submitted_by,
+              effective_priority, project_id, external_source
+         FROM tickets WHERE id = $1`,
+      [ticketId]
+    ).then(async (r) => {
+      const ticket = r.rows[0];
+      if (!ticket) return;
+      await fanoutNewTicket(null, {
+        ticket,
+        actorId: actingUserId || null,
+        actorName: source?.name || 'Alert',
+        submitterId: ticket.submitted_by,
+      });
+    }).catch((err) => console.error('fanoutNewTicket (alert) failed:', err.message));
+  });
 
   return ticketId;
 }

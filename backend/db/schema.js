@@ -2567,6 +2567,10 @@ async function initSchema() {
     await client.query(`ALTER TABLE consumables ADD COLUMN IF NOT EXISTS purchase_url TEXT`);
     await client.query(`ALTER TABLE consumables ADD COLUMN IF NOT EXISTS vendor_part_no TEXT`);
     await client.query(`ALTER TABLE consumables ADD COLUMN IF NOT EXISTS is_metered BOOLEAN NOT NULL DEFAULT FALSE`);
+    // reorder_qty — how many units we order at a time. Surfaced in the
+    // canned RFQ template as {consumable.reorder_qty} so admins can fire
+    // the vendor email without retyping the quantity on every restock.
+    await client.query(`ALTER TABLE consumables ADD COLUMN IF NOT EXISTS reorder_qty INTEGER NOT NULL DEFAULT 0`);
 
     // Seed two global canned responses for consumable restock workflows.
     // Idempotent: inserts only when no global response already carries
