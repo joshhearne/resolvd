@@ -28,7 +28,13 @@ const { encrypt } = require('./crypto');
 const blindIndex = require('./blindIndex');
 const { hashWhole } = blindIndex;
 const { sendVendorEmail } = require('./vendorOutbound');
-const { applyReplyToResolvedTicket, applyReplyToWaitingTicket } = require('./autoResolve');
+const {
+  applyReplyToResolvedTicket,
+  applyReplyToWaitingTicket,
+  applyCommentToTerminalTicket,
+  getReplyRoutingSettings,
+  detectOutOfOffice,
+} = require('./autoResolve');
 const tpl = require('./emailTemplate');
 const { sendMail } = require('./email');
 const { getBranding } = require('./branding');
@@ -224,15 +230,25 @@ function extractFreshReply(body, contactHints) {
 // We don't try to handle every quoted variant — only the form an agent
 // produces by clicking Forward in a standard mail client.
 const FORWARD_MARKER_RE = /(?:^|\n)[ \t>]*[-_=*]*[ \t]*(?:Begin\s+forwarded\s+message:|[- ]{0,8}Forwarded\s+message[- ]{0,8}|-{2,}\s*Original\s+Message\s*-{2,})[ \t]*[-_=*]*[ \t]*(?:\r?\n)/i;
+// Outlook "forward" produces no marker — just a flat 4-line header block
+// (From / Sent / To / Subject) at the start of the body. Match the
+// sequence directly so the forward path fires for Outlook clients too.
+const OUTLOOK_FORWARD_RE = /^[ \t>]*From:[ \t]+.+\r?\n[ \t>]*Sent:[ \t]+.+\r?\n[ \t>]*To:[ \t]+.+\r?\n[ \t>]*Subject:[ \t]+.+/im;
 const FROM_HEADER_RE = /^[ \t>]*From:[ \t]*(.+)$/im;
 const SUBJECT_HEADER_RE = /^[ \t>]*Subject:[ \t]*(.+)$/im;
 const EMAIL_ADDR_RE = /([\w.+-]+@[\w-]+(?:\.[\w-]+)+)/;
 
 function detectForward(body) {
   if (!body) return null;
+  let after;
   const markerMatch = FORWARD_MARKER_RE.exec(body);
-  if (!markerMatch) return null;
-  const after = body.slice(markerMatch.index + markerMatch[0].length);
+  if (markerMatch) {
+    after = body.slice(markerMatch.index + markerMatch[0].length);
+  } else {
+    const outlookMatch = OUTLOOK_FORWARD_RE.exec(body);
+    if (!outlookMatch) return null;
+    after = body.slice(outlookMatch.index);
+  }
   // Grab the next ~25 lines — header block of the wrapped message.
   const headerSlice = after.split(/\r?\n/).slice(0, 25).join('\n');
   const fromMatch = FROM_HEADER_RE.exec(headerSlice);
@@ -304,6 +320,24 @@ async function findInternalSubmitter(email) {
   if (!u) return null;
   if (!AUTHORIZED_SUBMIT_ROLES.has(u.role)) return null;
   return u;
+}
+
+// Resolve an inbound sender to an authorized submitter, auto-provisioning
+// a Submitter role when the address is wholly unknown. Existing users in
+// non-submit roles (Viewer/Vendor) are left alone — we don't silently
+// elevate them. Returns null when neither an existing authorized user nor
+// a provisioned one is available.
+async function resolveOrProvisionSubmitter(email, source = 'inbound_email') {
+  const existing = await findInternalSubmitter(email);
+  if (existing) return existing;
+  const anyExisting = await pool.query(
+    `SELECT 1 FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1`,
+    [email]
+  );
+  if (anyExisting.rows.length > 0) return null;
+  const provisioned = await autoProvisionSubmitter({ email, source });
+  if (provisioned && AUTHORIZED_SUBMIT_ROLES.has(provisioned.role)) return provisioned;
+  return null;
 }
 
 // Resolve a CC address to an existing active contact under the given
@@ -504,23 +538,28 @@ async function tryAutoCreate({ subject, body, fromAddress, ccAddresses, attachme
   // Forward attribution: if the body wraps a forwarded message and the
   // outer sender is a known internal user (the agent who forwarded),
   // re-aim the create flow at the inner sender as submitter. Forwarder
-  // is captured here and used as the auto-assignee after insert. If
-  // detection fires but the inner From can't be authorized as a
-  // submitter, the original flow is preserved (the agent themselves
-  // remains the submitter) — better to capture the ticket than to
-  // drop it because the inner address is unknown.
+  // is captured here and used as the auto-assignee after insert. The
+  // inner sender is auto-provisioned as a Submitter when unknown, so
+  // external customers a staffer forwards on behalf of become the
+  // requestor rather than the staffer. Falls back to the agent as
+  // submitter only when the inner address exists in an unauthorized
+  // role (Viewer/Vendor) — we don't silently elevate those.
   let forwarderUser = null;
   let effectiveFrom = fromAddress;
   let effectiveBody = body;
+  let preResolvedSubmitter = null;
   const forward = detectForward(body);
   if (forward) {
     const outerUser = await findUserByEmail(fromAddress);
     if (outerUser) {
-      const innerCandidate = await findInternalSubmitter(forward.innerEmail);
+      const innerCandidate = await resolveOrProvisionSubmitter(
+        forward.innerEmail, 'inbound_email_forward'
+      );
       if (innerCandidate) {
         forwarderUser = outerUser;
         effectiveFrom = forward.innerEmail;
         effectiveBody = forward.innerBody || body;
+        preResolvedSubmitter = innerCandidate;
       }
     }
   }
@@ -549,24 +588,7 @@ async function tryAutoCreate({ subject, body, fromAddress, ccAddresses, attachme
     return { ok: false, reason: 'no_prefix' };
   }
 
-  let submitter = await findInternalSubmitter(effectiveFrom);
-  if (!submitter) {
-    // Auto-provision an unknown sender as a default Submitter so the
-    // ticket has a real owner. Existing users with a non-submit role
-    // (Viewer/Vendor) are left alone — we do not silently elevate them.
-    const existing = await pool.query(
-      `SELECT 1 FROM users WHERE LOWER(email) = LOWER($1) LIMIT 1`,
-      [effectiveFrom]
-    );
-    if (existing.rows.length === 0) {
-      const provisioned = await autoProvisionSubmitter(
-        { email: effectiveFrom, source: 'inbound_email' }
-      );
-      if (provisioned && AUTHORIZED_SUBMIT_ROLES.has(provisioned.role)) {
-        submitter = provisioned;
-      }
-    }
-  }
+  const submitter = preResolvedSubmitter || await resolveOrProvisionSubmitter(effectiveFrom);
   if (!submitter) return { ok: false, reason: `sender_not_authorized:${effectiveFrom}` };
 
   const cleanedDescription = extractFreshReply(effectiveBody) || '(no description)';
@@ -843,67 +865,144 @@ async function sendCreationConfirmation({ submitter, ticket, project }) {
   });
 }
 
-// Auto-reply handler. Runs when inbound has a [PREFIX-N] candidate ref
-// and the sender is a known active contact on that ticket. Appends the
-// reply as an external-visible comment, then — if the ticket is sitting
-// in a resolved_pending_close status — runs gratitude detection. A real
-// reply auto-reopens; "thanks" leaves the auto-close timer running.
-async function tryAutoReply({ candidateRef, body, fromAddress, queueRowId, attachments }) {
-  if (!candidateRef) return { ok: false, reason: 'no_ref' };
-
-  const t = await pool.query(
-    `SELECT id, internal_ref, project_id, internal_status, submitted_by, title, title_enc
-       FROM tickets WHERE internal_ref = $1`,
-    [candidateRef]
-  );
-  if (!t.rows[0]) return { ok: false, reason: `ticket_not_found:${candidateRef}` };
-  const ticket = t.rows[0];
-
-  // Sender must be an active contact attached to this ticket. Match by
-  // email_blind_idx when populated (encryption mode flipped on) OR by
-  // plaintext email — covers off-mode rows, pre-encryption legacy rows,
-  // and rows where the blind backfill hasn't run yet. The OR means the
-  // lookup can't silently miss because of a NULL index column.
+// Resolve an inbound sender to either a vendor contact attached to the
+// ticket OR an internal user with a meaningful relationship to it
+// (submitter/assignee/follower). Returns one of:
+//   { kind: 'contact', contact }   — known vendor contact on the ticket
+//   { kind: 'user', user }         — known internal participant
+//   null                           — sender has no claim on this ticket
+async function resolveReplySender({ ticketId, submitterId, fromAddress }) {
   const blind = hashWhole(fromAddress);
   const contactRow = await pool.query(`
     SELECT c.id, c.name, c.name_enc, c.email, c.email_enc,
-           co.name AS company_name, co.name_enc AS company_name_enc,
-           u.id AS submitter_id
+           co.name AS company_name, co.name_enc AS company_name_enc
       FROM ticket_contacts tc
       JOIN contacts c ON c.id = tc.contact_id
       LEFT JOIN companies co ON co.id = c.company_id
- LEFT JOIN users u ON u.id = $2
      WHERE tc.ticket_id = $1
        AND c.is_active = TRUE
        AND (
-         ($3::text IS NOT NULL AND c.email_blind_idx = $3)
-         OR LOWER(c.email) = LOWER($4)
+         ($2::text IS NOT NULL AND c.email_blind_idx = $2)
+         OR LOWER(c.email) = LOWER($3)
        )
      LIMIT 1
-  `, [ticket.id, ticket.submitted_by, blind, fromAddress]);
-  if (!contactRow.rows[0]) return { ok: false, reason: 'sender_not_on_ticket' };
+  `, [ticketId, blind, fromAddress]);
+  if (contactRow.rows[0]) {
+    const contact = contactRow.rows[0];
+    await decryptRow('contacts', contact, {
+      aliases: { company_name: 'companies.name' },
+    }).catch(() => {});
+    return { kind: 'contact', contact };
+  }
 
-  const contact = contactRow.rows[0];
-  await decryptRow('contacts', contact, {
-    aliases: { company_name: 'companies.name' },
-  }).catch(() => {});
+  // Internal user path: any active user who is the submitter, assignee,
+  // or a current follower of the ticket can drive an email-reply append.
+  // Resolves the Ryan-style case: CC'd internal user replies (or auto-
+  // replies) on a ticket they were never added as a vendor contact for.
+  const userRow = await pool.query(`
+    SELECT u.id, u.email, u.display_name, u.role
+      FROM users u
+     WHERE u.status = 'active'
+       AND LOWER(u.email) = LOWER($1)
+       AND (
+         u.id = $2
+         OR EXISTS (SELECT 1 FROM tickets WHERE id = $3 AND assigned_to = u.id)
+         OR EXISTS (SELECT 1 FROM ticket_followers WHERE ticket_id = $3 AND user_id = u.id)
+       )
+     LIMIT 1
+  `, [fromAddress, submitterId, ticketId]);
+  if (userRow.rows[0]) {
+    return { kind: 'user', user: userRow.rows[0] };
+  }
+
+  return null;
+}
+
+// Auto-reply handler. Runs when inbound carries a [PREFIX-N] reference.
+// Authors the inbound as a comment on that ticket and (unless suppressed)
+// auto-reopens / auto-resumes based on the ticket's current state.
+//
+// Sender resolution accepts either a vendor contact attached to the
+// ticket OR an internal participant (submitter, assignee, follower).
+// Anything else falls through to the caller's auto-create path.
+//
+// Staleness: if the ticket hasn't been touched in `reply_stale_days`
+// (admin-configurable in auto_resolve_settings), the reply is refused
+// with reason 'too_stale:REF/DAYS' so the caller can treat it as a
+// brand-new ticket. Prevents a year-old closed ticket from being
+// resurrected by an unrelated reply that happens to quote its ref.
+//
+// OOO suppression: when subject + body look like an out-of-office
+// auto-reply AND admin has suppress_ooo_replies enabled, the comment
+// is recorded as muted, no status transition runs, and the caller is
+// told not to fan out follower notifications. An audit_log entry is
+// stamped so admins can see the OOO landed and was silenced.
+async function tryAutoReply({ candidateRef, subject, body, fromAddress, queueRowId, attachments }) {
+  if (!candidateRef) return { ok: false, reason: 'no_ref' };
+
+  const t = await pool.query(`
+    SELECT t.id, t.internal_ref, t.project_id, t.internal_status,
+           t.submitted_by, t.title, t.title_enc, t.updated_at,
+           s.is_terminal
+      FROM tickets t
+ LEFT JOIN statuses s ON s.kind = 'internal' AND s.name = t.internal_status
+     WHERE t.internal_ref = $1
+  `, [candidateRef]);
+  if (!t.rows[0]) return { ok: false, reason: `ticket_not_found:${candidateRef}` };
+  const ticket = t.rows[0];
+
+  const routing = await getReplyRoutingSettings();
+  const staleDays = routing.stale_days;
+  const ageMs = Date.now() - new Date(ticket.updated_at).getTime();
+  const ageDays = ageMs / (24 * 3600 * 1000);
+  if (ageDays > staleDays) {
+    return { ok: false, reason: `too_stale:${ticket.internal_ref}:${Math.floor(ageDays)}d>${staleDays}d` };
+  }
+
+  // OOO bounceback detection runs BEFORE the sender-claim check. An OOO
+  // from a CC'd watcher who isn't formally a contact/follower of the
+  // ticket has no business spawning a new ticket — the ref in their
+  // subject points at the right thread. Land it there as a passive
+  // muted comment with all notifications/status changes suppressed.
+  const ooo = routing.suppress_ooo && detectOutOfOffice({ subject, body });
+
+  const sender = await resolveReplySender({
+    ticketId: ticket.id, submitterId: ticket.submitted_by, fromAddress,
+  });
+  if (!sender && !ooo) return { ok: false, reason: 'sender_not_on_ticket' };
+
   await decryptRow('tickets', ticket).catch(() => {});
 
-  const contactName = (contact.name && contact.name.trim()) || null;
-  const contactEmail = (contact.email && contact.email.trim()) || fromAddress;
+  const contactName = sender?.kind === 'contact'
+    ? (sender.contact.name && sender.contact.name.trim()) || null
+    : (sender?.user?.display_name || null);
+  const contactEmail = sender?.kind === 'contact'
+    ? ((sender.contact.email && sender.contact.email.trim()) || fromAddress)
+    : (sender?.user?.email || fromAddress);
   const cleanedBody = extractFreshReply(body, {
     name: contactName, email: contactEmail,
   }) || '(no body)';
 
-  // Append as an external-visible, non-system comment on behalf of the
-  // submitter (we don't author comments as contact records). Stamp the
-  // vendor contact id so the UI renders the "from vendor" pill (per-
-  // company themed) instead of mistakenly tagging it "to vendor".
+  const oooSuppressed = !!ooo;
+
+  // Comment author. Vendor contact replies are stamped to the submitter
+  // (we don't write comments under a contact id). Internal user replies
+  // are authored under that user so the UI attributes them correctly.
+  // OOO-without-sender path also stamps to the submitter — the email had
+  // no claim on the ticket, we're just recording the bounce-back.
+  const authorUserId = sender?.kind === 'user' ? sender.user.id : ticket.submitted_by;
+  const vendorContactId = sender?.kind === 'contact' ? sender.contact.id : null;
+
   const patch = await buildWritePatch(pool, 'comments', { body: cleanedBody });
   const cols = ['ticket_id', 'user_id', 'is_external_visible', 'is_internal',
-    'vendor_contact_id', 'source_inbound_email_id', ...patch.cols];
-  const values = [ticket.id, ticket.submitted_by, true, false,
-    contact.id, queueRowId || null, ...patch.values];
+    'is_muted', 'vendor_contact_id', 'source_inbound_email_id', ...patch.cols];
+  const values = [
+    ticket.id, authorUserId,
+    sender?.kind === 'contact' && !oooSuppressed, // external-visible only for non-OOO vendor replies
+    sender?.kind !== 'contact' || oooSuppressed,  // internal-only otherwise
+    oooSuppressed,
+    vendorContactId, queueRowId || null, ...patch.values,
+  ];
   const placeholders = cols.map((_, i) => `$${i + 1}`).join(', ');
   const ins = await pool.query(
     `INSERT INTO comments (${cols.join(', ')}) VALUES (${placeholders}) RETURNING id`,
@@ -911,17 +1010,21 @@ async function tryAutoReply({ candidateRef, body, fromAddress, queueRowId, attac
   );
   const commentId = ins.rows[0].id;
   await pool.query(`UPDATE tickets SET updated_at = NOW() WHERE id = $1`, [ticket.id]);
+  const auditNote = oooSuppressed
+    ? `OOO auto-reply from ${fromAddress} — comment muted, status + notifications suppressed`
+    : (sender?.kind === 'contact'
+        ? `Vendor reply from ${fromAddress}`
+        : `Internal-user reply from ${fromAddress}`);
+  const auditAction = oooSuppressed ? 'ooo_reply_suppressed' : 'comment_appended_via_email';
   await pool.query(
     `INSERT INTO audit_log (ticket_id, user_id, action, note)
-     VALUES ($1, $2, 'comment_appended_via_email', $3)`,
-    [ticket.id, ticket.submitted_by, `Vendor reply from ${fromAddress}`]
+     VALUES ($1, $2, $3, $4)`,
+    [ticket.id, authorUserId, auditAction, auditNote]
   );
 
-  // Persist any inbound attachments and link them to the vendor reply
-  // comment so the UI renders them inline (same shape as user-uploaded
-  // files). Best-effort — comment exists either way. user_id is the
-  // ticket submitter because comments are authored under a user, not a
-  // contact (matches the comment row's user_id stamp above).
+  // Persist any inbound attachments and link them to the reply comment
+  // so the UI renders them inline (same shape as user-uploaded files).
+  // Best-effort — comment exists either way.
   let attachedCount = 0;
   for (const att of (attachments || [])) {
     try {
@@ -929,7 +1032,7 @@ async function tryAutoReply({ candidateRef, body, fromAddress, queueRowId, attac
       if (buf.length === 0) continue;
       await persistAttachment({
         ticketId: ticket.id,
-        userId: ticket.submitted_by,
+        userId: authorUserId,
         commentId,
         filename: att.filename || 'attachment.bin',
         mimetype: att.mimetype,
@@ -937,29 +1040,38 @@ async function tryAutoReply({ candidateRef, body, fromAddress, queueRowId, attac
       });
       attachedCount += 1;
     } catch (e) {
-      console.error(`vendor-reply attachment "${att?.filename}" failed:`, e.message);
+      console.error(`reply attachment "${att?.filename}" failed:`, e.message);
     }
   }
 
-  const reopen = await applyReplyToResolvedTicket({
-    ticketId: ticket.id, replyBody: cleanedBody, actorUserId: ticket.submitted_by,
-  });
-  // Vendor / inbound replies that hit awaiting_input get auto-resumed
-  // to in_progress — the thing we were waiting for just landed. Skipped
-  // if the resolved-grace path already moved the ticket out of an
-  // awaiting state.
-  const resume = reopen?.reopened
-    ? null
-    : await applyReplyToWaitingTicket({ ticketId: ticket.id, actorUserId: ticket.submitted_by });
+  // OOO path: skip every state-changing helper. Caller also skips fanout.
+  let reopen = null;
+  let resume = null;
+  let reopenTerminal = null;
+  if (!oooSuppressed) {
+    reopen = await applyReplyToResolvedTicket({
+      ticketId: ticket.id, replyBody: cleanedBody, actorUserId: authorUserId,
+    });
+    // Awaiting-input → in_progress. Skip if resolved-grace already moved it.
+    resume = reopen?.reopened
+      ? null
+      : await applyReplyToWaitingTicket({ ticketId: ticket.id, actorUserId: authorUserId });
+    // Fully terminal (Closed) tickets: gratitude filter still applies, but
+    // a substantive reply reopens. Mirrors the UI comment path.
+    if (!reopen?.reopened && !resume?.resumed && ticket.is_terminal) {
+      reopenTerminal = await applyCommentToTerminalTicket({
+        ticketId: ticket.id, commentBody: cleanedBody, actorUserId: authorUserId,
+      });
+    }
+  }
 
-  // Display label for follower notifications. Prefer "Name (Company)"
-  // when both are known, fall back to whichever is non-empty, then to
-  // the bare email.
+  // Display label for follower notifications. Vendor: "Name (Company)" if
+  // both known. Internal: display_name or email. Fall back to bare email.
   let actorLabel = contactName || contactEmail;
-  if (contactName && contact.company_name) {
-    actorLabel = `${contactName} (${contact.company_name})`;
-  } else if (contact.company_name) {
-    actorLabel = contact.company_name;
+  if (sender?.kind === 'contact' && contactName && sender.contact.company_name) {
+    actorLabel = `${contactName} (${sender.contact.company_name})`;
+  } else if (sender?.kind === 'contact' && sender.contact.company_name) {
+    actorLabel = sender.contact.company_name;
   }
 
   return {
@@ -970,13 +1082,16 @@ async function tryAutoReply({ candidateRef, body, fromAddress, queueRowId, attac
       project_id: ticket.project_id,
       title: ticket.title,
     },
-    reopen,
+    reopen: reopen || reopenTerminal,
     resume,
     cleanedBody,
     actorLabel,
-    contactId: contact.id,
+    contactId: vendorContactId,
+    actorUserId: sender?.kind === 'user' ? sender.user.id : null,
     commentId,
     attachmentCount: attachedCount,
+    oooSuppressed,
+    senderKind: sender?.kind || 'unknown',
   };
 }
 

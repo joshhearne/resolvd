@@ -117,8 +117,73 @@ router.post('/generic', async (req, res) => {
     );
     const queueRowId = result.rows[0].id;
 
-    // 2. If subject carries a #PREFIX, try the auto-create flow. Failures
-    //    fall through to leave the row as 'unmatched' for admin attention.
+    // 2a. Reply-first routing: if subject/body carries a [PREFIX-N] ref
+    //     AND the target ticket is fresh enough AND the sender belongs to
+    //     that ticket (vendor contact OR internal participant), append
+    //     the reply onto the existing thread. This must run BEFORE
+    //     tryAutoCreate so a stray OOO bounceback or a CC'd watcher's
+    //     reply doesn't spin up a duplicate ticket via the mailbox-scoped
+    //     auto-create path. Stale references fall through to auto-create
+    //     so a year-old closed ticket isn't resurrected by an unrelated
+    //     reply that happens to quote its ref.
+    let autoReply = null;
+    if (result.rows[0].candidate_ticket_ref) {
+      try {
+        autoReply = await inboundProcessor.tryAutoReply({
+          candidateRef: result.rows[0].candidate_ticket_ref,
+          subject,
+          body,
+          fromAddress: String(from).toLowerCase().trim(),
+          queueRowId,
+          attachments,
+        });
+      } catch (e) {
+        console.error('auto-reply attempt failed:', e);
+        autoReply = { ok: false, reason: `error:${e.message}` };
+      }
+    }
+    if (autoReply?.ok) {
+      const tags = [];
+      if (autoReply.oooSuppressed) tags.push('ooo_suppressed');
+      else if (autoReply.reopen?.reopened) tags.push(`auto_reopened:${autoReply.reopen.toStatus}`);
+      else if (autoReply.reopen?.gratitude) tags.push('gratitude_detected');
+      if (autoReply.senderKind === 'user') tags.push('sender:user');
+      await pool.query(
+        `UPDATE inbound_email_queue
+            SET status = 'matched',
+                matched_ticket_id = $1,
+                matched_at = NOW(),
+                reject_reason = $2
+          WHERE id = $3`,
+        [autoReply.ticket.id, tags.length ? tags.join(' ') : null, queueRowId]
+      );
+
+      // OOO bounce: comment lands muted, status untouched, NO fanout.
+      // Anything else fires the normal follower notification path.
+      if (!autoReply.oooSuppressed) {
+        fanoutNewComment(pool, {
+          ticket: autoReply.ticket,
+          comment: autoReply.cleanedBody || '',
+          commentId: autoReply.commentId,
+          actorId: autoReply.actorUserId || null,
+          actorName: autoReply.actorLabel || (autoReply.senderKind === 'user' ? 'Staff' : 'Vendor'),
+        }).catch(err => console.error('reply notification failed:', err.message));
+      }
+
+      return res.status(201).json({
+        ok: true, id: queueRowId,
+        kind: autoReply.oooSuppressed ? 'ooo_suppressed' : 'replied',
+        ticket_id: autoReply.ticket.id,
+        ticket_ref: autoReply.ticket.internal_ref,
+        reopen: autoReply.reopen,
+        ooo_suppressed: !!autoReply.oooSuppressed,
+      });
+    }
+
+    // 2b. Reply path declined. Fall through to auto-create — either no
+    //     ref was present, the ref pointed at a stale/missing ticket, or
+    //     the sender has no claim on the ticket. Failures fall further
+    //     through to leave the row as 'unmatched' for admin attention.
     let autoResult = null;
     try {
       autoResult = await inboundProcessor.tryAutoCreate({
@@ -178,59 +243,6 @@ router.post('/generic', async (req, res) => {
         `UPDATE inbound_email_queue SET reject_reason = $1 WHERE id = $2`,
         [autoResult.reason, queueRowId]
       );
-    }
-
-    // Auto-reply path: subject like "[PREFIX-N]" plus a known contact on
-    // that ticket. Appends a comment and applies resolved-state reopen
-    // logic when applicable. Skips entirely if ref or sender doesn't
-    // match — falls through to the unmatched queue.
-    let autoReply = null;
-    if (result.rows[0].candidate_ticket_ref) {
-      try {
-        autoReply = await inboundProcessor.tryAutoReply({
-          candidateRef: result.rows[0].candidate_ticket_ref,
-          body,
-          fromAddress: String(from).toLowerCase().trim(),
-          queueRowId,
-          attachments,
-        });
-      } catch (e) {
-        console.error('auto-reply attempt failed:', e);
-      }
-    }
-    if (autoReply?.ok) {
-      const tags = [];
-      if (autoReply.reopen?.reopened) tags.push(`auto_reopened:${autoReply.reopen.toStatus}`);
-      else if (autoReply.reopen?.gratitude) tags.push('gratitude_detected');
-      await pool.query(
-        `UPDATE inbound_email_queue
-            SET status = 'matched',
-                matched_ticket_id = $1,
-                matched_at = NOW(),
-                reject_reason = $2
-          WHERE id = $3`,
-        [autoReply.ticket.id, tags.length ? tags.join(' ') : null, queueRowId]
-      );
-
-      // Fan out follower notifications for the vendor reply. No
-      // user-side actor (the comment came from a contact, not a user),
-      // so actorId is null — submitter + every follower with the
-      // comment row enabled in their notification matrix gets the email.
-      fanoutNewComment(pool, {
-        ticket: autoReply.ticket,
-        comment: autoReply.cleanedBody || '',
-        commentId: autoReply.commentId,
-        actorId: null,
-        actorName: autoReply.actorLabel || 'Vendor',
-      }).catch(err => console.error('vendor-reply notification failed:', err.message));
-
-      return res.status(201).json({
-        ok: true, id: queueRowId,
-        kind: 'replied',
-        ticket_id: autoReply.ticket.id,
-        ticket_ref: autoReply.ticket.internal_ref,
-        reopen: autoReply.reopen,
-      });
     }
 
     // If neither auto-flow attached the row, persist whichever reason

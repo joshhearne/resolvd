@@ -1,7 +1,10 @@
 const express = require('express');
 const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
-const { getGratitudePhrases, setGratitudePhrases } = require('../services/autoResolve');
+const {
+  getGratitudePhrases, setGratitudePhrases,
+  getReplyRoutingSettings, setReplyRoutingSettings,
+} = require('../services/autoResolve');
 
 const router = express.Router();
 const VALID_KINDS = ['internal', 'external'];
@@ -240,6 +243,31 @@ router.put('/auto-resolve/phrases', requireAuth, requireRole('Admin'), async (re
     res.json({ phrases: cleaned });
   } catch (err) {
     console.error('phrases put error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// GET /api/statuses/auto-resolve/reply-routing — inbound-reply tunables.
+router.get('/auto-resolve/reply-routing', requireAuth, async (req, res) => {
+  try {
+    res.json(await getReplyRoutingSettings());
+  } catch (err) {
+    console.error('reply-routing get error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// PUT /api/statuses/auto-resolve/reply-routing — { stale_days, suppress_ooo } (Admin).
+router.put('/auto-resolve/reply-routing', requireAuth, requireRole('Admin'), async (req, res) => {
+  try {
+    const { stale_days, suppress_ooo } = req.body || {};
+    const next = await setReplyRoutingSettings({ stale_days, suppress_ooo });
+    res.json(next);
+  } catch (err) {
+    if (err.message?.includes('stale_days')) {
+      return res.status(400).json({ error: err.message });
+    }
+    console.error('reply-routing put error:', err);
     res.status(500).json({ error: 'Database error' });
   }
 });

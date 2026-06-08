@@ -2807,6 +2807,17 @@ Thanks,
     await client.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS ticket_id INTEGER REFERENCES tickets(id) ON DELETE SET NULL`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_tasks_ticket ON tasks(ticket_id) WHERE ticket_id IS NOT NULL`);
 
+    // Inbound reply routing tunables. reply_stale_days caps how old a
+    // referenced ticket can be before an inbound [PREFIX-N] reply is
+    // refused and falls through to the auto-create path (otherwise a
+    // year-old closed ticket can be resurrected by a stray reply).
+    // suppress_ooo_replies toggles passive handling of "Automatic Reply"
+    // / out-of-office bouncebacks: comment lands muted, no status change,
+    // no follower fanout. Both defaults match prior conservative behavior
+    // for a fresh install.
+    await client.query(`ALTER TABLE auto_resolve_settings ADD COLUMN IF NOT EXISTS reply_stale_days INTEGER NOT NULL DEFAULT 30`);
+    await client.query(`ALTER TABLE auto_resolve_settings ADD COLUMN IF NOT EXISTS suppress_ooo_replies BOOLEAN NOT NULL DEFAULT TRUE`);
+
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');

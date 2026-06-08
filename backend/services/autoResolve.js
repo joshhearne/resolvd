@@ -12,12 +12,31 @@ let _cache = null;
 let _cachedAt = 0;
 const TTL_MS = 60 * 1000;
 
-async function getGratitudePhrases() {
+// Single cached row so callers don't re-query for every inbound. Refreshed
+// when any setter runs or TTL expires.
+async function loadSettings() {
   if (_cache && Date.now() - _cachedAt < TTL_MS) return _cache;
-  const r = await pool.query('SELECT gratitude_phrases FROM auto_resolve_settings WHERE id = 1');
-  _cache = (r.rows[0]?.gratitude_phrases || []).map(s => String(s).trim().toLowerCase()).filter(Boolean);
+  const r = await pool.query(`
+    SELECT gratitude_phrases, reply_stale_days, suppress_ooo_replies
+      FROM auto_resolve_settings WHERE id = 1
+  `);
+  const row = r.rows[0] || {};
+  _cache = {
+    phrases: (row.gratitude_phrases || []).map(s => String(s).trim().toLowerCase()).filter(Boolean),
+    replyStaleDays: Number.isFinite(row.reply_stale_days) ? row.reply_stale_days : 30,
+    suppressOoo: row.suppress_ooo_replies !== false,
+  };
   _cachedAt = Date.now();
   return _cache;
+}
+
+async function getGratitudePhrases() {
+  return (await loadSettings()).phrases;
+}
+
+async function getReplyRoutingSettings() {
+  const s = await loadSettings();
+  return { stale_days: s.replyStaleDays, suppress_ooo: s.suppressOoo };
 }
 
 function invalidatePhraseCache() {
@@ -35,6 +54,59 @@ async function setGratitudePhrases(phrases) {
   );
   invalidatePhraseCache();
   return cleaned;
+}
+
+async function setReplyRoutingSettings({ stale_days, suppress_ooo } = {}) {
+  const sets = [];
+  const values = [];
+  if (stale_days != null) {
+    const n = Math.max(1, Math.min(3650, Math.floor(Number(stale_days))));
+    if (!Number.isFinite(n)) throw new Error('stale_days must be a positive integer');
+    sets.push(`reply_stale_days = $${values.length + 1}`);
+    values.push(n);
+  }
+  if (suppress_ooo != null) {
+    sets.push(`suppress_ooo_replies = $${values.length + 1}`);
+    values.push(!!suppress_ooo);
+  }
+  if (sets.length === 0) return await getReplyRoutingSettings();
+  sets.push(`updated_at = NOW()`);
+  await pool.query(
+    `UPDATE auto_resolve_settings SET ${sets.join(', ')} WHERE id = 1`,
+    values
+  );
+  invalidatePhraseCache();
+  return await getReplyRoutingSettings();
+}
+
+// Detect an out-of-office auto-reply. Subject signal: any "Automatic
+// reply" / "Out of office" / "OOF" / "Auto-Reply" form (Outlook, Gmail
+// vacation, third-party schedulers). Body signal: at least one phrase
+// strongly indicating absence. Both must match to qualify so a real
+// reply that happens to contain the words "out of office" in passing
+// doesn't get silenced. Used as a fallback when the standard RFC 3834
+// `Auto-Submitted` header path didn't fire (some forwarders strip it).
+const OOO_SUBJECT_RE = /\b(?:automatic\s+reply|automatic[-_ ]?response|auto[-_ ]?reply|out\s+of\s+(?:the\s+)?office|out\s+of\s+office\s+autoreply|OOF|OOO\s+(?:reply|notice)?|vacation\s+(?:reply|response|notice))\b/i;
+const OOO_BODY_RES = [
+  /\bout\s+of\s+(?:the\s+)?office\b/i,
+  /\baway\s+from\s+(?:the\s+|my\s+)?(?:office|desk|email)\b/i,
+  /\bon\s+(?:vacation|holiday|annual\s+leave|leave|PTO|maternity|paternity|parental\s+leave|sabbatical)\b/i,
+  /\bcurrently\s+(?:out|unavailable|away)\b/i,
+  /\bI\s+am\s+(?:currently\s+)?(?:out|away|unavailable|on\s+leave)\b/i,
+  /\bI['’]?ll\s+be\s+(?:out|away|back)\b/i,
+  /\bwill\s+be\s+(?:out\s+of\s+(?:the\s+)?office|away|back)\b/i,
+  /\b(?:limited|no)\s+access\s+to\s+(?:my\s+)?(?:e-?mail|messages)\b/i,
+  /\breturn(?:ing)?\s+(?:to\s+(?:the\s+)?office\s+)?on\b/i,
+  /\bback\s+(?:in\s+(?:the\s+)?office\s+)?on\b/i,
+];
+
+function detectOutOfOffice({ subject, body } = {}) {
+  if (!subject && !body) return false;
+  const subj = String(subject || '');
+  if (!OOO_SUBJECT_RE.test(subj)) return false;
+  const text = String(body || '');
+  if (!text.trim()) return true; // subject-only bouncers (Exchange "OOF: ...")
+  return OOO_BODY_RES.some(re => re.test(text));
 }
 
 // Strip whitespace + common punctuation; lower-case. Compares the trimmed
@@ -192,8 +264,11 @@ async function applyCommentToTerminalTicket({ ticketId, commentBody, actorUserId
 module.exports = {
   getGratitudePhrases,
   setGratitudePhrases,
+  getReplyRoutingSettings,
+  setReplyRoutingSettings,
   invalidatePhraseCache,
   isGratitudeOnly,
+  detectOutOfOffice,
   applyReplyToResolvedTicket,
   applyReplyToWaitingTicket,
   applyCommentToTerminalTicket,

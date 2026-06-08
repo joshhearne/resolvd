@@ -236,7 +236,139 @@ export default function AdminStatuses() {
       />
 
       <GratitudePhrasesBlock />
+
+      <ReplyRoutingBlock />
     </div>
+  );
+}
+
+function ReplyRoutingBlock() {
+  const [settings, setSettings] = useState({ stale_days: 30, suppress_ooo: true });
+  const [draftDays, setDraftDays] = useState("30");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  async function load() {
+    try {
+      const res = await fetch("/api/statuses/auto-resolve/reply-routing", {
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const d = await res.json();
+      setSettings(d);
+      setDraftDays(String(d.stale_days));
+    } catch {
+      toast.error("Failed to load reply routing settings");
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => {
+    load();
+  }, []);
+
+  async function save(patch) {
+    setSaving(true);
+    try {
+      const res = await fetch("/api/statuses/auto-resolve/reply-routing", {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(body.error || "Failed");
+        return;
+      }
+      setSettings(body);
+      setDraftDays(String(body.stale_days));
+      toast.success("Saved");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function saveDays(e) {
+    e.preventDefault();
+    const n = Math.floor(Number(draftDays));
+    if (!Number.isFinite(n) || n < 1) {
+      toast.error("Stale-days must be a positive integer");
+      return;
+    }
+    save({ stale_days: n });
+  }
+
+  return (
+    <section>
+      <h2 className="text-lg font-semibold text-fg mb-1">
+        Inbound reply routing
+      </h2>
+      <p className="text-sm text-fg-muted mb-3">
+        When an inbound email carries a <code>[PREFIX-N]</code> ticket
+        reference, the system appends it to that ticket instead of opening
+        a new one. The settings below control how old a referenced ticket
+        can be before the reference is ignored (reply lands as a new
+        ticket via the normal auto-create path), and whether Outlook /
+        Gmail-style out-of-office auto-replies are silenced.
+      </p>
+      {loading ? (
+        <div className="text-fg-muted text-sm">Loading…</div>
+      ) : (
+        <div className="border border-border rounded-lg p-3 bg-surface space-y-4">
+          <form onSubmit={saveDays} className="flex flex-wrap items-end gap-3">
+            <label className="flex-1 min-w-[16rem]">
+              <div className="text-sm font-medium text-fg mb-1">
+                Stale threshold (days)
+              </div>
+              <div className="text-xs text-fg-muted mb-1">
+                A referenced ticket older than this is treated as stale —
+                the reply falls through to auto-create a fresh ticket
+                rather than resurrecting an ancient thread.
+              </div>
+              <input
+                type="number"
+                min="1"
+                max="3650"
+                value={draftDays}
+                onChange={(e) => setDraftDays(e.target.value)}
+                className="w-32 border border-border-strong rounded-md px-3 py-1.5 text-sm"
+              />
+            </label>
+            <button
+              type="submit"
+              disabled={saving || String(settings.stale_days) === draftDays}
+              className="px-3 py-1.5 bg-brand hover:bg-brand-bright disabled:opacity-60 text-brand-fg text-sm rounded-md"
+            >
+              Save days
+            </button>
+          </form>
+
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={!!settings.suppress_ooo}
+              disabled={saving}
+              onChange={(e) => save({ suppress_ooo: e.target.checked })}
+              className="mt-1"
+            />
+            <div>
+              <div className="text-sm font-medium text-fg">
+                Suppress out-of-office auto-replies
+              </div>
+              <div className="text-xs text-fg-muted">
+                When the subject contains "Automatic Reply" / "Out of
+                Office" and the body matches OOO language, the message
+                still lands as a comment on the matched ticket — but the
+                comment is muted, no status transition runs, and no
+                follower notifications fire. An audit-log entry records
+                that the OOO bounce was silenced.
+              </div>
+            </div>
+          </label>
+        </div>
+      )}
+    </section>
   );
 }
 
