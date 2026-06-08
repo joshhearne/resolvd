@@ -6,57 +6,81 @@ import PageShell from "../components/PageShell";
 // Sub-nav schema. Items flagged manager:true show for both Admin + Manager;
 // items without that flag are Admin-only. Groups with no manager-visible
 // items hide entirely for Manager — they don't see group headers they
-// can't act on.
+// can't act on. `keywords` is an optional list of search aliases — admins
+// looking for a setting by its in-page label (e.g. "OOO", "reopen",
+// "blocklist") get routed to the right page even when the nav label
+// doesn't mention the term.
 const NAV_GROUPS = [
   {
     label: "People",
     items: [
-      { to: "/admin/users", label: "Users", manager: true },
-      { to: "/admin/companies", label: "Companies", manager: true },
-      { to: "/admin/support", label: "Support access" },
+      { to: "/admin/users", label: "Users", manager: true, keywords: ["roles", "submitter", "tech", "manager", "admin role", "active inactive"] },
+      { to: "/admin/companies", label: "Companies", manager: true, keywords: ["vendors", "contacts", "domain"] },
+      { to: "/admin/support", label: "Support access", keywords: ["impersonate", "anthropic"] },
     ],
   },
   {
     label: "Workflow",
     items: [
-      { to: "/admin/statuses", label: "Statuses" },
-      { to: "/admin/sla", label: "SLA policies", manager: true },
-      { to: "/admin/assignment", label: "Auto-assignment", manager: true },
-      { to: "/admin/escalations", label: "Escalations", manager: true },
-      { to: "/admin/custom-fields", label: "Custom fields", manager: true },
-      { to: "/admin/canned-responses", label: "Canned responses", manager: true },
-      { to: "/admin/ticket-schedules", label: "Scheduled tickets", manager: true },
-      { to: "/admin/merge", label: "Merge tickets" },
+      { to: "/admin/statuses", label: "Statuses", keywords: ["transitions", "mappings", "reopen", "gratitude", "auto-resolve", "OOO", "out of office", "automatic reply", "stale", "reply routing", "[ref]"] },
+      { to: "/admin/sla", label: "SLA policies", manager: true, keywords: ["response", "resolution", "breach", "due", "warn"] },
+      { to: "/admin/assignment", label: "Auto-assignment", manager: true, keywords: ["round robin", "load balance", "policy"] },
+      { to: "/admin/escalations", label: "Escalations", manager: true, keywords: ["page", "oncall", "pager"] },
+      { to: "/admin/custom-fields", label: "Custom fields", manager: true, keywords: ["dropdown", "metadata"] },
+      { to: "/admin/canned-responses", label: "Canned responses", manager: true, keywords: ["macros", "snippets", "boilerplate"] },
+      { to: "/admin/ticket-schedules", label: "Scheduled tickets", manager: true, keywords: ["recurring", "cron", "schedule"] },
+      { to: "/admin/merge", label: "Merge tickets", keywords: ["dedupe", "combine"] },
     ],
   },
   {
     label: "Integrations",
     items: [
-      { to: "/admin/ai-assist", label: "AI Assist" },
-      { to: "/admin/alert-sources", label: "Integrations" },
-      { to: "/admin/software-aliases", label: "Software aliases", manager: true },
-      { to: "/admin/inbound", label: "Inbound email", manager: true },
-      { to: "/admin/email-backends", label: "Email backends" },
-      { to: "/admin/email-templates", label: "Email templates" },
-      { to: "/admin/label-printer", label: "Label printer" },
+      { to: "/admin/ai-assist", label: "AI Assist", keywords: ["claude", "gpt", "openai", "rewrite", "summarize"] },
+      { to: "/admin/alert-sources", label: "Integrations", keywords: ["zabbix", "alerts", "webhook", "monitor"] },
+      { to: "/admin/software-aliases", label: "Software aliases", manager: true, keywords: ["asset normalization"] },
+      { to: "/admin/inbound", label: "Inbound email", manager: true, keywords: ["unmatched queue", "discard", "spam"] },
+      { to: "/admin/email-backends", label: "Email backends", keywords: ["smtp", "graph", "oauth", "gmail", "m365", "office 365"] },
+      { to: "/admin/email-templates", label: "Email templates", keywords: ["notification body", "subject", "render"] },
+      { to: "/admin/label-printer", label: "Label printer", keywords: ["consumables", "barcode", "print"] },
     ],
   },
   {
     label: "Site",
     items: [
-      { to: "/admin/branding", label: "Branding" },
-      { to: "/admin/auth", label: "Authentication" },
-      { to: "/admin/encryption", label: "Encryption" },
+      { to: "/admin/branding", label: "Branding", keywords: ["logo", "colors", "site name", "favicon"] },
+      { to: "/admin/auth", label: "Authentication", keywords: ["sso", "saml", "login", "blocklist", "muted digest", "session", "unknown users"] },
+      { to: "/admin/encryption", label: "Encryption", keywords: ["kms", "kek", "at rest", "blind index"] },
     ],
   },
   {
     label: "Data",
     items: [
-      { to: "/admin/system-health", label: "System health", manager: true },
-      { to: "/admin/export", label: "Export", manager: true },
+      { to: "/admin/system-health", label: "System health", manager: true, keywords: ["jobs", "scheduler", "queue depth", "build", "version"] },
+      { to: "/admin/export", label: "Export", manager: true, keywords: ["csv", "download", "backup"] },
     ],
   },
 ];
+
+function filterBySearch(groups, term) {
+  const q = term.trim().toLowerCase();
+  if (!q) return groups;
+  return groups
+    .map((g) => {
+      const groupHit = g.label.toLowerCase().includes(q);
+      const items = g.items.filter((i) => {
+        if (groupHit) return true;
+        if (i.label.toLowerCase().includes(q)) return true;
+        if (Array.isArray(i.keywords)) {
+          for (const k of i.keywords) {
+            if (k.toLowerCase().includes(q)) return true;
+          }
+        }
+        return false;
+      });
+      return { ...g, items };
+    })
+    .filter((g) => g.items.length > 0);
+}
 
 function filterForRole(role) {
   const isAdmin = role === "Admin";
@@ -70,8 +94,9 @@ export default function Admin() {
   const { user } = useAuth();
   const location = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
+  const [search, setSearch] = useState("");
 
-  const groups = filterForRole(user?.role);
+  const groups = filterBySearch(filterForRole(user?.role), search);
 
   // Mobile: auto-close sidebar after route change.
   useEffect(() => {
@@ -132,7 +157,32 @@ export default function Admin() {
               ✕
             </button>
           </div>
+          <div className="mb-4 relative">
+            <input
+              type="search"
+              value={search}
+              onChange={(e) => setSearch(e.target.value)}
+              placeholder="Search admin…"
+              aria-label="Search admin sections"
+              className="w-full bg-surface border border-border rounded-md pl-8 pr-7 py-1.5 text-sm placeholder:text-fg-dim focus:outline-none focus:ring-2 focus:ring-brand/40 focus:border-brand/60"
+            />
+            <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-fg-dim text-sm pointer-events-none">⌕</span>
+            {search && (
+              <button
+                onClick={() => setSearch("")}
+                aria-label="Clear search"
+                className="absolute right-2 top-1/2 -translate-y-1/2 text-fg-dim hover:text-fg text-sm"
+              >
+                ✕
+              </button>
+            )}
+          </div>
           <nav className="space-y-5">
+            {groups.length === 0 && (
+              <div className="px-3 text-sm text-fg-muted italic">
+                No matches for "{search}".
+              </div>
+            )}
             {groups.map((g) => (
               <div key={g.label}>
                 <div className="px-3 mb-1.5 text-[11px] uppercase tracking-wider font-semibold text-fg-dim">
