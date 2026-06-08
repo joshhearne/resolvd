@@ -2102,7 +2102,14 @@ export default function TicketDetail() {
                         <div className="border border-dashed border-border rounded-lg">
                           <button onClick={() => setShowMuted(s => !s)}
                             className="w-full flex items-center justify-between px-3 py-2 text-xs text-fg-muted hover:text-fg">
-                            <span>{muted.length} muted vendor {muted.length === 1 ? "reply" : "replies"} {showMuted ? "(hide)" : "(show)"}</span>
+                            <span>{(() => {
+                              const vendorCount = muted.filter(c => c.vendor_contact_id).length;
+                              const otherCount = muted.length - vendorCount;
+                              const parts = [];
+                              if (vendorCount) parts.push(`${vendorCount} muted vendor ${vendorCount === 1 ? "reply" : "replies"}`);
+                              if (otherCount) parts.push(`${otherCount} muted ${otherCount === 1 ? "reply" : "replies"}`);
+                              return parts.join(" + ");
+                            })()} {showMuted ? "(hide)" : "(show)"}</span>
                             <span>{showMuted ? "▾" : "▸"}</span>
                           </button>
                           {showMuted && (
