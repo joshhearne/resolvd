@@ -831,6 +831,25 @@ async function initSchema() {
     // comment never appears in two days' worth of summaries.
     await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS digested_at TIMESTAMPTZ`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_comments_pending_digest ON comments(created_at) WHERE is_muted = TRUE AND digested_at IS NULL`);
+    // OOO bounceback comments are noise in the muted-digest — the digest
+    // exists to surface vendor replies a follower might want to unmute,
+    // and an out-of-office auto-responder never qualifies. New OOO
+    // inserts pre-stamp digested_at at create time (inboundProcessor),
+    // but anything that landed before that change is still un-digested.
+    // Backfill by matching muted comments to their ooo_reply_suppressed
+    // audit row (audit fires immediately after the comment insert, so a
+    // 10-second window comfortably covers the gap without false matches
+    // from other ooo events on the same ticket).
+    await client.query(`
+      UPDATE comments c
+         SET digested_at = NOW()
+        FROM audit_log al
+       WHERE c.is_muted = TRUE
+         AND c.digested_at IS NULL
+         AND al.ticket_id = c.ticket_id
+         AND al.action = 'ooo_reply_suppressed'
+         AND al.created_at BETWEEN c.created_at AND c.created_at + INTERVAL '10 seconds'
+    `);
 
     // Workspace-level scheduling for the muted-digest job. The scheduler
     // checks every 5 minutes and runs once the wall-clock has crossed

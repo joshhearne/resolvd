@@ -994,14 +994,24 @@ async function tryAutoReply({ candidateRef, subject, body, fromAddress, queueRow
   const vendorContactId = sender?.kind === 'contact' ? sender.contact.id : null;
 
   const patch = await buildWritePatch(pool, 'comments', { body: cleanedBody });
+  // OOO comments are noise by design — the muted-digest is there to
+  // catch genuinely-silenced vendor replies a follower might want to
+  // unmute, not to surface "I'm out until Friday" auto-responders.
+  // Pre-stamp digested_at so the digest job skips them on every run
+  // without needing a dedicated is_ooo flag. The comment still lands
+  // in the thread, still mutes, still audits — just doesn't ride the
+  // daily summary.
   const cols = ['ticket_id', 'user_id', 'is_external_visible', 'is_internal',
-    'is_muted', 'vendor_contact_id', 'source_inbound_email_id', ...patch.cols];
+    'is_muted', 'vendor_contact_id', 'source_inbound_email_id', 'digested_at',
+    ...patch.cols];
   const values = [
     ticket.id, authorUserId,
     sender?.kind === 'contact' && !oooSuppressed, // external-visible only for non-OOO vendor replies
     sender?.kind !== 'contact' || oooSuppressed,  // internal-only otherwise
     oooSuppressed,
-    vendorContactId, queueRowId || null, ...patch.values,
+    vendorContactId, queueRowId || null,
+    oooSuppressed ? new Date() : null,
+    ...patch.values,
   ];
   const placeholders = cols.map((_, i) => `$${i + 1}`).join(', ');
   const ins = await pool.query(
