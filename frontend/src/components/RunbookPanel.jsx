@@ -3,9 +3,15 @@ import toast from "react-hot-toast";
 import { api } from "../utils/api";
 
 // Lightweight BlockNote-JSON walker scoped to what runbooks actually
-// use. Heavy lifting (rich text, tables, etc.) stays in the KB
-// article view; here we just need labels + checkboxes + inline
-// @canned:<title> pills.
+// use. Heavy lifting (tables, embeds, etc.) stays in the KB article
+// view; here we render headings, paragraphs, ordered + bulleted lists
+// (with nesting via block.children), checklist items with persistent
+// boxes, fenced code blocks with a copy affordance, inline links, and
+// inline @canned:<title> pills that prefill the comment composer.
+//
+// flattenInline returns plain text for the cases where we only need a
+// string — counting steps, scanning a checkListItem label for canned
+// pills, etc. Rich rendering (links + styles) goes through renderInline.
 function flattenInline(node) {
   if (!node) return "";
   if (typeof node === "string") return node;
@@ -15,6 +21,51 @@ function flattenInline(node) {
     if (node.content) return flattenInline(node.content);
   }
   return "";
+}
+
+// Walk BlockNote inline content and emit React nodes. Recognises:
+//   - { type:'text', text, styles:{bold,italic,code,strike,underline} }
+//   - { type:'link', href, content:[…] } — clickable, opens in new tab
+// Anything unrecognised falls back to its `.text` field or recurses
+// into `.content` so future BlockNote features at least render their
+// text instead of disappearing.
+function renderInline(content, keyPrefix = "i") {
+  if (content == null) return null;
+  if (typeof content === "string") return content;
+  if (Array.isArray(content)) {
+    return content.map((n, i) => (
+      <React.Fragment key={`${keyPrefix}-${i}`}>
+        {renderInline(n, `${keyPrefix}-${i}`)}
+      </React.Fragment>
+    ));
+  }
+  if (typeof content !== "object") return null;
+  if (content.type === "link" && content.href) {
+    return (
+      <a
+        href={content.href}
+        target="_blank"
+        rel="noopener noreferrer"
+        className="text-brand hover:underline break-all"
+      >
+        {renderInline(content.content, `${keyPrefix}-l`)}
+      </a>
+    );
+  }
+  if (typeof content.text === "string") {
+    let node = content.text;
+    const s = content.styles || {};
+    if (s.code) node = (
+      <code className="bg-surface px-1 py-0.5 rounded text-[0.85em] font-mono border border-border text-brand">{node}</code>
+    );
+    if (s.bold) node = <strong className="font-semibold">{node}</strong>;
+    if (s.italic) node = <em className="italic">{node}</em>;
+    if (s.strike) node = <s>{node}</s>;
+    if (s.underline) node = <u>{node}</u>;
+    return node;
+  }
+  if (content.content) return renderInline(content.content, keyPrefix);
+  return null;
 }
 
 // Splits text on `@canned:<title>` tokens. Multi-word titles are
@@ -54,81 +105,219 @@ function tokenizeCannedPills(text) {
   return out;
 }
 
-function InlineRow({ text, cannedByTitle, onCannedClick }) {
-  const parts = tokenizeCannedPills(text);
+// Renders inline content: text runs (with styles + canned-pill
+// tokenisation), and link nodes (passed through to renderInline so
+// they stay clickable). Pill detection only fires on plain-text
+// segments — a URL inside a link node never matches @canned syntax.
+function InlineRow({ content, cannedByTitle, onCannedClick }) {
+  const items = Array.isArray(content) ? content : (content ? [content] : []);
   return (
     <span>
-      {parts.map((p, i) => {
-        if (p.kind === "text") return <span key={i}>{p.value}</span>;
-        const canned = cannedByTitle.get(p.value.toLowerCase());
-        if (canned) {
+      {items.map((node, idx) => {
+        if (node && node.type === "link" && node.href) {
           return (
-            <button
-              key={i}
-              type="button"
-              onClick={() => onCannedClick(canned)}
-              className="inline-flex items-center gap-1 px-1.5 py-0.5 mx-0.5 rounded text-[11px] bg-brand/10 text-brand hover:bg-brand/20"
-              title={`Apply canned response "${canned.title}" to the comment composer`}
-            >
-              📋 {canned.title}
-            </button>
+            <React.Fragment key={`l-${idx}`}>
+              {renderInline(node, `l-${idx}`)}
+            </React.Fragment>
           );
         }
-        // Unknown canned reference — render dim so authors notice.
+        const text = typeof node === "string"
+          ? node
+          : (typeof node?.text === "string" ? node.text : "");
+        if (!text) {
+          // Unrecognised inline shape — try renderInline so styled text
+          // / nested inline content still appears instead of vanishing.
+          return (
+            <React.Fragment key={`x-${idx}`}>
+              {renderInline(node, `x-${idx}`)}
+            </React.Fragment>
+          );
+        }
+        const styles = node?.styles || {};
+        const parts = tokenizeCannedPills(text);
         return (
-          <span key={i} className="inline-block px-1 mx-0.5 rounded text-[11px] bg-surface-2 text-fg-dim"
-            title="Canned response not found in this project's scope">
-            @canned:{p.value} (?)
-          </span>
+          <React.Fragment key={`t-${idx}`}>
+            {parts.map((p, i) => {
+              if (p.kind === "text") {
+                let frag = p.value;
+                if (styles.code) frag = (
+                  <code className="bg-surface px-1 py-0.5 rounded text-[0.85em] font-mono border border-border text-brand">{frag}</code>
+                );
+                if (styles.bold) frag = <strong className="font-semibold">{frag}</strong>;
+                if (styles.italic) frag = <em className="italic">{frag}</em>;
+                if (styles.strike) frag = <s>{frag}</s>;
+                if (styles.underline) frag = <u>{frag}</u>;
+                return <React.Fragment key={i}>{frag}</React.Fragment>;
+              }
+              const canned = cannedByTitle.get(p.value.toLowerCase());
+              if (canned) {
+                return (
+                  <button
+                    key={i}
+                    type="button"
+                    onClick={() => onCannedClick(canned)}
+                    className="inline-flex items-center gap-1 px-1.5 py-0.5 mx-0.5 rounded text-[11px] bg-brand/10 text-brand hover:bg-brand/20"
+                    title={`Apply canned response "${canned.title}" to the comment composer`}
+                  >
+                    📋 {canned.title}
+                  </button>
+                );
+              }
+              return (
+                <span key={i} className="inline-block px-1 mx-0.5 rounded text-[11px] bg-surface-2 text-fg-dim"
+                  title="Canned response not found in this project's scope">
+                  @canned:{p.value} (?)
+                </span>
+              );
+            })}
+          </React.Fragment>
         );
       })}
     </span>
   );
 }
 
-function BlockRow({ block, stepStates, setStep, cannedByTitle, onCannedClick }) {
-  const id = block.id || `b-${Math.random().toString(36).slice(2, 9)}`;
-  const text = flattenInline(block.content);
-  if (block.type === "heading") {
-    const level = Math.min(3, Math.max(1, block.props?.level || 2));
-    const Tag = `h${level + 1}`; // h2/h3/h4 — keep page hierarchy sane
-    return <Tag className="font-semibold text-fg mt-3 mb-1 text-sm">{text}</Tag>;
+// Fenced code-block renderer. Shows the language badge (if any) in the
+// top-right corner and exposes a copy-to-clipboard button on hover —
+// same affordance as MarkdownContent. Code blocks in runbooks are
+// commonly templated vendor-email bodies; the copy button is the whole
+// point of putting them in a fenced block.
+function CodeBlockRow({ block }) {
+  const [copied, setCopied] = React.useState(false);
+  const code = flattenInline(block.content).replace(/\n$/, "");
+  const lang = block.props?.language;
+  async function copy() {
+    try {
+      await navigator.clipboard.writeText(code);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 1500);
+    } catch {
+      // Clipboard API blocked (insecure context, etc.) — user can
+      // still select + copy by hand.
+    }
   }
-  if (block.type === "checkListItem") {
-    const state = stepStates[id] || {};
-    return (
-      <label className="flex items-start gap-2 py-1 cursor-pointer hover:bg-surface-2/50 rounded px-1">
-        <input
-          type="checkbox"
-          checked={!!state.checked}
-          onChange={(e) => setStep(id, e.target.checked)}
-          className="mt-1 flex-shrink-0"
-        />
-        <div className="flex-1 text-sm">
-          <InlineRow text={text} cannedByTitle={cannedByTitle} onCannedClick={onCannedClick} />
-          {state.checked && state.checked_by_name && (
-            <span className="ml-2 text-[10px] text-fg-dim">
-              ✓ {state.checked_by_name}
-              {state.checked_at && ` · ${new Date(state.checked_at).toLocaleString()}`}
-            </span>
-          )}
-        </div>
-      </label>
-    );
-  }
-  if (block.type === "bulletListItem" || block.type === "numberedListItem") {
-    return (
-      <li className="text-sm ml-5 list-disc">
-        <InlineRow text={text} cannedByTitle={cannedByTitle} onCannedClick={onCannedClick} />
-      </li>
-    );
-  }
-  // paragraph / default
   return (
-    <p className="text-sm text-fg leading-relaxed">
-      <InlineRow text={text} cannedByTitle={cannedByTitle} onCannedClick={onCannedClick} />
+    <div className="relative group my-2">
+      {lang && (
+        <span className="absolute top-1.5 right-14 text-[10px] font-mono uppercase tracking-wide text-fg-dim bg-surface-2 border border-border rounded px-1.5 py-0.5 pointer-events-none select-none">
+          {lang}
+        </span>
+      )}
+      <button
+        type="button"
+        onClick={copy}
+        className="absolute top-1.5 right-1.5 text-[10px] font-mono uppercase tracking-wide text-fg-muted hover:text-fg bg-surface-2 hover:bg-surface border border-border rounded px-1.5 py-0.5 opacity-0 group-hover:opacity-100 focus:opacity-100 transition-opacity"
+        aria-label="Copy code"
+        title="Copy code"
+      >
+        {copied ? "✓" : "Copy"}
+      </button>
+      <pre className="bg-surface border border-border rounded-lg p-3 overflow-x-auto text-xs font-mono text-fg leading-relaxed whitespace-pre-wrap">
+        <code>{code}</code>
+      </pre>
+    </div>
+  );
+}
+
+function HeadingBlock({ block, opts }) {
+  const level = Math.min(3, Math.max(1, block.props?.level || 2));
+  const Tag = `h${level + 1}`; // h2/h3/h4 — keep page hierarchy sane
+  return (
+    <Tag className="font-semibold text-fg mt-3 mb-1 text-sm">
+      <InlineRow content={block.content} cannedByTitle={opts.cannedByTitle} onCannedClick={opts.onCannedClick} />
+    </Tag>
+  );
+}
+
+function ParagraphBlock({ block, opts }) {
+  return (
+    <p className="text-sm text-fg leading-relaxed my-1">
+      <InlineRow content={block.content} cannedByTitle={opts.cannedByTitle} onCannedClick={opts.onCannedClick} />
     </p>
   );
+}
+
+function CheckListBlock({ block, opts }) {
+  const id = block.id || `b-${Math.random().toString(36).slice(2, 9)}`;
+  const state = opts.stepStates[id] || {};
+  return (
+    <label className="flex items-start gap-2 py-1 cursor-pointer hover:bg-surface-2/50 rounded px-1">
+      <input
+        type="checkbox"
+        checked={!!state.checked}
+        onChange={(e) => opts.setStep(id, e.target.checked)}
+        className="mt-1 flex-shrink-0"
+      />
+      <div className="flex-1 text-sm">
+        <InlineRow content={block.content} cannedByTitle={opts.cannedByTitle} onCannedClick={opts.onCannedClick} />
+        {state.checked && state.checked_by_name && (
+          <span className="ml-2 text-[10px] text-fg-dim">
+            ✓ {state.checked_by_name}
+            {state.checked_at && ` · ${new Date(state.checked_at).toLocaleString()}`}
+          </span>
+        )}
+        {Array.isArray(block.children) && block.children.length > 0 && (
+          <div className="mt-1">{renderBlocks(block.children, opts)}</div>
+        )}
+      </div>
+    </label>
+  );
+}
+
+// Walk a flat sequence of BlockNote blocks and emit React nodes.
+// Consecutive numberedListItem / bulletListItem siblings get grouped
+// into a single <ol> / <ul> so list numbering stays continuous and
+// the markers (decimal / disc) render. block.children carries any
+// indented sub-items — recurse with the same grouping logic so a
+// nested numbered list under step 3 renders as its own <ol> inside
+// that <li>.
+function renderBlocks(blocks, opts) {
+  if (!Array.isArray(blocks) || blocks.length === 0) return null;
+  const out = [];
+  let i = 0;
+  while (i < blocks.length) {
+    const b = blocks[i];
+    if (b?.type === "numberedListItem" || b?.type === "bulletListItem") {
+      const listType = b.type;
+      const group = [];
+      while (i < blocks.length && blocks[i]?.type === listType) {
+        group.push(blocks[i]);
+        i++;
+      }
+      const ordered = listType === "numberedListItem";
+      const ListTag = ordered ? "ol" : "ul";
+      const listClass = ordered
+        ? "list-decimal list-outside ml-6 my-1 space-y-0.5"
+        : "list-disc list-outside ml-6 my-1 space-y-0.5";
+      out.push(
+        <ListTag key={`list-${i}-${group[0]?.id || ""}`} className={listClass}>
+          {group.map((item, idx) => (
+            <li key={item.id || idx} className="text-sm text-fg">
+              <InlineRow
+                content={item.content}
+                cannedByTitle={opts.cannedByTitle}
+                onCannedClick={opts.onCannedClick}
+              />
+              {Array.isArray(item.children) && item.children.length > 0
+                && renderBlocks(item.children, opts)}
+            </li>
+          ))}
+        </ListTag>
+      );
+      continue;
+    }
+    out.push(<BlockRow key={b?.id || `b-${i}`} block={b} opts={opts} />);
+    i++;
+  }
+  return out;
+}
+
+function BlockRow({ block, opts }) {
+  if (!block) return null;
+  if (block.type === "heading") return <HeadingBlock block={block} opts={opts} />;
+  if (block.type === "checkListItem") return <CheckListBlock block={block} opts={opts} />;
+  if (block.type === "codeBlock") return <CodeBlockRow block={block} />;
+  return <ParagraphBlock block={block} opts={opts} />;
 }
 
 export default function RunbookPanel({ ticket, user, projectMembers, onApplyCanned }) {
@@ -341,16 +530,12 @@ export default function RunbookPanel({ ticket, user, projectMembers, onApplyCann
               {blocks.length === 0 && (
                 <p className="text-xs text-fg-dim italic">(empty runbook)</p>
               )}
-              {blocks.map((b, i) => (
-                <BlockRow
-                  key={b.id || i}
-                  block={b}
-                  stepStates={stepStatesEnriched}
-                  setStep={(stepId, checked) => setStep(run, stepId, checked)}
-                  cannedByTitle={cannedByTitle}
-                  onCannedClick={handleCannedClick}
-                />
-              ))}
+              {renderBlocks(blocks, {
+                stepStates: stepStatesEnriched,
+                setStep: (stepId, checked) => setStep(run, stepId, checked),
+                cannedByTitle,
+                onCannedClick: handleCannedClick,
+              })}
             </div>
           </div>
         );
