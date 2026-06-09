@@ -977,6 +977,29 @@ async function initSchema() {
     // are linked — avoids the race where vendor email leaves before the
     // attachments land. NULL when the comment fired vendor email inline.
     await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS vendor_actor_id INTEGER REFERENCES users(id) ON DELETE SET NULL`);
+    // Per-attachment "delivered to vendor" stamp. Vendor-bound outbound
+    // checks this so a file uploaded during an internal back-and-forth
+    // gets included the first time someone escalates the ticket to the
+    // vendor — instead of being filtered out because it wasn't linked to
+    // the specific vendor-visible comment that triggered the send.
+    // Stamped after a successful send (sent>0). Existing rows backfill
+    // to NULL = unsent.
+    await client.query(`ALTER TABLE attachments ADD COLUMN IF NOT EXISTS sent_to_vendor_at TIMESTAMPTZ`);
+    // Pre-stamp historical files so the first vendor send after this
+    // migration doesn't dump every old internal-only file at the vendor.
+    // We mark anything already on the ticket as "already sent" when the
+    // ticket has vendor_notified_at set (vendor has been engaged). Tickets
+    // with no prior vendor contact leave attachments unsent — the next
+    // vendor escalation will then include them all, which is the desired
+    // behavior for a brand-new vendor handoff.
+    await client.query(`
+      UPDATE attachments a
+         SET sent_to_vendor_at = t.vendor_notified_at
+        FROM tickets t
+       WHERE a.ticket_id = t.id
+         AND a.sent_to_vendor_at IS NULL
+         AND t.vendor_notified_at IS NOT NULL
+    `);
     await client.query(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS notification_prefs JSONB NOT NULL DEFAULT '{}'`);
 
     // Seed default templates the first time the table is created.
