@@ -39,7 +39,7 @@ const tpl = require('./emailTemplate');
 const { sendMail } = require('./email');
 const { getBranding } = require('./branding');
 const { notifyManagersAndAdmins } = require('./notifications');
-const { fanoutNewTicket } = require('./notificationFanout');
+const { fanoutNewTicket, fanoutAssignment } = require('./notificationFanout');
 const { autoProvisionSubmitter } = require('./userAutoProvision');
 const sla = require('./sla');
 const assignmentPolicies = require('./assignmentPolicies');
@@ -810,6 +810,18 @@ async function tryAutoCreate({ subject, body, fromAddress, ccAddresses, attachme
         console.error('Failed to create unmatched_cc notification:', e.message);
       }
     }
+  }
+
+  // Notify the auto-assignee (policy pick / project default / forwarding
+  // agent). fanoutNewTicket excludes the assignee on the assumption an
+  // assignment fanout covers them — on the inbound path that's us.
+  if (ticket.assigned_to && ticket.assigned_to !== submitter.id) {
+    fanoutAssignment(pool, {
+      ticket,
+      assigneeId: ticket.assigned_to,
+      actorId: submitter.id,
+      actorName: submitter.display_name || submitter.email,
+    }).catch(err => console.error('fanoutAssignment (inbound) failed:', err.message));
   }
 
   // Broadcast to opted-in Admins/Managers. Inbound has no acting user

@@ -23,7 +23,7 @@ const blindIndex = require('./blindIndex');
 const sla = require('./sla');
 const assignmentPolicies = require('./assignmentPolicies');
 const { notifyManagersAndAdmins } = require('./notifications');
-const { fanoutNewTicket } = require('./notificationFanout');
+const { fanoutNewTicket, fanoutAssignment } = require('./notificationFanout');
 
 // Zabbix templates frequently ship URLs containing the user macro
 // `{$ZABBIX.URL}` which Zabbix itself doesn't expand for outbound
@@ -584,6 +584,17 @@ async function promoteAlertToTicket(client, source, alertRow, rule, actingUserId
     ).then(async (r) => {
       const ticket = r.rows[0];
       if (!ticket) return;
+      // Notify the auto-assignee directly — fanoutNewTicket excludes the
+      // assignee on the assumption an assignment fanout covers them, so
+      // promotion has to fire it itself.
+      if (ticket.assigned_to && ticket.assigned_to !== actingUserId) {
+        await fanoutAssignment(null, {
+          ticket,
+          assigneeId: ticket.assigned_to,
+          actorId: actingUserId || null,
+          actorName: source?.name || 'Alert',
+        }).catch((err) => console.error('fanoutAssignment (alert) failed:', err.message));
+      }
       await fanoutNewTicket(null, {
         ticket,
         actorId: actingUserId || null,
