@@ -33,6 +33,7 @@ import AdminLabelPrinter from "./pages/AdminLabelPrinter";
 import AdminSlaPolicies from "./pages/AdminSlaPolicies";
 import AdminTicketSchedules from "./pages/AdminTicketSchedules";
 import AdminAssignmentPolicies from "./pages/AdminAssignmentPolicies";
+import AdminDedupOmitRules from "./pages/AdminDedupOmitRules";
 import AdminEscalationPolicies from "./pages/AdminEscalationPolicies";
 import AdminCustomFields from "./pages/AdminCustomFields";
 import PrintExport from "./pages/PrintExport";
@@ -238,6 +239,7 @@ function AppRoutes() {
           <Route path="label-printer" element={<AdminLabelPrinter />} />
           <Route path="sla" element={<AdminSlaPolicies />} />
           <Route path="assignment" element={<AdminAssignmentPolicies />} />
+          <Route path="dedup-omit-rules" element={<AdminDedupOmitRules />} />
           <Route path="escalations" element={<AdminEscalationPolicies />} />
           <Route path="custom-fields" element={<AdminCustomFields />} />
           <Route path="ticket-schedules" element={<AdminTicketSchedules />} />

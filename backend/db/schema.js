@@ -1954,6 +1954,41 @@ async function initSchema() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_assignment_policies_lookup
       ON assignment_policies(project_id, priority, priority_op) WHERE enabled = TRUE`);
 
+    // Dedup-omit rules. Automated/reporter mail (e.g. Inky phish reports)
+    // reuses an identical subject on every message, which collides with
+    // the inbound auto-create dedup heuristics (same-title → comment-append,
+    // strong-overlap → defer to manual queue). A matching enabled rule
+    // tells tryAutoCreate to SKIP dedup entirely so each report spins up
+    // its own ticket. `pattern` is a JS-regex source compiled with `flags`
+    // (validated on write). `scope` decides which inbound field(s) the
+    // pattern is tested against. See services/dedupOmit.js.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS dedup_omit_rules (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        pattern TEXT NOT NULL,
+        flags TEXT NOT NULL DEFAULT 'i',
+        scope TEXT NOT NULL DEFAULT 'title'
+          CHECK (scope IN ('title', 'body', 'title_body')),
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_dedup_omit_enabled
+      ON dedup_omit_rules(enabled) WHERE enabled = TRUE`);
+    // Seed the Inky phish-report rule once so reports work out of the box.
+    // Keyed on the constant Inky subject; scoped to the title. Admins can
+    // edit/disable/extend via the Dedup omit rules admin page.
+    await client.query(`
+      INSERT INTO dedup_omit_rules (name, pattern, flags, scope)
+      SELECT 'Inky phish reports', 'User Report via Inky Phish Fence', 'i', 'title'
+       WHERE NOT EXISTS (
+         SELECT 1 FROM dedup_omit_rules
+          WHERE pattern = 'User Report via Inky Phish Fence'
+       )
+    `);
+
     // Escalation chains. One row = one step. Steps grouped by
     // (priority, project_id, trigger); step_order drives execution.
     // Trigger names mirror the four SLA milestones surfaced by

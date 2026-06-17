@@ -189,6 +189,19 @@ function stripHtml(html) {
     // Inline <code> gets single-backtick wrapping for the same reason.
     .replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, (_m, body) => `\n\n\`\`\`\n${body.replace(/<[^>]+>/g, '')}\n\`\`\`\n\n`)
     .replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, (_m, body) => `\`${body.replace(/<[^>]+>/g, '')}\``)
+    // Preserve hyperlinks. The generic tag stripper below would drop the
+    // <a> wrapper and leave only the link text ("View in INKY Dashboard"),
+    // losing the URL. Convert to a markdown link first so MarkdownContent
+    // renders it clickable. Emit a bare URL when the anchor text is empty
+    // or identical to the href; skip non-http(s) targets (mailto:, tel:,
+    // javascript:) by leaving just their text.
+    .replace(/<a\b[^>]*?\bhref\s*=\s*(["'])([\s\S]*?)\1[^>]*>([\s\S]*?)<\/a>/gi, (_m, _q, href, inner) => {
+      const label = inner.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+      const url = href.trim();
+      if (!/^https?:\/\//i.test(url)) return label || url;
+      if (!label || label === url) return url;
+      return `[${label}](${url})`;
+    })
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/(p|div|li|h[1-6]|tr|td|th|blockquote|article|section|header|footer|pre)\s*>/gi, '\n')
     .replace(/<[^>]+>/g, '')
