@@ -145,6 +145,7 @@ app.use('/api/dedup-omit-rules', dedupOmitRuleRoutes);
 app.use('/api/escalation-policies', escalationPolicyRoutes);
 app.use('/api/agents', agentRoutes);
 app.use('/api/custom-field-defs', customFieldRoutes);
+app.use('/api/forms', require('./routes/forms'));
 app.use('/api/ai', aiAssistRoutes);
 app.use('/api/ai-settings', aiSettingsRoutes);
 app.use('/api/security', securityRoutes);

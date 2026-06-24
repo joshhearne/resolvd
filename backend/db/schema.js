@@ -1650,6 +1650,88 @@ async function initSchema() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_custom_field_values_asset
       ON custom_field_values(asset_id) WHERE asset_id IS NOT NULL`);
 
+    // ───── Project-scoped custom forms (Phase 1) ─────
+    // Custom fields become optionally project-local: project_id NULL = the
+    // shared global library (legacy + cross-project), project_id set = local
+    // to one project with its slug auto-prefixed by project tag (e.g.
+    // "hr-username") to cut cross-project name collisions. `sensitive` marks
+    // values to encrypt-at-rest + mask in UI. `archived` soft-deletes a def
+    // so historical ticket values survive (we never hard-drop defs in use).
+    await client.query(`ALTER TABLE custom_field_defs ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE`);
+    await client.query(`ALTER TABLE custom_field_defs ADD COLUMN IF NOT EXISTS sensitive BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`ALTER TABLE custom_field_defs ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT FALSE`);
+    // agent_only: hide from the submitter-facing new-ticket form (the field
+    // never renders for non-handlers and is never required of them). Agents
+    // fill it on the ticket detail page; canned responses can still pull the
+    // value via {field.<slug>}.
+    await client.query(`ALTER TABLE custom_field_defs ADD COLUMN IF NOT EXISTS agent_only BOOLEAN NOT NULL DEFAULT FALSE`);
+    // Replace the global UNIQUE(entity_type, slug) with two partial uniques so
+    // a slug can repeat across projects but stays unique within a scope.
+    await client.query(`ALTER TABLE custom_field_defs DROP CONSTRAINT IF EXISTS custom_field_defs_entity_type_slug_key`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_cfd_global ON custom_field_defs(entity_type, slug) WHERE project_id IS NULL`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_cfd_project ON custom_field_defs(entity_type, slug, project_id) WHERE project_id IS NOT NULL`);
+
+    // Custom field values gain a ticket_id parallel to asset_id (exactly one
+    // set per row). value_text_enc holds the ciphertext for sensitive defs.
+    await client.query(`ALTER TABLE custom_field_values ADD COLUMN IF NOT EXISTS ticket_id INTEGER REFERENCES tickets(id) ON DELETE CASCADE`);
+    await client.query(`ALTER TABLE custom_field_values ADD COLUMN IF NOT EXISTS value_text_enc BYTEA`);
+    // The original inline UNIQUE(def_id, asset_id) can't express "one of
+    // asset/ticket"; swap it for two partial uniques.
+    await client.query(`ALTER TABLE custom_field_values DROP CONSTRAINT IF EXISTS custom_field_values_def_id_asset_id_key`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_cfv_asset ON custom_field_values(def_id, asset_id) WHERE asset_id IS NOT NULL`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_cfv_ticket ON custom_field_values(def_id, ticket_id) WHERE ticket_id IS NOT NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_cfv_ticket ON custom_field_values(ticket_id) WHERE ticket_id IS NOT NULL`);
+
+    // Category → form → field-binding. A category is a project sub-grouping
+    // ("Service Request", "HR"); a form is a request type ("Onboarding") that
+    // pulls in fields; the binding row carries the per-form `required` flag —
+    // required-ness lives HERE, never on the def, so a field is only mandatory
+    // on the forms that opt in (the anti-bleed guarantee).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ticket_categories (
+        id SERIAL PRIMARY KEY,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(project_id, name)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_categories_project ON ticket_categories(project_id, sort_order, id)`);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ticket_forms (
+        id SERIAL PRIMARY KEY,
+        category_id INTEGER NOT NULL REFERENCES ticket_categories(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        description TEXT,
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(category_id, name)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_forms_category ON ticket_forms(category_id, sort_order, id)`);
+    // Boilerplate that pre-fills the new-ticket Title/Description when this
+    // form is chosen — the structured fields carry the actual request data.
+    await client.query(`ALTER TABLE ticket_forms ADD COLUMN IF NOT EXISTS default_title TEXT`);
+    await client.query(`ALTER TABLE ticket_forms ADD COLUMN IF NOT EXISTS default_description TEXT`);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ticket_form_fields (
+        id SERIAL PRIMARY KEY,
+        form_id INTEGER NOT NULL REFERENCES ticket_forms(id) ON DELETE CASCADE,
+        field_def_id INTEGER NOT NULL REFERENCES custom_field_defs(id) ON DELETE CASCADE,
+        required BOOLEAN NOT NULL DEFAULT FALSE,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(form_id, field_def_id)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_form_fields_form ON ticket_form_fields(form_id, sort_order, id)`);
+    // Which form filed a ticket (for display + reporting). NULL for legacy /
+    // alert / email-ingested tickets that never went through a form.
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS form_id INTEGER REFERENCES ticket_forms(id) ON DELETE SET NULL`);
+
     // Audit + dedup log. UNIQUE(source_id, external_event_id) blocks Zabbix
     // resends from spawning duplicate tickets even if the mapper logic
     // changes. raw_payload kept for debugging when a mapper misbehaves.

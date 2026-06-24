@@ -35,8 +35,13 @@
 //   {site.url}              FRONTEND_URL
 
 const { pool } = require('../db/pool');
+const ticketCustomFields = require('./ticketCustomFields');
 
 const TAG_RE = /\{([a-z_]+)\.([a-z_0-9]+)\}/gi;
+// Custom-field tags use the field's slug, which can contain hyphens
+// (e.g. {field.inc-motility-temp-password}) — a separate, hyphen-tolerant
+// pass since TAG_RE's key class excludes '-'.
+const FIELD_RE = /\{field\.([a-z0-9_-]+)\}/gi;
 
 function firstName(displayName) {
   if (!displayName) return '';
@@ -113,7 +118,7 @@ async function loadConsumableContext(consumableId) {
 async function buildContext({ ticketId, actorId, consumableId }) {
   const ctx = {
     ticket: {}, submitter: {}, assignee: {}, actor: {}, user: {},
-    site: {}, consumable: {}, vendor: {},
+    site: {}, consumable: {}, vendor: {}, field: {},
   };
 
   const branding = await pool.query(`SELECT site_name FROM branding WHERE id = 1`).catch(() => null);
@@ -143,6 +148,16 @@ async function buildContext({ ticketId, actorId, consumableId }) {
       ctx.submitter = userNamespace({ display_name: t.submitter_name, email: t.submitter_email });
       ctx.assignee = userNamespace({ display_name: t.assignee_name, email: t.assignee_email });
     }
+
+    // Custom-field values for {field.<slug>} tags. The agent is composing the
+    // response, so sensitive/agent-only values are revealed here.
+    try {
+      const cfs = await ticketCustomFields.readValues(pool, ticketId, { reveal: true });
+      for (const f of cfs) {
+        const v = f.type === 'bool' ? (f.value ? 'Yes' : 'No') : (f.value == null ? '' : f.value);
+        ctx.field[String(f.slug).toLowerCase()] = String(v);
+      }
+    } catch { /* custom fields are best-effort */ }
 
     // Pull hostname from the most-recent alert payload on the ticket.
     // No-op when the ticket wasn't created from an alert.
@@ -195,12 +210,18 @@ async function buildContext({ ticketId, actorId, consumableId }) {
 
 function applyTags(body, ctx) {
   if (!body) return '';
-  return body.replace(TAG_RE, (match, ns, field) => {
+  let out = body.replace(TAG_RE, (match, ns, field) => {
     const namespace = ctx[ns.toLowerCase()];
     if (!namespace) return match;
     const v = namespace[field.toLowerCase()];
     return v == null || v === '' ? match : String(v);
   });
+  // Hyphen-tolerant custom-field pass for {field.<slug>}.
+  out = out.replace(FIELD_RE, (match, slug) => {
+    const v = ctx.field ? ctx.field[String(slug).toLowerCase()] : undefined;
+    return v == null || v === '' ? match : String(v);
+  });
+  return out;
 }
 
 async function render(body, { ticketId, actorId, consumableId } = {}) {

@@ -36,6 +36,7 @@ import AdminAssignmentPolicies from "./pages/AdminAssignmentPolicies";
 import AdminDedupOmitRules from "./pages/AdminDedupOmitRules";
 import AdminEscalationPolicies from "./pages/AdminEscalationPolicies";
 import AdminCustomFields from "./pages/AdminCustomFields";
+import AdminForms from "./pages/AdminForms";
 import PrintExport from "./pages/PrintExport";
 import Projects from "./pages/Projects";
 import ProjectDetail from "./pages/ProjectDetail";
@@ -242,6 +243,7 @@ function AppRoutes() {
           <Route path="dedup-omit-rules" element={<AdminDedupOmitRules />} />
           <Route path="escalations" element={<AdminEscalationPolicies />} />
           <Route path="custom-fields" element={<AdminCustomFields />} />
+          <Route path="forms" element={<AdminForms />} />
           <Route path="ticket-schedules" element={<AdminTicketSchedules />} />
         </Route>
       </Route>

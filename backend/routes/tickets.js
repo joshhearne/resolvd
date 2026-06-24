@@ -18,6 +18,7 @@ const blindIndex = require('../services/blindIndex');
 const { logSupportRead } = require('../middleware/supportAccess');
 const { sendVendorEmail } = require('../services/vendorOutbound');
 const { auditLog, systemComment } = require('../services/ticketHelpers');
+const ticketCustomFields = require('../services/ticketCustomFields');
 
 const router = express.Router();
 
@@ -333,7 +334,7 @@ router.get('/', requireAuth, async (req, res) => {
 router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter'), async (req, res) => {
   try {
     const user = req.session.user;
-    const { project_id, title, description, impact = 2, urgency = 2, external_ticket_ref, assigned_to, contact_ids, submitted_by } = req.body;
+    const { project_id, title, description, impact = 2, urgency = 2, external_ticket_ref, assigned_to, contact_ids, submitted_by, form_id, custom_fields } = req.body;
 
     if (!project_id) return res.status(400).json({ error: 'project_id required' });
     if (!title) return res.status(400).json({ error: 'Title required' });
@@ -358,6 +359,37 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter
         [project_id, user.id]
       );
       if (!member.rows[0]) return res.status(403).json({ error: 'Not a member of this project' });
+    }
+
+    // Custom form: validate the form belongs to this project and that every
+    // field the form marks required is supplied. Only THIS form's fields are
+    // checked — fields on other projects'/forms' never apply here.
+    let formId = null;
+    let coercedCustomFields = [];
+    if (form_id !== undefined && form_id !== null && form_id !== '') {
+      formId = Number(form_id);
+      if (!Number.isInteger(formId) || formId <= 0) return res.status(400).json({ error: 'invalid form_id' });
+      const formRow = await pool.query(
+        `SELECT c.project_id FROM ticket_forms f
+           JOIN ticket_categories c ON c.id = f.category_id
+          WHERE f.id = $1 AND f.enabled = TRUE`,
+        [formId]
+      );
+      if (!formRow.rows[0]) return res.status(404).json({ error: 'form not found or disabled' });
+      if (Number(formRow.rows[0].project_id) !== Number(project_id)) {
+        return res.status(400).json({ error: 'form does not belong to this project' });
+      }
+      try {
+        const isAgent = ['Admin', 'Manager', 'Tech'].includes(user.role);
+        const { missing, coerced } = await ticketCustomFields.validateForForm(pool, formId, custom_fields, { agentView: isAgent });
+        if (missing.length) {
+          return res.status(422).json({ error: 'Required fields missing', missing });
+        }
+        coercedCustomFields = coerced;
+      } catch (e) {
+        if (e.status === 400) return res.status(400).json({ error: e.message });
+        throw e;
+      }
     }
 
     const imp = Number(impact);
@@ -386,13 +418,14 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter
       const mode = await getMode(client);
       const baseCols = ['project_id', 'internal_ref', 'submitted_by', 'assigned_to',
         'impact', 'urgency', 'computed_priority', 'effective_priority', 'external_ticket_ref',
-        'title_blind_idx'];
+        'title_blind_idx', 'form_id'];
       const baseValues = [
         Number(project_id), internalRef, effectiveSubmitterId,
         effectiveAssignee || null,
         imp, urg, computed, computed,
         external_ticket_ref || null,
         mode === 'standard' ? blindIndex.buildIndex(title) : null,
+        formId,
       ];
       const cols = [...baseCols, ...sensitivePatch.cols];
       const values = [...baseValues, ...sensitivePatch.values];
@@ -404,6 +437,12 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter
       );
 
       const t = result.rows[0];
+
+      // Persist custom-field values for the chosen form (sensitive defs are
+      // encrypted inside writeValues). Same transaction as the ticket INSERT.
+      if (coercedCustomFields.length) {
+        await ticketCustomFields.writeValues(client, t.id, coercedCustomFields);
+      }
 
       // Apply AI rewrite log if client passed one (description was
       // AI-rewritten in the new-ticket form). Snapshot metadata onto
@@ -632,9 +671,53 @@ router.get('/:id', requireAuth, async (req, res) => {
     await decryptRow('tickets', result.rows[0], { aliases: TICKET_JOIN_ALIASES });
     await logSupportRead(req, { action: 'ticket.view', targetTable: 'tickets', targetId: result.rows[0].id });
     await stripAiMetadataIfHidden(req.session.user, result.rows[0]);
+    // Custom-field values (from the form the ticket was filed with). Sensitive
+    // values are revealed only to internal handlers; everyone else sees a mask.
+    const reveal = ['Admin', 'Manager', 'Tech'].includes(req.session.user.role);
+    result.rows[0].custom_fields = await ticketCustomFields.readValues(pool, result.rows[0].id, { reveal });
     res.json(result.rows[0]);
   } catch (err) {
     console.error(err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// PATCH /api/tickets/:id/custom-fields — agent-side fill/update of custom
+// field values (including agent-only fields that are hidden from the
+// submitter form). Handlers only. Body: [{def_id, value}] or
+// { custom_fields: [...] }; an empty value clears the field. Returns the
+// refreshed (revealed) custom_fields.
+router.patch('/:id(\\d+)/custom-fields', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+  try {
+    const ticketId = Number(req.params.id);
+    const tk = await pool.query('SELECT id, form_id FROM tickets WHERE id = $1', [ticketId]);
+    if (!tk.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
+    if (!tk.rows[0].form_id) return res.status(400).json({ error: 'Ticket has no form; no custom fields to edit' });
+    const items = Array.isArray(req.body) ? req.body
+      : (Array.isArray(req.body?.custom_fields) ? req.body.custom_fields : null);
+    if (!items) return res.status(400).json({ error: 'expected array of {def_id, value}' });
+
+    let changed = [];
+    let badReq = null;
+    await transaction(async (client) => {
+      try {
+        changed = await ticketCustomFields.applyTicketPatch(client, ticketId, tk.rows[0].form_id, items);
+      } catch (e) {
+        if (e.status === 400) { badReq = e.message; return; } // no writes happened yet
+        throw e;
+      }
+      if (changed.length) {
+        await auditLog(client, {
+          ticketId, userId: req.session.user.id,
+          action: 'custom_fields_updated', oldValue: '', newValue: changed.join(', '),
+        });
+      }
+    });
+    if (badReq) return res.status(400).json({ error: badReq });
+    const values = await ticketCustomFields.readValues(pool, ticketId, { reveal: true });
+    res.json({ ok: true, custom_fields: values });
+  } catch (err) {
+    console.error('ticket custom-fields patch:', err);
     res.status(500).json({ error: 'Database error' });
   }
 });

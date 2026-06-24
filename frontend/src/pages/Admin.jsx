@@ -27,6 +27,7 @@ const NAV_GROUPS = [
       { to: "/admin/assignment", label: "Auto-assignment", manager: true, keywords: ["round robin", "load balance", "policy"] },
       { to: "/admin/escalations", label: "Escalations", manager: true, keywords: ["page", "oncall", "pager"] },
       { to: "/admin/custom-fields", label: "Custom fields", manager: true, keywords: ["dropdown", "metadata"] },
+      { to: "/admin/forms", label: "Forms", manager: true, keywords: ["form", "category", "request type", "onboarding", "offboarding", "custom field", "template", "intake"] },
       { to: "/admin/canned-responses", label: "Canned responses", manager: true, keywords: ["macros", "snippets", "boilerplate"] },
       { to: "/admin/ticket-schedules", label: "Scheduled tickets", manager: true, keywords: ["recurring", "cron", "schedule"] },
       { to: "/admin/merge", label: "Merge tickets", keywords: ["dedupe", "combine"] },

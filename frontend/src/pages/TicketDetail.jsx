@@ -14,6 +14,7 @@ import {
 import HybridTime from "../components/HybridTime";
 import SlaTimer from "../components/SlaTimer";
 import AiUsageBadge from "../components/AiUsageBadge";
+import CustomFieldsCard from "../components/CustomFieldsCard";
 import MentionTextarea from "../components/MentionTextarea";
 import {
   useStatuses,
@@ -3121,6 +3122,15 @@ export default function TicketDetail() {
               </dl>
             </div>
           )}
+
+          {/* Custom Fields — agent-fill panel, between Status and Blocker.
+              Handlers edit inline (incl. agent-only fields); submitters see a
+              read-only list with sensitive values masked. */}
+          <CustomFieldsCard
+            ticket={ticket}
+            canEdit={isAdmin}
+            onUpdated={(cfs) => setTicket((t) => ({ ...t, custom_fields: cfs }))}
+          />
 
           {/* Blocker */}
           {isAdmin && (
