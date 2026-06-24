@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
 import AiRewriteButton from "../components/AiRewriteButton";
@@ -18,6 +18,24 @@ export default function AdminEmailTemplates() {
   const [preview, setPreview] = useState(null);
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
+  const [fieldTags, setFieldTags] = useState([]);
+  const subjectRef = useRef(null);
+  const bodyRef = useRef(null);
+  const [activeField, setActiveField] = useState("body"); // last-focused: subject|body
+
+  // Custom-field tags. Email templates aren't project-scoped, so offer every
+  // defined ticket field (deduped by slug); {field.<slug>} resolves per ticket
+  // at send time.
+  useEffect(() => {
+    api.get("/api/custom-field-defs?entity_type=ticket").then((defs) => {
+      const seen = new Set();
+      const tags = [];
+      (defs || []).forEach((d) => {
+        if (d.slug && !seen.has(d.slug)) { seen.add(d.slug); tags.push({ tag: `{field.${d.slug}}`, label: d.label }); }
+      });
+      setFieldTags(tags);
+    }).catch(() => {});
+  }, []);
 
   async function reload() {
     setLoading(true);
@@ -64,8 +82,20 @@ export default function AdminEmailTemplates() {
     } catch (e) { toast.error(e.message); }
   }
 
+  // Insert at the caret of the last-focused field (subject or body), falling
+  // back to appending to the body.
   function insertTag(tag) {
-    setEditing(t => ({ ...t, body_template: (t.body_template || "") + tag }));
+    const key = activeField === "subject" ? "subject_template" : "body_template";
+    const el = activeField === "subject" ? subjectRef.current : bodyRef.current;
+    setEditing((t) => {
+      const cur = t[key] || "";
+      if (!el || el.selectionStart == null) return { ...t, [key]: cur + tag };
+      const start = el.selectionStart;
+      const end = el.selectionEnd;
+      const cursor = start + tag.length;
+      requestAnimationFrame(() => { el.focus(); try { el.setSelectionRange(cursor, cursor); } catch { /* ignore */ } });
+      return { ...t, [key]: cur.slice(0, start) + tag + cur.slice(end) };
+    });
   }
 
   return (
@@ -118,7 +148,8 @@ export default function AdminEmailTemplates() {
                     size="xs"
                   />
                 </div>
-                <input className="w-full bg-surface-2 border border-border rounded px-2 py-1 text-sm font-mono"
+                <input ref={subjectRef} onFocus={() => setActiveField("subject")}
+                  className="w-full bg-surface-2 border border-border rounded px-2 py-1 text-sm font-mono"
                   value={editing.subject_template}
                   onChange={e => setEditing({ ...editing, subject_template: e.target.value })} />
               </div>
@@ -133,7 +164,7 @@ export default function AdminEmailTemplates() {
                     size="xs"
                   />
                 </div>
-                <textarea rows={12}
+                <textarea ref={bodyRef} onFocus={() => setActiveField("body")} rows={12}
                   className="w-full bg-surface-2 border border-border rounded px-2 py-1 text-sm font-mono"
                   value={editing.body_template}
                   onChange={e => setEditing({ ...editing, body_template: e.target.value })} />
@@ -156,6 +187,18 @@ export default function AdminEmailTemplates() {
                   </button>
                 ))}
               </div>
+              {fieldTags.length > 0 && (
+                <div className="flex flex-wrap gap-1">
+                  <span className="text-xs text-fg-dim mr-1">Custom fields:</span>
+                  {fieldTags.map(({ tag, label }) => (
+                    <button key={tag} title={label} onClick={() => insertTag(tag)}
+                      className="text-xs font-mono px-1.5 py-0.5 rounded bg-surface-2 hover:bg-surface text-fg-muted hover:text-fg border border-border">
+                      {tag}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div className="text-[11px] text-fg-dim">Tags insert at the cursor of the last-focused field (subject or body).</div>
 
               <div className="flex gap-2">
                 <button disabled={saving}

@@ -13,8 +13,13 @@
 const { marked } = require('marked');
 const { pool } = require('../db/pool');
 const { decryptRow, decryptRows } = require('./fields');
+const ticketCustomFields = require('./ticketCustomFields');
 
 const TAG_RE = /\{([a-z_]+)\.([a-z_0-9]+)(?:\.(\d+))?\}/gi;
+// Custom-field tags carry the field slug, which may contain hyphens
+// (e.g. {field.inc-motility_temp_password}); resolved in a separate pass
+// since TAG_RE's field class excludes '-'.
+const FIELD_RE = /\{field\.([a-z0-9_-]+)\}/gi;
 const REPLIES_HARD_CAP = 20;
 
 function htmlEscape(s) {
@@ -122,6 +127,16 @@ function applyTags(template, resolve) {
   });
 }
 
+// Resolve {field.<slug>} against the ticket's custom-field values. Unknown
+// slugs are preserved verbatim. HTML templates get the value escaped.
+function applyFieldTags(template, fieldMap, escape) {
+  return template.replace(FIELD_RE, (match, slug) => {
+    const v = fieldMap[String(slug).toLowerCase()];
+    if (v == null) return match;
+    return escape ? htmlEscape(v) : String(v);
+  });
+}
+
 async function render(template, ctx, opts = {}) {
   if (!template) return null;
   const escape = !!template.is_html;
@@ -133,9 +148,24 @@ async function render(template, ctx, opts = {}) {
     ? await fetchVendorVisibleReplies(ctx.ticket.id, repliesCount)
     : [];
   const resolve = makeResolver(ctx, replies, escape);
+
+  // Custom-field values for {field.<slug>}. Vendor mail is composed by an
+  // agent who deliberately included the tag, so sensitive values are revealed.
+  // ctx.field (preview sample) seeds the map; real DB values override.
+  const fieldMap = { ...(ctx.field || {}) };
+  if (ctx.ticket?.id) {
+    try {
+      const cfs = await ticketCustomFields.readValues(pool, ctx.ticket.id, { reveal: true });
+      for (const f of cfs) {
+        const v = f.type === 'bool' ? (f.value ? 'Yes' : 'No') : (f.value == null ? '' : f.value);
+        fieldMap[String(f.slug).toLowerCase()] = String(v);
+      }
+    } catch { /* custom fields are best-effort */ }
+  }
+
   return {
-    subject: applyTags(template.subject_template, resolve),
-    body:    applyTags(template.body_template, resolve),
+    subject: applyFieldTags(applyTags(template.subject_template, resolve), fieldMap, escape),
+    body:    applyFieldTags(applyTags(template.body_template, resolve), fieldMap, escape),
     is_html: escape,
   };
 }
@@ -178,6 +208,8 @@ function sampleContext() {
     },
     company: { name: 'Vendor Co', domain: 'vendorco.com' },
     contact: { name: 'Jamie Vendor', email: 'jamie@vendorco.com', role_title: 'Account Manager' },
+    // Sample custom-field values so {field.<slug>} renders in the preview.
+    field: { 'sample-field': 'Sample value' },
   };
 }
 
