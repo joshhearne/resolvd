@@ -157,7 +157,9 @@ async function render(template, ctx, opts = {}) {
     try {
       const cfs = await ticketCustomFields.readValues(pool, ctx.ticket.id, { reveal: true });
       for (const f of cfs) {
-        const v = f.type === 'bool' ? (f.value ? 'Yes' : 'No') : (f.value == null ? '' : f.value);
+        const v = f.type === 'bool' ? (f.value ? 'Yes' : 'No')
+          : Array.isArray(f.value) ? f.value.join(', ')
+          : (f.value == null ? '' : f.value);
         fieldMap[String(f.slug).toLowerCase()] = String(v);
       }
     } catch { /* custom fields are best-effort */ }

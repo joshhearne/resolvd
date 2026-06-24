@@ -35,6 +35,15 @@ function coerceValue(value, def) {
       if (!valid) return { error: 'value not in options' };
       return { col: 'value_text', value: String(value) };
     }
+    case 'multiselect': {
+      const arr = Array.isArray(value)
+        ? value
+        : String(value).split(',').map((s) => s.trim()).filter(Boolean);
+      if (!arr.length) return { col: null, value: null };
+      const valid = new Set((def.options || []).map((o) => o.value));
+      for (const v of arr) if (!valid.has(String(v))) return { error: `value "${v}" not in options` };
+      return { col: 'value_text', value: JSON.stringify(arr.map(String)) };
+    }
     default:
       return { error: 'unknown type' };
   }
@@ -143,6 +152,10 @@ async function readValues(client, ticketId, { reveal = false } = {}) {
     } else if (row.type === 'number') value = row.value_number;
     else if (row.type === 'date') value = row.value_date;
     else if (row.type === 'bool') value = row.value_bool;
+    else if (row.type === 'multiselect') {
+      if (row.sensitive && !reveal) value = '••••••';
+      else { try { value = JSON.parse(row.value_text || '[]'); } catch { value = []; } }
+    }
     else value = row.sensitive && !reveal ? '••••••' : row.value_text;
     out.push({ def_id: row.def_id, slug: row.slug, label: row.label, type: row.type, sensitive: row.sensitive, value });
   }

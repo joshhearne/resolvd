@@ -36,7 +36,9 @@ export default function CustomFieldsCard({ ticket, canEdit, onUpdated }) {
     const seed = {};
     f.forEach((fld) => {
       const v = cur.find((x) => x.def_id === fld.def_id);
-      seed[fld.def_id] = v ? (fld.type === "bool" ? !!v.value : (v.value ?? "")) : (fld.type === "bool" ? false : "");
+      if (fld.type === "multiselect") seed[fld.def_id] = v && Array.isArray(v.value) ? v.value : [];
+      else if (fld.type === "bool") seed[fld.def_id] = v ? !!v.value : false;
+      else seed[fld.def_id] = v ? (v.value ?? "") : "";
     });
     return seed;
   }
@@ -59,6 +61,19 @@ export default function CustomFieldsCard({ ticket, canEdit, onUpdated }) {
     const setV = (val) => setDraft((p) => ({ ...p, [f.def_id]: val }));
     const cls = "w-full border border-border-strong rounded-md px-2 py-1.5 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40";
     if (f.type === "bool") return <input type="checkbox" checked={!!v} onChange={(e) => setV(e.target.checked)} />;
+    if (f.type === "multiselect") {
+      const arr = Array.isArray(v) ? v : [];
+      const toggle = (val) => setV(arr.includes(val) ? arr.filter((x) => x !== val) : [...arr, val]);
+      return (
+        <div className="space-y-1">
+          {(f.options || []).map((o) => (
+            <label key={o.value} className="flex items-center gap-2 text-sm text-fg">
+              <input type="checkbox" checked={arr.includes(o.value)} onChange={() => toggle(o.value)} /> {o.label}
+            </label>
+          ))}
+        </div>
+      );
+    }
     if (f.type === "select") {
       return (
         <select value={v ?? ""} onChange={(e) => setV(e.target.value)} className={cls}>
@@ -115,7 +130,9 @@ export default function CustomFieldsCard({ ticket, canEdit, onUpdated }) {
           <div key={cf.slug} className="flex flex-col">
             <dt className="text-xs text-fg-muted">{cf.label}{cf.sensitive && <span className="ml-1">🔒</span>}</dt>
             <dd className="text-sm text-fg break-words">
-              {cf.value == null || cf.value === ""
+              {Array.isArray(cf.value)
+                ? (cf.value.length ? cf.value.join(", ") : <span className="text-fg-dim">—</span>)
+                : cf.value == null || cf.value === ""
                 ? <span className="text-fg-dim">—</span>
                 : cf.type === "bool" ? (cf.value ? "Yes" : "No")
                 : cf.type === "date" ? new Date(cf.value).toLocaleDateString()

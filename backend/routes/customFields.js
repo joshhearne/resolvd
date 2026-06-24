@@ -9,7 +9,7 @@ const { requireAuth, requireRole } = require('../middleware/auth');
 const router = express.Router();
 
 const ENTITY_TYPES = ['asset', 'ticket'];
-const FIELD_TYPES = ['text', 'number', 'date', 'bool', 'select'];
+const FIELD_TYPES = ['text', 'number', 'date', 'bool', 'select', 'multiselect'];
 
 // Slugify a label: lowercase, alphanumeric + underscore. Used as the
 // stable machine handle so renames don't break attribute mappings. When a
@@ -32,8 +32,8 @@ function slugify(label, projectPrefix) {
 }
 
 function validateOptions(options, type) {
-  if (type !== 'select') return null;
-  if (!Array.isArray(options) || !options.length) return 'select type requires non-empty options array';
+  if (type !== 'select' && type !== 'multiselect') return null;
+  if (!Array.isArray(options) || !options.length) return `${type} type requires non-empty options array`;
   for (const o of options) {
     if (!o || typeof o.value !== 'string' || typeof o.label !== 'string') {
       return 'each option must be { value: string, label: string }';
@@ -66,6 +66,16 @@ function coerceValue(value, def) {
       const valid = (def.options || []).some((o) => o.value === String(value));
       if (!valid) return { error: 'value not in options' };
       return { col: 'value_text', value: String(value) };
+    }
+    case 'multiselect': {
+      // Accept an array of option values, or a comma-separated string.
+      const arr = Array.isArray(value)
+        ? value
+        : String(value).split(',').map((s) => s.trim()).filter(Boolean);
+      if (!arr.length) return { col: null, value: null };
+      const valid = new Set((def.options || []).map((o) => o.value));
+      for (const v of arr) if (!valid.has(String(v))) return { error: `value "${v}" not in options` };
+      return { col: 'value_text', value: JSON.stringify(arr.map(String)) };
     }
     default:
       return { error: 'unknown type' };

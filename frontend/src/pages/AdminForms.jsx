@@ -14,7 +14,9 @@ const FIELD_TYPES = [
   { value: "date", label: "Date" },
   { value: "bool", label: "Yes / no" },
   { value: "select", label: "Select" },
+  { value: "multiselect", label: "Multi-select" },
 ];
+const HAS_OPTIONS = (t) => t === "select" || t === "multiselect";
 
 function parseOptions(s) {
   if (!s) return [];
@@ -37,7 +39,7 @@ export default function AdminForms() {
   const [binding, setBinding] = useState([]); // [{field_def_id, required, sort_order}]
   const [formDraft, setFormDraft] = useState({ default_title: "", default_description: "" });
   const [editingDefId, setEditingDefId] = useState(null);
-  const [defEdit, setDefEdit] = useState({ help_text: "", options: "", sensitive: false, agent_only: false });
+  const [defEdit, setDefEdit] = useState({ label: "", help_text: "", options: "", sensitive: false, agent_only: false });
   const [slugDraft, setSlugDraft] = useState({ category: "", form: "" });
   const [linkPrefills, setLinkPrefills] = useState({}); // field slug -> prefill value
   const [newCategory, setNewCategory] = useState("");
@@ -140,14 +142,15 @@ export default function AdminForms() {
   // anchor the slug + stored value shape). Archive lives here, not in the list.
   function openDefEditor(d) {
     setEditingDefId(d.id);
-    setDefEdit({ help_text: d.help_text || "", options: fmtOptions(d.options), sensitive: !!d.sensitive, agent_only: !!d.agent_only });
+    setDefEdit({ label: d.label || "", help_text: d.help_text || "", options: fmtOptions(d.options), sensitive: !!d.sensitive, agent_only: !!d.agent_only });
   }
   async function saveDefEdit(d) {
     try {
-      const body = { help_text: defEdit.help_text.trim() || null, sensitive: defEdit.sensitive, agent_only: defEdit.agent_only };
-      if (d.type === "select") {
+      if (!defEdit.label.trim()) return toast.error("Label required");
+      const body = { label: defEdit.label.trim(), help_text: defEdit.help_text.trim() || null, sensitive: defEdit.sensitive, agent_only: defEdit.agent_only };
+      if (HAS_OPTIONS(d.type)) {
         const opts = parseOptions(defEdit.options);
-        if (!opts.length) return toast.error("Select fields need at least one option");
+        if (!opts.length) return toast.error("Select/multi-select fields need at least one option");
         body.options = opts;
       }
       await api.patch(`/api/custom-field-defs/${d.id}`, body);
@@ -156,8 +159,11 @@ export default function AdminForms() {
   }
   async function archiveDef(d) {
     if (!confirm(`Archive "${d.label}"? It's hidden from forms going forward; stored ticket values are kept.`)) return;
-    try { await api.delete(`/api/custom-field-defs/${d.id}`); toast.success("Field archived"); setEditingDefId(null); await loadProjectScope(); }
-    catch (e) { toast.error(e.message); }
+    try {
+      await api.delete(`/api/custom-field-defs/${d.id}`);
+      setBinding((prev) => prev.filter((b) => b.field_def_id !== d.id)); // drop stale binding
+      toast.success("Field archived"); setEditingDefId(null); await loadProjectScope();
+    } catch (e) { toast.error(e.message); }
   }
 
   async function createField() {
@@ -167,13 +173,13 @@ export default function AdminForms() {
         entity_type: "ticket",
         label: newField.label.trim(),
         type: newField.type,
-        options: newField.type === "select" ? parseOptions(newField.options) : [],
+        options: HAS_OPTIONS(newField.type) ? parseOptions(newField.options) : [],
         help_text: newField.help_text.trim() || null,
         sensitive: !!newField.sensitive,
         agent_only: !!newField.agent_only,
         project_id: newField.shared ? null : Number(projectId),
       };
-      if (body.type === "select" && !body.options.length) return toast.error("Select fields need at least one option");
+      if (HAS_OPTIONS(body.type) && !body.options.length) return toast.error("Select/multi-select fields need at least one option");
       const created = await api.post("/api/custom-field-defs", body);
       toast.success(`Field created (slug: ${created.slug})`);
       setNewField({ label: "", type: "text", options: "", help_text: "", sensitive: false, shared: false, agent_only: false });
@@ -395,9 +401,11 @@ export default function AdminForms() {
                           <tr className="bg-surface-2/40">
                             <td colSpan={8} className="p-3">
                               <div className="flex flex-wrap items-end gap-3">
-                                <div className="text-xs text-fg-muted">Label<br /><span className="text-sm text-fg">{d.label}</span> <span className="text-fg-dim">(locked)</span></div>
+                                <label className="flex flex-col gap-1"><span className="text-xs text-fg-muted">Label</span>
+                                  <input value={defEdit.label} onChange={(e) => setDefEdit((p) => ({ ...p, label: e.target.value }))} className="border border-border-strong rounded px-2 py-1 text-sm w-44" /></label>
                                 <div className="text-xs text-fg-muted">Type<br /><span className="text-sm text-fg">{d.type}</span> <span className="text-fg-dim">(locked)</span></div>
-                                {d.type === "select" && (
+                                <div className="text-xs text-fg-muted">Slug<br /><span className="text-sm font-mono text-fg-dim">{d.slug}</span> <span className="text-fg-dim">(locked)</span></div>
+                                {HAS_OPTIONS(d.type) && (
                                   <label className="flex flex-col gap-1 flex-1 min-w-[12rem]"><span className="text-xs text-fg-muted">Options</span>
                                     <input value={defEdit.options} onChange={(e) => setDefEdit((p) => ({ ...p, options: e.target.value }))} placeholder="value:label, value:label" className="border border-border-strong rounded px-2 py-1 text-sm" /></label>
                                 )}
@@ -432,7 +440,7 @@ export default function AdminForms() {
                         {FIELD_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
                       </select>
                     </label>
-                    {newField.type === "select" && (
+                    {HAS_OPTIONS(newField.type) && (
                       <label className="flex flex-col gap-1 flex-1 min-w-[12rem]">
                         <span className="text-xs text-fg-muted">Options</span>
                         <input value={newField.options} onChange={(e) => setNewField((p) => ({ ...p, options: e.target.value }))} placeholder="value:label, value:label" className="border border-border-strong rounded px-2 py-1 text-sm" />

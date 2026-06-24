@@ -1615,7 +1615,7 @@ async function initSchema() {
         entity_type TEXT NOT NULL CHECK (entity_type IN ('asset', 'ticket')),
         slug TEXT NOT NULL,
         label TEXT NOT NULL,
-        type TEXT NOT NULL CHECK (type IN ('text', 'number', 'date', 'bool', 'select')),
+        type TEXT NOT NULL CHECK (type IN ('text', 'number', 'date', 'bool', 'select', 'multiselect')),
         options JSONB NOT NULL DEFAULT '[]'::jsonb,
         required BOOLEAN NOT NULL DEFAULT FALSE,
         sort_order INTEGER NOT NULL DEFAULT 0,
@@ -1665,6 +1665,11 @@ async function initSchema() {
     // fill it on the ticket detail page; canned responses can still pull the
     // value via {field.<slug>}.
     await client.query(`ALTER TABLE custom_field_defs ADD COLUMN IF NOT EXISTS agent_only BOOLEAN NOT NULL DEFAULT FALSE`);
+    // Allow the multiselect type on pre-existing installs (CHECK was created
+    // before multiselect existed). Multiselect values are stored as a JSON
+    // array of option values in value_text.
+    await client.query(`ALTER TABLE custom_field_defs DROP CONSTRAINT IF EXISTS custom_field_defs_type_check`);
+    await client.query(`ALTER TABLE custom_field_defs ADD CONSTRAINT custom_field_defs_type_check CHECK (type IN ('text','number','date','bool','select','multiselect'))`);
     // Replace the global UNIQUE(entity_type, slug) with two partial uniques so
     // a slug can repeat across projects but stays unique within a scope.
     await client.query(`ALTER TABLE custom_field_defs DROP CONSTRAINT IF EXISTS custom_field_defs_entity_type_slug_key`);

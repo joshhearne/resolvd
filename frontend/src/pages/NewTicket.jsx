@@ -152,15 +152,19 @@ export default function NewTicket() {
       const fields = (r.fields || []).filter((f) => isAgent || !f.agent_only);
       setFormFields(fields);
       const seed = {};
-      fields.forEach((f) => { seed[f.def_id] = f.type === "bool" ? false : ""; });
+      fields.forEach((f) => { seed[f.def_id] = f.type === "bool" ? false : f.type === "multiselect" ? [] : ""; });
       // Deep-link prefills: ?<field-slug>=<value>. Selects take a 1-based
-      // option number; bools take 1/true; others take the literal value.
+      // option number; multi-selects take a comma list of numbers; bools take
+      // 1/true; others take the literal value.
       fields.forEach((f) => {
         const raw = searchParams.get(f.slug);
         if (raw == null) return;
         if (f.type === "select") {
           const opt = (f.options || [])[parseInt(raw, 10) - 1];
           if (opt) seed[f.def_id] = opt.value;
+        } else if (f.type === "multiselect") {
+          const vals = raw.split(",").map((s) => (f.options || [])[parseInt(s.trim(), 10) - 1]?.value).filter(Boolean);
+          if (vals.length) seed[f.def_id] = vals;
         } else if (f.type === "bool") {
           seed[f.def_id] = raw === "1" || raw.toLowerCase() === "true";
         } else {
@@ -189,6 +193,25 @@ export default function NewTicket() {
           <input type="checkbox" checked={!!v} onChange={(e) => setV(e.target.checked)} />
           {f.label}{f.required && <span className="text-red-500">*</span>}
         </label>
+      );
+    }
+    if (f.type === "multiselect") {
+      const arr = Array.isArray(v) ? v : [];
+      const toggle = (val) => setV(arr.includes(val) ? arr.filter((x) => x !== val) : [...arr, val]);
+      return (
+        <div>
+          <label className="block text-sm font-medium text-fg mb-1">
+            {f.label}{f.required && <span className="text-red-500"> *</span>}
+          </label>
+          <div className="space-y-1">
+            {(f.options || []).map((o) => (
+              <label key={o.value} className="flex items-center gap-2 text-sm text-fg">
+                <input type="checkbox" checked={arr.includes(o.value)} onChange={() => toggle(o.value)} /> {o.label}
+              </label>
+            ))}
+          </div>
+          {f.help_text && <p className="text-xs text-fg-muted mt-1">{f.help_text}</p>}
+        </div>
       );
     }
     const inputType = f.sensitive && f.type === "text" ? "password"
@@ -270,7 +293,7 @@ export default function NewTicket() {
     for (const f of formFields) {
       if (!f.required) continue;
       const v = cfValues[f.def_id];
-      const empty = v == null || v === "" || (f.type === "bool" && !v);
+      const empty = v == null || v === "" || (f.type === "bool" && !v) || (Array.isArray(v) && v.length === 0);
       if (empty) { toast.error(`"${f.label}" is required`); return; }
     }
     setSubmitting(true);

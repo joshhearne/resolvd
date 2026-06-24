@@ -289,6 +289,10 @@ router.put('/:id(\\d+)/fields', requireAuth, requireRole('Admin'), async (req, r
     const projectId = meta.rows[0].project_id;
 
     const defIds = items.map((i) => Number(i.field_def_id)).filter((n) => Number.isInteger(n) && n > 0);
+    // Valid = ticket def, not archived, shared or in this form's project.
+    // Anything else (e.g. a field archived after it was bound) is silently
+    // dropped from the save rather than failing the whole thing.
+    let validSet = new Set();
     if (defIds.length) {
       const ok = await pool.query(
         `SELECT id FROM custom_field_defs
@@ -296,19 +300,20 @@ router.put('/:id(\\d+)/fields', requireAuth, requireRole('Admin'), async (req, r
             AND (project_id IS NULL OR project_id = $2)`,
         [defIds, projectId]
       );
-      if (ok.rows.length !== defIds.length) {
-        return res.status(400).json({ error: 'one or more field defs are invalid, archived, or out of project scope' });
-      }
+      validSet = new Set(ok.rows.map((r) => r.id));
     }
+    const skipped = defIds.filter((id) => !validSet.has(id)).length;
 
     const client = await pool.connect();
     try {
       await client.query('BEGIN');
       await client.query(`DELETE FROM ticket_form_fields WHERE form_id = $1`, [formId]);
+      const seen = new Set();
       let order = 0;
       for (const it of items) {
         const defId = Number(it.field_def_id);
-        if (!Number.isInteger(defId) || defId <= 0) continue;
+        if (!validSet.has(defId) || seen.has(defId)) continue; // skip invalid + dupes
+        seen.add(defId);
         await client.query(
           `INSERT INTO ticket_form_fields (form_id, field_def_id, required, sort_order)
            VALUES ($1, $2, $3, $4)
@@ -323,7 +328,7 @@ router.put('/:id(\\d+)/fields', requireAuth, requireRole('Admin'), async (req, r
     } finally {
       client.release();
     }
-    res.json({ ok: true });
+    res.json({ ok: true, saved: validSet.size, skipped });
   } catch (err) {
     console.error('form fields put:', err);
     res.status(500).json({ error: 'Database error' });
