@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { useEffect, useState, Fragment } from "react";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
 
@@ -36,6 +36,10 @@ export default function AdminForms() {
   const [formId, setFormId] = useState("");
   const [binding, setBinding] = useState([]); // [{field_def_id, required, sort_order}]
   const [formDraft, setFormDraft] = useState({ default_title: "", default_description: "" });
+  const [editingDefId, setEditingDefId] = useState(null);
+  const [defEdit, setDefEdit] = useState({ help_text: "", options: "", sensitive: false, agent_only: false });
+  const [slugDraft, setSlugDraft] = useState({ category: "", form: "" });
+  const [linkPrefills, setLinkPrefills] = useState({}); // field slug -> prefill value
   const [newCategory, setNewCategory] = useState("");
   const [newForm, setNewForm] = useState("");
   const [newField, setNewField] = useState({ label: "", type: "text", options: "", help_text: "", sensitive: false, shared: false, agent_only: false });
@@ -63,11 +67,26 @@ export default function AdminForms() {
   useEffect(() => {
     if (!formId) { setBinding([]); return; }
     const sf = forms.find((f) => String(f.id) === String(formId));
+    const cat = categories.find((c) => String(c.id) === String(sf?.category_id));
     setFormDraft({ default_title: sf?.default_title || "", default_description: sf?.default_description || "" });
+    setSlugDraft({ category: cat?.slug || "", form: sf?.slug || "" });
+    setLinkPrefills({});
     api.get(`/api/forms/${formId}`).then((r) => {
       setBinding((r.fields || []).map((f) => ({ field_def_id: f.def_id, required: !!f.required, sort_order: f.sort_order })));
     }).catch((e) => toast.error(e.message));
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [formId]);
+
+  async function saveSlugs() {
+    try {
+      if (slugDraft.category) await api.patch(`/api/forms/categories/${categoryId}`, { slug: slugDraft.category });
+      if (slugDraft.form) await api.patch(`/api/forms/${formId}`, { slug: slugDraft.form });
+      toast.success("Slugs saved"); await loadProjectScope();
+    } catch (e) { toast.error(e.message); }
+  }
+  function copyLink(url) {
+    navigator.clipboard?.writeText(url).then(() => toast.success("Link copied")).catch(() => toast.error("Copy failed"));
+  }
 
   async function saveFormDefaults() {
     try {
@@ -113,6 +132,34 @@ export default function AdminForms() {
     catch (e) { toast.error(e.message); }
   }
 
+  function fmtOptions(options) {
+    if (!Array.isArray(options) || !options.length) return "";
+    return options.map((o) => (o.value === o.label ? o.label : `${o.value}:${o.label}`)).join(", ");
+  }
+  // Edit an existing def's mutable attributes. Label + type stay locked (they
+  // anchor the slug + stored value shape). Archive lives here, not in the list.
+  function openDefEditor(d) {
+    setEditingDefId(d.id);
+    setDefEdit({ help_text: d.help_text || "", options: fmtOptions(d.options), sensitive: !!d.sensitive, agent_only: !!d.agent_only });
+  }
+  async function saveDefEdit(d) {
+    try {
+      const body = { help_text: defEdit.help_text.trim() || null, sensitive: defEdit.sensitive, agent_only: defEdit.agent_only };
+      if (d.type === "select") {
+        const opts = parseOptions(defEdit.options);
+        if (!opts.length) return toast.error("Select fields need at least one option");
+        body.options = opts;
+      }
+      await api.patch(`/api/custom-field-defs/${d.id}`, body);
+      toast.success("Field updated"); setEditingDefId(null); await loadProjectScope();
+    } catch (e) { toast.error(e.message); }
+  }
+  async function archiveDef(d) {
+    if (!confirm(`Archive "${d.label}"? It's hidden from forms going forward; stored ticket values are kept.`)) return;
+    try { await api.delete(`/api/custom-field-defs/${d.id}`); toast.success("Field archived"); setEditingDefId(null); await loadProjectScope(); }
+    catch (e) { toast.error(e.message); }
+  }
+
   async function createField() {
     if (!newField.label.trim()) return toast.error("Field label required");
     try {
@@ -154,6 +201,27 @@ export default function AdminForms() {
 
   const formsInCategory = forms.filter((f) => String(f.category_id) === String(categoryId));
   const selectedForm = forms.find((f) => String(f.id) === String(formId));
+  const selectedCategory = categories.find((c) => String(c.id) === String(categoryId));
+  const selectedProject = projects.find((p) => String(p.id) === String(projectId));
+
+  // Bound fields (ordered) for the link-builder param reference.
+  const boundFields = binding
+    .slice().sort((a, b) => (a.sort_order ?? 0) - (b.sort_order ?? 0))
+    .map((b) => defs.find((d) => d.id === b.field_def_id)).filter(Boolean);
+  const deepLinkBase = selectedProject && selectedForm
+    ? `${window.location.origin}/tickets/new/${String(selectedProject.prefix).toLowerCase()}/${slugDraft.category || selectedCategory?.slug || ""}/${slugDraft.form || selectedForm?.slug || ""}`
+    : "";
+  const deepLinkQuery = Object.entries(linkPrefills)
+    .filter(([, v]) => v !== "" && v != null)
+    .map(([k, v]) => `${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join("&");
+  const deepLinkFull = deepLinkBase + (deepLinkQuery ? `?${deepLinkQuery}` : "");
+
+  async function setCategoryDefault(val) {
+    try {
+      await api.patch(`/api/forms/categories/${categoryId}`, { default_form_id: val ? Number(val) : null });
+      toast.success("Default form set"); await loadProjectScope();
+    } catch (e) { toast.error(e.message); }
+  }
 
   return (
     <div className="space-y-5">
@@ -208,6 +276,16 @@ export default function AdminForms() {
                   ))}
                   {!formsInCategory.length && <span className="text-sm text-fg-muted">No forms in this category.</span>}
                 </div>
+                {formsInCategory.length > 0 && (
+                  <div className="flex items-center gap-2 mb-2">
+                    <span className="text-xs text-fg-muted">Default form (pre-selected on new ticket):</span>
+                    <select value={selectedCategory?.default_form_id || ""} onChange={(e) => setCategoryDefault(e.target.value)}
+                      className="border border-border-strong rounded px-2 py-1 text-sm">
+                      <option value="">None — user picks{formsInCategory.length === 1 ? " (single form auto-selects)" : ""}</option>
+                      {formsInCategory.map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+                    </select>
+                  </div>
+                )}
                 <div className="flex items-end gap-2">
                   <input value={newForm} onChange={(e) => setNewForm(e.target.value)} placeholder="e.g. Onboarding"
                     className="border border-border-strong rounded px-2 py-1 text-sm w-56" />
@@ -238,19 +316,65 @@ export default function AdminForms() {
                   </label>
                 </div>
 
+                {/* Deep-link / bookmark builder. Admins hand these out to
+                    pre-open this form, optionally pre-filling fields. */}
+                <div className="border border-border rounded p-3 mb-4 bg-surface-2/40">
+                  <h3 className="text-xs font-semibold text-fg-muted mb-2 uppercase">Shareable link</h3>
+                  <div className="flex flex-wrap items-end gap-2 mb-2">
+                    <label className="flex flex-col gap-1"><span className="text-xs text-fg-muted">Category slug</span>
+                      <input value={slugDraft.category} onChange={(e) => setSlugDraft((p) => ({ ...p, category: e.target.value }))} className="border border-border-strong rounded px-2 py-1 text-sm font-mono w-40" /></label>
+                    <label className="flex flex-col gap-1"><span className="text-xs text-fg-muted">Form slug</span>
+                      <input value={slugDraft.form} onChange={(e) => setSlugDraft((p) => ({ ...p, form: e.target.value }))} className="border border-border-strong rounded px-2 py-1 text-sm font-mono w-40" /></label>
+                    <button onClick={saveSlugs} className="btn btn-secondary btn-sm">Save slugs</button>
+                  </div>
+                  {/* Optional per-field prefills */}
+                  {boundFields.length > 0 && (
+                    <div className="space-y-1 mb-2">
+                      <div className="text-xs text-fg-muted">Optional prefills (query params):</div>
+                      {boundFields.map((d) => (
+                        <div key={d.id} className="flex items-center gap-2">
+                          <code className="text-[11px] text-fg-muted w-56 truncate" title={d.slug}>{d.slug}</code>
+                          {d.type === "select" ? (
+                            <select value={linkPrefills[d.slug] || ""} onChange={(e) => setLinkPrefills((p) => ({ ...p, [d.slug]: e.target.value }))}
+                              className="border border-border-strong rounded px-2 py-1 text-sm">
+                              <option value="">— none —</option>
+                              {(d.options || []).map((o, i) => <option key={o.value} value={i + 1}>{i + 1} — {o.label}</option>)}
+                            </select>
+                          ) : d.type === "bool" ? (
+                            <select value={linkPrefills[d.slug] || ""} onChange={(e) => setLinkPrefills((p) => ({ ...p, [d.slug]: e.target.value }))}
+                              className="border border-border-strong rounded px-2 py-1 text-sm">
+                              <option value="">— none —</option><option value="1">true</option><option value="0">false</option>
+                            </select>
+                          ) : (
+                            <input value={linkPrefills[d.slug] || ""} onChange={(e) => setLinkPrefills((p) => ({ ...p, [d.slug]: e.target.value }))}
+                              placeholder="value" className="border border-border-strong rounded px-2 py-1 text-sm flex-1 min-w-0" />
+                          )}
+                        </div>
+                      ))}
+                      <div className="text-[11px] text-fg-dim">Selects use the option number (1 = first). Save slugs above before copying if you just changed them.</div>
+                    </div>
+                  )}
+                  <div className="flex items-center gap-2">
+                    <input readOnly value={deepLinkFull} className="border border-border-strong rounded px-2 py-1 text-xs font-mono flex-1 min-w-0 bg-surface" />
+                    <button onClick={() => copyLink(deepLinkFull)} className="btn btn-secondary btn-sm shrink-0">Copy</button>
+                  </div>
+                </div>
+
                 <div className="flex items-center justify-between mb-2">
                   <h3 className="text-xs font-semibold text-fg-muted uppercase">Fields on “{selectedForm?.name}”</h3>
                   <button onClick={saveBinding} className="btn btn-primary btn-sm">Save form fields</button>
                 </div>
                 <table className="w-full text-sm mb-4">
                   <thead className="text-xs text-fg-muted">
-                    <tr><th className="text-left py-1 w-10">On</th><th className="text-left py-1">Field</th><th className="text-left py-1">Slug</th><th className="text-left py-1">Type</th><th className="text-left py-1">Visibility</th><th className="text-left py-1 w-16">Req</th><th className="text-left py-1 w-20">Order</th></tr>
+                    <tr><th className="text-left py-1 w-10">On</th><th className="text-left py-1">Field</th><th className="text-left py-1">Slug</th><th className="text-left py-1">Type</th><th className="text-left py-1">Visibility</th><th className="text-left py-1 w-16">Req</th><th className="text-left py-1 w-20">Order</th><th className="py-1 w-12"></th></tr>
                   </thead>
                   <tbody>
                     {defs.map((d) => {
                       const b = bound(d.id);
+                      const open = editingDefId === d.id;
                       return (
-                        <tr key={d.id} className="border-t border-border">
+                        <Fragment key={d.id}>
+                        <tr className="border-t border-border">
                           <td className="py-2"><input type="checkbox" checked={!!b} onChange={() => toggleBound(d.id)} /></td>
                           <td className="py-2 pr-3">{d.label}{d.sensitive && <span className="ml-1 text-xs text-fg-muted">(sensitive)</span>}{d.project_id == null && <span className="ml-1 text-xs text-fg-muted">(shared)</span>}</td>
                           <td className="py-2 pr-3 font-mono text-xs text-fg-muted">{d.slug}</td>
@@ -263,10 +387,34 @@ export default function AdminForms() {
                           </td>
                           <td className="py-2 pr-3"><input type="checkbox" disabled={!b} checked={!!b?.required} onChange={(e) => setBoundField(d.id, { required: e.target.checked })} /></td>
                           <td className="py-2 pr-3"><input type="number" disabled={!b} value={b?.sort_order ?? ""} onChange={(e) => setBoundField(d.id, { sort_order: Number(e.target.value) || 0 })} className="border border-border-strong rounded px-2 py-1 text-sm font-mono w-16 disabled:opacity-40" /></td>
+                          <td className="py-2 text-right">
+                            <button onClick={() => open ? setEditingDefId(null) : openDefEditor(d)} className="text-xs text-brand hover:underline">{open ? "Close" : "Edit"}</button>
+                          </td>
                         </tr>
+                        {open && (
+                          <tr className="bg-surface-2/40">
+                            <td colSpan={8} className="p-3">
+                              <div className="flex flex-wrap items-end gap-3">
+                                <div className="text-xs text-fg-muted">Label<br /><span className="text-sm text-fg">{d.label}</span> <span className="text-fg-dim">(locked)</span></div>
+                                <div className="text-xs text-fg-muted">Type<br /><span className="text-sm text-fg">{d.type}</span> <span className="text-fg-dim">(locked)</span></div>
+                                {d.type === "select" && (
+                                  <label className="flex flex-col gap-1 flex-1 min-w-[12rem]"><span className="text-xs text-fg-muted">Options</span>
+                                    <input value={defEdit.options} onChange={(e) => setDefEdit((p) => ({ ...p, options: e.target.value }))} placeholder="value:label, value:label" className="border border-border-strong rounded px-2 py-1 text-sm" /></label>
+                                )}
+                                <label className="flex flex-col gap-1 flex-1 min-w-[10rem]"><span className="text-xs text-fg-muted">Help text</span>
+                                  <input value={defEdit.help_text} onChange={(e) => setDefEdit((p) => ({ ...p, help_text: e.target.value }))} className="border border-border-strong rounded px-2 py-1 text-sm" /></label>
+                                <label className="text-xs text-fg-muted inline-flex items-center gap-1"><input type="checkbox" checked={defEdit.sensitive} onChange={(e) => setDefEdit((p) => ({ ...p, sensitive: e.target.checked }))} /> Sensitive</label>
+                                <label className="text-xs text-fg-muted inline-flex items-center gap-1"><input type="checkbox" checked={defEdit.agent_only} onChange={(e) => setDefEdit((p) => ({ ...p, agent_only: e.target.checked }))} /> Agent-only</label>
+                                <button onClick={() => saveDefEdit(d)} className="btn btn-primary btn-sm">Save</button>
+                                <button onClick={() => archiveDef(d)} className="text-xs text-red-600 hover:underline">Archive</button>
+                              </div>
+                            </td>
+                          </tr>
+                        )}
+                        </Fragment>
                       );
                     })}
-                    {!defs.length && <tr><td colSpan={7} className="py-2 text-fg-muted">No ticket fields yet — create one below.</td></tr>}
+                    {!defs.length && <tr><td colSpan={8} className="py-2 text-fg-muted">No ticket fields yet — create one below.</td></tr>}
                   </tbody>
                 </table>
 

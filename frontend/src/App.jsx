@@ -128,6 +128,15 @@ function AppRoutes() {
             </ProtectedRoute>
           }
         />
+        {/* Deep links: /tickets/new/<project>/<category>/<form> (+ ?field=… prefills) */}
+        <Route
+          path="tickets/new/*"
+          element={
+            <ProtectedRoute>
+              <NewTicket />
+            </ProtectedRoute>
+          }
+        />
         <Route path="tickets/:id" element={<TicketDetail />} />
         <Route path="help" element={<Help />} />
         <Route

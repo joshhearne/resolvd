@@ -1717,6 +1717,21 @@ async function initSchema() {
     // form is chosen — the structured fields carry the actual request data.
     await client.query(`ALTER TABLE ticket_forms ADD COLUMN IF NOT EXISTS default_title TEXT`);
     await client.query(`ALTER TABLE ticket_forms ADD COLUMN IF NOT EXISTS default_description TEXT`);
+    // Optional default form for a category — pre-selected on the new-ticket
+    // form when the category is chosen. Added here (not in the categories
+    // block) because it FKs ticket_forms, which is created just above.
+    await client.query(`ALTER TABLE ticket_categories ADD COLUMN IF NOT EXISTS default_form_id INTEGER REFERENCES ticket_forms(id) ON DELETE SET NULL`);
+    // URL slugs for deep-linkable new-ticket URLs:
+    //   /tickets/new/<project-prefix>/<category-slug>/<form-slug>
+    // Editable; backfilled from the name as kebab-case. Uniqueness is enforced
+    // in the API (within project / within category), not at the DB level, so a
+    // messy backfill can't block boot.
+    await client.query(`ALTER TABLE ticket_categories ADD COLUMN IF NOT EXISTS slug TEXT`);
+    await client.query(`ALTER TABLE ticket_forms ADD COLUMN IF NOT EXISTS slug TEXT`);
+    await client.query(`UPDATE ticket_categories SET slug = NULLIF(trim(both '-' from regexp_replace(lower(name), '[^a-z0-9]+', '-', 'g')), '') WHERE slug IS NULL`);
+    await client.query(`UPDATE ticket_forms SET slug = NULLIF(trim(both '-' from regexp_replace(lower(name), '[^a-z0-9]+', '-', 'g')), '') WHERE slug IS NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_categories_slug ON ticket_categories(project_id, slug)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_forms_slug ON ticket_forms(category_id, slug)`);
     await client.query(`
       CREATE TABLE IF NOT EXISTS ticket_form_fields (
         id SERIAL PRIMARY KEY,

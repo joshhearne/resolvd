@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useState, useRef } from "react";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
 import { useAuth } from "../context/AuthContext";
@@ -208,6 +208,29 @@ function Editor({ form, isPriv, projects, onCancel, onSubmit }) {
     project_ids: Array.isArray(form.project_ids) ? form.project_ids : [],
   });
   const isEdit = !!form.id;
+  const insertApiRef = useRef(null);
+  const [fieldTags, setFieldTags] = useState([]);
+
+  // Custom-field tags for the scoped project(s). When scoped to specific
+  // projects, show those projects' ticket fields; when "All projects", show
+  // only the shared field library (project_id=0 → defs with project_id NULL).
+  useEffect(() => {
+    const pids = local.project_ids.length ? local.project_ids : [0];
+    let alive = true;
+    Promise.all(pids.map((pid) =>
+      api.get(`/api/custom-field-defs?entity_type=ticket&project_id=${pid}`).catch(() => [])
+    )).then((lists) => {
+      if (!alive) return;
+      const seen = new Set();
+      const tags = [];
+      lists.flat().forEach((d) => {
+        if (d && d.slug && !seen.has(d.slug)) { seen.add(d.slug); tags.push({ tag: `{field.${d.slug}}`, label: d.label }); }
+      });
+      setFieldTags(tags);
+    });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [JSON.stringify(local.project_ids)]);
 
   function submit(e) {
     e.preventDefault();
@@ -222,7 +245,9 @@ function Editor({ form, isPriv, projects, onCancel, onSubmit }) {
   }
 
   function insertTag(tag) {
-    setLocal((l) => ({ ...l, body: l.body + tag }));
+    // Inject at the caret when the editor exposes its insert API; else append.
+    if (insertApiRef.current) insertApiRef.current(tag);
+    else setLocal((l) => ({ ...l, body: l.body + tag }));
   }
 
   function toggleProject(id) {
@@ -312,6 +337,7 @@ function Editor({ form, isPriv, projects, onCancel, onSubmit }) {
           rows={10}
           placeholder={"Hi,\n\nWe scheduled a toner replacement for {ticket.ref}.\n\nMore info: [vendor portal](https://example.com)\n\n— {actor.name}"}
           aiSurface="comment_internal"
+          insertApiRef={insertApiRef}
         />
         <span className="text-fg-dim">
           Markdown supported — use <code>[label](https://...)</code> for hyperlinks. Preview tab renders the body; tag substitution still happens at send time.
@@ -330,6 +356,22 @@ function Editor({ form, isPriv, projects, onCancel, onSubmit }) {
           </button>
         ))}
       </div>
+      {fieldTags.length > 0 && (
+        <div className="text-xs text-fg-muted">
+          <span>Custom field tags:</span>
+          {fieldTags.map((f) => (
+            <button
+              key={f.tag}
+              type="button"
+              title={f.label}
+              onClick={() => insertTag(f.tag)}
+              className="ml-1 px-1.5 py-0.5 rounded bg-surface-2 border border-border hover:bg-surface text-[11px] font-mono"
+            >
+              {f.tag}
+            </button>
+          ))}
+        </div>
+      )}
       <div className="flex justify-end gap-2 pt-1">
         <button type="button" onClick={onCancel} className="btn btn-secondary btn-sm">Cancel</button>
         <button type="submit" className="btn btn-primary btn-sm">

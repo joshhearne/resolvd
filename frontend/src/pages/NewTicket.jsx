@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams, useParams } from "react-router-dom";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
 import {
@@ -21,6 +21,9 @@ export default function NewTicket() {
     ? Number(searchParams.get("project_id"))
     : null;
   const fromFilter = searchParams.get("from_filter") === "1";
+  // Deep-link path: /tickets/new/<project-prefix>/<category-slug>/<form-slug>
+  const splat = (useParams()["*"] || "").split("/").filter(Boolean);
+  const [pathProject, pathCategory, pathForm] = splat;
   const { user } = useAuth();
   const [projects, setProjects] = useState([]);
   const [form, setForm] = useState({
@@ -61,9 +64,12 @@ export default function NewTicket() {
       .then((all) => {
         const active = all.filter((p) => p.status === "active");
         setProjects(active);
-        // Precedence: ?project_id query (filter scope) > user default > only-one fallback.
+        // Precedence: deep-link path prefix > ?project_id query > user default > only-one.
         const defaultId = user?.defaultProjectId;
-        if (queryProjectId && active.find((p) => p.id === queryProjectId)) {
+        const pathProj = pathProject && active.find((p) => String(p.prefix).toLowerCase() === pathProject.toLowerCase());
+        if (pathProj) {
+          setForm((f) => ({ ...f, project_id: pathProj.id }));
+        } else if (queryProjectId && active.find((p) => p.id === queryProjectId)) {
           setForm((f) => ({ ...f, project_id: queryProjectId }));
           if (
             fromFilter &&
@@ -110,8 +116,30 @@ export default function NewTicket() {
     setCategoryId(""); setFormId(""); setFormFields([]); setCfValues({});
     setCategories([]); setProjectForms([]);
     if (!form.project_id) return;
-    api.get(`/api/forms/categories?project_id=${form.project_id}`).then(setCategories).catch(() => setCategories([]));
-    api.get(`/api/forms?project_id=${form.project_id}`).then(setProjectForms).catch(() => setProjectForms([]));
+    let alive = true;
+    Promise.all([
+      api.get(`/api/forms/categories?project_id=${form.project_id}`).catch(() => []),
+      api.get(`/api/forms?project_id=${form.project_id}`).catch(() => []),
+    ]).then(([cats, fms]) => {
+      if (!alive) return;
+      setCategories(cats); setProjectForms(fms);
+      // Deep-link: resolve category + form by slug from the URL path.
+      if (!pathCategory) return;
+      const cat = cats.find((c) => c.slug === pathCategory);
+      if (!cat) return;
+      setCategoryId(String(cat.id));
+      const inCat = fms.filter((x) => String(x.category_id) === String(cat.id));
+      if (pathForm) {
+        const f = inCat.find((x) => x.slug === pathForm);
+        if (f) setFormId(String(f.id));
+      } else if (cat.default_form_id && inCat.some((x) => x.id === cat.default_form_id)) {
+        setFormId(String(cat.default_form_id));
+      } else if (inCat.length === 1) {
+        setFormId(String(inCat[0].id));
+      }
+    });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [form.project_id]);
 
   // When a form is chosen, fetch its bound fields + seed default values.
@@ -125,6 +153,20 @@ export default function NewTicket() {
       setFormFields(fields);
       const seed = {};
       fields.forEach((f) => { seed[f.def_id] = f.type === "bool" ? false : ""; });
+      // Deep-link prefills: ?<field-slug>=<value>. Selects take a 1-based
+      // option number; bools take 1/true; others take the literal value.
+      fields.forEach((f) => {
+        const raw = searchParams.get(f.slug);
+        if (raw == null) return;
+        if (f.type === "select") {
+          const opt = (f.options || [])[parseInt(raw, 10) - 1];
+          if (opt) seed[f.def_id] = opt.value;
+        } else if (f.type === "bool") {
+          seed[f.def_id] = raw === "1" || raw.toLowerCase() === "true";
+        } else {
+          seed[f.def_id] = raw;
+        }
+      });
       setCfValues(seed);
       // Pre-fill Title/Description from the form's boilerplate, but never
       // clobber what the user already typed.
@@ -351,7 +393,18 @@ export default function NewTicket() {
               </label>
               <select
                 value={categoryId}
-                onChange={(e) => { setCategoryId(e.target.value); setFormId(""); }}
+                onChange={(e) => {
+                  const cid = e.target.value;
+                  setCategoryId(cid);
+                  // Pre-select the category's default form, or the only form if
+                  // there's just one; otherwise leave it to the user.
+                  const cat = categories.find((c) => String(c.id) === String(cid));
+                  const inCat = projectForms.filter((f) => String(f.category_id) === String(cid));
+                  const def = cat?.default_form_id && inCat.some((f) => f.id === cat.default_form_id)
+                    ? String(cat.default_form_id)
+                    : (inCat.length === 1 ? String(inCat[0].id) : "");
+                  setFormId(def);
+                }}
                 className="w-full border border-border-strong rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40"
               >
                 <option value="">No category</option>

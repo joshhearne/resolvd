@@ -92,12 +92,36 @@ export default function MarkdownEditor({
   mentionProjectId,   // if provided, use MentionTextarea instead of plain textarea
   aiSurface,          // if set ("comment_internal" | "comment_vendor" | "ticket_description"), enables AI rewrite button
   aiProjectId,        // if set, AI rewrite includes the project's admin-authored context blob
+  insertApiRef,       // if provided, .current is set to insertAtCursor(text) for parent-driven inserts
 }) {
   const [tab, setTab] = useState("write");
   const [aiOpen, setAiOpen] = useState(false);
   const ref = useRef(null);
   const { branding } = useBranding();
   const aiAvailable = !!aiSurface && branding?.ai_assist_enabled !== false;
+
+  // Insert text at the caret (falling back to append). Restores the caret to
+  // just after the inserted text. Exposed to parents via insertApiRef so tag
+  // pickers can inject {field.x} wherever the cursor is, not at the end.
+  function insertAtCursor(text) {
+    const el = ref.current;
+    const v = value || "";
+    if (!el || el.selectionStart == null) {
+      onChange({ target: { value: v + text } });
+      return;
+    }
+    const start = el.selectionStart;
+    const end = el.selectionEnd;
+    const before = v.slice(0, start);
+    const after = v.slice(end);
+    onChange({ target: { value: before + text + after } });
+    const cursor = before.length + text.length;
+    requestAnimationFrame(() => {
+      el.focus();
+      try { el.setSelectionRange(cursor, cursor); } catch { /* ignore */ }
+    });
+  }
+  if (insertApiRef) insertApiRef.current = insertAtCursor;
 
   function format(fmt) {
     const el = ref.current;

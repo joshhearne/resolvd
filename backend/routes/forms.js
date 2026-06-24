@@ -36,6 +36,11 @@ async function canAccessProject(user, projectId) {
   return ids.includes(Number(projectId));
 }
 
+// kebab-case slug for URL path segments (e.g. "VM PIN Reset" -> "vm-pin-reset").
+function kebab(s) {
+  return String(s || '').toLowerCase().trim().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 80);
+}
+
 // ───────── Categories ───────────────────────────────────────────────
 
 // GET /api/forms/categories?project_id=N — list a project's categories.
@@ -63,10 +68,14 @@ router.post('/categories', requireAuth, requireRole('Admin'), async (req, res) =
     if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name required' });
     const proj = await pool.query(`SELECT 1 FROM projects WHERE id = $1`, [projectId]);
     if (!proj.rows[0]) return res.status(404).json({ error: 'project not found' });
+    const slug = kebab(req.body.slug || name);
+    if (!slug) return res.status(400).json({ error: 'name/slug must produce a non-empty slug' });
+    const dupe = await pool.query(`SELECT 1 FROM ticket_categories WHERE project_id = $1 AND slug = $2`, [projectId, slug]);
+    if (dupe.rows[0]) return res.status(409).json({ error: `category slug "${slug}" already exists in this project` });
     const r = await pool.query(
-      `INSERT INTO ticket_categories (project_id, name, sort_order)
-       VALUES ($1, $2, COALESCE($3, 0)) RETURNING *`,
-      [projectId, name.trim(), sort_order]
+      `INSERT INTO ticket_categories (project_id, name, sort_order, slug)
+       VALUES ($1, $2, COALESCE($3, 0), $4) RETURNING *`,
+      [projectId, name.trim(), sort_order, slug]
     );
     res.status(201).json(r.rows[0]);
   } catch (err) {
@@ -83,7 +92,25 @@ router.patch('/categories/:id', requireAuth, requireRole('Admin'), async (req, r
     const values = [];
     let p = 1;
     if (req.body.name !== undefined) { sets.push(`name = $${p++}`); values.push(String(req.body.name).trim()); }
+    if (req.body.slug !== undefined) {
+      const slug = kebab(req.body.slug);
+      if (!slug) return res.status(400).json({ error: 'slug must be non-empty' });
+      const cat = await pool.query(`SELECT project_id FROM ticket_categories WHERE id = $1`, [id]);
+      if (!cat.rows[0]) return res.status(404).json({ error: 'not found' });
+      const dupe = await pool.query(`SELECT 1 FROM ticket_categories WHERE project_id = $1 AND slug = $2 AND id <> $3`, [cat.rows[0].project_id, slug, id]);
+      if (dupe.rows[0]) return res.status(409).json({ error: `category slug "${slug}" already exists in this project` });
+      sets.push(`slug = $${p++}`); values.push(slug);
+    }
     if (req.body.sort_order !== undefined) { sets.push(`sort_order = $${p++}`); values.push(Number(req.body.sort_order) || 0); }
+    if (req.body.default_form_id !== undefined) {
+      const dfid = req.body.default_form_id == null ? null : Number(req.body.default_form_id);
+      if (dfid != null) {
+        // The default form must belong to this category.
+        const ok = await pool.query(`SELECT 1 FROM ticket_forms WHERE id = $1 AND category_id = $2`, [dfid, id]);
+        if (!ok.rows[0]) return res.status(400).json({ error: 'default form must belong to this category' });
+      }
+      sets.push(`default_form_id = $${p++}`); values.push(dfid);
+    }
     if (!sets.length) return res.status(400).json({ error: 'no updatable fields supplied' });
     values.push(id);
     const r = await pool.query(`UPDATE ticket_categories SET ${sets.join(', ')} WHERE id = $${p} RETURNING *`, values);
@@ -183,10 +210,14 @@ router.post('/', requireAuth, requireRole('Admin'), async (req, res) => {
     if (!name || typeof name !== 'string') return res.status(400).json({ error: 'name required' });
     const cat = await pool.query(`SELECT 1 FROM ticket_categories WHERE id = $1`, [catId]);
     if (!cat.rows[0]) return res.status(404).json({ error: 'category not found' });
+    const slug = kebab(req.body.slug || name);
+    if (!slug) return res.status(400).json({ error: 'name/slug must produce a non-empty slug' });
+    const dupe = await pool.query(`SELECT 1 FROM ticket_forms WHERE category_id = $1 AND slug = $2`, [catId, slug]);
+    if (dupe.rows[0]) return res.status(409).json({ error: `form slug "${slug}" already exists in this category` });
     const r = await pool.query(
-      `INSERT INTO ticket_forms (category_id, name, description, enabled, sort_order, created_by, default_title, default_description)
-       VALUES ($1, $2, $3, COALESCE($4, TRUE), COALESCE($5, 0), $6, $7, $8) RETURNING *`,
-      [catId, name.trim(), description || null, enabled, sort_order, req.session.user.id, default_title || null, default_description || null]
+      `INSERT INTO ticket_forms (category_id, name, description, enabled, sort_order, created_by, default_title, default_description, slug)
+       VALUES ($1, $2, $3, COALESCE($4, TRUE), COALESCE($5, 0), $6, $7, $8, $9) RETURNING *`,
+      [catId, name.trim(), description || null, enabled, sort_order, req.session.user.id, default_title || null, default_description || null, slug]
     );
     res.status(201).json(r.rows[0]);
   } catch (err) {
@@ -206,6 +237,15 @@ router.patch('/:id(\\d+)', requireAuth, requireRole('Admin'), async (req, res) =
       if (req.body[k] !== undefined) { sets.push(`${col} = $${p++}`); values.push(req.body[k] == null ? null : String(req.body[k]).trim() || null); }
     }
     if (req.body.enabled !== undefined) { sets.push(`enabled = $${p++}`); values.push(!!req.body.enabled); }
+    if (req.body.slug !== undefined) {
+      const slug = kebab(req.body.slug);
+      if (!slug) return res.status(400).json({ error: 'slug must be non-empty' });
+      const cur = await pool.query(`SELECT category_id FROM ticket_forms WHERE id = $1`, [id]);
+      if (!cur.rows[0]) return res.status(404).json({ error: 'not found' });
+      const dupe = await pool.query(`SELECT 1 FROM ticket_forms WHERE category_id = $1 AND slug = $2 AND id <> $3`, [cur.rows[0].category_id, slug, id]);
+      if (dupe.rows[0]) return res.status(409).json({ error: `form slug "${slug}" already exists in this category` });
+      sets.push(`slug = $${p++}`); values.push(slug);
+    }
     if (req.body.sort_order !== undefined) { sets.push(`sort_order = $${p++}`); values.push(Number(req.body.sort_order) || 0); }
     if (req.body.category_id !== undefined) { sets.push(`category_id = $${p++}`); values.push(Number(req.body.category_id)); }
     if (!sets.length) return res.status(400).json({ error: 'no updatable fields supplied' });
