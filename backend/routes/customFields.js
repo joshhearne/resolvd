@@ -9,7 +9,7 @@ const formula = require('../services/formula');
 
 const router = express.Router();
 
-const ENTITY_TYPES = ['asset', 'ticket'];
+const ENTITY_TYPES = ['asset', 'ticket', 'consumable'];
 const FIELD_TYPES = ['text', 'number', 'date', 'bool', 'select', 'multiselect'];
 
 // Slugify a label: lowercase, alphanumeric + underscore. Used as the

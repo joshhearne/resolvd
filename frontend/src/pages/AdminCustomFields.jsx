@@ -9,7 +9,8 @@ import { api } from "../utils/api";
 
 const ENTITY_TYPES = [
   { value: "asset", label: "Asset" },
-  // Ticket entity surfaced once the asset side has settled.
+  { value: "consumable", label: "Consumable" },
+  // Ticket custom fields live on the Forms / Fields page (project-scoped).
 ];
 
 const FIELD_TYPES = [
@@ -118,7 +119,9 @@ export default function AdminCustomFields() {
     <div className="space-y-5">
       <div className="bg-surface border border-border rounded-lg p-4">
         <div className="flex items-center justify-between mb-1">
-          <h2 className="text-base font-semibold text-fg">Custom fields</h2>
+          <h2 className="text-base font-semibold text-fg">
+            {(ENTITY_TYPES.find((e) => e.value === entityType)?.label || "Asset")} Custom Fields
+          </h2>
           <select
             value={entityType}
             onChange={(e) => setEntityType(e.target.value)}

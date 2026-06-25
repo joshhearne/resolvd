@@ -1612,7 +1612,7 @@ async function initSchema() {
     await client.query(`
       CREATE TABLE IF NOT EXISTS custom_field_defs (
         id SERIAL PRIMARY KEY,
-        entity_type TEXT NOT NULL CHECK (entity_type IN ('asset', 'ticket')),
+        entity_type TEXT NOT NULL CHECK (entity_type IN ('asset', 'ticket', 'consumable')),
         slug TEXT NOT NULL,
         label TEXT NOT NULL,
         type TEXT NOT NULL CHECK (type IN ('text', 'number', 'date', 'bool', 'select', 'multiselect')),
@@ -1674,6 +1674,10 @@ async function initSchema() {
     // via POST /api/tickets/:id/recompute-fields. See services/formula.js.
     await client.query(`ALTER TABLE custom_field_defs ADD COLUMN IF NOT EXISTS computed BOOLEAN NOT NULL DEFAULT FALSE`);
     await client.query(`ALTER TABLE custom_field_defs ADD COLUMN IF NOT EXISTS formula TEXT`);
+    // Widen entity_type on existing installs to allow consumable custom fields
+    // (the inline CHECK above only applies to fresh CREATE TABLE).
+    await client.query(`ALTER TABLE custom_field_defs DROP CONSTRAINT IF EXISTS custom_field_defs_entity_type_check`);
+    await client.query(`ALTER TABLE custom_field_defs ADD CONSTRAINT custom_field_defs_entity_type_check CHECK (entity_type IN ('asset', 'ticket', 'consumable'))`);
     // Allow the multiselect type on pre-existing installs (CHECK was created
     // before multiselect existed). Multiselect values are stored as a JSON
     // array of option values in value_text.
@@ -1695,6 +1699,8 @@ async function initSchema() {
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_cfv_asset ON custom_field_values(def_id, asset_id) WHERE asset_id IS NOT NULL`);
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_cfv_ticket ON custom_field_values(def_id, ticket_id) WHERE ticket_id IS NOT NULL`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_cfv_ticket ON custom_field_values(ticket_id) WHERE ticket_id IS NOT NULL`);
+    // (custom_field_values.consumable_id is added later — after the consumables
+    // table is created — so its FK target exists.)
 
     // Category → form → field-binding. A category is a project sub-grouping
     // ("Service Request", "HR"); a form is a request type ("Onboarding") that
@@ -2739,6 +2745,14 @@ async function initSchema() {
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_consumable_movements_consumable ON consumable_movements(consumable_id, at DESC)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_consumable_movements_ticket ON consumable_movements(ticket_id) WHERE ticket_id IS NOT NULL`);
+
+    // custom_field_values.consumable_id parallels asset_id/ticket_id so
+    // consumable custom-field values store the same way (one of the *_id set
+    // per row). Defined here, after the consumables table exists, so the FK
+    // target is present. Value read/write UI on the consumable page is future.
+    await client.query(`ALTER TABLE custom_field_values ADD COLUMN IF NOT EXISTS consumable_id INTEGER REFERENCES consumables(id) ON DELETE CASCADE`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_cfv_consumable ON custom_field_values(def_id, consumable_id) WHERE consumable_id IS NOT NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_cfv_consumable ON custom_field_values(consumable_id) WHERE consumable_id IS NOT NULL`);
 
     // Restock + sourcing fields:
     //   purchase_url     — self-serve order URL surfaced in OOS / low-stock
