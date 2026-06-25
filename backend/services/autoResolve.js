@@ -261,6 +261,88 @@ async function applyCommentToTerminalTicket({ ticketId, commentBody, actorUserId
   return { reopened: true, gratitude: false, fromStatus: row.internal_status, toStatus: target };
 }
 
+// ───────────────────────── Vendor reply status automation ─────────────────
+// When a vendor (external contact) replies to a ticket that's escalated to
+// them, classify the verbiage and move the EXTERNAL status accordingly,
+// keeping the internal status the vendor's court until they report completion.
+//
+//   'acknowledged' (ack / confirming / acknowledgement)
+//        → external In Progress, internal UNCHANGED (still with the vendor)
+//   'completed'    (complete / completed / resolved / finished)
+//        → external Resolved, internal Pending Review (now ours to verify)
+//
+// Completion is checked first: "completed and confirmed" is a completion.
+const VENDOR_COMPLETED_RE = /\b(complet(e|ed|es|ing|ion)|resolv(e|ed|es|ing)|finished)\b/i;
+const VENDOR_ACK_RE = /\b(acknowledg(e|ed|es|ing|ement|ment)|confirm(s|ed|ing|ation)?|ack)\b/i;
+
+function classifyVendorReply(text) {
+  const s = String(text || '');
+  if (!s.trim()) return null;
+  if (VENDOR_COMPLETED_RE.test(s)) return 'completed';
+  if (VENDOR_ACK_RE.test(s)) return 'acknowledged';
+  return null;
+}
+
+// Act on a classified vendor reply. Only runs for tickets that are actually
+// engaged with a vendor (internal status External Escalation OR an external
+// ticket ref is attached). Returns { handled, classification, changed } —
+// handled:true tells the caller to SKIP the generic awaiting/resolved auto
+// helpers (so an ack doesn't get pulled back to In Progress internally).
+async function applyVendorReplyStatus({ ticketId, replyBody, actorUserId }) {
+  const t = await pool.query(
+    `SELECT id, internal_status, external_status, external_ticket_ref FROM tickets WHERE id = $1`,
+    [ticketId]
+  );
+  const row = t.rows[0];
+  if (!row) return { handled: false };
+
+  const engaged = row.internal_status === 'External Escalation' || !!row.external_ticket_ref;
+  if (!engaged) return { handled: false };
+
+  const classification = classifyVendorReply(replyBody);
+  if (!classification) return { handled: false };
+
+  if (classification === 'acknowledged') {
+    // Don't downgrade an already-more-advanced external status.
+    if (row.external_status === 'In Progress' || row.external_status === 'Resolved') {
+      return { handled: true, classification, changed: false };
+    }
+    await pool.query(
+      `UPDATE tickets SET external_status = 'In Progress', external_updated_at = NOW(), updated_at = NOW() WHERE id = $1`,
+      [ticketId]
+    );
+    await pool.query(
+      `INSERT INTO audit_log (ticket_id, user_id, action, old_value, new_value, note)
+       VALUES ($1, $2, 'external_status_change_auto', $3, 'In Progress', $4)`,
+      [ticketId, actorUserId || null, row.external_status, 'Vendor acknowledged — external set In Progress; internal left with vendor']
+    );
+    return { handled: true, classification, changed: true };
+  }
+
+  // classification === 'completed'
+  const internalChanged = row.internal_status !== 'Pending Review';
+  await pool.query(
+    `UPDATE tickets
+        SET external_status = 'Resolved', external_updated_at = NOW(),
+            internal_status = 'Pending Review', flagged_for_review = TRUE, updated_at = NOW()
+      WHERE id = $1`,
+    [ticketId]
+  );
+  await pool.query(
+    `INSERT INTO audit_log (ticket_id, user_id, action, old_value, new_value, note)
+     VALUES ($1, $2, 'external_status_change_auto', $3, 'Resolved', $4)`,
+    [ticketId, actorUserId || null, row.external_status, 'Vendor reported completion']
+  );
+  if (internalChanged) {
+    await pool.query(
+      `INSERT INTO audit_log (ticket_id, user_id, action, old_value, new_value, note)
+       VALUES ($1, $2, 'status_change_auto', $3, 'Pending Review', $4)`,
+      [ticketId, actorUserId || null, row.internal_status, 'Vendor reported work complete — flagged for review']
+    );
+  }
+  return { handled: true, classification, changed: true };
+}
+
 module.exports = {
   getGratitudePhrases,
   setGratitudePhrases,
@@ -269,6 +351,8 @@ module.exports = {
   invalidatePhraseCache,
   isGratitudeOnly,
   detectOutOfOffice,
+  classifyVendorReply,
+  applyVendorReplyStatus,
   applyReplyToResolvedTicket,
   applyReplyToWaitingTicket,
   applyCommentToTerminalTicket,

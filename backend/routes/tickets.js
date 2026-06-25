@@ -895,6 +895,19 @@ router.patch('/:id', requireAuth, async (req, res) => {
         });
         if (nextStatus === 'Reopened') {
           await auditLog(client, { ticketId: ticket.id, userId: user.id, action: 'reopened', note: 'Ticket reopened' });
+          // Reopening a ticket that's (or was) escalated to a vendor bumps the
+          // external side back to In Progress — the vendor's work resumes.
+          // No external ref attached → purely internal reopen, leave external
+          // status alone.
+          if (ticket.external_ticket_ref && body.external_status === undefined && ticket.external_status !== 'In Progress') {
+            updates.external_status = 'In Progress';
+            updates.external_updated_at = new Date().toISOString();
+            await auditLog(client, {
+              ticketId: ticket.id, userId: user.id, action: 'external_status_update',
+              oldValue: ticket.external_status, newValue: 'In Progress',
+              note: 'Reopened with external ticket attached — external bumped to In Progress',
+            });
+          }
         }
         // Alert-side ack: an alert-driven ticket moving OUT of Open
         // signals "human has it" — flip the linked alert from firing

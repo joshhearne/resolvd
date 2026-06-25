@@ -32,6 +32,7 @@ const {
   applyReplyToResolvedTicket,
   applyReplyToWaitingTicket,
   applyCommentToTerminalTicket,
+  applyVendorReplyStatus,
   getReplyRoutingSettings,
   detectOutOfOffice,
 } = require('./autoResolve');
@@ -1165,20 +1166,34 @@ async function tryAutoReply({ candidateRef, subject, body, fromAddress, queueRow
   let reopen = null;
   let resume = null;
   let reopenTerminal = null;
+  let vendorStatus = null;
   if (!oooSuppressed) {
-    reopen = await applyReplyToResolvedTicket({
-      ticketId: ticket.id, replyBody: cleanedBody, actorUserId: authorUserId,
-    });
-    // Awaiting-input → in_progress. Skip if resolved-grace already moved it.
-    resume = reopen?.reopened
-      ? null
-      : await applyReplyToWaitingTicket({ ticketId: ticket.id, actorUserId: authorUserId });
-    // Fully terminal (Closed) tickets: gratitude filter still applies, but
-    // a substantive reply reopens. Mirrors the UI comment path.
-    if (!reopen?.reopened && !resume?.resumed && ticket.is_terminal) {
-      reopenTerminal = await applyCommentToTerminalTicket({
-        ticketId: ticket.id, commentBody: cleanedBody, actorUserId: authorUserId,
+    // Vendor (external contact) replies on an externally-engaged ticket get
+    // classified FIRST: an "acknowledged" must keep the ticket in External
+    // Escalation, which means it has to pre-empt applyReplyToWaitingTicket
+    // (External Escalation carries the awaiting_input tag and would otherwise
+    // be pulled back to In Progress). When it handles the reply, skip the
+    // generic resolved/awaiting/terminal helpers entirely.
+    if (sender?.kind === 'contact') {
+      vendorStatus = await applyVendorReplyStatus({
+        ticketId: ticket.id, replyBody: cleanedBody, actorUserId: authorUserId,
       });
+    }
+    if (!vendorStatus?.handled) {
+      reopen = await applyReplyToResolvedTicket({
+        ticketId: ticket.id, replyBody: cleanedBody, actorUserId: authorUserId,
+      });
+      // Awaiting-input → in_progress. Skip if resolved-grace already moved it.
+      resume = reopen?.reopened
+        ? null
+        : await applyReplyToWaitingTicket({ ticketId: ticket.id, actorUserId: authorUserId });
+      // Fully terminal (Closed) tickets: gratitude filter still applies, but
+      // a substantive reply reopens. Mirrors the UI comment path.
+      if (!reopen?.reopened && !resume?.resumed && ticket.is_terminal) {
+        reopenTerminal = await applyCommentToTerminalTicket({
+          ticketId: ticket.id, commentBody: cleanedBody, actorUserId: authorUserId,
+        });
+      }
     }
   }
 
@@ -1201,6 +1216,7 @@ async function tryAutoReply({ candidateRef, subject, body, fromAddress, queueRow
     },
     reopen: reopen || reopenTerminal,
     resume,
+    vendorStatus,
     cleanedBody,
     actorLabel,
     contactId: vendorContactId,
