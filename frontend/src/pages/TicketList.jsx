@@ -43,15 +43,30 @@ const LIMIT = 50;
 // URL ?preset=foo → filter overlay applied on top of the current
 // persisted filter state. Lets dashboard tiles + email links deep-link
 // into a specific view without inventing a new URL schema.
+// Status buckets MUST match the dashboard cards (backend/routes/dashboard.js).
+// A card and its preset show the same set, so clicking "In Progress" (which
+// counts Acknowledged too) lists those tickets as well.
 const URL_PRESETS = {
-  open:           { statuses: ["Open"],            excludeClosed: true },
-  in_progress:    { statuses: ["In Progress"],     excludeClosed: true },
-  awaiting_mot:   { statuses: ["Awaiting Input"],  excludeClosed: true },
-  pending_review: { statuses: ["Pending Review"],  excludeClosed: true },
-  flagged:        { flagged: true,                 excludeClosed: true },
-  closed:         { statuses: ["Closed"],          excludeClosed: false },
-  sla_breached:   { excludeClosed: true },
-  mine:           { mine: true,                    excludeClosed: true },
+  open:           { statuses: ["Open"],                                            excludeClosed: true },
+  in_progress:    { statuses: ["In Progress", "Acknowledged"],                      excludeClosed: true },
+  awaiting_mot:   { statuses: ["Awaiting Input", "On Hold", "External Escalation"], excludeClosed: true },
+  pending_review: { statuses: ["Pending Review"],                                  excludeClosed: true },
+  flagged:        { statuses: ["Reopened"],                                        excludeClosed: true },
+  closed:         { statuses: ["Resolved", "Closed"],                              excludeClosed: false },
+  // SLA presets clear the date window (days:0) so they match the dashboard SLA
+  // cards, which count across all time, not just the last N days.
+  // SLA presets are self-contained so the list matches the dashboard card
+  // exactly: clear status/priority/project scope + the date window, and DON'T
+  // exclude closed (MTD breaches are mostly closed tickets — a ticket that
+  // breached this month then got closed still counts).
+  sla_open:         { sla: "open",         days: 0, statuses: [], priorities: [], projectIds: [], excludeClosed: false },
+  sla_breached:     { sla: "breached",     days: 0, statuses: [], priorities: [], projectIds: [], excludeClosed: false },
+  sla_mtd_response: { sla: "mtd_response", days: 0, statuses: [], priorities: [], projectIds: [], excludeClosed: false },
+  sla_mtd_resolve:  { sla: "mtd_resolve",  days: 0, statuses: [], priorities: [], projectIds: [], excludeClosed: false },
+  // "active" = non-terminal, non-resolved (matches Priority Distribution). Used
+  // with a ?priorities=N param from the dashboard priority bars (hydrated below).
+  active:           { active: true, days: 0, statuses: [] },
+  mine:           { mine: true,                                                    excludeClosed: true },
 };
 
 function DateTimeStack({ value }) {
@@ -93,10 +108,27 @@ export default function TicketList() {
   useEffect(() => {
     const preset = searchParams.get("preset");
     if (!preset || !URL_PRESETS[preset]) return;
-    setFilters((f) => ({ ...f, ...URL_PRESETS[preset] }));
-    // Strip the param so a subsequent filter change doesn't re-overlay.
+    // Optional ?priorities=1,3 rides alongside the preset (dashboard priority
+    // bars link to preset=active&priorities=N). Parse it into the filter.
+    const prioParam = (searchParams.get("priorities") || "")
+      .split(",").map((s) => Number(s.trim())).filter((n) => n >= 1 && n <= 5);
+    // Reset the parametric facets (sla/active) to a clean baseline first so
+    // switching from an SLA/priority preset back to a status preset doesn't
+    // carry a stale facet filter.
+    // Reset the parametric facets (sla / active / priorities) to a clean
+    // baseline first so a dashboard card click never carries a stale facet —
+    // e.g. a lingering P3 filter from a priority bar must wash off when you
+    // then click the Open / In Progress / etc. card. The preset (and an
+    // optional ?priorities=) re-applies anything it actually wants.
+    setFilters((f) => ({
+      ...f, sla: undefined, active: undefined, priorities: [],
+      ...URL_PRESETS[preset],
+      ...(prioParam.length ? { priorities: prioParam } : {}),
+    }));
+    // Strip the params so a subsequent filter change doesn't re-overlay.
     const next = new URLSearchParams(searchParams);
     next.delete("preset");
+    next.delete("priorities");
     setSearchParams(next, { replace: true });
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [searchParams.get("preset")]);

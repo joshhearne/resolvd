@@ -82,6 +82,8 @@ export function buildTicketQs(filters, extras = {}) {
   if (filters.hasFix === true) parts.push(`has_fix=1`);
   if (filters.hasFix === false) parts.push(`has_fix=0`);
   if (filters.excludeClosed) parts.push(`exclude_closed=1`);
+  if (filters.sla) parts.push(`sla=${encodeURIComponent(filters.sla)}`);
+  if (filters.active) parts.push(`active=1`);
 
   // Map UI sort token → backend (sort_by, sort_dir)
   const sortMap = {

@@ -361,7 +361,9 @@ function SlaBreachCard({ sla }) {
   const mtd = sla.mtd_total || { response: 0, resolve: 0 };
   const byProject = sla.mtd_by_project || [];
   const byVendor = sla.vendor_wait_by_vendor || [];
-  const liveBreached = (live.breached_response || 0) + (live.breached_resolve || 0);
+  // Distinct breached tickets (matches the ?sla=breached list). Falls back to
+  // the response+resolve sum for older API payloads without breached_clock.
+  const liveBreached = live.breached_clock ?? ((live.breached_response || 0) + (live.breached_resolve || 0));
   const mtdTotal = (mtd.response || 0) + (mtd.resolve || 0);
   const vendor = Number(live.vendor_wait_seconds || 0);
   const internal = Number(live.internal_hold_seconds || 0);
@@ -388,18 +390,24 @@ function SlaBreachCard({ sla }) {
       ) : (
         <>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
-            <div className="rounded-md border border-border bg-surface-2 px-3 py-2">
+            <Link
+              to="/tickets?preset=sla_mtd_response"
+              className="rounded-md border border-border bg-surface-2 px-3 py-2 hover:bg-surface transition-colors"
+            >
               <div className="text-xs text-fg-muted">MTD response breaches</div>
               <div className="text-2xl font-bold text-amber-500 dark:text-amber-400">
                 {mtd.response || 0}
               </div>
-            </div>
-            <div className="rounded-md border border-border bg-surface-2 px-3 py-2">
+            </Link>
+            <Link
+              to="/tickets?preset=sla_mtd_resolve"
+              className="rounded-md border border-border bg-surface-2 px-3 py-2 hover:bg-surface transition-colors"
+            >
               <div className="text-xs text-fg-muted">MTD resolve breaches</div>
               <div className="text-2xl font-bold text-amber-500 dark:text-amber-400">
                 {mtd.resolve || 0}
               </div>
-            </div>
+            </Link>
             <Link
               to="/tickets?preset=sla_breached"
               className="rounded-md border border-border bg-surface-2 px-3 py-2 hover:bg-surface transition-colors"
@@ -415,12 +423,15 @@ function SlaBreachCard({ sla }) {
                 {liveBreached}
               </div>
             </Link>
-            <div className="rounded-md border border-border bg-surface-2 px-3 py-2">
+            <Link
+              to="/tickets?preset=sla_open"
+              className="rounded-md border border-border bg-surface-2 px-3 py-2 hover:bg-surface transition-colors"
+            >
               <div className="text-xs text-fg-muted">Open w/ SLA clock</div>
               <div className="text-2xl font-bold text-fg">
-                {(live.open_response || 0) + (live.open_resolve || 0)}
+                {live.open_clock ?? ((live.open_response || 0) + (live.open_resolve || 0))}
               </div>
-            </div>
+            </Link>
           </div>
 
           {pauseTotal > 0 && (
@@ -617,9 +628,9 @@ export default function Dashboard() {
         />
         <StatCard
           label="Flagged for Review"
-          value={stats?.flagged_for_review || 0}
+          value={stats?.total_reopened || 0}
           color="red"
-          urgent={stats?.flagged_for_review > 0}
+          urgent={stats?.total_reopened > 0}
           to="/tickets?preset=flagged"
         />
         <StatCard
@@ -647,19 +658,21 @@ export default function Dashboard() {
                 "bg-slate-400",
               ];
               return (
-                <div
+                <Link
                   key={p}
-                  className="flex flex-col items-center gap-1 flex-1"
+                  to={`/tickets?preset=active&priorities=${p}`}
+                  className="flex flex-col items-center gap-1 flex-1 group"
+                  title={`${count} active P${p} ticket${count === 1 ? "" : "s"}`}
                 >
-                  <span className="text-xs font-medium text-fg-muted">
+                  <span className="text-xs font-medium text-fg-muted group-hover:text-fg">
                     {count}
                   </span>
                   <div
-                    className={`w-full ${colors[p - 1]} rounded-t transition-all`}
+                    className={`w-full ${colors[p - 1]} rounded-t transition-all group-hover:opacity-80`}
                     style={{ height: `${Math.max(pct, 4)}%` }}
                   />
-                  <span className="text-xs text-fg-dim">P{p}</span>
-                </div>
+                  <span className="text-xs text-fg-dim group-hover:text-fg-muted">P{p}</span>
+                </Link>
               );
             })}
           </div>

@@ -305,12 +305,31 @@ router.get('/dashboard', requireAuth, async (req, res) => {
     // the live in-progress pause (NOW - sla_paused_at) onto the
     // accumulated totals so an active pause is reflected immediately
     // without waiting for the next status change.
+    // `live` = the ticket still has a running/owed SLA obligation: it is NOT
+    // terminal (Closed) and NOT in the resolved_pending_close grace window.
+    // Without this guard the breach/open counts swept in legacy Closed tickets
+    // that never got sla_first_response_at stamped — inflating "Open w/ SLA
+    // clock" with hundreds of done tickets. Pause-second accumulators below
+    // are intentionally left unguarded (historical totals).
+    const live = `(s.is_terminal IS NOT TRUE AND COALESCE(s.semantic_tag,'') <> 'resolved_pending_close')`;
     const counts = await pool.query(`
       SELECT
-        SUM(CASE WHEN sla_response_breached = TRUE AND sla_first_response_at IS NULL THEN 1 ELSE 0 END)::int AS breached_response,
-        SUM(CASE WHEN sla_resolve_breached = TRUE AND resolved_at IS NULL THEN 1 ELSE 0 END)::int AS breached_resolve,
-        SUM(CASE WHEN sla_response_due_at IS NOT NULL AND sla_first_response_at IS NULL AND sla_response_breached = FALSE THEN 1 ELSE 0 END)::int AS open_response,
-        SUM(CASE WHEN sla_resolve_due_at  IS NOT NULL AND resolved_at IS NULL              AND sla_resolve_breached  = FALSE THEN 1 ELSE 0 END)::int AS open_resolve,
+        SUM(CASE WHEN ${live} AND sla_response_breached = TRUE AND sla_first_response_at IS NULL THEN 1 ELSE 0 END)::int AS breached_response,
+        SUM(CASE WHEN ${live} AND sla_resolve_breached = TRUE AND resolved_at IS NULL THEN 1 ELSE 0 END)::int AS breached_resolve,
+        SUM(CASE WHEN ${live} AND sla_response_due_at IS NOT NULL AND sla_first_response_at IS NULL AND sla_response_breached = FALSE THEN 1 ELSE 0 END)::int AS open_response,
+        SUM(CASE WHEN ${live} AND sla_resolve_due_at  IS NOT NULL AND resolved_at IS NULL              AND sla_resolve_breached  = FALSE THEN 1 ELSE 0 END)::int AS open_resolve,
+        -- Distinct tickets with EITHER clock live, so a ticket owing both
+        -- response and resolve isn't counted twice (matches ?sla=open list).
+        SUM(CASE WHEN ${live} AND (
+              (sla_response_due_at IS NOT NULL AND sla_first_response_at IS NULL AND sla_response_breached = FALSE)
+           OR (sla_resolve_due_at  IS NOT NULL AND resolved_at IS NULL              AND sla_resolve_breached  = FALSE)
+        ) THEN 1 ELSE 0 END)::int AS open_clock,
+        -- Distinct currently-breached tickets (a ticket breaching BOTH response
+        -- and resolve counts once), so the card matches the ?sla=breached list.
+        SUM(CASE WHEN ${live} AND (
+              (sla_response_breached = TRUE AND sla_first_response_at IS NULL)
+           OR (sla_resolve_breached  = TRUE AND resolved_at IS NULL)
+        ) THEN 1 ELSE 0 END)::int AS breached_clock,
         SUM(
           sla_vendor_wait_seconds
           + CASE WHEN sla_pause_kind = 'vendor' AND sla_paused_at IS NOT NULL
@@ -323,7 +342,8 @@ router.get('/dashboard', requireAuth, async (req, res) => {
                  THEN GREATEST(0, EXTRACT(EPOCH FROM (NOW() - sla_paused_at))::int)
                  ELSE 0 END
         )::bigint AS internal_hold_seconds
-      FROM tickets
+      FROM tickets t
+      LEFT JOIN statuses s ON s.kind = 'internal' AND s.name = t.internal_status
       WHERE 1=1 ${scopeWhere}
     `, scopeParams);
 

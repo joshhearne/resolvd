@@ -103,10 +103,14 @@ router.get('/stats', requireAuth, async (req, res) => {
       f.params,
     );
 
+    // "Active" excludes terminal (Closed) AND resolved_pending_close (Resolved)
+    // — a resolved ticket in its grace window isn't active work.
     const priorityCounts = await pool.query(
       `SELECT effective_priority, COUNT(*)::int AS count
          FROM tickets t
-        WHERE internal_status NOT IN ('Closed')
+         LEFT JOIN statuses s ON s.kind = 'internal' AND s.name = t.internal_status
+        WHERE s.is_terminal IS NOT TRUE
+          AND COALESCE(s.semantic_tag,'') <> 'resolved_pending_close'
           AND ${f.sql}
         GROUP BY effective_priority
         ORDER BY effective_priority`,
@@ -124,14 +128,19 @@ router.get('/stats', requireAuth, async (req, res) => {
 
     const statusMap = {};
     statusCounts.rows.forEach((r) => { statusMap[r.internal_status] = r.count; });
+    const bucket = (...names) => names.reduce((n, s) => n + (statusMap[s] || 0), 0);
 
     res.json({
-      total_open: statusMap['Open'] || 0,
-      total_in_progress: statusMap['In Progress'] || 0,
-      total_awaiting_mot: statusMap['Awaiting Input'] || 0,
-      total_pending_review: statusMap['Pending Review'] || 0,
-      total_closed: statusMap['Closed'] || 0,
-      total_reopened: statusMap['Reopened'] || 0,
+      // Dashboard cards bucket several internal statuses into one number, so
+      // tickets in Acknowledged / On Hold / External Escalation / Resolved
+      // aren't silently dropped (was returning 0s). Keep these buckets in sync
+      // with URL_PRESETS in frontend/src/pages/TicketList.jsx.
+      total_open: bucket('Open'),
+      total_in_progress: bucket('In Progress', 'Acknowledged'),
+      total_awaiting_mot: bucket('Awaiting Input', 'On Hold', 'External Escalation'),
+      total_pending_review: bucket('Pending Review'),
+      total_closed: bucket('Resolved', 'Closed'),
+      total_reopened: bucket('Reopened'),
       flagged_for_review: flaggedCount.rows[0].count,
       priority_distribution: priorityCounts.rows,
     });

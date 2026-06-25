@@ -243,6 +243,37 @@ router.get('/', requireAuth, async (req, res) => {
       params.push(flagged_for_review === 'true');
     }
     if (exclude_closed === '1') { where.push(`t.internal_status != 'Closed'`); }
+    // "active" = non-terminal AND not in the resolved grace window. Matches the
+    // dashboard Priority Distribution (Active Tickets) so its bars can link to
+    // the exact set.
+    const liveExists = `EXISTS (SELECT 1 FROM statuses s
+      WHERE s.kind='internal' AND s.name = t.internal_status
+        AND s.is_terminal IS NOT TRUE
+        AND COALESCE(s.semantic_tag,'') <> 'resolved_pending_close')`;
+    if (req.query.active === '1') { where.push(liveExists); }
+    // SLA facets — mirror the dashboard SLA card definitions so each card links
+    // straight to its tickets. open/breached are scoped to live tickets (so
+    // done tickets that never recorded a first response don't leak in);
+    // mtd_* are historical (a ticket that breached this month then closed
+    // still counts toward the month-to-date number).
+    if (req.query.sla === 'open' || req.query.sla === 'breached') {
+      where.push(liveExists);
+      if (req.query.sla === 'open') {
+        where.push(`(
+          (t.sla_response_due_at IS NOT NULL AND t.sla_first_response_at IS NULL AND t.sla_response_breached = FALSE)
+          OR (t.sla_resolve_due_at IS NOT NULL AND t.resolved_at IS NULL AND t.sla_resolve_breached = FALSE)
+        )`);
+      } else {
+        where.push(`(
+          (t.sla_response_breached = TRUE AND t.sla_first_response_at IS NULL)
+          OR (t.sla_resolve_breached = TRUE AND t.resolved_at IS NULL)
+        )`);
+      }
+    } else if (req.query.sla === 'mtd_response') {
+      where.push(`t.sla_response_breached_at IS NOT NULL AND t.sla_response_breached_at >= date_trunc('month', NOW())`);
+    } else if (req.query.sla === 'mtd_resolve') {
+      where.push(`t.sla_resolve_breached_at IS NOT NULL AND t.sla_resolve_breached_at >= date_trunc('month', NOW())`);
+    }
     // "Has fix applied" — resolution_summary set OR at least one KB
     // link. Driven by the ticket-list facet of the KB linking feature.
     if (has_fix === '1' || has_fix === 'true') {
