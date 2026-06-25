@@ -2227,6 +2227,8 @@ router.get('/:id(\\d+)/print-label-resolve',
       // / vendor_part_no. First active hit wins.
       let suggestedConsumableId = null;
       let suggestedFromTag = null;
+      let suggestedFromText = null;
+      let suggestedSource = null; // 'alert_tag' | 'ticket_text' | null
       try {
         const ar = await pool.query(
           `SELECT raw_payload FROM alerts
@@ -2249,6 +2251,42 @@ router.get('/:id(\\d+)/print-label-resolve',
             [partTag]
           );
           suggestedConsumableId = cm.rows[0]?.id || null;
+          if (suggestedConsumableId) suggestedSource = 'alert_tag';
+        }
+
+        // Fallback: the alert tag was missing/unmatched (e.g. the Zabbix
+        // trigger fired without a part.number, then the description was fixed
+        // by hand). Scan the ticket's title + description for any active
+        // consumable's part_no / vendor_part_no appearing verbatim — this is
+        // what "Rescan" re-evaluates after an edit. Longest part_no wins so a
+        // more specific code beats a prefix.
+        if (!suggestedConsumableId) {
+          const txt = await pool.query(
+            `SELECT title, title_enc, description, description_enc FROM tickets WHERE id = $1`,
+            [ticketId]
+          );
+          const row = txt.rows[0] || {};
+          await decryptRow('tickets', row).catch(() => {});
+          const ticketText = `${row.title || ''}\n${row.description || ''}`.trim();
+          if (ticketText) {
+            const tm = await pool.query(
+              `SELECT id, part_no, title
+                 FROM consumables
+                WHERE is_archived = FALSE
+                  AND (
+                    ($1 ILIKE '%' || part_no || '%')
+                    OR (vendor_part_no IS NOT NULL AND vendor_part_no <> '' AND $1 ILIKE '%' || vendor_part_no || '%')
+                  )
+                ORDER BY length(part_no) DESC, id ASC
+                LIMIT 1`,
+              [ticketText]
+            );
+            if (tm.rows[0]) {
+              suggestedConsumableId = tm.rows[0].id;
+              suggestedFromText = tm.rows[0].part_no;
+              suggestedSource = 'ticket_text';
+            }
+          }
         }
       } catch (e) {
         console.warn('print-label-resolve: consumable suggest failed:', e.message);
@@ -2261,6 +2299,8 @@ router.get('/:id(\\d+)/print-label-resolve',
         graph_available: !!graphUser,
         suggested_consumable_id: suggestedConsumableId,
         suggested_from_tag: suggestedFromTag,
+        suggested_from_text: suggestedFromText,
+        suggested_source: suggestedSource,
       });
     } catch (err) {
       console.error('print-label-resolve:', err);

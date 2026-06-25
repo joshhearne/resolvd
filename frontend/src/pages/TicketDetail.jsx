@@ -1126,22 +1126,20 @@ export default function TicketDetail() {
       ]);
       const consumables = (Array.isArray(consList) ? consList : consList?.items || [])
         .filter((c) => !c.is_archived);
-      // Auto-select the consumable the backend matched against the
-      // alert's part.number tag. Falls back to the first row only when
-      // there's no suggestion AND no suggestion source either — if the
-      // suggestion came back null but a tag WAS present, surface the
-      // raw tag string in the picker placeholder so the admin knows
-      // why nothing matched ("part.number:XYZ — not in inventory").
+      // Auto-select ONLY the consumable the backend actually matched (alert
+      // part.number tag, or a part_no found in the ticket title/description).
+      // On no match, leave the picker empty — never silently default to the
+      // first row (which is alphabetically the B200 drum and was getting
+      // dispatched by accident). The admin must consciously pick or Rescan.
       const suggestedId = resolved.suggested_consumable_id;
-      const defaultId = suggestedId
-        ? String(suggestedId)
-        : (consumables[0]?.id ? String(consumables[0].id) : "");
       setLabelModal({
         loading: false,
         resolved,
         consumables,
-        consumableId: defaultId,
+        consumableId: suggestedId ? String(suggestedId) : "",
         suggestedFromTag: resolved.suggested_from_tag || null,
+        suggestedFromText: resolved.suggested_from_text || null,
+        suggestedSource: resolved.suggested_source || null,
         suggestedHit: !!suggestedId,
         requestor: resolved.requestor || "",
         location: resolved.location || "",
@@ -1150,6 +1148,37 @@ export default function TicketDetail() {
     } catch (e) {
       toast.error(e.message || "Failed to load label data");
       setLabelModal(null);
+    }
+  }
+
+  // Re-run the consumable match against the CURRENT ticket (alert tag + the
+  // latest title/description). Use after correcting a bad description or fixing
+  // the Zabbix part.number tag so the label re-picks the right part.
+  async function rescanLabel() {
+    setLabelModal((m) => (m ? { ...m, rescanning: true } : m));
+    try {
+      const resolved = await api.get(`/api/tickets/${id}/print-label-resolve`);
+      const suggestedId = resolved.suggested_consumable_id;
+      setLabelModal((m) => m ? {
+        ...m,
+        rescanning: false,
+        resolved,
+        // Adopt the fresh match; if none, clear so nothing prints by accident.
+        consumableId: suggestedId ? String(suggestedId) : "",
+        suggestedFromTag: resolved.suggested_from_tag || null,
+        suggestedFromText: resolved.suggested_from_text || null,
+        suggestedSource: resolved.suggested_source || null,
+        suggestedHit: !!suggestedId,
+      } : m);
+      if (suggestedId) {
+        const c = (labelModal?.consumables || []).find((x) => String(x.id) === String(suggestedId));
+        toast.success(`Matched ${c ? (c.part_no || c.title) : "a consumable"}`);
+      } else {
+        toast("No consumable matched — pick one manually", { icon: "⚠️" });
+      }
+    } catch (e) {
+      toast.error(e.message || "Rescan failed");
+      setLabelModal((m) => (m ? { ...m, rescanning: false } : m));
     }
   }
 
@@ -3509,7 +3538,18 @@ export default function TicketDetail() {
                 </div>
 
                 <div className="space-y-1">
-                  <label className="text-xs font-medium text-fg-muted">Consumable</label>
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-medium text-fg-muted">Consumable</label>
+                    <button
+                      type="button"
+                      onClick={rescanLabel}
+                      disabled={labelModal.rescanning || labelModal.printing}
+                      title="Re-match the part from the alert tag and the current ticket title/description"
+                      className="text-[11px] text-brand hover:underline disabled:opacity-50"
+                    >
+                      {labelModal.rescanning ? "Rescanning…" : "↻ Rescan"}
+                    </button>
+                  </div>
                   <select
                     value={labelModal.consumableId}
                     onChange={(e) =>
@@ -3524,19 +3564,25 @@ export default function TicketDetail() {
                       </option>
                     ))}
                   </select>
-                  {labelModal.suggestedFromTag && (
-                    <div className="text-[11px] mt-1">
-                      {labelModal.suggestedHit ? (
-                        <span className="text-emerald-600 dark:text-emerald-400">
-                          Auto-matched from alert tag <code className="font-mono">part.number:{labelModal.suggestedFromTag}</code>
-                        </span>
-                      ) : (
-                        <span className="text-amber-600 dark:text-amber-400">
-                          Alert tag <code className="font-mono">part.number:{labelModal.suggestedFromTag}</code> — no matching consumable in inventory
-                        </span>
-                      )}
-                    </div>
-                  )}
+                  <div className="text-[11px] mt-1">
+                    {labelModal.suggestedSource === "alert_tag" ? (
+                      <span className="text-emerald-600 dark:text-emerald-400">
+                        Auto-matched from alert tag <code className="font-mono">part.number:{labelModal.suggestedFromTag}</code>
+                      </span>
+                    ) : labelModal.suggestedSource === "ticket_text" ? (
+                      <span className="text-emerald-600 dark:text-emerald-400">
+                        Matched <code className="font-mono">{labelModal.suggestedFromText}</code> from the ticket title/description
+                      </span>
+                    ) : labelModal.suggestedFromTag ? (
+                      <span className="text-amber-600 dark:text-amber-400">
+                        Alert tag <code className="font-mono">part.number:{labelModal.suggestedFromTag}</code> — no matching consumable. Fix the description and Rescan, or pick manually.
+                      </span>
+                    ) : (
+                      <span className="text-amber-600 dark:text-amber-400">
+                        No part auto-matched — pick a consumable, or fix the description and Rescan.
+                      </span>
+                    )}
+                  </div>
                 </div>
 
                 <div className="space-y-1">
