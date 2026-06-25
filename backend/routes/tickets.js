@@ -544,6 +544,15 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter
       return t;
     });
 
+    // Computed custom fields evaluate AFTER commit so each formula's context
+    // sees the just-written form inputs. Best-effort: a bad formula never
+    // fails the create.
+    try {
+      await ticketCustomFields.recomputeForTicket(pool, ticket.id);
+    } catch (e) {
+      console.error('recompute computed fields (ticket create) failed:', e.message);
+    }
+
     await decryptRow('tickets', ticket);
     res.status(201).json(ticket);
 
@@ -718,6 +727,36 @@ router.patch('/:id(\\d+)/custom-fields', requireAuth, requireRole('Admin', 'Mana
     res.json({ ok: true, custom_fields: values });
   } catch (err) {
     console.error('ticket custom-fields patch:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// POST /api/tickets/:id/recompute-fields — re-evaluate the ticket's computed
+// (formula) custom fields against the current ticket context and persist the
+// results. Handlers only. Use after editing the human inputs a formula reads.
+// Returns the refreshed (revealed) custom_fields plus the per-field results.
+router.post('/:id(\\d+)/recompute-fields', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+  try {
+    const ticketId = Number(req.params.id);
+    const tk = await pool.query('SELECT id, form_id FROM tickets WHERE id = $1', [ticketId]);
+    if (!tk.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
+    if (!tk.rows[0].form_id) return res.status(400).json({ error: 'Ticket has no form; nothing to recompute' });
+
+    let results = [];
+    await transaction(async (client) => {
+      results = await ticketCustomFields.recomputeForTicket(client, ticketId);
+      if (results.length) {
+        await auditLog(client, {
+          ticketId, userId: req.session.user.id,
+          action: 'custom_fields_recomputed', oldValue: '',
+          newValue: results.map((r) => r.slug).join(', '),
+        });
+      }
+    });
+    const values = await ticketCustomFields.readValues(pool, ticketId, { reveal: true });
+    res.json({ ok: true, recomputed: results.length, custom_fields: values });
+  } catch (err) {
+    console.error('ticket recompute-fields:', err);
     res.status(500).json({ error: 'Database error' });
   }
 });

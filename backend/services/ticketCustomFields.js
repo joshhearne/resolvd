@@ -56,7 +56,8 @@ const aad = (ticketId, defId) => `custom_field_value:${ticketId}:${defId}`;
 async function loadFormFields(client, formId) {
   const r = await client.query(
     `SELECT ff.required,
-            d.id AS def_id, d.slug, d.label, d.type, d.options, d.sensitive, d.agent_only
+            d.id AS def_id, d.slug, d.label, d.type, d.options, d.sensitive, d.agent_only,
+            d.computed, d.formula
        FROM ticket_form_fields ff
        JOIN custom_field_defs d ON d.id = ff.field_def_id
       WHERE ff.form_id = $1 AND d.archived = FALSE
@@ -72,6 +73,10 @@ async function loadFormFields(client, formId) {
 // the form are ignored (can't be smuggled onto the ticket).
 async function validateForForm(client, formId, input, { agentView = false } = {}) {
   let fields = await loadFormFields(client, formId);
+  // Computed fields are produced by their formula, never entered: drop them
+  // from create-time validation so they're neither required nor writable from
+  // the submitted payload.
+  fields = fields.filter((f) => !f.computed);
   // Submitters never see agent-only fields: they aren't rendered, can't be
   // required of the submitter, and any value smuggled in is dropped.
   if (!agentView) fields = fields.filter((f) => !f.agent_only);
@@ -174,6 +179,7 @@ async function applyTicketPatch(client, ticketId, formId, input) {
   for (const it of Array.isArray(input) ? input : []) {
     const def = byId.get(Number(it && it.def_id));
     if (!def) continue; // not bound to this ticket's form — ignore
+    if (def.computed) continue; // value comes from the formula; ignore manual writes
     const c = coerceValue(it.value, def);
     if (c.error) { const e = new Error(`${def.slug}: ${c.error}`); e.status = 400; throw e; }
     if (c.col == null) toClear.push(def); else toWrite.push({ def, col: c.col, value: c.value });
@@ -186,4 +192,43 @@ async function applyTicketPatch(client, ticketId, formId, input) {
   return changed;
 }
 
-module.exports = { validateForForm, writeValues, readValues, loadFormFields, applyTicketPatch, coerceValue };
+// Recompute the ticket's computed (formula) fields and persist the results.
+// Runs AFTER the create transaction commits (or on demand) so the formula
+// context — built by cannedRender.buildContext — sees the just-written form
+// inputs. Best-effort per field: a formula that throws yields '' (the field is
+// cleared) and never blocks the others. Returns [{ slug, value }] for the
+// computed fields touched. `client` may be the pool or a txn client.
+//
+// v1 is single-pass: a computed field reads human inputs + ticket/user
+// context, NOT the output of another computed field on the same form.
+async function recomputeForTicket(client, ticketId) {
+  const tr = await client.query('SELECT form_id FROM tickets WHERE id = $1', [ticketId]);
+  const formId = tr.rows[0]?.form_id;
+  if (!formId) return [];
+  const fields = await loadFormFields(client, formId);
+  const computed = fields.filter((f) => f.computed && f.formula);
+  if (!computed.length) return [];
+
+  // Lazy require breaks the cannedRender ⇄ ticketCustomFields cycle.
+  const { buildContext } = require('./cannedRender');
+  const formula = require('./formula');
+  const ctx = await buildContext({ ticketId });
+
+  const toWrite = [];
+  const results = [];
+  for (const def of computed) {
+    const value = formula.evaluate(def.formula, ctx, { safe: true });
+    results.push({ slug: def.slug, value });
+    if (value === '') {
+      await client.query('DELETE FROM custom_field_values WHERE ticket_id = $1 AND def_id = $2', [ticketId, def.def_id]);
+    } else {
+      // Computed defs are stored as text (and encrypted by writeValues when
+      // sensitive + encryption mode is on).
+      toWrite.push({ def, col: 'value_text', value });
+    }
+  }
+  if (toWrite.length) await writeValues(client, ticketId, toWrite);
+  return results;
+}
+
+module.exports = { validateForForm, writeValues, readValues, loadFormFields, applyTicketPatch, coerceValue, recomputeForTicket };

@@ -1665,6 +1665,15 @@ async function initSchema() {
     // fill it on the ticket detail page; canned responses can still pull the
     // value via {field.<slug>}.
     await client.query(`ALTER TABLE custom_field_defs ADD COLUMN IF NOT EXISTS agent_only BOOLEAN NOT NULL DEFAULT FALSE`);
+    // computed: the field's value is derived by evaluating `formula` (a
+    // safe expression over the ticket context — form inputs via
+    // {field.<slug>}, plus {ticket.*}/{submitter.*}/{assignee.*}/{actor.*})
+    // rather than entered by a human. Computed defs are always treated as
+    // agent_only (never on the submitter form) and stored as text. Evaluated
+    // automatically at ticket-create after form values land, and on demand
+    // via POST /api/tickets/:id/recompute-fields. See services/formula.js.
+    await client.query(`ALTER TABLE custom_field_defs ADD COLUMN IF NOT EXISTS computed BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`ALTER TABLE custom_field_defs ADD COLUMN IF NOT EXISTS formula TEXT`);
     // Allow the multiselect type on pre-existing installs (CHECK was created
     // before multiselect existed). Multiselect values are stored as a JSON
     // array of option values in value_text.

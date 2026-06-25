@@ -149,7 +149,9 @@ export default function NewTicket() {
       // Agent-only fields never render on the submitter form; agents filing
       // can still fill them here. Backend re-enforces this on create.
       const isAgent = ["Admin", "Manager", "Tech"].includes(user?.role);
-      const fields = (r.fields || []).filter((f) => isAgent || !f.agent_only);
+      // Computed fields are derived by their formula after submit — never an
+      // input on the create form, for agents or submitters.
+      const fields = (r.fields || []).filter((f) => !f.computed && (isAgent || !f.agent_only));
       setFormFields(fields);
       const seed = {};
       fields.forEach((f) => { seed[f.def_id] = f.type === "bool" ? false : f.type === "multiselect" ? [] : ""; });

@@ -56,6 +56,20 @@ export default function CustomFieldsCard({ ticket, canEdit, onUpdated }) {
     finally { setSavingId(null); }
   }
 
+  // Re-run the form's computed (formula) fields against the ticket's current
+  // inputs and refresh their displayed values.
+  async function recompute() {
+    setSavingId("recompute");
+    try {
+      const r = await api.post(`/api/tickets/${ticket.id}/recompute-fields`, {});
+      const next = r.custom_fields || [];
+      toast.success(r.recomputed ? `Recomputed ${r.recomputed} field${r.recomputed > 1 ? "s" : ""}` : "Nothing to recompute");
+      onUpdated?.(next);
+      if (fields) setDraft(seedFrom(fields, next));
+    } catch (e) { toast.error(e.message); }
+    finally { setSavingId(null); }
+  }
+
   function control(f) {
     const v = draft[f.def_id];
     const setV = (val) => setDraft((p) => ({ ...p, [f.def_id]: val }));
@@ -90,17 +104,24 @@ export default function CustomFieldsCard({ ticket, canEdit, onUpdated }) {
   if (canEdit && hasForm) {
     if (fields === null) return null; // still loading
     if (!fields.length && !values.length) return null;
+    const editable = fields.filter((f) => !f.computed);
+    const derived = fields.filter((f) => f.computed);
+    // Current value of a computed field, read from the ticket's stored values.
+    const curVal = (f) => {
+      const v = values.find((x) => x.def_id === f.def_id);
+      return v ? v.value : "";
+    };
     return (
       <div className="bg-surface rounded-lg border border-border shadow-sm p-4 space-y-3">
         <div className="flex items-center justify-between">
           <h2 className="text-sm font-semibold text-fg">Custom Fields</h2>
-          {fields.length > 1 && (
-            <button onClick={() => save(fields, "all")} disabled={!!savingId} className="text-xs text-brand hover:underline disabled:opacity-50">
+          {editable.length > 1 && (
+            <button onClick={() => save(editable, "all")} disabled={!!savingId} className="text-xs text-brand hover:underline disabled:opacity-50">
               {savingId === "all" ? "Saving…" : "Save all"}
             </button>
           )}
         </div>
-        {fields.map((f) => (
+        {editable.map((f) => (
           <div key={f.def_id} className="space-y-1">
             <label className="block text-xs text-fg-muted">
               {f.label}{f.required && <span className="text-red-500"> *</span>}
@@ -115,6 +136,28 @@ export default function CustomFieldsCard({ ticket, canEdit, onUpdated }) {
             </div>
           </div>
         ))}
+
+        {derived.length > 0 && (
+          <div className="pt-2 border-t border-border space-y-2">
+            <div className="flex items-center justify-between">
+              <span className="text-xs font-medium text-fg-muted">Derived (auto)</span>
+              <button onClick={recompute} disabled={!!savingId} className="text-xs text-brand hover:underline disabled:opacity-50">
+                {savingId === "recompute" ? "Recomputing…" : "↻ Recompute"}
+              </button>
+            </div>
+            {derived.map((f) => {
+              const cv = curVal(f);
+              return (
+                <div key={f.def_id} className="flex flex-col">
+                  <span className="text-xs text-fg-muted">{f.label}{f.sensitive && <span className="ml-1">🔒</span>}</span>
+                  <code className="text-sm text-fg break-all font-mono">
+                    {cv == null || cv === "" ? <span className="text-fg-dim font-sans">—</span> : String(cv)}
+                  </code>
+                </div>
+              );
+            })}
+          </div>
+        )}
         {!fields.length && <p className="text-sm text-fg-muted">This form has no fields.</p>}
       </div>
     );

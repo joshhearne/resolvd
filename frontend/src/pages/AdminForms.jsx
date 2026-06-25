@@ -1,6 +1,91 @@
-import { useEffect, useState, Fragment } from "react";
+import { useEffect, useState, useRef, Fragment } from "react";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
+
+// Context tags always available to a formula (resolved by buildContext on the
+// server). Form-field tags are appended per project from the field defs.
+const CONTEXT_TAGS = [
+  { token: "{ticket.title}", hint: "Ticket title" },
+  { token: "{ticket.ref}", hint: "Ticket ref (e.g. HR-0312)" },
+  { token: "{ticket.priority}", hint: "Priority" },
+  { token: "{submitter.name}", hint: "Submitter full name" },
+  { token: "{submitter.firstname}", hint: "Submitter first name" },
+  { token: "{submitter.email}", hint: "Submitter email" },
+  { token: "{assignee.name}", hint: "Assignee name" },
+  { token: "{assignee.email}", hint: "Assignee email" },
+  { token: "{actor.name}", hint: "Acting agent name" },
+  { token: "{actor.email}", hint: "Acting agent email" },
+];
+
+// Formula editor: a textarea plus clickable tag chips that insert {field.<slug>}
+// (and context tags) at the cursor, and an inline demo preview. fieldDefs is
+// the project's field-def list; computed/archived defs are excluded (a computed
+// field can't reference another computed field, v1 single-pass).
+function FormulaField({ value, onChange, placeholder, fieldDefs, onPreview }) {
+  const ref = useRef(null);
+  const [preview, setPreview] = useState(null);
+  const fieldTags = (fieldDefs || [])
+    .filter((d) => !d.computed && !d.archived)
+    .map((d) => ({ token: `{field.${d.slug}}`, hint: d.label }));
+
+  function insert(token) {
+    const el = ref.current;
+    const start = el ? el.selectionStart : value.length;
+    const end = el ? el.selectionEnd : value.length;
+    const next = value.slice(0, start) + token + value.slice(end);
+    onChange(next);
+    requestAnimationFrame(() => {
+      if (!el) return;
+      const pos = start + token.length;
+      el.focus();
+      el.setSelectionRange(pos, pos);
+    });
+  }
+
+  async function preview_() {
+    if (!value.trim()) { setPreview({ ok: false, error: "Enter a formula first" }); return; }
+    setPreview(await onPreview(value));
+  }
+
+  const Chip = ({ token, hint }) => (
+    <button type="button" key={token} onClick={() => insert(token)} title={hint}
+      className="text-xs font-mono px-1.5 py-0.5 rounded border border-border-strong bg-surface-2/60 hover:border-brand hover:text-brand">
+      {token}
+    </button>
+  );
+
+  return (
+    <div className="space-y-2">
+      <textarea
+        ref={ref}
+        value={value}
+        onChange={(e) => onChange(e.target.value)}
+        rows={3}
+        spellCheck={false}
+        placeholder={placeholder}
+        className="w-full border border-border-strong rounded px-2 py-1.5 text-sm font-mono"
+      />
+      <div className="space-y-1">
+        {!!fieldTags.length && (
+          <div className="flex flex-wrap items-center gap-1">
+            <span className="text-xs text-fg-muted mr-1">Form fields:</span>
+            {fieldTags.map((t) => <Chip key={t.token} {...t} />)}
+          </div>
+        )}
+        <div className="flex flex-wrap items-center gap-1">
+          <span className="text-xs text-fg-muted mr-1">Ticket / people:</span>
+          {CONTEXT_TAGS.map((t) => <Chip key={t.token} {...t} />)}
+        </div>
+      </div>
+      <div className="flex items-center gap-2">
+        <button type="button" onClick={preview_} className="btn btn-secondary btn-sm">Preview (demo: John Doe, DOB 2000-03-12)</button>
+        {preview && (preview.ok
+          ? <span className="text-xs text-fg">→ <code className="font-mono text-emerald-600">{preview.value || "(empty)"}</code></span>
+          : <span className="text-xs text-red-600">{preview.error}</span>)}
+      </div>
+    </div>
+  );
+}
 
 // Project-scoped custom forms admin: project → categories → forms → field
 // bindings. Required-ness is set per form on the binding (the anti-bleed
@@ -39,12 +124,12 @@ export default function AdminForms() {
   const [binding, setBinding] = useState([]); // [{field_def_id, required, sort_order}]
   const [formDraft, setFormDraft] = useState({ default_title: "", default_description: "" });
   const [editingDefId, setEditingDefId] = useState(null);
-  const [defEdit, setDefEdit] = useState({ label: "", help_text: "", options: "", sensitive: false, agent_only: false });
+  const [defEdit, setDefEdit] = useState({ label: "", help_text: "", options: "", sensitive: false, agent_only: false, formula: "" });
   const [slugDraft, setSlugDraft] = useState({ category: "", form: "" });
   const [linkPrefills, setLinkPrefills] = useState({}); // field slug -> prefill value
   const [newCategory, setNewCategory] = useState("");
   const [newForm, setNewForm] = useState("");
-  const [newField, setNewField] = useState({ label: "", type: "text", options: "", help_text: "", sensitive: false, shared: false, agent_only: false });
+  const [newField, setNewField] = useState({ label: "", type: "text", options: "", help_text: "", sensitive: false, shared: false, agent_only: false, computed: false, formula: "" });
 
   useEffect(() => {
     api.get("/api/projects").then((all) => setProjects(all.filter((p) => p.status === "active"))).catch((e) => toast.error(e.message));
@@ -142,7 +227,7 @@ export default function AdminForms() {
   // anchor the slug + stored value shape). Archive lives here, not in the list.
   function openDefEditor(d) {
     setEditingDefId(d.id);
-    setDefEdit({ label: d.label || "", help_text: d.help_text || "", options: fmtOptions(d.options), sensitive: !!d.sensitive, agent_only: !!d.agent_only });
+    setDefEdit({ label: d.label || "", help_text: d.help_text || "", options: fmtOptions(d.options), sensitive: !!d.sensitive, agent_only: !!d.agent_only, formula: d.formula || "" });
   }
   async function saveDefEdit(d) {
     try {
@@ -152,6 +237,10 @@ export default function AdminForms() {
         const opts = parseOptions(defEdit.options);
         if (!opts.length) return toast.error("Select/multi-select fields need at least one option");
         body.options = opts;
+      }
+      if (d.computed) {
+        if (!defEdit.formula.trim()) return toast.error("Computed fields need a formula");
+        body.formula = defEdit.formula.trim();
       }
       await api.patch(`/api/custom-field-defs/${d.id}`, body);
       toast.success("Field updated"); setEditingDefId(null); await loadProjectScope();
@@ -179,15 +268,45 @@ export default function AdminForms() {
         agent_only: !!newField.agent_only,
         project_id: newField.shared ? null : Number(projectId),
       };
-      if (HAS_OPTIONS(body.type) && !body.options.length) return toast.error("Select/multi-select fields need at least one option");
+      if (newField.computed) {
+        if (!newField.formula.trim()) return toast.error("Computed fields need a formula");
+        body.computed = true;
+        body.formula = newField.formula.trim();
+      } else if (HAS_OPTIONS(body.type) && !body.options.length) {
+        return toast.error("Select/multi-select fields need at least one option");
+      }
       const created = await api.post("/api/custom-field-defs", body);
       toast.success(`Field created (slug: ${created.slug})`);
-      setNewField({ label: "", type: "text", options: "", help_text: "", sensitive: false, shared: false, agent_only: false });
+      setNewField({ label: "", type: "text", options: "", help_text: "", sensitive: false, shared: false, agent_only: false, computed: false, formula: "" });
       await loadProjectScope();
     } catch (e) {
       // 409 → slug collision; the server message names the clashing slug.
       toast.error(e.message);
     }
+  }
+
+  // Dry-run a formula against demo inputs so the admin can eyeball the output
+  // before saving. Each {field.<slug>} referenced gets a sensible demo value:
+  // first→John, last→Doe, dob/birth/date→2000-03-12, else "Sample".
+  async function previewFormula(src) {
+    const formula = String(src || "").trim();
+    if (!formula) return { ok: false, error: "Enter a formula first" };
+    const field = {};
+    const re = /\{field\.([a-z0-9_-]+)\}/gi;
+    let m;
+    while ((m = re.exec(formula))) {
+      const slug = m[1].toLowerCase();
+      field[slug] = /first/.test(slug) ? "John"
+        : /last|surname/.test(slug) ? "Doe"
+        : /dob|birth|date/.test(slug) ? "2000-03-12"
+        : "Sample";
+    }
+    try {
+      return await api.post("/api/custom-field-defs/formula-preview", {
+        formula, field,
+        ticket: { title: "Demo ticket" }, submitter: { name: "John Doe", firstname: "John" },
+      });
+    } catch (e) { return { ok: false, error: e.message }; }
   }
 
   // Binding helpers ---------------------------------------------------------
@@ -382,7 +501,7 @@ export default function AdminForms() {
                         <Fragment key={d.id}>
                         <tr className="border-t border-border">
                           <td className="py-2"><input type="checkbox" checked={!!b} onChange={() => toggleBound(d.id)} /></td>
-                          <td className="py-2 pr-3">{d.label}{d.sensitive && <span className="ml-1 text-xs text-fg-muted">(sensitive)</span>}{d.project_id == null && <span className="ml-1 text-xs text-fg-muted">(shared)</span>}</td>
+                          <td className="py-2 pr-3">{d.label}{d.computed && <span className="ml-1 text-xs text-brand">ƒ computed</span>}{d.sensitive && <span className="ml-1 text-xs text-fg-muted">(sensitive)</span>}{d.project_id == null && <span className="ml-1 text-xs text-fg-muted">(shared)</span>}</td>
                           <td className="py-2 pr-3 font-mono text-xs text-fg-muted">{d.slug}</td>
                           <td className="py-2 pr-3">{d.type}</td>
                           <td className="py-2 pr-3">
@@ -416,6 +535,17 @@ export default function AdminForms() {
                                 <button onClick={() => saveDefEdit(d)} className="btn btn-primary btn-sm">Save</button>
                                 <button onClick={() => archiveDef(d)} className="text-xs text-red-600 hover:underline">Archive</button>
                               </div>
+                              {d.computed && (
+                                <div className="mt-3 w-full">
+                                  <span className="text-xs text-fg-muted">Formula (computed field) — click a tag to insert, <code>~</code> concats.</span>
+                                  <FormulaField
+                                    value={defEdit.formula}
+                                    onChange={(v) => setDefEdit((p) => ({ ...p, formula: v }))}
+                                    fieldDefs={defs}
+                                    onPreview={previewFormula}
+                                  />
+                                </div>
+                              )}
                             </td>
                           </tr>
                         )}
@@ -434,13 +564,15 @@ export default function AdminForms() {
                       <span className="text-xs text-fg-muted">Label</span>
                       <input value={newField.label} onChange={(e) => setNewField((p) => ({ ...p, label: e.target.value }))} placeholder="e.g. Username" className="border border-border-strong rounded px-2 py-1 text-sm w-44" />
                     </label>
+                    {!newField.computed && (
                     <label className="flex flex-col gap-1">
                       <span className="text-xs text-fg-muted">Type</span>
                       <select value={newField.type} onChange={(e) => setNewField((p) => ({ ...p, type: e.target.value }))} className="border border-border-strong rounded px-2 py-1 text-sm">
                         {FIELD_TYPES.map((t) => <option key={t.value} value={t.value}>{t.label}</option>)}
                       </select>
                     </label>
-                    {HAS_OPTIONS(newField.type) && (
+                    )}
+                    {!newField.computed && HAS_OPTIONS(newField.type) && (
                       <label className="flex flex-col gap-1 flex-1 min-w-[12rem]">
                         <span className="text-xs text-fg-muted">Options</span>
                         <input value={newField.options} onChange={(e) => setNewField((p) => ({ ...p, options: e.target.value }))} placeholder="value:label, value:label" className="border border-border-strong rounded px-2 py-1 text-sm" />
@@ -459,8 +591,28 @@ export default function AdminForms() {
                     <label className="text-xs text-fg-muted inline-flex items-center gap-1">
                       <input type="checkbox" checked={newField.shared} onChange={(e) => setNewField((p) => ({ ...p, shared: e.target.checked }))} /> Shared
                     </label>
+                    <label className="text-xs text-fg-muted inline-flex items-center gap-1">
+                      <input type="checkbox" checked={newField.computed} onChange={(e) => setNewField((p) => ({ ...p, computed: e.target.checked }))} /> Computed
+                    </label>
                     <button onClick={createField} className="px-3 py-1.5 text-sm bg-brand text-white rounded">Create field</button>
                   </div>
+
+                  {newField.computed && (
+                    <div className="mt-3 space-y-2 border-t border-border pt-3">
+                      <span className="text-xs text-fg-muted block">
+                        Formula — derive this field's value from form inputs. Click a tag to insert; concatenate with <code>~</code>.
+                        Functions: <code>slice, left, right, upper, lower, cap, pad, trim, len, digits, replace, match, datepart, if, default</code>.
+                        Computed fields are always agent-only and stored as text.
+                      </span>
+                      <FormulaField
+                        value={newField.formula}
+                        onChange={(v) => setNewField((p) => ({ ...p, formula: v }))}
+                        fieldDefs={defs}
+                        onPreview={previewFormula}
+                        placeholder={`lower( slice({field.${String(selectedProject?.prefix || "hr").toLowerCase()}-first_name},0,1) ~ {field.${String(selectedProject?.prefix || "hr").toLowerCase()}-last_name} )`}
+                      />
+                    </div>
+                  )}
                   <p className="text-xs text-fg-muted mt-2">Project-local fields get the project tag prefixed to their slug. Tick <em>Shared</em> to add to the cross-project library instead.</p>
                 </div>
               </section>

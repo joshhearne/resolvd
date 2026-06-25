@@ -5,6 +5,7 @@
 const express = require('express');
 const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
+const formula = require('../services/formula');
 
 const router = express.Router();
 
@@ -119,13 +120,54 @@ router.get('/', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req
   }
 });
 
+// POST /api/custom-fields/formula-preview — validate + dry-run a formula
+// against sample inputs so the admin can see the output before saving. Body:
+// { formula, field: {slug: value, ...}, ticket/submitter/... : {...} }. The
+// whole body (minus `formula`) becomes the evaluation context, so any
+// namespace ({field.x}, {ticket.title}, …) can be exercised.
+router.post('/formula-preview', requireAuth, requireRole('Admin'), (req, res) => {
+  const body = req.body || {};
+  const src = String(body.formula || '').trim();
+  if (!src) return res.status(400).json({ error: 'formula required' });
+  const v = formula.validate(src);
+  if (!v.ok) return res.status(400).json({ ok: false, error: v.error });
+  const ctx = {};
+  for (const [k, val] of Object.entries(body)) {
+    if (k === 'formula') continue;
+    // Lower-case namespace + keys to match how buildContext stores them.
+    if (val && typeof val === 'object' && !Array.isArray(val)) {
+      const ns = {};
+      for (const [kk, vv] of Object.entries(val)) ns[String(kk).toLowerCase()] = vv;
+      ctx[k.toLowerCase()] = ns;
+    }
+  }
+  try {
+    return res.json({ ok: true, value: formula.evaluate(src, ctx, { safe: false }) });
+  } catch (e) {
+    return res.status(400).json({ ok: false, error: e.message });
+  }
+});
+
 router.post('/', requireAuth, requireRole('Admin'), async (req, res) => {
   try {
     const { entity_type, label, type, options, required, sort_order, help_text, project_id, sensitive, agent_only } = req.body || {};
     if (!ENTITY_TYPES.includes(entity_type)) return res.status(400).json({ error: 'invalid entity_type' });
     if (!label || typeof label !== 'string') return res.status(400).json({ error: 'label required' });
-    if (!FIELD_TYPES.includes(type)) return res.status(400).json({ error: 'invalid type' });
-    const optErr = validateOptions(options, type);
+
+    // Computed fields derive their value from `formula` instead of human input:
+    // value is always stored as text, and the field is forced agent_only (never
+    // on the submitter form) + non-required. Validate formula syntax up front.
+    const computed = !!(req.body && req.body.computed);
+    const formulaSrc = computed ? String(req.body.formula || '').trim() : null;
+    let effType = type;
+    if (computed) {
+      if (!formulaSrc) return res.status(400).json({ error: 'formula required for a computed field' });
+      const v = formula.validate(formulaSrc);
+      if (!v.ok) return res.status(400).json({ error: `invalid formula — ${v.error}` });
+      effType = 'text';
+    }
+    if (!FIELD_TYPES.includes(effType)) return res.status(400).json({ error: 'invalid type' });
+    const optErr = validateOptions(computed ? [] : options, effType);
     if (optErr) return res.status(400).json({ error: optErr });
 
     // Resolve project scope + tag for the slug prefix. project_id absent/null
@@ -159,14 +201,16 @@ router.post('/', requireAuth, requireRole('Admin'), async (req, res) => {
 
     const r = await pool.query(
       `INSERT INTO custom_field_defs
-         (entity_type, slug, label, type, options, required, sort_order, help_text, project_id, sensitive, agent_only)
-       VALUES ($1, $2, $3, $4, $5::jsonb, COALESCE($6, FALSE), COALESCE($7, 0), $8, $9, COALESCE($10, FALSE), COALESCE($11, FALSE))
+         (entity_type, slug, label, type, options, required, sort_order, help_text, project_id, sensitive, agent_only, computed, formula)
+       VALUES ($1, $2, $3, $4, $5::jsonb, COALESCE($6, FALSE), COALESCE($7, 0), $8, $9, COALESCE($10, FALSE), COALESCE($11, FALSE), $12, $13)
        RETURNING *`,
       [
-        entity_type, slug, label.trim(), type,
-        JSON.stringify(options || []),
-        required, sort_order, help_text || null,
-        projId, !!sensitive, !!agent_only,
+        entity_type, slug, label.trim(), effType,
+        JSON.stringify(computed ? [] : (options || [])),
+        // Computed fields are never required and always agent_only.
+        computed ? false : required, sort_order, help_text || null,
+        projId, !!sensitive, computed ? true : !!agent_only,
+        computed, formulaSrc,
       ]
     );
     res.status(201).json(r.rows[0]);
@@ -226,6 +270,16 @@ router.patch('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
     if (body.archived !== undefined) {
       sets.push(`archived = $${p++}`);
       values.push(!!body.archived);
+    }
+    if (body.formula !== undefined) {
+      // Only meaningful on a computed def; validate syntax before storing.
+      if (!def.rows[0].computed) return res.status(400).json({ error: 'field is not computed; cannot set a formula' });
+      const src = String(body.formula || '').trim();
+      if (!src) return res.status(400).json({ error: 'formula cannot be empty' });
+      const v = formula.validate(src);
+      if (!v.ok) return res.status(400).json({ error: `invalid formula — ${v.error}` });
+      sets.push(`formula = $${p++}`);
+      values.push(src);
     }
     if (!sets.length) return res.status(400).json({ error: 'no updatable fields supplied' });
     sets.push('updated_at = NOW()');

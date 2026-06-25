@@ -188,7 +188,8 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
     if (!(await canAccessProject(req.session.user, meta.rows[0].project_id))) return res.status(403).json({ error: 'no access' });
     const fields = await pool.query(
       `SELECT ff.id AS binding_id, ff.required, ff.sort_order,
-              d.id AS def_id, d.slug, d.label, d.type, d.options, d.help_text, d.sensitive, d.agent_only
+              d.id AS def_id, d.slug, d.label, d.type, d.options, d.help_text, d.sensitive, d.agent_only,
+              d.computed, d.formula
          FROM ticket_form_fields ff
          JOIN custom_field_defs d ON d.id = ff.field_def_id
         WHERE ff.form_id = $1 AND d.archived = FALSE
