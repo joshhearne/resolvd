@@ -1883,6 +1883,63 @@ router.get('/:id/audit', requireAuth, async (req, res) => {
   }
 });
 
+// GET /api/tickets/:id/source-email[?comment_id=N]
+//
+// Returns the raw inbound email a ticket (no comment_id) or one of its
+// comments (comment_id) was created/appended from. The ingest pipeline
+// strips signatures, quoted history, external-sender banners and (for
+// reply-above-quote) forwarded blocks before writing the description /
+// comment body — this hands back the ORIGINAL so the UI can reveal that
+// hidden content behind a toggle instead of losing it.
+//
+// Internal handlers only (Admin/Manager/Tech): the raw body can carry
+// quoted third-party content that shouldn't reach submitters/vendors.
+// 404 when the ticket/comment has no inbound source row.
+router.get('/:id(\\d+)/source-email', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+  try {
+    const ticketId = Number(req.params.id);
+    const commentId = req.query.comment_id ? Number(req.query.comment_id) : null;
+    let queueId;
+    if (commentId) {
+      // Scope the comment to this ticket so a valid comment id from another
+      // ticket can't be used to read its source email through this route.
+      const c = await pool.query(
+        `SELECT source_inbound_email_id FROM comments WHERE id = $1 AND ticket_id = $2`,
+        [commentId, ticketId]
+      );
+      if (!c.rows[0]) return res.status(404).json({ error: 'Comment not found' });
+      queueId = c.rows[0].source_inbound_email_id;
+    } else {
+      const t = await pool.query('SELECT source_inbound_email_id FROM tickets WHERE id = $1', [ticketId]);
+      if (!t.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
+      queueId = t.rows[0].source_inbound_email_id;
+    }
+    if (!queueId) return res.status(404).json({ error: 'No inbound source' });
+
+    const q = await pool.query(
+      `SELECT id, from_addr, from_name, to_addr, subject, subject_enc,
+              body, body_enc, received_at
+         FROM inbound_email_queue WHERE id = $1`,
+      [queueId]
+    );
+    if (!q.rows[0]) return res.status(404).json({ error: 'Source email not found' });
+    await decryptRow('inbound_email_queue', q.rows[0]);
+    const row = q.rows[0];
+    res.json({
+      id: row.id,
+      from_addr: row.from_addr,
+      from_name: row.from_name,
+      to_addr: row.to_addr,
+      subject: row.subject,
+      body: row.body || '',
+      received_at: row.received_at,
+    });
+  } catch (err) {
+    console.error('source-email fetch:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
 // POST /api/tickets/:id/print-consumable-label
 //
 // Print a delivery label for a consumable tied to this ticket. Resolves:

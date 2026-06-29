@@ -28,6 +28,7 @@ import PriorityBadge from "../components/PriorityBadge";
 import StatusBadge from "../components/StatusBadge";
 import MarkdownEditor from "../components/MarkdownEditor";
 import MarkdownContent from "../components/MarkdownContent";
+import SourceEmailReveal from "../components/SourceEmailReveal";
 import ConfirmDialog from "../components/ConfirmDialog";
 import PhoneticPopover from "../components/PhoneticPopover";
 import MergePicker from "../components/MergePicker";
@@ -1886,6 +1887,12 @@ export default function TicketDetail() {
                 <span className="text-fg-dim text-sm">No description</span>
               )
             )}
+            {/* Inbound-created tickets: reveal the raw email (sig/quote/banner
+                content stripped from the description) behind a toggle. Handlers
+                only — mirrors the role gate on the source-email endpoint. */}
+            {isAdmin && !editing.description && ticket.source_inbound_email_id && (
+              <SourceEmailReveal ticketId={ticket.id} className="mt-2" />
+            )}
           </div>
 
           {/* Comments + Attachments + Resolution + Audit tabs. Two
@@ -2084,6 +2091,11 @@ export default function TicketDetail() {
                         </div>
                       ) : (
                         <MarkdownContent>{c.body}</MarkdownContent>
+                      )}
+                      {/* Inbound-reply comments: reveal the raw email behind a
+                          toggle (handlers only). */}
+                      {isAdmin && editingCommentId !== c.id && c.source_inbound_email_id && (
+                        <SourceEmailReveal ticketId={ticket.id} commentId={c.id} className="mt-2" />
                       )}
                       {attachments.filter((a) => a.comment_id === c.id).length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-1.5">

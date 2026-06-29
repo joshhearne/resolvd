@@ -631,7 +631,18 @@ async function tryAutoCreate({ subject, body, fromAddress, ccAddresses, attachme
   }
 
   const forward = !inky && detectForward(body);
-  if (forward) {
+  // A reply where the sender quotes their OWN earlier message produces the
+  // same flat Outlook From:/Sent:/To:/Subject: header block that a forward
+  // does (OUTLOOK_FORWARD_RE can't tell them apart). When the unwrapped
+  // inner sender is the same address as the outer sender, this is a
+  // reply-above-quote, not a forward — unwrapping it would discard the
+  // sender's fresh text above the quote and keep only the quoted original
+  // (see INC-0317). Skip the forward path so extractFreshReply cuts at the
+  // header boundary and preserves the new content instead.
+  const isSelfQuote = forward
+    && forward.innerEmail
+    && forward.innerEmail.toLowerCase() === String(fromAddress || '').toLowerCase();
+  if (forward && !isSelfQuote) {
     const outerUser = await findUserByEmail(fromAddress);
     if (outerUser) {
       const innerCandidate = await resolveOrProvisionSubmitter(
