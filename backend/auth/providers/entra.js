@@ -35,12 +35,14 @@ async function isEnabled() {
   return !!s?.entra_enabled && !!process.env.AZURE_CLIENT_ID;
 }
 
-async function getAuthUrl(req) {
+async function getAuthUrl(req, opts = {}) {
   const settings = await getAuthSettings();
   const client = getMsalClient(settings?.entra_allow_personal);
   return client.getAuthCodeUrl({
     scopes: SCOPES,
     redirectUri: getRedirectUri(req),
+    // Round-tripped post-login destination; comes back as req.query.state.
+    state: opts.state,
   });
 }
 

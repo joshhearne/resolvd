@@ -23,7 +23,7 @@ async function isEnabled() {
   return !!s?.google_enabled && !!process.env.GOOGLE_CLIENT_ID;
 }
 
-async function getAuthUrl(req) {
+async function getAuthUrl(req, opts = {}) {
   const settings = await getAuthSettings();
   const client = getClient(req);
   const params = {
@@ -31,6 +31,8 @@ async function getAuthUrl(req) {
     prompt: 'consent',
     scope: SCOPES,
     include_granted_scopes: true,
+    // Round-tripped post-login destination; comes back as req.query.state.
+    state: opts.state,
   };
   if (settings?.google_workspace_domain) {
     params.hd = settings.google_workspace_domain;

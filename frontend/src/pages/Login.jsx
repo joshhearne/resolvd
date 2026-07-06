@@ -20,6 +20,10 @@ export default function Login() {
   const logoFilter = brandingLogoFilter(branding, resolved);
   const navigate = useNavigate();
   const [params] = useSearchParams();
+  // Where to land after login — set by ProtectedRoute when an unauthenticated
+  // user hits a deep link (e.g. a ticket from a mention email). Defaults to
+  // the app root. Client-side navigate() only, so no open-redirect risk here.
+  const returnTo = params.get("returnTo") || "/";
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
   const [submitting, setSubmitting] = useState(false);
@@ -50,7 +54,7 @@ export default function Login() {
       const dwell = Date.now() - formMountRef.current;
       const result = await loginLocal(email, password, { honeypot, formDwellMs: dwell });
       if (result.pendingMfa) navigate("/mfa-challenge");
-      else navigate("/");
+      else navigate(returnTo);
     } catch (err) {
       toast.error(err.message);
     } finally {
@@ -184,7 +188,7 @@ export default function Login() {
         )}
 
         {methods.entra && (
-          <button onClick={loginEntra} className="btn-secondary w-full mb-2">
+          <button onClick={() => loginEntra(returnTo)} className="btn-secondary w-full mb-2">
             <svg
               className="w-4 h-4"
               viewBox="0 0 21 21"
@@ -201,7 +205,7 @@ export default function Login() {
         )}
 
         {methods.google && (
-          <button onClick={loginGoogle} className="btn-secondary w-full mb-2">
+          <button onClick={() => loginGoogle(returnTo)} className="btn-secondary w-full mb-2">
             <svg
               className="w-4 h-4"
               viewBox="0 0 18 18"

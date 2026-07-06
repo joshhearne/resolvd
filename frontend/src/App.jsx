@@ -1,5 +1,5 @@
 import React from "react";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { Toaster } from "react-hot-toast";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { BrandingProvider } from "./context/BrandingContext";
@@ -62,13 +62,23 @@ import KbEditor from "./pages/KbEditor";
 
 function ProtectedRoute({ children, adminOnly = false, handlerOnly = false }) {
   const { user, loading } = useAuth();
+  const location = useLocation();
   if (loading)
     return (
       <div className="flex items-center justify-center h-screen text-fg-muted">
         Loading...
       </div>
     );
-  if (!user) return <Navigate to="/login" replace />;
+  if (!user) {
+    // Preserve where the user was headed (e.g. a ticket deep-linked from a
+    // mention email) so login can return them there instead of the dashboard.
+    const returnTo = location.pathname + location.search;
+    const q =
+      returnTo && returnTo !== "/"
+        ? `?returnTo=${encodeURIComponent(returnTo)}`
+        : "";
+    return <Navigate to={`/login${q}`} replace />;
+  }
   if (adminOnly && !["Admin", "Manager"].includes(user.role))
     return <Navigate to="/" replace />;
   if (handlerOnly && !["Admin", "Manager", "Tech"].includes(user.role))
