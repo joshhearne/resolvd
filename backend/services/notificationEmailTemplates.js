@@ -17,6 +17,12 @@ const { baseHtml } = require('./email');
 const APP_URL = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
 
 function ticketUrl(ticketId) { return `${APP_URL}/tickets/${ticketId}`; }
+// Deep-link to a specific comment. The frontend reads ?comment= and scrolls
+// to / flashes that comment (see TicketDetail highlightedComment), so the
+// recipient lands on the exact response — no hunting through the thread.
+function ticketCommentUrl(ticketId, commentId) {
+  return commentId ? `${ticketUrl(ticketId)}?comment=${commentId}` : ticketUrl(ticketId);
+}
 
 function esc(s) {
   return String(s == null ? '' : s).replace(/[&<>"']/g, (c) => (
@@ -83,13 +89,13 @@ const RENDERERS = {
   },
 
   mention(payload) {
-    const { ticket_id, ticket_ref, ticket_title, actor_name } = payload;
+    const { ticket_id, ticket_ref, ticket_title, actor_name, comment_id } = payload;
     const subject = `[${ticket_ref}] You were mentioned`;
     const body = `
       <p style="color:#374151;font-size:14px;margin:0 0 12px">
         <strong>${esc(actor_name || 'Someone')}</strong> mentioned you on <strong>${esc(ticket_ref)}</strong>${ticket_title ? ` — ${esc(ticket_title)}` : ''}.
       </p>
-      ${viewButton(ticketUrl(ticket_id))}`;
+      ${viewButton(ticketCommentUrl(ticket_id, comment_id), 'View Response')}`;
     return { subject, body };
   },
 

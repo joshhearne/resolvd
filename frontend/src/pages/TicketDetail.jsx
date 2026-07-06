@@ -418,7 +418,12 @@ export default function TicketDetail() {
   const location = useLocation();
   const { user } = useAuth();
   const [highlightedComment, setHighlightedComment] = useState(
-    location.state?.highlightComment ?? null
+    // In-app nav passes highlightComment via router state; an emailed deep
+    // link (mention notification) can't carry state, so fall back to the
+    // ?comment= query param. Both feed the same scroll/flash effect below.
+    location.state?.highlightComment ??
+      new URLSearchParams(location.search).get("comment") ??
+      null
   );
   const statusCfg = useStatuses();
   // "isAdmin" here = elevated ticket handler. Tech is in this group
