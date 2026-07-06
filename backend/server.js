@@ -81,10 +81,14 @@ app.use(session({
   secret: process.env.SESSION_SECRET || 'changeme-in-production',
   resave: false,
   saveUninitialized: false,
+  // rolling: bump the cookie's maxAge on every response so an active user
+  // never gets logged out mid-work. The session only lapses after a full
+  // idle window (below), not on a fixed clock from login time.
+  rolling: true,
   cookie: {
     secure: process.env.COOKIE_SECURE === 'true',
     httpOnly: true,
-    maxAge: 8 * 60 * 60 * 1000, // 8 hours
+    maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days idle
     sameSite: 'lax',
   },
 }));
