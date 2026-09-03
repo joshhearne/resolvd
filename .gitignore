@@ -49,3 +49,7 @@ scripts/*
 /package.json
 /package-lock.json
 .preview-last-sha
+
+# Publicly-hosted brand logos (local-only; not app assets)
+frontend/public/mot.png
+frontend/public/rvo.png
