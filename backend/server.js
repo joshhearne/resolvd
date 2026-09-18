@@ -61,6 +61,12 @@ const PORT = process.env.PORT || 3001;
 // Set security response headers on every request. Cheap, runs first.
 app.use(securityHeaders);
 
+// Inbound webhook payloads carry the whole message — full body plus every
+// attachment inline as base64 — so they blow past the 100kb express default
+// the moment a vendor's mail has a signature image on it. Mounted ahead of
+// the global parser so only these routes get the bigger ceiling.
+app.use('/api/inbound', express.json({ limit: '30mb' }));
+
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 

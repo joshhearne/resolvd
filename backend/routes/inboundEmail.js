@@ -34,15 +34,37 @@ function extractCandidateRef(...sources) {
   return null;
 }
 
-function isAutoLoop(headers) {
-  if (!headers || typeof headers !== 'object') return false;
+// Classifies auto-mail headers into two tiers.
+//
+//   hard — X-Resolvd-No-Reply: 1. We stamp this on our own outbound, so it
+//          is only ever our own mail bouncing back through a forwarder.
+//          Never a genuine reply; always discarded.
+//
+//   soft — Auto-Submitted / Precedence: bulk. Usually noise, but NOT proof
+//          of a loop. Exchange quarantine release re-injects a message via
+//          the transport and stamps Auto-Submitted: auto-generated on it,
+//          so a released vendor reply looks identical to an autoresponder.
+//          Soft hits still get a shot at the reply path, which independently
+//          verifies the sender is a contact/participant on the referenced
+//          ticket before appending anything. They never reach auto-create.
+//
+// Returns null when nothing matched.
+function classifyAutoLoop(headers) {
+  if (!headers || typeof headers !== 'object') return null;
+  let soft = null;
   for (const [k, v] of Object.entries(headers)) {
     const lk = k.toLowerCase();
-    if (lk === 'x-resolvd-no-reply' && String(v).trim() === '1') return true;
-    if (lk === 'auto-submitted' && /auto-(replied|generated)/i.test(String(v))) return true;
-    if (lk === 'precedence' && /^bulk$/i.test(String(v).trim())) return true;
+    const val = String(v).trim();
+    // Hard wins outright, so return the moment we see it.
+    if (lk === 'x-resolvd-no-reply' && val === '1') return { kind: 'hard', tag: 'x-resolvd-no-reply' };
+    if (!soft && lk === 'auto-submitted' && /auto-(replied|generated)/i.test(val)) {
+      soft = { kind: 'soft', tag: `auto-submitted=${val}` };
+    }
+    if (!soft && lk === 'precedence' && /^bulk$/i.test(val)) {
+      soft = { kind: 'soft', tag: 'precedence=bulk' };
+    }
   }
-  return false;
+  return soft;
 }
 
 // POST /api/inbound/generic — webhook ingestion
@@ -78,9 +100,10 @@ router.post('/generic', async (req, res) => {
       return res.status(400).json({ error: 'from and body required' });
     }
 
-    if (isAutoLoop(headers || {})) {
-      return res.status(202).json({ ok: true, dropped: 'auto_loop' });
-    }
+    // Classified now, acted on AFTER the row is persisted. Dropping before
+    // the insert left zero trace anywhere — no row, no log — so a silently
+    // eaten message was indistinguishable from one that never arrived.
+    const autoLoop = classifyAutoLoop(headers || {});
 
     // Idempotency: identical external_message_id → skip insert.
     if (external_message_id) {
@@ -117,6 +140,19 @@ router.post('/generic', async (req, res) => {
     );
     const queueRowId = result.rows[0].id;
 
+    // 1b. Hard loop — our own outbound came back to us. Record and stop.
+    //     Discarded rows are excluded from the default admin queue view, so
+    //     this is traceable without being noise.
+    if (autoLoop?.kind === 'hard') {
+      await pool.query(
+        `UPDATE inbound_email_queue
+            SET status = 'discarded', matched_at = NOW(), reject_reason = $1
+          WHERE id = $2`,
+        [`auto_loop:${autoLoop.tag}`, queueRowId]
+      );
+      return res.status(202).json({ ok: true, id: queueRowId, dropped: 'auto_loop', tag: autoLoop.tag });
+    }
+
     // 2a. Reply-first routing: if subject/body carries a [PREFIX-N] ref
     //     AND the target ticket is fresh enough AND the sender belongs to
     //     that ticket (vendor contact OR internal participant), append
@@ -148,6 +184,9 @@ router.post('/generic', async (req, res) => {
       else if (autoReply.reopen?.reopened) tags.push(`auto_reopened:${autoReply.reopen.toStatus}`);
       else if (autoReply.reopen?.gratitude) tags.push('gratitude_detected');
       if (autoReply.senderKind === 'user') tags.push('sender:user');
+      // Landed despite an auto-mail header — worth showing so a released or
+      // relay-stamped reply is distinguishable from a clean one.
+      if (autoLoop) tags.push(`auto_loop_override:${autoLoop.tag}`);
       await pool.query(
         `UPDATE inbound_email_queue
             SET status = 'matched',
@@ -180,7 +219,22 @@ router.post('/generic', async (req, res) => {
       });
     }
 
-    // 2b. Reply path declined. Fall through to auto-create — either no
+    // 2b. Soft loop that the reply path declined. An autoresponder or bulk
+    //     blast has no business spawning a new ticket, so it stops here
+    //     rather than falling through to auto-create. The reason carries
+    //     both the header and why the reply path passed on it.
+    if (autoLoop?.kind === 'soft') {
+      const why = autoReply?.reason ? `${autoLoop.tag}/${autoReply.reason}` : autoLoop.tag;
+      await pool.query(
+        `UPDATE inbound_email_queue
+            SET status = 'discarded', matched_at = NOW(), reject_reason = $1
+          WHERE id = $2`,
+        [`auto_loop:${why}`, queueRowId]
+      );
+      return res.status(202).json({ ok: true, id: queueRowId, dropped: 'auto_loop', tag: autoLoop.tag });
+    }
+
+    // 2c. Reply path declined. Fall through to auto-create — either no
     //     ref was present, the ref pointed at a stale/missing ticket, or
     //     the sender has no claim on the ticket. Failures fall further
     //     through to leave the row as 'unmatched' for admin attention.
