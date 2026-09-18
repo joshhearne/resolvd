@@ -4,7 +4,7 @@ import { api } from "../utils/api";
 
 // Dedup-omit rules admin. Inbound auto-create normally merges same-title
 // mail onto an existing ticket / defers strong-overlap mail to the manual
-// queue. Automated and user-reporter mail (e.g. Inky phish reports) reuses
+// queue. Automated and user-reporter mail (e.g. monitoring alerts) reuses
 // one fixed subject on every message, so that dedup wrongly collapses them.
 // A rule whose regex matches the inbound title/body (per its scope) tells
 // the pipeline to SKIP dedup so each message gets its own ticket.
@@ -169,7 +169,7 @@ export default function AdminDedupOmitRules() {
           pass: an identical-title message from the same sender within 7
           days is appended as a comment, and a strong-overlap match in the
           same project within 24h is deferred to the manual queue. Automated
-          and user-reporter mail (e.g. <b>Inky phish reports</b>) reuses one
+          and user-reporter mail (e.g. <b>monitoring alerts</b>) reuses one
           fixed subject on every message, so dedup wrongly collapses them.
           A rule whose regex matches the inbound{" "}
           <b>title</b>, <b>body</b>, or both <b>skips dedup</b> so each
@@ -184,7 +184,7 @@ export default function AdminDedupOmitRules() {
               <input
                 value={newRow.name}
                 onChange={(e) => setNewRow((p) => ({ ...p, name: e.target.value }))}
-                placeholder="e.g. Inky phish reports"
+                placeholder="e.g. Monitoring alerts"
                 className="border border-border-strong rounded px-2 py-1 text-sm w-48"
               />
             </label>
@@ -193,7 +193,7 @@ export default function AdminDedupOmitRules() {
               <input
                 value={newRow.pattern}
                 onChange={(e) => setNewRow((p) => ({ ...p, pattern: e.target.value }))}
-                placeholder="User Report via Inky Phish Fence"
+                placeholder="^Problem: .* on .*$"
                 className="border border-border-strong rounded px-2 py-1 text-sm font-mono w-full"
               />
             </label>
@@ -257,7 +257,7 @@ export default function AdminDedupOmitRules() {
             <input
               value={test.pattern}
               onChange={(e) => setTest((t) => ({ ...t, pattern: e.target.value }))}
-              placeholder="User Report via Inky Phish Fence"
+              placeholder="^Problem: .* on .*$"
               className="border border-border-strong rounded px-2 py-1 text-sm font-mono w-full"
             />
           </label>
@@ -276,7 +276,7 @@ export default function AdminDedupOmitRules() {
             value={test.sample}
             onChange={(e) => setTest((t) => ({ ...t, sample: e.target.value }))}
             rows={4}
-            placeholder="User Report via Inky Phish Fence (threat level: Caution (1), user label: phish, rid: …)"
+            placeholder="Problem: High CPU on PRINT01"
             className="w-full border border-border-strong rounded px-2 py-1 text-sm font-mono"
           />
         </label>

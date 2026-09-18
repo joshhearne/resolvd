@@ -622,11 +622,6 @@ function ScopeSection({ account, currentUser, onAdd, onRemove, onApprove, onDefa
 
 const BANNER_PRESETS = [
   {
-    key: "inky",
-    label: "Inky",
-    pattern: "^\\s*Caution:\\s*External[\\s\\S]*?Protection by INKY[^\\n]*",
-  },
-  {
     key: "mimecast",
     label: "Mimecast",
     pattern: "^\\s*\\[?CAUTION:?\\]?[^\\n]*External[^\\n]{0,300}",
@@ -682,7 +677,7 @@ function BannerStripSection({ account, onSave }) {
         <div className="mt-2 space-y-2 text-xs">
           <div className="rounded bg-blue-50 dark:bg-blue-950/40 border border-blue-300 dark:border-blue-700 px-2.5 py-2 text-blue-900 dark:text-blue-200 leading-snug">
             <strong>Try the gateway first.</strong> If this is a licensed
-            resource mailbox (no human user), most gateways (Inky, Mimecast,
+            resource mailbox (no human user), most gateways (Mimecast,
             Proofpoint) let you suppress recipient banners per-mailbox while
             keeping malware/phishing scans active. That delivers cleaner
             replies than regex stripping ever will. Use the patterns below

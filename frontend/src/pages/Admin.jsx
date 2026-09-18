@@ -31,7 +31,7 @@ const NAV_GROUPS = [
       { to: "/admin/canned-responses", label: "Canned responses", manager: true, keywords: ["macros", "snippets", "boilerplate"] },
       { to: "/admin/ticket-schedules", label: "Scheduled tickets", manager: true, keywords: ["recurring", "cron", "schedule"] },
       { to: "/admin/merge", label: "Merge tickets", keywords: ["dedupe", "combine"] },
-      { to: "/admin/dedup-omit-rules", label: "Dedup omit rules", keywords: ["regex", "pattern", "duplicate", "inky", "phish", "report", "skip dedup", "automated"] },
+      { to: "/admin/dedup-omit-rules", label: "Dedup omit rules", keywords: ["regex", "pattern", "duplicate", "report", "skip dedup", "automated"] },
     ],
   },
   {

@@ -1076,7 +1076,7 @@ async function initSchema() {
 
     // Per-account regex patterns applied to inbound mail bodies before
     // ingestion. Lets admins strip recipient banners injected by mail
-    // security gateways (Inky, Mimecast, Proofpoint, Avanan) when they
+    // security gateways (Mimecast, Proofpoint, Avanan) when they
     // can't suppress the banner upstream. Patterns are POSIX-style and
     // applied with case-insensitive multi-line flags. Empty array =
     // no per-account stripping.
@@ -2071,7 +2071,7 @@ async function initSchema() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_assignment_policies_lookup
       ON assignment_policies(project_id, priority, priority_op) WHERE enabled = TRUE`);
 
-    // Dedup-omit rules. Automated/reporter mail (e.g. Inky phish reports)
+    // Dedup-omit rules. Automated/reporter mail (e.g. monitoring alerts)
     // reuses an identical subject on every message, which collides with
     // the inbound auto-create dedup heuristics (same-title → comment-append,
     // strong-overlap → defer to manual queue). A matching enabled rule
@@ -2094,17 +2094,6 @@ async function initSchema() {
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_dedup_omit_enabled
       ON dedup_omit_rules(enabled) WHERE enabled = TRUE`);
-    // Seed the Inky phish-report rule once so reports work out of the box.
-    // Keyed on the constant Inky subject; scoped to the title. Admins can
-    // edit/disable/extend via the Dedup omit rules admin page.
-    await client.query(`
-      INSERT INTO dedup_omit_rules (name, pattern, flags, scope)
-      SELECT 'Inky phish reports', 'User Report via Inky Phish Fence', 'i', 'title'
-       WHERE NOT EXISTS (
-         SELECT 1 FROM dedup_omit_rules
-          WHERE pattern = 'User Report via Inky Phish Fence'
-       )
-    `);
 
     // Escalation chains. One row = one step. Steps grouped by
     // (priority, project_id, trigger); step_order drives execution.

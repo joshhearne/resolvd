@@ -3,7 +3,7 @@
 // Inbound auto-create runs a dedup pass (findDuplicateOrSimilar) that
 // merges same-title mail onto an existing ticket or defers strong-overlap
 // mail to the manual queue. That's wrong for automated/reporter mail that
-// reuses one fixed subject on every message (Inky phish reports, monitoring
+// reuses one fixed subject on every message (monitoring
 // alerts, etc.) — every report would collapse into the first one's ticket.
 //
 // A dedup-omit rule is an admin-defined regex (source + flags) plus a

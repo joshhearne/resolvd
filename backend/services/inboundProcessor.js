@@ -128,7 +128,7 @@ const EXTERNAL_SAFETY_BANNERS = [
   /^[ \t]*\*+\s*EXTERNAL EMAIL[^\n]*\n+/im,
   /^[ \t]*CAUTION:[ \t]*This (?:e-?mail|message) originated from outside[^\n]*\n+/im,
   /^[ \t]*This email originated from outside (?:of|the) (?:our|your) (?:organi[sz]ation|company)[^\n]*\n+/im,
-  // Mimecast / Inky-style "external sender" wrappers.
+  // Mimecast / Proofpoint-style "external sender" wrappers.
   /^[ \t]*--+\s*External (?:Email|Sender)\s*--+[^\n]*\n+/im,
 ];
 function stripExternalBanners(text) {
@@ -192,7 +192,7 @@ function dedupeParagraphs(text) {
 // even without an explicit "-- " delim.
 function extractFreshReply(body, contactHints) {
   if (!body) return '';
-  // Pre-strip external-sender safety banners (M365 / Mimecast / Inky)
+  // Pre-strip external-sender safety banners (M365 / Mimecast / Proofpoint)
   // so their boilerplate doesn't masquerade as a signature line and
   // gobble the actual reply.
   const text = stripExternalBanners(String(body).replace(/\r\n/g, '\n'));
@@ -275,60 +275,6 @@ function detectForward(body) {
     innerName,
     innerSubject,
     innerBody: innerBody.trim() || null,
-  };
-}
-
-// Inky "User Report via Inky Phish Fence" detector. When a user clicks
-// Report in Inky, Inky relays the report to the ticketing mailbox. The
-// outer From is Inky's own sending address (no longer the spoofed user),
-// so the real reporter — the person the ticket's requester should be —
-// lives in the body's "Reported by:" line. We also lift a few fields to
-// build a unique, human-readable title (the subject is a constant, which
-// the dedup-omit rule keeps from collapsing reports together).
-//
-// Returns null when the body isn't an Inky report. Detection is anchored
-// on the Inky markers so a normal email that happens to contain one of
-// these labels doesn't get hijacked.
-const INKY_REPORTED_BY_RE = /^[ \t>]*Reported by:[ \t]*<?([^\s<>]+@[^\s<>]+?)>?[ \t]*$/mi;
-const INKY_RESULT_RE = /^[ \t>]*INKY result:[ \t]*(.+?)[ \t]*$/mi;
-const INKY_LABEL_RE = /^[ \t>]*User label:[ \t]*(.+?)[ \t]*$/mi;
-const INKY_ORIGINAL_FROM_RE = /^[ \t>]*Original message from:[ \t]*<?([^\s<>]+@[^\s<>]+?)>?[ \t]*$/mi;
-const INKY_MESSAGE_ID_RE = /^[ \t>]*Message-ID:[ \t]*<?([^\s<>]+)>?[ \t]*$/mi;
-
-// Inbound HTML bodies arrive with single "\n" line breaks (converted from
-// <br>), but the ticket markdown renderer (react-markdown + GFM, no
-// remark-breaks) soft-wraps a single newline into a space — so a
-// structured report (one "Label: value" per line) collapses into a wall
-// of text. Convert single newlines to markdown hard breaks (two trailing
-// spaces) so the line structure survives rendering. Blank-line paragraph
-// breaks are left untouched.
-function markdownHardBreaks(text) {
-  return String(text).replace(/([^\n])\n(?!\n)/g, '$1  \n');
-}
-
-function detectInkyReport(subject, body) {
-  if (!body) return null;
-  const text = String(body);
-  const reportedBy = INKY_REPORTED_BY_RE.exec(text);
-  if (!reportedBy) return null;
-  // Require a second Inky marker so the "Reported by:" line alone (which a
-  // human could conceivably type) can't trigger the override.
-  const hasMarker = /Inky Phish Fence/i.test(subject || '')
-    || INKY_RESULT_RE.test(text)
-    || /\bvia Inky\b/i.test(text);
-  if (!hasMarker) return null;
-
-  const level = (INKY_RESULT_RE.exec(text)?.[1] || '').trim() || 'unknown';
-  const label = (INKY_LABEL_RE.exec(text)?.[1] || '').trim() || 'none';
-  const originalFrom = (INKY_ORIGINAL_FROM_RE.exec(text)?.[1] || '').trim() || null;
-  // rid: the reported message's Message-ID gives a stable per-report id.
-  const rid = (INKY_MESSAGE_ID_RE.exec(text)?.[1] || '').trim() || 'n/a';
-  return {
-    reporterEmail: reportedBy[1].trim().toLowerCase(),
-    level,
-    label,
-    originalFrom,
-    rid,
   };
 }
 
@@ -605,32 +551,7 @@ async function tryAutoCreate({ subject, body, fromAddress, ccAddresses, attachme
   let effectiveBody = body;
   let preResolvedSubmitter = null;
 
-  // Inky phish-report attribution: the outer From is Inky's relay address,
-  // not the person who reported. Re-aim the submitter at the "Reported by:"
-  // address so the reporting staffer becomes the ticket requester, and
-  // synthesize a unique title (the Inky subject is constant). Takes
-  // precedence over generic forward-unwrap. Falls through to normal
-  // handling if the reporter isn't an authorized submitter.
-  const inky = detectInkyReport(subject, body);
-  let inkyTitle = null;
-  if (inky) {
-    const reporter = await resolveOrProvisionSubmitter(inky.reporterEmail, 'inbound_inky_report');
-    if (reporter) {
-      preResolvedSubmitter = reporter;
-      effectiveFrom = inky.reporterEmail;
-      // Inky's own subject already carries the detail in the desired shape
-      // ("… (threat level: caution, user label: safe, rid: 9128624)") with
-      // the real numeric Inky report id — prefer it verbatim. Only the
-      // older bare-subject variant ("User Report via Inky Phish Fence")
-      // needs us to synthesize a title from the body fields.
-      const subj = (subject || '').trim();
-      inkyTitle = /\(threat level:/i.test(subj)
-        ? subj
-        : `User Report via Inky Phish Fence (threat level: ${inky.level}, user label: ${inky.label}, rid: ${inky.rid})`;
-    }
-  }
-
-  const forward = !inky && detectForward(body);
+  const forward = detectForward(body);
   // A reply where the sender quotes their OWN earlier message produces the
   // same flat Outlook From:/Sent:/To:/Subject: header block that a forward
   // does (OUTLOOK_FORWARD_RE can't tell them apart). When the unwrapped
@@ -681,23 +602,15 @@ async function tryAutoCreate({ subject, body, fromAddress, ccAddresses, attachme
     return { ok: false, reason: 'no_prefix' };
   }
 
-  // Inky reports carry a constant subject; replace it with the synthesized
-  // per-report title so the ticket is identifiable in lists.
-  if (inkyTitle) titleFromSubject = inkyTitle;
-
   const submitter = preResolvedSubmitter || await resolveOrProvisionSubmitter(effectiveFrom);
   if (!submitter) return { ok: false, reason: `sender_not_authorized:${effectiveFrom}` };
 
-  // Inky reports are structured (label/value per line) — preserve their
-  // line breaks through the soft-wrapping markdown renderer.
-  const cleanedDescription = inky
-    ? markdownHardBreaks(extractFreshReply(effectiveBody) || '(no description)')
-    : (extractFreshReply(effectiveBody) || '(no description)');
+  const cleanedDescription = extractFreshReply(effectiveBody) || '(no description)';
 
   // Dedup: same-submitter exact-title open ticket in last 7d → append
   // body as comment instead of creating a new ticket. Strong-overlap
   // match in the same project last 24h → defer to manual queue.
-  // A matching dedup-omit rule (admin-configured, e.g. Inky reports)
+  // A matching dedup-omit rule (admin-configured, e.g. fixed-subject alerts)
   // skips this entirely so automated/reporter mail with a fixed subject
   // always gets its own ticket.
   const omitted = await dedupOmit.isDedupOmitted({
@@ -1243,7 +1156,6 @@ module.exports = {
   parseSubjectPrefix,
   stripSignature,
   extractFreshReply,
-  detectInkyReport,
   findProjectByPrefix,
   findInternalSubmitter,
   tryAutoCreate,

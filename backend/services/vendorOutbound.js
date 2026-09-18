@@ -303,7 +303,7 @@ async function sendVendorEmail({ eventType, ticketId, actorId, commentId = null 
       // for proxied/automated mail (mailing lists, GitHub notifications,
       // Gmail "Send mail as") — Outlook and Gmail render it consistently
       // without overriding from a directory match, and anti-spoof filters
-      // (Inky VIP, Mimecast Impersonation Protect, etc.) recognize it as
+      // (Mimecast Impersonation Protect, Proofpoint, etc.) recognize it as
       // legitimate rather than treating `Name <unrelated@addr>` as an
       // exec impersonation attempt. Falls back to email local-part, then
       // to the bare site name when no actor is available.
