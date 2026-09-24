@@ -72,6 +72,7 @@ router.get('/', requireAuth, requireRole('Admin', 'Manager'), async (req, res) =
       const ageMs = j.last_run_at ? now - new Date(j.last_run_at).getTime() : null;
       let health = 'unknown';
       if (j.last_status === 'error') health = 'error';
+      else if (j.last_status === 'degraded') health = 'degraded';
       else if (ageMs == null) health = 'never_ran';
       else if (cadence && ageMs > cadence * 2) health = 'stale';
       else health = 'ok';

@@ -929,6 +929,11 @@ async function initSchema() {
     await client.query(`ALTER TABLE email_backend_accounts ADD COLUMN IF NOT EXISTS inbox_subscription_state TEXT`);
     await client.query(`ALTER TABLE email_backend_accounts ADD COLUMN IF NOT EXISTS inbox_subscription_expires_at TIMESTAMPTZ`);
     await client.query(`ALTER TABLE email_backend_accounts ADD COLUMN IF NOT EXISTS inbox_last_renewed_at TIMESTAMPTZ`);
+    // High-water mark of the last successful Inbox catch-up sweep. Lets the
+    // hourly polling fallback (used while a subscription can't be
+    // recreated, e.g. edge 403 on Graph validation) resume from where it
+    // left off instead of rescanning the full lookback window every tick.
+    await client.query(`ALTER TABLE email_backend_accounts ADD COLUMN IF NOT EXISTS inbox_last_swept_at TIMESTAMPTZ`);
 
     await client.query(`
       INSERT INTO system_jobs (name) VALUES ('inbox_subscription_renewal')

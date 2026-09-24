@@ -42,27 +42,72 @@ function isGoneError(e) {
   return /PATCH 404\b/.test(msg) || /ResourceNotFound/i.test(msg);
 }
 
+// Overlap applied to the sweep watermark so a message that landed while
+// the previous sweep was mid-flight (or sits just under Graph's
+// receivedDateTime rounding) is still picked up. Sweeps are idempotent so
+// the overlap only costs a few duplicate lookups.
+const SWEEP_OVERLAP_MS = 10 * 60 * 1000;
+
 // Earliest moment we can be sure notifications were still flowing is the
 // last successful create/renew; anything after that may have been lost.
+// A later successful sweep moves the mark forward so the polling fallback
+// doesn't rescan the whole lookback window every hour.
 function sweepSince(account) {
   const candidates = [account.inbox_last_renewed_at, account.inbox_subscription_expires_at]
     .map(v => (v ? new Date(v).getTime() : NaN))
     .filter(Number.isFinite);
   const floor = Date.now() - MAX_SWEEP_LOOKBACK_MS;
-  const since = candidates.length ? Math.min(...candidates) : floor;
+  let since = candidates.length ? Math.min(...candidates) : floor;
+  const swept = account.inbox_last_swept_at ? new Date(account.inbox_last_swept_at).getTime() : NaN;
+  if (Number.isFinite(swept)) since = Math.max(since, swept - SWEEP_OVERLAP_MS);
   return new Date(Math.max(since, floor)).toISOString();
+}
+
+async function sweepGraph(account, since, label) {
+  const startedAt = new Date();
+  const sweep = await graphInbox.sweepInbox(account, since);
+  console.warn(`inbox monitor: ${label} sweep for account ${account.id}: since=${since} scanned=${sweep.scanned} fed=${sweep.fed} skipped=${sweep.skipped} failed=${sweep.failed}`);
+  for (const it of sweep.items) {
+    console.warn(`  ${it.error ? 'FAILED' : 'fed   '} ${it.received} | ${it.from} | ${it.subject}${it.error ? ` :: ${it.error}` : ''}`);
+  }
+  // Watermark = when this sweep started, not when it finished, so mail
+  // arriving mid-sweep falls inside the next window.
+  if (!sweep.failed) {
+    await pool.query(
+      `UPDATE email_backend_accounts SET inbox_last_swept_at = $2 WHERE id = $1`,
+      [account.id, startedAt]
+    );
+  }
+  return { since, scanned: sweep.scanned, fed: sweep.fed, skipped: sweep.skipped, failed: sweep.failed };
 }
 
 async function recreateGraph(account) {
   const since = sweepSince(account);
   const sub = await graphInbox.createSubscription(account);
   console.warn(`inbox monitor: recreated Graph subscription for account ${account.id} (${account.from_address}) -> ${sub.id}; sweeping Inbox since ${since}`);
-  const sweep = await graphInbox.sweepInbox(account, since);
-  console.warn(`inbox monitor: sweep for account ${account.id}: scanned=${sweep.scanned} fed=${sweep.fed} skipped=${sweep.skipped} failed=${sweep.failed}`);
-  for (const it of sweep.items) {
-    console.warn(`  ${it.error ? 'FAILED' : 'fed   '} ${it.received} | ${it.from} | ${it.subject}${it.error ? ` :: ${it.error}` : ''}`);
+  return { subscriptionId: sub.id, sweep: await sweepGraph(account, since, 'post-recreate') };
+}
+
+// Polling fallback. When the subscription can't be rebuilt (Graph's
+// validation ping to our webhook is being rejected upstream — Sep 2026
+// this was a Cloudflare edge 403 that lasted for weeks), push
+// notifications are simply unavailable. Rather than log the same error
+// hourly while mail piles up unseen, fall back to sweeping the Inbox on
+// every tick. Slower (up to an hour of lag) but nothing is lost.
+async function recreateOrPoll(account, reason) {
+  try {
+    return { action: 'recreated', reason, ...(await recreateGraph(account)) };
+  } catch (e) {
+    console.error(`inbox monitor: recreate after ${reason} failed for account ${account.id}:`, e.message);
+    const since = sweepSince(account);
+    console.warn(`inbox monitor: account ${account.id} (${account.from_address}) has no live subscription; polling Inbox instead`);
+    try {
+      return { action: 'polled', reason, recreateError: e.message, sweep: await sweepGraph(account, since, 'polling-fallback') };
+    } catch (e2) {
+      console.error(`inbox monitor: polling fallback failed for account ${account.id}:`, e2.message);
+      return { action: 'error', stage: 'recreate', error: e.message, pollError: e2.message };
+    }
   }
-  return { subscriptionId: sub.id, sweep: { since, scanned: sweep.scanned, fed: sweep.fed, skipped: sweep.skipped, failed: sweep.failed } };
 }
 
 async function tickOnce({ thresholdMs } = {}) {
@@ -82,12 +127,7 @@ async function tickOnce({ thresholdMs } = {}) {
     }
     // Already past expiry: Graph has dropped it, don't bother PATCHing.
     if (account.provider === 'graph_user' && dueIn <= 0) {
-      try {
-        results.push({ id: account.id, action: 'recreated', reason: 'expired', ...(await recreateGraph(account)) });
-      } catch (e) {
-        console.error(`inbox monitor: recreate after expiry failed for account ${account.id}:`, e.message);
-        results.push({ id: account.id, action: 'error', stage: 'recreate', error: e.message });
-      }
+      results.push({ id: account.id, ...(await recreateOrPoll(account, 'expiry')) });
       continue;
     }
     try {
@@ -97,12 +137,7 @@ async function tickOnce({ thresholdMs } = {}) {
     } catch (e) {
       console.error(`inbox renewal failed for account ${account.id}:`, e.message);
       if (account.provider === 'graph_user' && isGoneError(e)) {
-        try {
-          results.push({ id: account.id, action: 'recreated', reason: 'gone', ...(await recreateGraph(account)) });
-        } catch (e2) {
-          console.error(`inbox monitor: recreate after 404 failed for account ${account.id}:`, e2.message);
-          results.push({ id: account.id, action: 'error', stage: 'recreate', error: e2.message });
-        }
+        results.push({ id: account.id, ...(await recreateOrPoll(account, '404')) });
       } else {
         results.push({ id: account.id, action: 'error', stage: 'renew', error: e.message });
       }
@@ -114,7 +149,8 @@ async function tickOnce({ thresholdMs } = {}) {
             last_status = $2,
             metadata = $1::jsonb
       WHERE name = 'inbox_subscription_renewal'`,
-    [JSON.stringify({ ran: results.length, results }), results.some(r => r.action === 'error') ? 'error' : 'ok']
+    [JSON.stringify({ ran: results.length, results }),
+     results.some(r => r.action === 'error') ? 'error' : results.some(r => r.action === 'polled') ? 'degraded' : 'ok']
   );
   return results;
 }

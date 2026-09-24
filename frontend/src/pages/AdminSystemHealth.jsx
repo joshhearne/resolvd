@@ -19,6 +19,7 @@ function HealthDot({ health }) {
   const map = {
     ok: { color: "bg-emerald-500", label: "OK" },
     stale: { color: "bg-amber-500", label: "Stale" },
+    degraded: { color: "bg-amber-500", label: "Degraded (polling)" },
     error: { color: "bg-red-500", label: "Error" },
     never_ran: { color: "bg-fg-dim", label: "Never ran" },
     unknown: { color: "bg-fg-dim", label: "Unknown" },
