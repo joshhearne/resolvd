@@ -93,6 +93,24 @@ router.post('/sync-collections', async (req, res) => {
   catch (err) { fail(res, err, 'sync-collections'); }
 });
 
+// POST /api/trove-kb-settings/check — one manual poll: connection + new
+// collections, drop every cached read, refresh link/run snapshots.
+router.post('/check', async (req, res) => {
+  try {
+    const t = await troveKb.testConnection();
+    troveKb.invalidateCache();
+    const snap = await require('../services/troveKbSnapshotScheduler').refreshSnapshots();
+    res.json({
+      ok: true,
+      collections: t.collections.length,
+      new_collections: t.new_collections || [],
+      auto_mapped: t.auto_mapped || [],
+      snapshots: snap,
+      cache_cleared: true,
+    });
+  } catch (err) { fail(res, err, 'check'); }
+});
+
 router.post('/test', async (req, res) => {
   try { res.json(await troveKb.testConnection()); }
   catch (err) { fail(res, err, 'test'); }

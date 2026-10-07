@@ -131,6 +131,24 @@ function ConnectionPane({ settings, setSettings, patch, busy }) {
     } catch (e) { toast.error(e.message); }
   }
 
+  const [checking, setChecking] = useState(false);
+  async function checkNow() {
+    setChecking(true);
+    try {
+      const r = await api.post("/api/trove-kb-settings/check", {});
+      const bits = [`${r.collections} collections`];
+      if (r.auto_mapped?.length) bits.push(`mapped ${r.auto_mapped.map((c) => c.name).join(", ")}`);
+      else if (r.new_collections?.length) bits.push(`${r.new_collections.length} new, unmapped`);
+      if (r.snapshots && !r.snapshots.skipped) bits.push(`${r.snapshots.updated} snapshot rows updated`);
+      bits.push("cache cleared");
+      toast.success(bits.join(" · "));
+      setSettings(await api.get("/api/trove-kb-settings"));
+    } catch (e) {
+      toast.error(e.message || "Check failed");
+      try { setSettings(await api.get("/api/trove-kb-settings")); } catch { /* keep */ }
+    } finally { setChecking(false); }
+  }
+
   async function test() {
     setTesting(true);
     setTestResult(null);
@@ -195,6 +213,14 @@ function ConnectionPane({ settings, setSettings, patch, busy }) {
           <button onClick={saveUrls} disabled={busy} className="btn btn-primary btn-sm">Save URLs</button>
           <button onClick={test} disabled={testing || !settings.has_api_key || !settings.base_url} className="btn btn-secondary btn-sm">
             {testing ? "Testing…" : "Test connection"}
+          </button>
+          <button
+            onClick={checkNow}
+            disabled={checking || !settings.enabled}
+            className="btn btn-secondary btn-sm"
+            title="Poll Trove KB now: new collections, fresh article cache, link and runbook titles. Article edits also arrive by webhook as they happen."
+          >
+            {checking ? "Checking…" : "Check for changes now"}
           </button>
         </div>
 
