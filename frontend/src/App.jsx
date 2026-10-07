@@ -60,6 +60,7 @@ import KbIndex from "./pages/KbIndex";
 import KbProject from "./pages/KbProject";
 import KbArticle from "./pages/KbArticle";
 import TroveKbArticle from "./pages/TroveKbArticle";
+import TroveKbCollection from "./pages/TroveKbCollection";
 import KbEditor from "./pages/KbEditor";
 
 function ProtectedRoute({ children, adminOnly = false, handlerOnly = false }) {
@@ -228,6 +229,7 @@ function AppRoutes() {
         />
         <Route path="kb" element={<ProtectedRoute><KbIndex /></ProtectedRoute>} />
         <Route path="kb/article/:id" element={<ProtectedRoute><TroveKbArticle /></ProtectedRoute>} />
+        <Route path="kb/collection/:id" element={<ProtectedRoute><TroveKbCollection /></ProtectedRoute>} />
         <Route path="kb/:projectId" element={<ProtectedRoute><KbProject /></ProtectedRoute>} />
         <Route path="kb/:projectId/new" element={<ProtectedRoute><KbEditor /></ProtectedRoute>} />
         <Route path="kb/:projectId/:slug" element={<ProtectedRoute><KbArticle /></ProtectedRoute>} />

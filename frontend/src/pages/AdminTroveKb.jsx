@@ -292,7 +292,7 @@ function CollectionsPane({ settings, patch, busy }) {
   // admin can still un-map them.
   const rows = [];
   const seen = new Set();
-  for (const c of live || []) { rows.push({ id: c.id, name: c.name, articles: c.articles, description: c.description, live: true }); seen.add(c.id); }
+  for (const c of live || []) { rows.push({ id: c.id, name: c.name, articles: c.articles, description: c.description, public: c.public, live: true }); seen.add(c.id); }
   for (const id of [...internal, ...pub]) {
     if (!seen.has(id)) rows.push({ id, name: settings.collection_names?.[id] || id, articles: null, live: false });
   }
@@ -325,6 +325,15 @@ function CollectionsPane({ settings, patch, busy }) {
         </p>
       </div>
 
+      <div className="flex flex-wrap items-center gap-3 text-sm">
+        <label className="flex items-center gap-2">
+          <input type="checkbox" checked={settings.auto_map_public !== false} disabled={busy} onChange={(e) => patch({ auto_map_public: e.target.checked })} />
+          Map new public collections automatically
+        </label>
+        <button onClick={async () => { try { const r = await api.post("/api/trove-kb-settings/sync-collections", {}); toast.success(r.auto_mapped?.length ? `Mapped: ${r.auto_mapped.map((c) => c.name).join(", ")}` : r.new_collections?.length ? `${r.new_collections.length} new collection(s) seen, none public` : "Nothing new"); await patch({}); } catch (e) { toast.error(e.message); } }} className="btn btn-secondary btn-sm">Check for new collections</button>
+        {settings.collections_synced_at && <span className="text-xs text-fg-dim">Checked hourly; last {new Date(settings.collections_synced_at).toLocaleString()}</span>}
+      </div>
+
       {loading && <div className="text-sm text-fg-muted">Loading collections from Trove KB…</div>}
       {liveError && <Note tone="warn">Could not list collections from Trove KB: {liveError}. Saved mappings are shown below.</Note>}
 
@@ -337,7 +346,10 @@ function CollectionsPane({ settings, patch, busy }) {
             return (
               <div key={row.id} className="flex flex-wrap items-center gap-3 px-3 py-2">
                 <div className="flex-1 min-w-[200px]">
-                  <div className="text-sm font-medium text-fg">{row.name}</div>
+                  <div className="text-sm font-medium text-fg flex items-center gap-2">{row.name}
+                    {row.public === true && <span className="text-[9px] uppercase px-1 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-300" title="On Trove KB's public site">public site</span>}
+                    {!(settings.known_collection_ids || []).includes(row.id) && row.live && <span className="text-[9px] uppercase px-1 rounded bg-amber-500/15 text-amber-600 dark:text-amber-300">new</span>}
+                  </div>
                   <div className="text-[11px] text-fg-dim font-mono">
                     {row.articles != null ? `${row.articles} articles · ` : ""}{row.id}{row.live ? "" : " · not reported by Trove KB"}
                   </div>

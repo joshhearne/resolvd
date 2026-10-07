@@ -96,15 +96,47 @@ router.get('/collections', async (req, res) => {
     if (!s.enabled) return res.json([]);
     const handler = isGlobalHandler(req.session.user);
     const vis = troveKb.visibleCollections(s, handler);
-    let rows;
-    if (vis.ids === null) {
-      // Handler with nothing mapped: everything the key sees.
-      rows = (await troveKb.listCollections()).map((c) => ({ id: c.id, name: c.name, description: c.description, articles: c.articles, scope: 'internal' }));
-    } else {
-      rows = vis.ids.map((id) => ({ id, name: s.collection_names[id] || id, description: null, articles: null, scope: vis.scopeOf(id) }));
-    }
+    // Live details (description, counts, public flag) when Trove KB answers;
+    // the name snapshot otherwise, so the page still renders.
+    let live = new Map();
+    try { live = new Map((await troveKb.listCollections()).map((c) => [c.id, c])); } catch { /* snapshot only */ }
+    const ids = vis.ids === null ? [...live.keys()] : vis.ids;
+    const rows = ids.map((id) => {
+      const c = live.get(id);
+      return { id, name: c?.name || s.collection_names[id] || id, description: c?.description || null, site_url: c?.site_url || null,
+               articles: c?.articles ?? null, public: c?.public ?? null, scope: vis.scopeOf(id) || 'internal', live: !!c };
+    }).filter((row) => handler || !s.public_strict || row.public !== false);
     res.json(rows);
   } catch (err) { fail(res, err, 'collections'); }
+});
+
+// GET /api/trove-kb/collections/:id — one collection with its category tree.
+router.get('/collections/:id', async (req, res) => {
+  try {
+    if (!UUID_RE.test(req.params.id)) return res.status(404).json({ error: 'Collection not found' });
+    const s = await troveKb.getSettings();
+    if (!s.enabled) return res.status(503).json({ error: 'Trove KB is not configured' });
+    const kind = ['article', 'runbook'].includes(req.query.kind) ? req.query.kind : null;
+    res.json(await troveKb.getCollection(req.params.id, { handler: isGlobalHandler(req.session.user), kind }));
+  } catch (err) { fail(res, err, 'collection'); }
+});
+
+// GET /api/trove-kb/articles?collection_id=&category=&subcategory=&kind=&sort=&dir=&limit=&cursor=
+router.get('/articles', async (req, res) => {
+  try {
+    const cid = String(req.query.collection_id || '');
+    if (!UUID_RE.test(cid)) return res.status(400).json({ error: 'collection_id (uuid) required' });
+    const s = await troveKb.getSettings();
+    if (!s.enabled) return res.status(503).json({ error: 'Trove KB is not configured' });
+    const str = (v) => (v == null || v === '' ? null : String(v).slice(0, 200));
+    const page = await troveKb.listArticlesPage({
+      collectionId: cid, category: str(req.query.category), subcategory: str(req.query.subcategory),
+      kind: ['article', 'runbook'].includes(req.query.kind) ? req.query.kind : null,
+      sort: req.query.sort, dir: req.query.dir, limit: req.query.limit, cursor: str(req.query.cursor),
+      handler: isGlobalHandler(req.session.user),
+    });
+    res.json({ ...page, articles: scrubStaffUrl(req.session.user, page.articles) });
+  } catch (err) { fail(res, err, 'articles'); }
 });
 
 router.get('/search', async (req, res) => {

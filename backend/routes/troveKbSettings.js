@@ -25,6 +25,9 @@ function present(s) {
     suggestions_enabled: s.suggestions_enabled,
     public_strict: s.public_strict,
     local_kb_enabled: s.local_kb_enabled,
+    auto_map_public: s.auto_map_public,
+    known_collection_ids: s.known_collection_ids,
+    collections_synced_at: s.collections_synced_at,
     last_ok_at: s.last_ok_at,
     last_error: s.last_error,
     has_api_key: s.has_api_key,
@@ -82,6 +85,12 @@ router.post('/webhook-secret', async (req, res) => {
 router.post('/refresh-snapshots', async (req, res) => {
   try { res.json(await require('../services/troveKbSnapshotScheduler').refreshSnapshots()); }
   catch (err) { fail(res, err, 'refresh-snapshots'); }
+});
+
+// POST /api/trove-kb-settings/sync-collections — pick up new collections now.
+router.post('/sync-collections', async (req, res) => {
+  try { res.json(await troveKb.syncCollections()); }
+  catch (err) { fail(res, err, 'sync-collections'); }
 });
 
 router.post('/test', async (req, res) => {

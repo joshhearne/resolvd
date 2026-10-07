@@ -28,8 +28,8 @@ export default function TroveKbArticle() {
     <div className="max-w-4xl mx-auto p-6 space-y-4">
       <div className="text-xs text-fg-muted">
         <Link to="/kb" className="hover:underline">Knowledge Base</Link>
-        {article?.collection_name && <> <span className="mx-1">/</span> {article.collection_name}</>}
-        {article?.category && <> <span className="mx-1">/</span> {article.category}</>}
+        {article?.collection_name && <> <span className="mx-1">/</span> <Link to={`/kb/collection/${article.collection_id}`} className="hover:underline">{article.collection_name}</Link></>}
+        {article?.category && <> <span className="mx-1">/</span> <Link to={`/kb/collection/${article.collection_id}?category=${encodeURIComponent(article.category)}${article.subcategory ? `&subcategory=${encodeURIComponent(article.subcategory)}` : ""}`} className="hover:underline">{article.category}{article.subcategory ? ` / ${article.subcategory}` : ""}</Link></>}
       </div>
 
       {loading ? (

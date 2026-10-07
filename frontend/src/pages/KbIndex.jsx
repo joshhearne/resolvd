@@ -131,27 +131,37 @@ export default function KbIndex() {
             )
           )}
 
-          {!hits && collections.length > 0 && (
-            <div className="flex flex-wrap gap-2">
-              {collections.map((c) => (
-                <button
-                  key={c.id}
-                  type="button"
-                  onClick={() => { setCollectionId(c.id); if (q.trim()) setParams({ q: q.trim(), collection: c.id }); }}
-                  className={`text-xs px-2.5 py-1 rounded-full border ${collectionId === c.id ? "border-accent text-accent bg-accent/10" : "border-border text-fg-muted hover:text-fg hover:bg-surface-2"}`}
-                  title={c.scope === "internal" ? "Internal: handlers only" : "Public collection"}
-                >
-                  {c.name}{c.articles != null ? ` · ${c.articles}` : ""}
-                </button>
-              ))}
-              {troveKb.base_url && (
-                <a href={`${troveKb.base_url}/kb`} target="_blank" rel="noreferrer" className="text-xs px-2.5 py-1 text-brand hover:underline">Open Trove KB ↗</a>
-              )}
-              {troveKb.public_url && (
-                <a href={troveKb.public_url} target="_blank" rel="noreferrer" className="text-xs px-2.5 py-1 text-brand hover:underline">Public site ↗</a>
-              )}
+          {!hits && (troveKb.base_url || troveKb.public_url) && (
+            <div className="flex flex-wrap gap-3 text-xs">
+              {troveKb.base_url && <a href={`${troveKb.base_url}/kb`} target="_blank" rel="noreferrer" className="text-brand hover:underline">Open Trove KB ↗</a>}
+              {troveKb.public_url && <a href={troveKb.public_url} target="_blank" rel="noreferrer" className="text-brand hover:underline">Public site ↗</a>}
             </div>
           )}
+        </section>
+      )}
+
+      {troveKb?.has_visible && !hits && collections.length > 0 && (
+        <section className="space-y-3">
+          <h2 className="text-sm font-semibold text-fg-muted uppercase tracking-wide">Collections</h2>
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {collections.map((c) => (
+              <Link
+                key={c.id}
+                to={`/kb/collection/${c.id}`}
+                className="block group rounded-lg border border-border bg-surface hover:bg-surface-2 hover:border-accent/40 transition-colors p-5"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="text-base font-semibold text-fg group-hover:text-accent">{c.name}</div>
+                  <span className={`flex-shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded ${c.scope === "public" ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-300" : "bg-brand/10 text-brand"}`}>{c.scope === "public" ? "Public" : "Internal"}</span>
+                </div>
+                {c.description && <p className="text-sm text-fg-muted mt-1 line-clamp-2">{c.description}</p>}
+                <div className="mt-3 flex items-center gap-2 text-xs text-fg-muted">
+                  {c.articles != null && <span className="px-2 py-0.5 rounded-full font-mono bg-surface-2 text-fg-muted">{c.articles}</span>}
+                  <span>{c.articles == null ? "Browse" : `article${c.articles === 1 ? "" : "s"}`}</span>
+                </div>
+              </Link>
+            ))}
+          </div>
         </section>
       )}
 

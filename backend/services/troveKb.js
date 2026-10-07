@@ -120,6 +120,9 @@ async function getSettings({ withKey = false } = {}) {
       local_kb_enabled: row.local_kb_enabled !== false,
       last_ok_at: row.last_ok_at || null,
       last_error: row.last_error || null,
+      auto_map_public: row.auto_map_public !== false,
+      known_collection_ids: row.known_collection_ids || [],
+      collections_synced_at: row.collections_synced_at || null,
       has_api_key: !!row.api_key_enc,
       has_webhook_secret: !!row.webhook_secret_enc,
       last_webhook_at: row.last_webhook_at || null,
@@ -141,6 +144,9 @@ async function patchSettings(partial) {
   if (partial.suggestions_enabled !== undefined) updates.suggestions_enabled = !!partial.suggestions_enabled;
   if (partial.public_strict !== undefined) updates.public_strict = !!partial.public_strict;
   if (partial.local_kb_enabled !== undefined) updates.local_kb_enabled = !!partial.local_kb_enabled;
+  if (partial.auto_map_public !== undefined) updates.auto_map_public = !!partial.auto_map_public;
+  const known = uuidList(partial.known_collection_ids, 'known_collection_ids');
+  if (known !== undefined) updates.known_collection_ids = known;
   if (partial.base_url !== undefined) updates.base_url = normalizeUrl(partial.base_url);
   if (partial.public_url !== undefined) updates.public_url = normalizeUrl(partial.public_url);
   const internal = uuidList(partial.internal_collection_ids, 'internal_collection_ids');
@@ -563,6 +569,90 @@ async function archiveArticle({ collectionId, externalId }) {
   _results.clear();
 }
 
+// One collection with its categories as a tree, visibility-checked.
+async function getCollection(collectionId, { handler = false, kind = null } = {}) {
+  const settings = await getSettings({ withKey: true });
+  if (!settings.enabled) throw httpError(503, 'Trove KB is not configured');
+  const id = String(collectionId || '').toLowerCase();
+  const vis = visibleCollections(settings, handler);
+  if (vis.ids !== null && !vis.ids.includes(id)) throw httpError(404, 'Collection not found');
+  const d = await cached(`collection:${id}:${kind || ''}`, () => rest(`/kb/collections/${id}${qs({ kind })}`, { settings }));
+  if (!handler && d.public !== true && settings.public_strict) throw httpError(404, 'Collection not found');
+  const tree = new Map();
+  for (const row of d.categories || []) {
+    const cat = row.category || '';
+    if (!tree.has(cat)) tree.set(cat, { category: cat, articles: 0, subcategories: [] });
+    const node = tree.get(cat);
+    node.articles += row.articles || 0;
+    if (row.subcategory) node.subcategories.push({ subcategory: row.subcategory, articles: row.articles || 0 });
+  }
+  const categories = [...tree.values()].sort((a, b) => (a.category || '~').localeCompare(b.category || '~'));
+  for (const c of categories) c.subcategories.sort((a, b) => a.subcategory.localeCompare(b.subcategory));
+  return {
+    id: d.id, name: d.name, description: d.description || null, site_url: d.site_url || null,
+    public: d.public === true, articles: d.articles ?? null,
+    scope: vis.scopeOf(id) || (vis.ids === null ? 'internal' : null),
+    categories,
+  };
+}
+
+// One page of a collection's articles. Non-handlers only get articles
+// confirmed public (one cached article read per row, page capped).
+async function listArticlesPage({ collectionId, category = null, subcategory = null, kind = null, sort = 'name', dir = 'asc', limit = 50, cursor = null, handler = false }) {
+  const settings = await getSettings({ withKey: true });
+  if (!settings.enabled) throw httpError(503, 'Trove KB is not configured');
+  const id = String(collectionId || '').toLowerCase();
+  const vis = visibleCollections(settings, handler);
+  if (vis.ids !== null && !vis.ids.includes(id)) throw httpError(404, 'Collection not found');
+  const lim = Math.max(1, Math.min(handler ? 200 : 50, Number(limit) || 50));
+  const s = ['name', 'modified'].includes(sort) ? sort : 'name';
+  const d = ['asc', 'desc'].includes(dir) ? dir : 'asc';
+  const key = `list:${id}:${category || ''}:${subcategory || ''}:${kind || ''}:${s}:${d}:${lim}:${cursor || ''}`;
+  const r = await cached(key, () => rest(`/kb/articles${qs({ collection_id: id, category, subcategory, kind, sort: s, dir: d, limit: lim, cursor })}`, { settings }));
+  let rows = (r?.data || []).map((a) => ({
+    article_id: a.id, external_id: a.external_id || null, title: a.title, kind: a.kind || 'article',
+    category: a.category || null, subcategory: a.subcategory || null, date_modified: a.date_modified || null,
+    collection_id: id, collection_name: settings.collection_names[id] || null,
+    ...articleUrls(settings, a.id, id),
+  }));
+  if (!handler) {
+    const checks = await Promise.allSettled(rows.map((row) => fetchArticle(settings, row.article_id)));
+    rows = rows.filter((row, i) => checks[i].status === 'fulfilled' && publicEnough(settings, checks[i].value))
+      .map((row, i) => ({ ...row, public: true, public_url: checks[i]?.value?.public_url || row.public_url }));
+  }
+  return { articles: rows, next_cursor: r?.next_cursor || null };
+}
+
+// Pick up collections Trove KB has gained since we last looked. A new
+// public collection is mapped Public when auto_map_public is on; any other
+// new one is left unmapped (Hidden) for an admin. Returns what changed.
+async function syncCollections() {
+  const settings = await getSettings({ withKey: true });
+  if (!settings.enabled) return { skipped: 'disabled' };
+  const live = await listCollections({ settings });
+  const known = new Set(settings.known_collection_ids);
+  const names = { ...settings.collection_names };
+  const pub = [...settings.public_collection_ids];
+  const added = [];
+  const seen = [];
+  for (const c of live) {
+    names[c.id] = c.name;
+    if (known.has(c.id)) continue;
+    seen.push({ id: c.id, name: c.name, public: c.public });
+    if (settings.auto_map_public && c.public && !settings.internal_collection_ids.includes(c.id) && !pub.includes(c.id)) {
+      pub.push(c.id);
+      added.push({ id: c.id, name: c.name });
+    }
+  }
+  const nextKnown = [...new Set([...settings.known_collection_ids, ...live.map((c) => c.id)])];
+  await pool.query(
+    `UPDATE trove_kb_settings SET collection_names = $1, public_collection_ids = $2, known_collection_ids = $3, collections_synced_at = NOW(), updated_at = NOW() WHERE id = 1`,
+    [JSON.stringify(names), pub, nextKnown]
+  );
+  invalidateCache();
+  return { live: live.length, new_collections: seen, auto_mapped: added };
+}
+
 // Admin "Test connection": lists collections, records the outcome, and
 // refreshes the name snapshot so the mapping UI and link pills have
 // names even when Trove KB is down later.
@@ -572,11 +662,9 @@ async function testConnection() {
   if (!settings._apiKey) throw httpError(400, settings.kms_available ? 'Save a Trove KB API key first' : 'RESOLVD_MASTER_KEY not configured');
   try {
     const collections = await listCollections({ settings });
-    const names = { ...settings.collection_names };
-    for (const c of collections) names[c.id] = c.name;
-    await pool.query(`UPDATE trove_kb_settings SET collection_names = $1, updated_at = NOW() WHERE id = 1`, [JSON.stringify(names)]);
     await recordOutcome(null);
-    return { ok: true, collections };
+    const sync = await syncCollections();
+    return { ok: true, collections, auto_mapped: sync.auto_mapped || [], new_collections: sync.new_collections || [] };
   } catch (err) {
     await recordOutcome(err.message);
     throw err;
@@ -599,6 +687,9 @@ module.exports = {
   search,
   getArticle,
   listArticles,
+  listArticlesPage,
+  getCollection,
+  syncCollections,
   upsertArticle,
   archiveArticle,
   rest,

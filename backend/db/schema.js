@@ -3074,6 +3074,12 @@ Thanks,
     await client.query(`ALTER TABLE trove_kb_settings ADD COLUMN IF NOT EXISTS last_webhook_at TIMESTAMPTZ`);
     await client.query(`ALTER TABLE trove_kb_settings ADD COLUMN IF NOT EXISTS last_webhook_event TEXT`);
     await client.query(`ALTER TABLE trove_kb_settings ADD COLUMN IF NOT EXISTS snapshots_refreshed_at TIMESTAMPTZ`);
+    // New collections Trove KB gains are picked up automatically: a public
+    // one is mapped Public, anything else is left for an admin. known_* keeps
+    // an admin's "Hidden" choice from being undone by the next sync.
+    await client.query(`ALTER TABLE trove_kb_settings ADD COLUMN IF NOT EXISTS auto_map_public BOOLEAN NOT NULL DEFAULT TRUE`);
+    await client.query(`ALTER TABLE trove_kb_settings ADD COLUMN IF NOT EXISTS known_collection_ids TEXT[] NOT NULL DEFAULT '{}'::text[]`);
+    await client.query(`ALTER TABLE trove_kb_settings ADD COLUMN IF NOT EXISTS collections_synced_at TIMESTAMPTZ`);
     // Runbook runs can point at a Trove KB runbook (uuid) instead of a local
     // article. step_states is then keyed by Trove KB step id.
     await client.query(`ALTER TABLE ticket_runbook_runs ADD COLUMN IF NOT EXISTS trove_kb_article_id UUID`);

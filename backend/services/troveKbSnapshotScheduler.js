@@ -37,9 +37,20 @@ async function refreshSnapshots() {
   return { articles: ids.rows.length, updated, missing };
 }
 
+const SYNC_INTERVAL_MS = 60 * 60 * 1000;
+let syncTimer = null;
+
 let timer = null;
 function startScheduler() {
   if (timer) return;
+  // New collections in Trove KB appear in Resolvd within the hour.
+  const sync = async () => {
+    try {
+      const r = await troveKb.syncCollections();
+      if (r.auto_mapped?.length) console.log(`troveKb sync: mapped ${r.auto_mapped.map((c) => c.name).join(', ')} as Public`);
+    } catch (err) { console.warn('troveKb sync:', err.message); }
+  };
+  setTimeout(() => { sync(); syncTimer = setInterval(sync, SYNC_INTERVAL_MS); if (syncTimer.unref) syncTimer.unref(); }, 2 * 60 * 1000).unref?.();
   const tick = async () => {
     try {
       const r = await refreshSnapshots();
@@ -50,3 +61,4 @@ function startScheduler() {
 }
 
 module.exports = { startScheduler, refreshSnapshots };
+
