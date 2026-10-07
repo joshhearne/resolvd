@@ -28,6 +28,11 @@ function present(s) {
     last_ok_at: s.last_ok_at,
     last_error: s.last_error,
     has_api_key: s.has_api_key,
+    has_webhook_secret: s.has_webhook_secret,
+    last_webhook_at: s.last_webhook_at,
+    last_webhook_event: s.last_webhook_event,
+    snapshots_refreshed_at: s.snapshots_refreshed_at,
+    webhook_url: `${(process.env.FRONTEND_URL || '').replace(/\/+$/, '')}/api/trove-kb/webhook`,
     kms_available: s.kms_available,
     updated_at: s.updated_at,
   };
@@ -55,6 +60,28 @@ router.post('/api-key', async (req, res) => {
     const s = await troveKb.getSettings();
     res.json({ has_api_key: s.has_api_key, enabled: s.enabled });
   } catch (err) { fail(res, err, 'api-key'); }
+});
+
+// POST /api/trove-kb-settings/webhook-secret { secret } | { generate: true } | { secret: "" }
+// A generated secret is returned exactly once so it can be pasted into
+// Trove KB (Admin → Webhooks). Never readable again afterwards.
+router.post('/webhook-secret', async (req, res) => {
+  try {
+    let secret = req.body?.secret;
+    let generated = false;
+    if (req.body?.generate === true) { secret = troveKb.generateWebhookSecret(); generated = true; }
+    if (secret != null && typeof secret !== 'string') return res.status(400).json({ error: 'secret must be a string' });
+    if (typeof secret === 'string' && secret.length > 500) return res.status(400).json({ error: 'secret too long' });
+    await troveKb.setWebhookSecret(secret);
+    const s = await troveKb.getSettings();
+    res.json({ has_webhook_secret: s.has_webhook_secret, ...(generated ? { secret } : {}) });
+  } catch (err) { fail(res, err, 'webhook-secret'); }
+});
+
+// POST /api/trove-kb-settings/refresh-snapshots — run the nightly refresh now.
+router.post('/refresh-snapshots', async (req, res) => {
+  try { res.json(await require('../services/troveKbSnapshotScheduler').refreshSnapshots()); }
+  catch (err) { fail(res, err, 'refresh-snapshots'); }
 });
 
 router.post('/test', async (req, res) => {

@@ -67,6 +67,9 @@ app.use(securityHeaders);
 // the global parser so only these routes get the bigger ceiling.
 app.use('/api/inbound', express.json({ limit: '30mb' }));
 
+// Trove KB webhooks carry an HMAC over the raw body, so this route takes
+// the body as bytes and sits ahead of the JSON parser and session auth.
+app.use('/api/trove-kb/webhook', express.raw({ type: '*/*', limit: '256kb' }), require('./routes/troveKbWebhook'));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
 
@@ -194,6 +197,7 @@ initSchema()
     // Recurring ticket materialiser: every 60s, fire schedules whose
     // next_fire_at has lapsed, log the run, advance the iterator.
     require('./services/ticketSchedules').startScheduler();
+    require('./services/troveKbSnapshotScheduler').startScheduler();
     app.listen(PORT, () => {
       console.log(`Resolvd backend running on port ${PORT}`);
     });

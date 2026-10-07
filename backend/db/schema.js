@@ -3068,6 +3068,12 @@ Thanks,
     await client.query(`ALTER TABLE trove_kb_settings ADD COLUMN IF NOT EXISTS public_strict BOOLEAN NOT NULL DEFAULT TRUE`);
     // The built-in per-project KB stays on until "Replace local knowledge base" runs.
     await client.query(`ALTER TABLE trove_kb_settings ADD COLUMN IF NOT EXISTS local_kb_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
+    // Signed webhooks from Trove KB (kb.article.upserted|archived) drop our
+    // read cache. Secret encrypted like the key; never returned to a client.
+    await client.query(`ALTER TABLE trove_kb_settings ADD COLUMN IF NOT EXISTS webhook_secret_enc BYTEA`);
+    await client.query(`ALTER TABLE trove_kb_settings ADD COLUMN IF NOT EXISTS last_webhook_at TIMESTAMPTZ`);
+    await client.query(`ALTER TABLE trove_kb_settings ADD COLUMN IF NOT EXISTS last_webhook_event TEXT`);
+    await client.query(`ALTER TABLE trove_kb_settings ADD COLUMN IF NOT EXISTS snapshots_refreshed_at TIMESTAMPTZ`);
     // Runbook runs can point at a Trove KB runbook (uuid) instead of a local
     // article. step_states is then keyed by Trove KB step id.
     await client.query(`ALTER TABLE ticket_runbook_runs ADD COLUMN IF NOT EXISTS trove_kb_article_id UUID`);

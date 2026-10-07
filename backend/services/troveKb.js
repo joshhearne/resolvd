@@ -24,11 +24,13 @@ function publicEnough(settings, article) {
 const { pool } = require('../db/pool');
 const { encrypt, decrypt } = require('./crypto');
 const kms = require('./kms');
+const nodeCrypto = require('crypto');
 
 // Encryption context of the stored key. Kept at the old product name on
 // purpose: it is bound into the ciphertext (AAD), so renaming it would make
 // every saved key unreadable. Not a table name.
 const KEY_CTX = 'bothy_settings.api_key';
+const WEBHOOK_CTX = 'trove_kb_settings.webhook_secret';
 const SETTINGS_TTL_MS = 30 * 1000;
 const RESULT_TTL_MS = 60 * 1000;
 const REQUEST_TIMEOUT_MS = 12 * 1000;
@@ -47,6 +49,7 @@ function invalidateCache() {
   _settings = null;
   _settingsAt = 0;
   _results.clear();
+  _collectionsCache = null;
 }
 
 function normalizeUrl(v) {
@@ -81,11 +84,19 @@ async function getSettings({ withKey = false } = {}) {
     const r = await pool.query(`SELECT * FROM trove_kb_settings WHERE id = 1`);
     const row = r.rows[0] || {};
     let apiKey = null;
+    let webhookSecret = null;
     if (kms.isAvailable() && row.api_key_enc) {
       try {
         apiKey = (await decrypt(row.api_key_enc, KEY_CTX)).toString('utf8');
       } catch (err) {
         console.error('troveKb: api key decrypt failed:', err.message);
+      }
+    }
+    if (kms.isAvailable() && row.webhook_secret_enc) {
+      try {
+        webhookSecret = (await decrypt(row.webhook_secret_enc, WEBHOOK_CTX)).toString('utf8');
+      } catch (err) {
+        console.error('troveKb: webhook secret decrypt failed:', err.message);
       }
     }
     const internal = row.internal_collection_ids || [];
@@ -110,13 +121,18 @@ async function getSettings({ withKey = false } = {}) {
       last_ok_at: row.last_ok_at || null,
       last_error: row.last_error || null,
       has_api_key: !!row.api_key_enc,
+      has_webhook_secret: !!row.webhook_secret_enc,
+      last_webhook_at: row.last_webhook_at || null,
+      last_webhook_event: row.last_webhook_event || null,
+      snapshots_refreshed_at: row.snapshots_refreshed_at || null,
       kms_available: kms.isAvailable(),
       updated_at: row.updated_at || null,
       _apiKey: apiKey,
+      _webhookSecret: webhookSecret,
     };
     _settingsAt = now;
   }
-  return withKey ? { ..._settings } : { ..._settings, _apiKey: null };
+  return withKey ? { ..._settings } : { ..._settings, _apiKey: null, _webhookSecret: null };
 }
 
 async function patchSettings(partial) {
@@ -162,6 +178,51 @@ async function setApiKey(plaintext) {
   // A new key is a fresh start; the next test records its own outcome.
   await pool.query(`UPDATE trove_kb_settings SET api_key_enc = $1, last_error = NULL, updated_at = NOW() WHERE id = 1`, [enc]);
   invalidateCache();
+}
+
+// The webhook signing secret, generated here or pasted from Trove KB.
+async function setWebhookSecret(plaintext) {
+  await pool.query(`INSERT INTO trove_kb_settings (id) VALUES (1) ON CONFLICT DO NOTHING`);
+  if (plaintext == null || String(plaintext).trim() === '') {
+    await pool.query(`UPDATE trove_kb_settings SET webhook_secret_enc = NULL, updated_at = NOW() WHERE id = 1`);
+    invalidateCache();
+    return;
+  }
+  if (!kms.isAvailable()) throw httpError(400, 'RESOLVD_MASTER_KEY not configured — the webhook secret cannot be stored until it is.');
+  const enc = await encrypt(Buffer.from(String(plaintext).trim(), 'utf8'), WEBHOOK_CTX);
+  await pool.query(`UPDATE trove_kb_settings SET webhook_secret_enc = $1, updated_at = NOW() WHERE id = 1`, [enc]);
+  invalidateCache();
+}
+
+function generateWebhookSecret() {
+  return `whsec_${nodeCrypto.randomBytes(32).toString('base64url')}`;
+}
+
+// X-Trove-Signature: sha256=<hex hmac-sha256(secret, raw body)>. Constant
+// time; any malformed header is a rejection, never a throw.
+function verifyWebhookSignature(secret, rawBody, header) {
+  if (!secret || !header || typeof header !== 'string') return false;
+  const m = /^sha256=([0-9a-f]{64})$/i.exec(header.trim());
+  if (!m) return false;
+  const expected = nodeCrypto.createHmac('sha256', secret).update(rawBody).digest('hex');
+  const a = Buffer.from(m[1].toLowerCase(), 'hex');
+  const b = Buffer.from(expected, 'hex');
+  return a.length === b.length && nodeCrypto.timingSafeEqual(a, b);
+}
+
+// Drop everything cached about one article: its body and every search
+// result list (a search page may name it). Cheap; searches re-fill in 60 s anyway.
+function invalidateArticle(articleId) {
+  const id = String(articleId || '').toLowerCase();
+  for (const k of [..._results.keys()]) {
+    if (k === `article:${id}` || k.startsWith('search:')) _results.delete(k);
+  }
+  _collectionsCache = null;
+}
+
+async function recordWebhook(event) {
+  await pool.query(`UPDATE trove_kb_settings SET last_webhook_at = NOW(), last_webhook_event = $1 WHERE id = 1`, [String(event || '').slice(0, 80)]);
+  _settings = null;
 }
 
 async function recordOutcome(error) {
@@ -211,6 +272,18 @@ async function rest(path, { method = 'GET', body, settings } = {}) {
   if (res.status === 400) throw httpError(400, json?.error?.message || 'Trove KB rejected the request');
   if (!res.ok) throw httpError(502, json?.error?.message || `Trove KB answered HTTP ${res.status}`);
   return json;
+}
+
+// Ids of every collection the key can read, cached briefly, so a search
+// over "all mapped collections" can be one unfiltered call instead of a
+// fan-out when the mapping covers everything the key sees.
+let _collectionsCache = null;
+async function readableCollectionIds(settings) {
+  const now = Date.now();
+  if (_collectionsCache && now - _collectionsCache.at < 5 * 60 * 1000) return _collectionsCache.ids;
+  const ids = new Set((await listCollections({ settings })).map((c) => c.id));
+  _collectionsCache = { at: now, ids };
+  return ids;
 }
 
 const qs = (params) => {
@@ -375,6 +448,13 @@ async function searchOnce({ settings, query, limit, collectionId, kind, handler,
   const prefer = preferCollectionId && !collectionId
     && (vis.ids === null || vis.ids.includes(preferCollectionId)) ? preferCollectionId : null;
   if (prefer && Array.isArray(targets)) targets = [prefer, ...targets.filter((id) => id !== prefer)];
+  // Every readable collection is wanted: one call instead of a fan-out.
+  if (Array.isArray(targets) && !collectionId) {
+    try {
+      const all = await readableCollectionIds(settings);
+      if (all.size > 0 && all.size === targets.length && targets.every((id) => all.has(id))) targets = null;
+    } catch { /* fan out as before */ }
+  }
 
   const run = (cid) => cached(`search:${cid || '*'}:${kind || ''}:${lim}:${query}`, async () =>
     (await rest(`/kb/search${qs({ q: query, limit: lim, collection_id: cid, kind })}`, { settings }))?.data || []);
@@ -507,6 +587,11 @@ module.exports = {
   getSettings,
   patchSettings,
   setApiKey,
+  setWebhookSecret,
+  generateWebhookSecret,
+  verifyWebhookSignature,
+  invalidateArticle,
+  recordWebhook,
   testConnection,
   listCollections,
   visibleCollections,

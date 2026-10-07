@@ -233,6 +233,8 @@ function ConnectionPane({ settings, setSettings, patch, busy }) {
         )}
       </section>
 
+      <WebhookSection settings={settings} setSettings={setSettings} />
+
       <section className="bg-surface border border-border rounded-lg p-4 space-y-3">
         <h2 className="text-base font-semibold text-fg">Held-back articles</h2>
         <p className="text-xs text-fg-muted">
@@ -467,5 +469,110 @@ function Stat({ label, value, warn }) {
       <div className="text-[10px] uppercase tracking-wide text-fg-dim">{label}</div>
       <div className="text-base font-semibold text-fg font-mono">{value}</div>
     </div>
+  );
+}
+
+
+// Signed webhooks from Trove KB drop Resolvd's read cache the moment an
+// article changes. The secret is shown once when generated here; paste it
+// into Trove KB → Admin → Webhooks together with the endpoint URL.
+function WebhookSection({ settings, setSettings }) {
+  const [shown, setShown] = useState(null);
+  const [pasted, setPasted] = useState("");
+  const [busy, setBusy] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
+
+  async function generate() {
+    setBusy(true);
+    try {
+      const r = await api.post("/api/trove-kb-settings/webhook-secret", { generate: true });
+      setShown(r.secret);
+      setSettings((s) => ({ ...s, has_webhook_secret: r.has_webhook_secret }));
+    } catch (e) { toast.error(e.message); }
+    finally { setBusy(false); }
+  }
+  async function savePasted() {
+    if (!pasted.trim()) return;
+    setBusy(true);
+    try {
+      const r = await api.post("/api/trove-kb-settings/webhook-secret", { secret: pasted.trim() });
+      setSettings((s) => ({ ...s, has_webhook_secret: r.has_webhook_secret }));
+      setPasted(""); setShown(null);
+      toast.success("Webhook secret saved");
+    } catch (e) { toast.error(e.message); }
+    finally { setBusy(false); }
+  }
+  async function clear() {
+    if (!confirm("Remove the webhook secret? Deliveries from Trove KB will be rejected until a new one is saved.")) return;
+    try {
+      const r = await api.post("/api/trove-kb-settings/webhook-secret", { secret: "" });
+      setSettings((s) => ({ ...s, has_webhook_secret: r.has_webhook_secret }));
+      setShown(null);
+    } catch (e) { toast.error(e.message); }
+  }
+  async function refresh() {
+    setRefreshing(true);
+    try {
+      const r = await api.post("/api/trove-kb-settings/refresh-snapshots", {});
+      toast.success(r.skipped ? "Trove KB is off" : `${r.articles} articles checked, ${r.updated} rows updated${r.missing ? `, ${r.missing} missing` : ""}`);
+      setSettings(await api.get("/api/trove-kb-settings"));
+    } catch (e) { toast.error(e.message); }
+    finally { setRefreshing(false); }
+  }
+
+  return (
+    <section className="bg-surface border border-border rounded-lg p-4 space-y-3">
+      <h2 className="text-base font-semibold text-fg">Webhooks from Trove KB</h2>
+      <p className="text-xs text-fg-muted">
+        When an article is written or archived in Trove KB, Resolvd drops what it cached about it so tickets show the new version at once. Without this, changes appear within a minute anyway.
+      </p>
+      <div className="text-xs">
+        <span className="text-fg-muted">Endpoint to register in Trove KB → Admin → Webhooks:</span>
+        <div className="mt-1 flex items-center gap-2">
+          <code className="bg-surface-2 border border-border rounded px-2 py-1 font-mono">{settings.webhook_url}</code>
+          <button type="button" onClick={() => navigator.clipboard?.writeText(settings.webhook_url).then(() => toast.success("Copied")).catch(() => {})} className="text-brand hover:underline">Copy</button>
+        </div>
+        <div className="text-fg-dim mt-1">Events: <code>kb.article.upserted</code>, <code>kb.article.archived</code></div>
+      </div>
+
+      {shown ? (
+        <div className="rounded-md border border-amber-400/60 bg-amber-50 dark:bg-amber-900/20 px-3 py-2 text-xs space-y-1">
+          <div className="font-medium text-amber-900 dark:text-amber-200">New secret — shown once. Paste it into the Trove KB webhook now.</div>
+          <div className="flex items-center gap-2">
+            <code className="font-mono break-all">{shown}</code>
+            <button type="button" onClick={() => navigator.clipboard?.writeText(shown).then(() => toast.success("Copied")).catch(() => {})} className="text-brand hover:underline whitespace-nowrap">Copy</button>
+          </div>
+          <button type="button" onClick={() => setShown(null)} className="text-amber-900 dark:text-amber-200 hover:underline">I have saved it</button>
+        </div>
+      ) : (
+        <div className="flex flex-wrap items-center gap-2 text-xs">
+          <span className={settings.has_webhook_secret ? "text-emerald-600 dark:text-emerald-300" : "text-fg-dim"}>
+            {settings.has_webhook_secret ? "Secret saved." : "No secret yet."}
+          </span>
+          {settings.last_webhook_at && (
+            <span className="text-fg-dim">Last delivery {new Date(settings.last_webhook_at).toLocaleString()} ({settings.last_webhook_event})</span>
+          )}
+          <button onClick={generate} disabled={busy || !settings.kms_available} className="btn btn-primary btn-sm">{settings.has_webhook_secret ? "Rotate secret" : "Generate secret"}</button>
+          {settings.has_webhook_secret && <button onClick={clear} className="text-red-600 hover:underline">Remove</button>}
+        </div>
+      )}
+
+      <div className="flex flex-wrap items-center gap-2">
+        <input
+          type="password"
+          value={pasted}
+          onChange={(e) => setPasted(e.target.value)}
+          placeholder="…or paste a secret issued by Trove KB"
+          autoComplete="off"
+          className="flex-1 min-w-[220px] bg-surface-2 border border-border rounded px-2 py-1.5 text-sm font-mono"
+        />
+        <button onClick={savePasted} disabled={busy || !pasted.trim() || !settings.kms_available} className="btn btn-secondary btn-sm">Save pasted secret</button>
+      </div>
+
+      <div className="border-t border-border pt-3 flex flex-wrap items-center gap-2 text-xs">
+        <span className="text-fg-muted">Snapshots of linked article titles refresh nightly{settings.snapshots_refreshed_at ? `; last ${new Date(settings.snapshots_refreshed_at).toLocaleString()}` : ""}.</span>
+        <button onClick={refresh} disabled={refreshing} className="btn btn-secondary btn-sm">{refreshing ? "Refreshing…" : "Refresh now"}</button>
+      </div>
+    </section>
   );
 }
