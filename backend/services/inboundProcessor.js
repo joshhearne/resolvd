@@ -35,6 +35,7 @@ const {
   applyVendorReplyStatus,
   getReplyRoutingSettings,
   detectOutOfOffice,
+  detectSystemNotice,
 } = require('./autoResolve');
 const tpl = require('./emailTemplate');
 const { sendMail } = require('./email');
@@ -997,11 +998,15 @@ async function tryAutoReply({ candidateRef, subject, body, fromAddress, queueRow
   // subject points at the right thread. Land it there as a passive
   // muted comment with all notifications/status changes suppressed.
   const ooo = routing.suppress_ooo && detectOutOfOffice({ subject, body });
+  // Our own notification mail looping back (SLA warnings/breaches). It is
+  // recorded as a system notice, never as somebody's reply: no author,
+  // muted, no fanout, no status change.
+  const notice = detectSystemNotice({ subject, body, fromAddress });
 
   const sender = await resolveReplySender({
     ticketId: ticket.id, submitterId: ticket.submitted_by, fromAddress,
   });
-  if (!sender && !ooo) return { ok: false, reason: 'sender_not_on_ticket' };
+  if (!sender && !ooo && !notice) return { ok: false, reason: 'sender_not_on_ticket' };
 
   await decryptRow('tickets', ticket).catch(() => {});
 
@@ -1015,7 +1020,7 @@ async function tryAutoReply({ candidateRef, subject, body, fromAddress, queueRow
     name: contactName, email: contactEmail,
   }) || '(no body)';
 
-  const oooSuppressed = !!ooo;
+  const oooSuppressed = !!ooo || !!notice;
 
   // Comment author. Vendor contact replies are stamped to the submitter
   // (we don't write comments under a contact id). Internal user replies
@@ -1034,15 +1039,16 @@ async function tryAutoReply({ candidateRef, subject, body, fromAddress, queueRow
   // in the thread, still mutes, still audits — just doesn't ride the
   // daily summary.
   const cols = ['ticket_id', 'user_id', 'is_external_visible', 'is_internal',
-    'is_muted', 'vendor_contact_id', 'source_inbound_email_id', 'digested_at',
+    'is_muted', 'vendor_contact_id', 'source_inbound_email_id', 'digested_at', 'is_system',
     ...patch.cols];
   const values = [
-    ticket.id, authorUserId,
+    ticket.id, notice ? null : authorUserId,
     sender?.kind === 'contact' && !oooSuppressed, // external-visible only for non-OOO vendor replies
     sender?.kind !== 'contact' || oooSuppressed,  // internal-only otherwise
     oooSuppressed,
-    vendorContactId, queueRowId || null,
+    notice ? null : vendorContactId, queueRowId || null,
     oooSuppressed ? new Date() : null,
+    !!notice,
     ...patch.values,
   ];
   const placeholders = cols.map((_, i) => `$${i + 1}`).join(', ');
@@ -1052,12 +1058,14 @@ async function tryAutoReply({ candidateRef, subject, body, fromAddress, queueRow
   );
   const commentId = ins.rows[0].id;
   await pool.query(`UPDATE tickets SET updated_at = NOW() WHERE id = $1`, [ticket.id]);
-  const auditNote = oooSuppressed
+  const auditNote = notice
+    ? `System notice (${notice}) received by email from ${fromAddress} — stored as a system comment, notifications suppressed`
+    : oooSuppressed
     ? `OOO auto-reply from ${fromAddress} — comment muted, status + notifications suppressed`
     : (sender?.kind === 'contact'
         ? `Vendor reply from ${fromAddress}`
         : `Internal-user reply from ${fromAddress}`);
-  const auditAction = oooSuppressed ? 'ooo_reply_suppressed' : 'comment_appended_via_email';
+  const auditAction = notice ? 'system_notice_via_email' : oooSuppressed ? 'ooo_reply_suppressed' : 'comment_appended_via_email';
   await pool.query(
     `INSERT INTO audit_log (ticket_id, user_id, action, note)
      VALUES ($1, $2, $3, $4)`,

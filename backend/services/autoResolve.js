@@ -100,6 +100,27 @@ const OOO_BODY_RES = [
   /\bback\s+(?:in\s+(?:the\s+)?office\s+)?on\b/i,
 ];
 
+// Resolvd's own notification emails (SLA warnings and breaches, and any
+// other alert the fanout sends) sometimes come back through the inbound
+// mailbox: a follower's mailbox forwards them, or the help desk address
+// is itself a follower. They are not replies. Detected by the subject
+// and body shapes the fanout writes, and by our own sender address, so
+// they land as system notices rather than as a person's comment.
+const SYSTEM_NOTICE_PATTERNS = [
+  /^\s*(?:\[[A-Z0-9]+-\d+\]\s*)?SLA\s+(warning|breach)\s*:/im,          // "[INC-0528] SLA breach: resolve window missed"
+  /^\s*(?:\[[A-Z0-9]+-\d+\]\s*)?(Response|Resolve)\s+SLA\s+breached\b/im,
+  /^\s*(?:\[[A-Z0-9]+-\d+\]\s*)?(Response|Resolve)\s+window\s+closing\b/im,
+  /^\s*(?:\[[A-Z0-9]+-\d+\]\s*)?(No response within target|Resolve target missed)\b/im,
+];
+function detectSystemNotice({ subject, body, fromAddress } = {}) {
+  const text = `${subject || ''}\n${String(body || '').slice(0, 600)}`;
+  for (const re of SYSTEM_NOTICE_PATTERNS) if (re.test(text)) return 'sla';
+  const ours = String(process.env.MAIL_FROM || '').trim().toLowerCase();
+  const from = String(fromAddress || '').trim().toLowerCase();
+  if (ours && from && from === ours && /resolvd|\[[A-Z0-9]+-\d+\]/i.test(text)) return 'notification';
+  return null;
+}
+
 function detectOutOfOffice({ subject, body } = {}) {
   if (!subject && !body) return false;
   const subj = String(subject || '');
@@ -355,5 +376,4 @@ module.exports = {
   applyVendorReplyStatus,
   applyReplyToResolvedTicket,
   applyReplyToWaitingTicket,
-  applyCommentToTerminalTicket,
-};
+  applyCommentToTerminalTicket, detectSystemNotice, SYSTEM_NOTICE_PATTERNS };
