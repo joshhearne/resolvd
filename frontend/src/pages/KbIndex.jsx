@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
+import ViewToggle, { useViewMode } from "../components/ViewToggle";
 
 export default function KbIndex() {
   const [projects, setProjects] = useState([]);
@@ -13,6 +14,7 @@ export default function KbIndex() {
   const [collectionId, setCollectionId] = useState(params.get("collection") || "");
   const [hits, setHits] = useState(null);
   const [searching, setSearching] = useState(false);
+  const [view, setView] = useViewMode("kb-collections", "cards");
 
   useEffect(() => {
     api.get("/api/trove-kb/status")
@@ -142,7 +144,26 @@ export default function KbIndex() {
 
       {troveKb?.has_visible && !hits && collections.length > 0 && (
         <section className="space-y-3">
-          <h2 className="text-sm font-semibold text-fg-muted uppercase tracking-wide">Collections</h2>
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-fg-muted uppercase tracking-wide">Collections</h2>
+            <ViewToggle mode={view} onChange={setView} />
+          </div>
+          {view === "list" ? (
+            <ul className="rounded-lg border border-border bg-surface divide-y divide-border">
+              {collections.map((c) => (
+                <li key={c.id}>
+                  <Link to={`/kb/collection/${c.id}`} className="flex items-center gap-3 px-4 py-3 hover:bg-surface-2 group">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium text-fg group-hover:text-accent truncate">{c.name}</div>
+                      {c.description && <div className="text-xs text-fg-muted truncate">{c.description}</div>}
+                    </div>
+                    <span className={`flex-shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded ${c.scope === "public" ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-300" : "bg-brand/10 text-brand"}`}>{c.scope === "public" ? "Public" : "Internal"}</span>
+                    {c.articles != null && <span className="flex-shrink-0 w-16 text-right text-xs font-mono text-fg-muted">{c.articles}</span>}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          ) : (
           <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
             {collections.map((c) => (
               <Link
@@ -162,6 +183,7 @@ export default function KbIndex() {
               </Link>
             ))}
           </div>
+          )}
         </section>
       )}
 

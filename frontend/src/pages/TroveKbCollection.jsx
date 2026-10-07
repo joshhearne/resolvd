@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { Link, useParams, useSearchParams } from "react-router-dom";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
+import ViewToggle, { useViewMode } from "../components/ViewToggle";
 
 // Browse one Trove KB collection: categories (with subcategories and
 // counts) on the left, the articles of the chosen category on the right,
@@ -27,6 +28,7 @@ export default function TroveKbCollection() {
   const [searching, setSearching] = useState(false);
   const [qInput, setQInput] = useState(q);
   const [railOpen, setRailOpen] = useState(false);
+  const [view, setView] = useViewMode("kb-articles", "list");
 
   useEffect(() => {
     setError(null);
@@ -158,6 +160,7 @@ export default function TroveKbCollection() {
               </select>
             )}
             {selected && <span className="text-fg-dim">{selected.articles} in {selected.category || "Uncategorized"}</span>}
+            <ViewToggle mode={view} onChange={setView} className="ml-auto" />
           </div>
           {railOpen && <div className="lg:hidden rounded-lg border border-border bg-surface p-2">{rail}</div>}
 
@@ -165,13 +168,13 @@ export default function TroveKbCollection() {
             <div className="rounded-lg border border-border bg-surface">
               {searching ? <div className="p-4 text-sm text-fg-muted">Searching…</div>
                 : !hits || hits.length === 0 ? <div className="p-6 text-sm text-fg-dim italic">No articles matched “{q}”.</div>
-                : <ul className="divide-y divide-border">{hits.map((h) => <Row key={h.article_id} a={h} snippet />)}</ul>}
+                : <Items items={hits} view={view} snippet />}
             </div>
           ) : (
             <div className="rounded-lg border border-border bg-surface">
               {loading ? <div className="p-4 text-sm text-fg-muted">Loading…</div>
                 : articles.length === 0 ? <div className="p-6 text-sm text-fg-dim italic">Nothing here.</div>
-                : <ul className="divide-y divide-border">{articles.map((a) => <Row key={a.article_id} a={a} />)}</ul>}
+                : <Items items={articles} view={view} />}
               {cursor && !loading && (
                 <div className="p-3 border-t border-border text-center">
                   <button onClick={loadMore} disabled={more} className="btn btn-secondary btn-sm">{more ? "Loading…" : "Load more"}</button>
@@ -183,6 +186,27 @@ export default function TroveKbCollection() {
       </div>
     </div>
   );
+}
+
+function Items({ items, view, snippet = false }) {
+  if (view === "cards") {
+    return (
+      <div className="grid sm:grid-cols-2 xl:grid-cols-3 gap-3 p-3">
+        {items.map((a) => (
+          <Link key={a.article_id} to={`/kb/article/${a.article_id}`} className="block rounded-lg border border-border bg-surface-2/40 hover:bg-surface-2 hover:border-accent/40 transition-colors p-4 group">
+            <div className="flex items-start gap-2">
+              <div className="text-sm font-medium text-fg group-hover:text-accent line-clamp-2 flex-1">{a.title}</div>
+              {a.kind === "runbook" && <span className="flex-shrink-0 text-[9px] uppercase px-1 rounded bg-brand/10 text-brand">Runbook</span>}
+            </div>
+            <div className="text-[11px] text-fg-dim mt-1 truncate">{[a.category, a.subcategory].filter(Boolean).join(" · ")}</div>
+            {snippet && a.snippet && <p className="text-xs text-fg-muted mt-2 line-clamp-3">{a.snippet}</p>}
+            {a.date_modified && <div className="text-[11px] text-fg-dim mt-2">{new Date(a.date_modified).toLocaleDateString()}</div>}
+          </Link>
+        ))}
+      </div>
+    );
+  }
+  return <ul className="divide-y divide-border">{items.map((a) => <Row key={a.article_id} a={a} snippet={snippet} />)}</ul>;
 }
 
 function Row({ a, snippet = false }) {
