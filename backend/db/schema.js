@@ -3014,16 +3014,41 @@ Thanks,
     await client.query(`ALTER TABLE auto_resolve_settings ADD COLUMN IF NOT EXISTS reply_stale_days INTEGER NOT NULL DEFAULT 30`);
     await client.query(`ALTER TABLE auto_resolve_settings ADD COLUMN IF NOT EXISTS suppress_ooo_replies BOOLEAN NOT NULL DEFAULT TRUE`);
 
-    // ── Bothy (external knowledge base) ──────────────────────────────────
-    // Bothy (bothy.gomotx.com) is the company documentation platform.
+    // ── Trove KB (external knowledge base) ──────────────────────────────────
+    // Trove KB (trove-kb.gomotx.com) is the company documentation platform.
     // Resolvd reads articles from it with ONE API key and enforces who
     // sees what on its own side: handlers (Admin/Manager/Tech or project
     // handlers) see internal + public collections, everyone else public
-    // only. Collection ids are Bothy UUIDs; names are a display snapshot
+    // only. Collection ids are Trove KB UUIDs; names are a display snapshot
     // refreshed on every successful "test connection". Key is encrypted
     // under RESOLVD_MASTER_KEY like ai_settings.org_api_key_enc.
+    // Renamed from "Bothy" (the product's old name) on 2026-10-07. Rename in
+    // place so a deployment that still has the old tables keeps its rows;
+    // a fresh install never sees the old names. Idempotent.
     await client.query(`
-      CREATE TABLE IF NOT EXISTS bothy_settings (
+      DO $$
+      BEGIN
+        IF to_regclass('public.bothy_settings') IS NOT NULL AND to_regclass('public.trove_kb_settings') IS NULL THEN
+          ALTER TABLE bothy_settings RENAME TO trove_kb_settings;
+        END IF;
+        IF to_regclass('public.ticket_bothy_links') IS NOT NULL AND to_regclass('public.ticket_trove_kb_links') IS NULL THEN
+          ALTER TABLE ticket_bothy_links RENAME TO ticket_trove_kb_links;
+        END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'ticket_runbook_runs' AND column_name = 'bothy_article_id') THEN
+          ALTER TABLE ticket_runbook_runs RENAME COLUMN bothy_article_id TO trove_kb_article_id;
+        END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'ticket_runbook_runs' AND column_name = 'bothy_title') THEN
+          ALTER TABLE ticket_runbook_runs RENAME COLUMN bothy_title TO trove_kb_title;
+        END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'projects' AND column_name = 'bothy_collection_id') THEN
+          ALTER TABLE projects RENAME COLUMN bothy_collection_id TO trove_kb_collection_id;
+        END IF;
+        ALTER INDEX IF EXISTS idx_ticket_bothy_links_article RENAME TO idx_ticket_trove_kb_links_article;
+        ALTER INDEX IF EXISTS idx_ticket_runbook_runs_bothy RENAME TO idx_ticket_runbook_runs_trove_kb;
+      END $$
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS trove_kb_settings (
         id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
         enabled BOOLEAN NOT NULL DEFAULT FALSE,
         base_url TEXT,
@@ -3038,24 +3063,24 @@ Thanks,
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
-    await client.query(`INSERT INTO bothy_settings (id) VALUES (1) ON CONFLICT DO NOTHING`);
-    // Non-handlers only see articles Bothy marks public (held-back articles stay hidden).
-    await client.query(`ALTER TABLE bothy_settings ADD COLUMN IF NOT EXISTS public_strict BOOLEAN NOT NULL DEFAULT TRUE`);
+    await client.query(`INSERT INTO trove_kb_settings (id) VALUES (1) ON CONFLICT DO NOTHING`);
+    // Non-handlers only see articles Trove KB marks public (held-back articles stay hidden).
+    await client.query(`ALTER TABLE trove_kb_settings ADD COLUMN IF NOT EXISTS public_strict BOOLEAN NOT NULL DEFAULT TRUE`);
     // The built-in per-project KB stays on until "Replace local knowledge base" runs.
-    await client.query(`ALTER TABLE bothy_settings ADD COLUMN IF NOT EXISTS local_kb_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
-    // Runbook runs can point at a Bothy runbook (uuid) instead of a local
-    // article. step_states is then keyed by Bothy step id.
-    await client.query(`ALTER TABLE ticket_runbook_runs ADD COLUMN IF NOT EXISTS bothy_article_id UUID`);
+    await client.query(`ALTER TABLE trove_kb_settings ADD COLUMN IF NOT EXISTS local_kb_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
+    // Runbook runs can point at a Trove KB runbook (uuid) instead of a local
+    // article. step_states is then keyed by Trove KB step id.
+    await client.query(`ALTER TABLE ticket_runbook_runs ADD COLUMN IF NOT EXISTS trove_kb_article_id UUID`);
     await client.query(`ALTER TABLE ticket_runbook_runs ALTER COLUMN article_id DROP NOT NULL`);
-    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ticket_runbook_runs_bothy ON ticket_runbook_runs(ticket_id, bothy_article_id) WHERE bothy_article_id IS NOT NULL`);
-    await client.query(`ALTER TABLE ticket_runbook_runs ADD COLUMN IF NOT EXISTS bothy_title TEXT`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ticket_runbook_runs_trove_kb ON ticket_runbook_runs(ticket_id, trove_kb_article_id) WHERE trove_kb_article_id IS NOT NULL`);
+    await client.query(`ALTER TABLE ticket_runbook_runs ADD COLUMN IF NOT EXISTS trove_kb_title TEXT`);
 
-    // Ticket -> Bothy article junction. Separate from ticket_kb_links
+    // Ticket -> Trove KB article junction. Separate from ticket_kb_links
     // (local articles, integer ids) so the local KB keeps working until
     // its content has moved. title/collection_name are snapshots so a
-    // ticket still shows what it was linked to when Bothy is unreachable.
+    // ticket still shows what it was linked to when Trove KB is unreachable.
     await client.query(`
-      CREATE TABLE IF NOT EXISTS ticket_bothy_links (
+      CREATE TABLE IF NOT EXISTS ticket_trove_kb_links (
         ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
         article_id UUID NOT NULL,
         title TEXT NOT NULL,
@@ -3068,16 +3093,16 @@ Thanks,
         PRIMARY KEY (ticket_id, article_id)
       )
     `);
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_bothy_links_article ON ticket_bothy_links(article_id)`);
-    // A project's home collection in Bothy: suggestions search it first,
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_trove_kb_links_article ON ticket_trove_kb_links(article_id)`);
+    // A project's home collection in Trove KB: suggestions search it first,
     // resolution drafts prefer it, and (later) promote-to-KB writes to it.
-    await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS bothy_collection_id UUID`);
+    await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS trove_kb_collection_id UUID`);
 
     // Knowledge briefs: the audited inputs behind an assisted response.
     // One row per "scope with knowledge" run on a ticket: what the user
     // reported (trusted), the tech's draft (trusted), corrections the
     // tech added (the tribal knowledge the user left out), the project
-    // context in force, the Bothy articles included/excluded, and what
+    // context in force, the Trove KB articles included/excluded, and what
     // was produced (extractive or AI). This is where a poorly scoped
     // prompt gets fixed and where that fix is reviewable afterwards.
     await client.query(`

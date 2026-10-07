@@ -160,8 +160,8 @@ app.use('/api/ai', aiAssistRoutes);
 app.use('/api/ai-settings', aiSettingsRoutes);
 app.use('/api/security', securityRoutes);
 app.use('/api/kb', kbRoutes);
-app.use('/api/bothy', require('./routes/bothy'));
-app.use('/api/bothy-settings', require('./routes/bothySettings'));
+app.use('/api/trove-kb', require('./routes/troveKb'));
+app.use('/api/trove-kb-settings', require('./routes/troveKbSettings'));
 app.use('/api/ticket-schedules', require('./routes/ticketSchedules'));
 app.use('/api/tasks', require('./routes/tasks'));
 

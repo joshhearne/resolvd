@@ -4,16 +4,16 @@ import toast from "react-hot-toast";
 import { api } from "../utils/api";
 import MarkdownContent from "./MarkdownContent";
 
-// Runbooks from Bothy on a ticket. Steps come live from Bothy; checkbox
-// state lives in Resolvd per (ticket, runbook), keyed by Bothy step id.
+// Runbooks from Trove KB on a ticket. Steps come live from Trove KB; checkbox
+// state lives in Resolvd per (ticket, runbook), keyed by Trove KB step id.
 // A step's `canned` (from "@canned:[Name]" in its text) becomes a pill
 // that renders the canned response into the comment composer.
-//   GET    /api/bothy/runbooks?project_id=
-//   GET    /api/bothy/tickets/:id/runbook-runs
-//   POST   /api/bothy/tickets/:id/runbook-runs { article_id }
-//   PATCH  /api/bothy/tickets/:id/runbook-runs/:articleId { step_states | completed }
-//   DELETE /api/bothy/tickets/:id/runbook-runs/:articleId
-export default function BothyRunbookPanel({ ticket, user, onApplyCanned }) {
+//   GET    /api/trove-kb/runbooks?project_id=
+//   GET    /api/trove-kb/tickets/:id/runbook-runs
+//   POST   /api/trove-kb/tickets/:id/runbook-runs { article_id }
+//   PATCH  /api/trove-kb/tickets/:id/runbook-runs/:articleId { step_states | completed }
+//   DELETE /api/trove-kb/tickets/:id/runbook-runs/:articleId
+export default function TroveKbRunbookPanel({ ticket, user, onApplyCanned }) {
   const [enabled, setEnabled] = useState(null);
   const [runs, setRuns] = useState([]);
   const [runbooks, setRunbooks] = useState([]);
@@ -22,16 +22,16 @@ export default function BothyRunbookPanel({ ticket, user, onApplyCanned }) {
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    api.get("/api/bothy/status").then((s) => setEnabled(!!s.enabled)).catch(() => setEnabled(false));
+    api.get("/api/trove-kb/status").then((s) => setEnabled(!!s.enabled)).catch(() => setEnabled(false));
   }, []);
 
   async function load() {
-    try { setRuns(await api.get(`/api/bothy/tickets/${ticket.id}/runbook-runs`)); } catch { setRuns([]); }
+    try { setRuns(await api.get(`/api/trove-kb/tickets/${ticket.id}/runbook-runs`)); } catch { setRuns([]); }
   }
   useEffect(() => {
     if (!enabled) return;
     load();
-    api.get(`/api/bothy/runbooks?project_id=${ticket.project_id}`).then(setRunbooks).catch(() => setRunbooks([]));
+    api.get(`/api/trove-kb/runbooks?project_id=${ticket.project_id}`).then(setRunbooks).catch(() => setRunbooks([]));
     api.get(`/api/canned-responses?project_id=${ticket.project_id}`).then((r) => setCanned(Array.isArray(r) ? r : [])).catch(() => setCanned([]));
   }, [enabled, ticket.id, ticket.project_id]); // eslint-disable-line react-hooks/exhaustive-deps
 
@@ -41,7 +41,7 @@ export default function BothyRunbookPanel({ ticket, user, onApplyCanned }) {
     if (!articleId) return;
     setBusy(true);
     try {
-      await api.post(`/api/bothy/tickets/${ticket.id}/runbook-runs`, { article_id: articleId });
+      await api.post(`/api/trove-kb/tickets/${ticket.id}/runbook-runs`, { article_id: articleId });
       setPick("");
       await load();
     } catch (e) { toast.error(e.message); }
@@ -52,13 +52,13 @@ export default function BothyRunbookPanel({ ticket, user, onApplyCanned }) {
     setRuns((all) => all.map((r) => (r.id === run.id ? { ...r, step_states: { ...(r.step_states || {}), ...next } } : r)));
     try {
       const allChecked = (run.steps || []).every((s) => (s.id === stepId ? checked : run.step_states?.[s.id]?.checked));
-      await api.patch(`/api/bothy/tickets/${ticket.id}/runbook-runs/${run.bothy_article_id}`, { step_states: next, completed: allChecked });
+      await api.patch(`/api/trove-kb/tickets/${ticket.id}/runbook-runs/${run.trove_kb_article_id}`, { step_states: next, completed: allChecked });
       if (allChecked) await load();
     } catch (e) { toast.error(e.message); await load(); }
   }
   async function reset(run) {
     if (!confirm("Reset this runbook's progress on this ticket?")) return;
-    try { await api.delete(`/api/bothy/tickets/${ticket.id}/runbook-runs/${run.bothy_article_id}`); await load(); }
+    try { await api.delete(`/api/trove-kb/tickets/${ticket.id}/runbook-runs/${run.trove_kb_article_id}`); await load(); }
     catch (e) { toast.error(e.message); }
   }
   async function applyCanned(c) {
@@ -71,14 +71,14 @@ export default function BothyRunbookPanel({ ticket, user, onApplyCanned }) {
 
   if (!enabled) return null;
 
-  const available = runbooks.filter((rb) => !runs.some((r) => r.bothy_article_id === rb.article_id));
+  const available = runbooks.filter((rb) => !runs.some((r) => r.trove_kb_article_id === rb.article_id));
   const home = available.filter((rb) => rb.home);
   const others = available.filter((rb) => !rb.home);
 
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap items-center gap-2">
-        <div className="text-xs font-semibold uppercase tracking-wide text-fg">Runbooks <span className="text-fg-muted normal-case tracking-normal font-normal">from Bothy</span></div>
+        <div className="text-xs font-semibold uppercase tracking-wide text-fg">Runbooks <span className="text-fg-muted normal-case tracking-normal font-normal">from Trove KB</span></div>
         {available.length > 0 && (
           <div className="ml-auto flex items-center gap-2">
             <select value={pick} onChange={(e) => setPick(e.target.value)} className="bg-surface-2 border border-border rounded px-2 py-1 text-xs max-w-[320px]">
@@ -91,7 +91,7 @@ export default function BothyRunbookPanel({ ticket, user, onApplyCanned }) {
         )}
       </div>
 
-      {runs.length === 0 && <div className="text-xs text-fg-dim italic">No Bothy runbook running on this ticket.</div>}
+      {runs.length === 0 && <div className="text-xs text-fg-dim italic">No Trove KB runbook running on this ticket.</div>}
 
       {runs.map((run) => {
         const steps = run.steps || [];
@@ -99,12 +99,12 @@ export default function BothyRunbookPanel({ ticket, user, onApplyCanned }) {
         return (
           <div key={run.id} className="bg-surface border border-border rounded-lg p-3 space-y-2">
             <div className="flex flex-wrap items-center gap-2">
-              <Link to={`/kb/article/${run.bothy_article_id}?ticket=${ticket.id}`} className="text-sm font-medium text-fg hover:text-accent">{run.title}</Link>
+              <Link to={`/kb/article/${run.trove_kb_article_id}?ticket=${ticket.id}`} className="text-sm font-medium text-fg hover:text-accent">{run.title}</Link>
               {run.collection_name && <span className="text-[10px] text-fg-dim">{run.collection_name}</span>}
               <span className={`ml-auto text-[11px] font-mono ${run.completed_at ? "text-emerald-600 dark:text-emerald-300" : "text-fg-muted"}`}>{done}/{steps.length}{run.completed_at ? " · complete" : ""}</span>
               <button onClick={() => reset(run)} className="text-[11px] text-fg-dim hover:text-red-500" title="Reset progress">reset</button>
             </div>
-            {run.unavailable && <div className="text-xs text-amber-500">This runbook is no longer readable in Bothy.</div>}
+            {run.unavailable && <div className="text-xs text-amber-500">This runbook is no longer readable in Trove KB.</div>}
             <ol className="space-y-1.5">
               {steps.map((s, i) => {
                 const st = run.step_states?.[s.id];

@@ -9,7 +9,7 @@ import MarkdownContent from "./MarkdownContent";
 // Left: the inputs, all editable, all scrollable. What the user reported
 // (trusted), what the team already said, the tech's draft (trusted), the
 // tech's corrections (what the user left out), the project context in
-// force, and the Bothy articles that matched with include/exclude + a
+// force, and the Trove KB articles that matched with include/exclude + a
 // per-article note. Right: the output. "Build" composes with no AI
 // (default). "Rewrite with AI" sends the curated brief to the provider.
 // Both yield a Reply (for the user) and a Resolution (internal record).
@@ -27,7 +27,7 @@ export default function AssistBriefModal({ open, onClose, ticketId, draft, aiAva
     if (!open) return;
     setResult(null); setError(null); setSearch(""); setSearchHits([]);
     setLoading(true);
-    api.post(`/api/bothy/tickets/${ticketId}/assist/brief`, { draft })
+    api.post(`/api/trove-kb/tickets/${ticketId}/assist/brief`, { draft })
       .then(setBrief)
       .catch((e) => setError(e.message || "Could not build the brief"))
       .finally(() => setLoading(false));
@@ -45,7 +45,7 @@ export default function AssistBriefModal({ open, onClose, ticketId, draft, aiAva
     let cancelled = false;
     const t = setTimeout(async () => {
       try {
-        const r = await api.get(`/api/bothy/search?q=${encodeURIComponent(search.trim())}&limit=8`);
+        const r = await api.get(`/api/trove-kb/search?q=${encodeURIComponent(search.trim())}&limit=8`);
         if (!cancelled) setSearchHits(r.filter((h) => !brief?.articles?.some((a) => a.article_id === h.article_id)));
       } catch { if (!cancelled) setSearchHits([]); }
     }, 250);
@@ -72,7 +72,7 @@ export default function AssistBriefModal({ open, onClose, ticketId, draft, aiAva
     setComposing(true);
     setResult(null);
     try {
-      const r = await api.post(`/api/bothy/tickets/${ticketId}/assist/compose`, { brief, ai });
+      const r = await api.post(`/api/trove-kb/tickets/${ticketId}/assist/compose`, { brief, ai });
       setResult(r);
       if (r.ai?.note) toast(r.ai.note, { icon: "ℹ️" });
       else toast.success(r.mode === "ai" ? "Rewritten with AI" : "Built from the brief");
@@ -190,8 +190,8 @@ export default function AssistBriefModal({ open, onClose, ticketId, draft, aiAva
 
               <div className={section}>
                 <div className={label}><span>Documentation that matched</span><span className="normal-case tracking-normal font-normal">{includedCount} included</span></div>
-                {!brief.bothy_enabled && <div className="text-[11px] text-amber-500">Bothy is not connected; no articles available.</div>}
-                {brief.articles.length === 0 && brief.bothy_enabled && <div className="text-[11px] text-fg-dim italic">Nothing matched the title or your draft. Search below to add articles.</div>}
+                {!brief.troveKb_enabled && <div className="text-[11px] text-amber-500">Trove KB is not connected; no articles available.</div>}
+                {brief.articles.length === 0 && brief.troveKb_enabled && <div className="text-[11px] text-fg-dim italic">Nothing matched the title or your draft. Search below to add articles.</div>}
                 {brief.articles.map((a) => (
                   <div key={a.article_id} className={`rounded border p-2 space-y-1 ${a.included ? "border-brand/40 bg-brand/5" : "border-border opacity-70"}`}>
                     <div className="flex items-start gap-2">
@@ -215,9 +215,9 @@ export default function AssistBriefModal({ open, onClose, ticketId, draft, aiAva
                     )}
                   </div>
                 ))}
-                {brief.bothy_enabled && (
+                {brief.troveKb_enabled && (
                   <div className="relative">
-                    <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search Bothy to add an article…" className={ta} />
+                    <input value={search} onChange={(e) => setSearch(e.target.value)} placeholder="Search Trove KB to add an article…" className={ta} />
                     {searchHits.length > 0 && (
                       <div className="absolute z-20 left-0 right-0 mt-1 bg-surface border border-border rounded-md shadow-lg max-h-56 overflow-y-auto">
                         {searchHits.map((h) => (

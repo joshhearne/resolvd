@@ -1,14 +1,14 @@
-// Admin-only Bothy integration settings.
-//   GET    /api/bothy-settings              — singleton (no key plaintext)
-//   PATCH  /api/bothy-settings              — urls, toggles, collection mapping
-//   POST   /api/bothy-settings/api-key      — set/clear the Bothy API key
-//   POST   /api/bothy-settings/test         — list collections through the key, record outcome
-//   GET    /api/bothy-settings/collections  — live collection list (mapping UI)
+// Admin-only Trove KB integration settings.
+//   GET    /api/trove-kb-settings              — singleton (no key plaintext)
+//   PATCH  /api/trove-kb-settings              — urls, toggles, collection mapping
+//   POST   /api/trove-kb-settings/api-key      — set/clear the Trove KB API key
+//   POST   /api/trove-kb-settings/test         — list collections through the key, record outcome
+//   GET    /api/trove-kb-settings/collections  — live collection list (mapping UI)
 
 const express = require('express');
 const { requireAuth, requireRole } = require('../middleware/auth');
-const bothy = require('../services/bothy');
-const migration = require('../services/bothyMigration');
+const troveKb = require('../services/troveKb');
+const migration = require('../services/troveKbMigration');
 
 const router = express.Router();
 router.use(requireAuth, requireRole('Admin'));
@@ -35,39 +35,39 @@ function present(s) {
 
 function fail(res, err, label) {
   if (err.httpStatus) return res.status(err.httpStatus).json({ error: err.message });
-  console.error(`bothy-settings ${label}:`, err);
+  console.error(`troveKb-settings ${label}:`, err);
   return res.status(500).json({ error: 'Database error' });
 }
 
 router.get('/', async (req, res) => {
-  try { res.json(present(await bothy.getSettings())); }
+  try { res.json(present(await troveKb.getSettings())); }
   catch (err) { fail(res, err, 'get'); }
 });
 
 router.patch('/', async (req, res) => {
-  try { res.json(present(await bothy.patchSettings(req.body || {}))); }
+  try { res.json(present(await troveKb.patchSettings(req.body || {}))); }
   catch (err) { fail(res, err, 'patch'); }
 });
 
 router.post('/api-key', async (req, res) => {
   try {
-    await bothy.setApiKey(req.body?.api_key);
-    const s = await bothy.getSettings();
+    await troveKb.setApiKey(req.body?.api_key);
+    const s = await troveKb.getSettings();
     res.json({ has_api_key: s.has_api_key, enabled: s.enabled });
   } catch (err) { fail(res, err, 'api-key'); }
 });
 
 router.post('/test', async (req, res) => {
-  try { res.json(await bothy.testConnection()); }
+  try { res.json(await troveKb.testConnection()); }
   catch (err) { fail(res, err, 'test'); }
 });
 
 router.get('/collections', async (req, res) => {
-  try { res.json(await bothy.listCollections()); }
+  try { res.json(await troveKb.listCollections()); }
   catch (err) { fail(res, err, 'collections'); }
 });
 
-// Replace the local knowledge base with Bothy. Plan is a dry run; apply
+// Replace the local knowledge base with Trove KB. Plan is a dry run; apply
 // moves ticket links and runbook runs, archives local articles, and turns
 // the local KB off. Nothing is deleted.
 router.get('/migration/plan', async (req, res) => {

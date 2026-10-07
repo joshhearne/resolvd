@@ -6,7 +6,7 @@ import { api } from "../utils/api";
 export default function KbIndex() {
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [bothy, setBothy] = useState(null);
+  const [troveKb, setTroveKb] = useState(null);
   const [collections, setCollections] = useState([]);
   const [params, setParams] = useSearchParams();
   const [q, setQ] = useState(params.get("q") || "");
@@ -15,12 +15,12 @@ export default function KbIndex() {
   const [searching, setSearching] = useState(false);
 
   useEffect(() => {
-    api.get("/api/bothy/status")
+    api.get("/api/trove-kb/status")
       .then((st) => {
-        setBothy(st);
-        if (st?.has_visible) api.get("/api/bothy/collections").then(setCollections).catch(() => setCollections([]));
+        setTroveKb(st);
+        if (st?.has_visible) api.get("/api/trove-kb/collections").then(setCollections).catch(() => setCollections([]));
       })
-      .catch(() => setBothy({ enabled: false }));
+      .catch(() => setTroveKb({ enabled: false }));
   }, []);
 
   // Search runs from the URL (?q=&collection=) so results are linkable.
@@ -28,15 +28,15 @@ export default function KbIndex() {
     const term = (params.get("q") || "").trim();
     const cid = params.get("collection") || "";
     setQ(term); setCollectionId(cid);
-    if (!bothy?.has_visible || term.length < 2) { setHits(null); return; }
+    if (!troveKb?.has_visible || term.length < 2) { setHits(null); return; }
     let cancelled = false;
     setSearching(true);
-    api.get(`/api/bothy/search?q=${encodeURIComponent(term)}&limit=25${cid ? `&collection_id=${cid}` : ""}`)
+    api.get(`/api/trove-kb/search?q=${encodeURIComponent(term)}&limit=25${cid ? `&collection_id=${cid}` : ""}`)
       .then((r) => { if (!cancelled) setHits(r); })
       .catch((e) => { if (!cancelled) { setHits([]); toast.error(e.message); } })
       .finally(() => { if (!cancelled) setSearching(false); });
     return () => { cancelled = true; };
-  }, [params, bothy?.has_visible]);
+  }, [params, troveKb?.has_visible]);
 
   function submitSearch(e) {
     e.preventDefault();
@@ -77,13 +77,13 @@ export default function KbIndex() {
       <header>
         <h1 className="text-2xl font-semibold tracking-tight text-fg">Knowledge Base</h1>
         <p className="text-sm text-fg-muted mt-1">
-          {bothy?.has_visible
+          {troveKb?.has_visible
             ? "Search the company knowledge base, or browse the per-project articles below."
             : "Per-project documentation. Pick a project to browse or edit its articles."}
         </p>
       </header>
 
-      {bothy?.has_visible && (
+      {troveKb?.has_visible && (
         <section className="rounded-lg border border-border bg-surface p-5 space-y-4">
           <form onSubmit={submitSearch} className="flex flex-col sm:flex-row gap-2">
             <input
@@ -144,22 +144,22 @@ export default function KbIndex() {
                   {c.name}{c.articles != null ? ` · ${c.articles}` : ""}
                 </button>
               ))}
-              {bothy.base_url && (
-                <a href={`${bothy.base_url}/kb`} target="_blank" rel="noreferrer" className="text-xs px-2.5 py-1 text-brand hover:underline">Open Bothy ↗</a>
+              {troveKb.base_url && (
+                <a href={`${troveKb.base_url}/kb`} target="_blank" rel="noreferrer" className="text-xs px-2.5 py-1 text-brand hover:underline">Open Trove KB ↗</a>
               )}
-              {bothy.public_url && (
-                <a href={bothy.public_url} target="_blank" rel="noreferrer" className="text-xs px-2.5 py-1 text-brand hover:underline">Public site ↗</a>
+              {troveKb.public_url && (
+                <a href={troveKb.public_url} target="_blank" rel="noreferrer" className="text-xs px-2.5 py-1 text-brand hover:underline">Public site ↗</a>
               )}
             </div>
           )}
         </section>
       )}
 
-      {bothy?.has_visible && bothy?.local_kb_enabled !== false && (
+      {troveKb?.has_visible && troveKb?.local_kb_enabled !== false && (
         <h2 className="text-sm font-semibold text-fg-muted uppercase tracking-wide pt-2">Project articles</h2>
       )}
 
-      {bothy?.local_kb_enabled === false ? null : loading ? (
+      {troveKb?.local_kb_enabled === false ? null : loading ? (
         <div className="text-fg-muted text-sm">Loading…</div>
       ) : projects.length === 0 ? (
         <div className="rounded-lg border border-border bg-surface p-8 text-center">

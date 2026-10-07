@@ -4,10 +4,10 @@ import toast from "react-hot-toast";
 import { api } from "../utils/api";
 import MarkdownContent from "../components/MarkdownContent";
 
-// Reads one Bothy article inside Resolvd. The body is Markdown from
-// Bothy; images inside it are relative to Bothy and need a signed-in
-// Bothy session, so the "Open in Bothy" link is always offered.
-export default function BothyArticle() {
+// Reads one Trove KB article inside Resolvd. The body is Markdown from
+// Trove KB; images inside it are relative to Trove KB and need a signed-in
+// Trove KB session, so the "Open in Trove KB" link is always offered.
+export default function TroveKbArticle() {
   const { id } = useParams();
   const [params] = useSearchParams();
   const ticketId = params.get("ticket");
@@ -18,7 +18,7 @@ export default function BothyArticle() {
   useEffect(() => {
     setLoading(true);
     setError(null);
-    api.get(`/api/bothy/articles/${id}${ticketId ? `?ticket_id=${encodeURIComponent(ticketId)}` : ""}`)
+    api.get(`/api/trove-kb/articles/${id}${ticketId ? `?ticket_id=${encodeURIComponent(ticketId)}` : ""}`)
       .then(setArticle)
       .catch((e) => { setError(e.message || "Failed to load"); if (e.status !== 404) toast.error(e.message); })
       .finally(() => setLoading(false));
@@ -48,7 +48,7 @@ export default function BothyArticle() {
             <h1 className="text-2xl font-semibold tracking-tight text-fg">{article.title}</h1>
             <div className="flex flex-wrap gap-3 text-xs text-fg-dim">
               {article.date_modified && <span>Updated {new Date(article.date_modified).toLocaleDateString()}</span>}
-              {article.staff_url && <a href={article.staff_url} target="_blank" rel="noreferrer" className="text-brand hover:underline">Open in Bothy ↗</a>}
+              {article.staff_url && <a href={article.staff_url} target="_blank" rel="noreferrer" className="text-brand hover:underline">Open in Trove KB ↗</a>}
               {article.public_url && <a href={article.public_url} target="_blank" rel="noreferrer" className="text-brand hover:underline">Public link ↗</a>}
               {article.source_url && <a href={article.source_url} target="_blank" rel="noreferrer" className="hover:underline">Original source ↗</a>}
             </div>
@@ -64,7 +64,7 @@ export default function BothyArticle() {
 
           {(article.attachments?.documents?.length > 0 || article.attachments?.images?.length > 0) && (
             <footer className="border-t border-border pt-3 text-xs text-fg-muted">
-              This article has attachments. Open it in Bothy to view them.
+              This article has attachments. Open it in Trove KB to view them.
             </footer>
           )}
         </article>

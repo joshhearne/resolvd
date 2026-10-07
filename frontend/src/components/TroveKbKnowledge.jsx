@@ -3,16 +3,16 @@ import { Link } from "react-router-dom";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
 
-// Ticket-side Bothy block: linked Bothy articles, title-based
+// Ticket-side Trove KB block: linked Trove KB articles, title-based
 // suggestions, and a search picker. Rendered inside the ticket's
-// KnowledgePanel. Renders nothing when Bothy is off.
-//   GET    /api/bothy/status
-//   GET    /api/bothy/tickets/:id/links
-//   GET    /api/bothy/tickets/:id/suggestions
-//   GET    /api/bothy/search?q=
-//   POST   /api/bothy/tickets/:id/links
-//   DELETE /api/bothy/tickets/:id/links/:articleId
-export default function BothyKnowledge({ ticketId, canEdit, onDraft }) {
+// KnowledgePanel. Renders nothing when Trove KB is off.
+//   GET    /api/trove-kb/status
+//   GET    /api/trove-kb/tickets/:id/links
+//   GET    /api/trove-kb/tickets/:id/suggestions
+//   GET    /api/trove-kb/search?q=
+//   POST   /api/trove-kb/tickets/:id/links
+//   DELETE /api/trove-kb/tickets/:id/links/:articleId
+export default function TroveKbKnowledge({ ticketId, canEdit, onDraft }) {
   const [status, setStatus] = useState(null);
   const [drafting, setDrafting] = useState(false);
   const [withAi, setWithAi] = useState(true);
@@ -24,13 +24,13 @@ export default function BothyKnowledge({ ticketId, canEdit, onDraft }) {
   const [searching, setSearching] = useState(false);
 
   useEffect(() => {
-    api.get("/api/bothy/status").then(setStatus).catch(() => setStatus({ enabled: false }));
+    api.get("/api/trove-kb/status").then(setStatus).catch(() => setStatus({ enabled: false }));
   }, []);
 
   async function loadAll() {
-    try { setLinks(await api.get(`/api/bothy/tickets/${ticketId}/links`)); } catch { setLinks([]); }
+    try { setLinks(await api.get(`/api/trove-kb/tickets/${ticketId}/links`)); } catch { setLinks([]); }
     if (canEdit) {
-      try { setSuggestions(await api.get(`/api/bothy/tickets/${ticketId}/suggestions?limit=5`)); } catch { setSuggestions([]); }
+      try { setSuggestions(await api.get(`/api/trove-kb/tickets/${ticketId}/suggestions?limit=5`)); } catch { setSuggestions([]); }
     }
   }
   useEffect(() => { if (status?.enabled) loadAll(); }, [ticketId, status?.enabled]); // eslint-disable-line react-hooks/exhaustive-deps
@@ -41,7 +41,7 @@ export default function BothyKnowledge({ ticketId, canEdit, onDraft }) {
     const t = setTimeout(async () => {
       setSearching(true);
       try {
-        const r = await api.get(`/api/bothy/search?q=${encodeURIComponent(picker.trim())}&limit=8`);
+        const r = await api.get(`/api/trove-kb/search?q=${encodeURIComponent(picker.trim())}&limit=8`);
         if (!cancelled) setHits(r.filter((h) => !links.find((l) => l.article_id === h.article_id)));
       } catch { if (!cancelled) setHits([]); }
       finally { if (!cancelled) setSearching(false); }
@@ -51,15 +51,15 @@ export default function BothyKnowledge({ ticketId, canEdit, onDraft }) {
 
   async function link(articleId, kind) {
     try {
-      await api.post(`/api/bothy/tickets/${ticketId}/links`, { article_id: articleId, kind });
-      toast.success("Bothy article linked");
+      await api.post(`/api/trove-kb/tickets/${ticketId}/links`, { article_id: articleId, kind });
+      toast.success("Trove KB article linked");
       setPicker(""); setHits([]);
       await loadAll();
     } catch (e) { toast.error(e.message); }
   }
   async function unlink(articleId) {
     try {
-      await api.delete(`/api/bothy/tickets/${ticketId}/links/${articleId}`);
+      await api.delete(`/api/trove-kb/tickets/${ticketId}/links/${articleId}`);
       toast.success("Unlinked");
       await loadAll();
     } catch (e) { toast.error(e.message); }
@@ -72,7 +72,7 @@ export default function BothyKnowledge({ ticketId, canEdit, onDraft }) {
     setDrafting(true);
     setDraftNote(null);
     try {
-      const r = await api.post(`/api/bothy/tickets/${ticketId}/resolution-draft`, {
+      const r = await api.post(`/api/trove-kb/tickets/${ticketId}/resolution-draft`, {
         ai: withAi && status?.ai?.available === true,
       });
       if (!r.digest_md) { setDraftNote(r.ai?.note || "Nothing to draft from."); return; }
@@ -92,11 +92,11 @@ export default function BothyKnowledge({ ticketId, canEdit, onDraft }) {
   return (
     <div className="space-y-2 border-t border-border pt-2">
       <div className="text-[11px] text-fg-muted uppercase tracking-wide">
-        Bothy {links.length > 0 && <span className="normal-case tracking-normal">({links.length})</span>}
+        Trove KB {links.length > 0 && <span className="normal-case tracking-normal">({links.length})</span>}
       </div>
 
       {links.length === 0 ? (
-        <div className="text-xs text-fg-dim italic">No Bothy articles linked.</div>
+        <div className="text-xs text-fg-dim italic">No Trove KB articles linked.</div>
       ) : (
         <div className="flex flex-wrap gap-1.5">
           {links.map((l) => (
@@ -117,7 +117,7 @@ export default function BothyKnowledge({ ticketId, canEdit, onDraft }) {
             type="text"
             value={picker}
             onChange={(e) => setPicker(e.target.value)}
-            placeholder="Search Bothy to link an article…"
+            placeholder="Search Trove KB to link an article…"
             className="w-full bg-surface-2 border border-border rounded px-2 py-1 text-xs"
           />
           {(hits.length > 0 || searching) && picker.trim().length >= 2 && (
@@ -142,7 +142,7 @@ export default function BothyKnowledge({ ticketId, canEdit, onDraft }) {
             className="px-2 py-1 rounded border border-border bg-surface-2 text-fg hover:bg-surface disabled:opacity-50"
             title={links.length > 0 ? "Build a resolution write-up from the linked articles" : "Build a resolution write-up from the best-matching articles"}
           >
-            {drafting ? "Drafting…" : "Draft resolution from Bothy"}
+            {drafting ? "Drafting…" : "Draft resolution from Trove KB"}
           </button>
           {status?.ai?.available ? (
             <label className="flex items-center gap-1 text-fg-muted">
@@ -160,7 +160,7 @@ export default function BothyKnowledge({ ticketId, canEdit, onDraft }) {
 
       {canEdit && suggestions.length > 0 && (
         <div className="space-y-1">
-          <div className="text-[10px] text-fg-dim uppercase tracking-wide">Suggested from Bothy</div>
+          <div className="text-[10px] text-fg-dim uppercase tracking-wide">Suggested from Trove KB</div>
           {suggestions.map((s) => (
             <div key={s.article_id} className="flex items-center gap-2 text-xs">
               <Link to={`/kb/article/${s.article_id}?ticket=${ticketId}`} className="text-brand hover:underline flex-1 truncate" title={s.snippet || ""}>{s.title}</Link>

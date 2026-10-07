@@ -1,17 +1,17 @@
-// Resolution drafts from Bothy knowledge.
+// Resolution drafts from Trove KB knowledge.
 //
 // Two tiers, both from the same inputs (the ticket + a few articles):
 //   1. Extractive digest — no AI, always available. Each article's title,
-//      link, and the passage Bothy's search matched for the ticket title
+//      link, and the passage Trove KB's search matched for the ticket title
 //      (or the opening of the article when nothing matched). Runbook
-//      steps are included when Bothy returns them (`steps` is part of the
-//      runbook feature Bothy is growing; absent today, handled when present).
+//      steps are included when Trove KB returns them (`steps` is part of the
+//      runbook feature Trove KB is growing; absent today, handled when present).
 //   2. AI summary — only when the caller may use AI Assist (org key or
 //      their own). Synthesizes the ticket and the articles into a short
 //      resolution write-up. Logged in ai_rewrite_logs like a rewrite.
 
 const { pool } = require('../db/pool');
-const bothy = require('./bothy');
+const troveKb = require('./troveKb');
 const aiSettings = require('./aiSettings');
 const aiRewrite = require('./aiRewrite');
 const { getAdapter } = require('./aiProviders');
@@ -51,7 +51,7 @@ async function aiAvailability(userId) {
     if (adapter.needsApiKey !== false && !eff.api_key) return { available: false, reason: 'no_api_key' };
     return { available: true, eff, adapter, projectContextEnabled: orgSettings.project_context_enabled, userCfg };
   } catch (err) {
-    console.warn('bothyResolution aiAvailability:', err.message);
+    console.warn('troveKbResolution aiAvailability:', err.message);
     return { available: false, reason: 'error' };
   }
 }
@@ -68,33 +68,33 @@ const REASON_NOTE = {
   error: 'AI summary unavailable right now. The write-up below is extracted from the articles.',
 };
 
-// Pick articles: explicit ids, else the ticket's Bothy links, else the
+// Pick articles: explicit ids, else the ticket's Trove KB links, else the
 // best suggestions (project collection first). Returns full articles.
 async function pickArticles({ ticket, articleIds, projectCollectionId }) {
   let ids = (articleIds || []).map((s) => String(s).toLowerCase()).filter(Boolean);
   if (!ids.length) {
-    const linked = await pool.query(`SELECT article_id FROM ticket_bothy_links WHERE ticket_id = $1 ORDER BY created_at`, [ticket.id]);
+    const linked = await pool.query(`SELECT article_id FROM ticket_trove_kb_links WHERE ticket_id = $1 ORDER BY created_at`, [ticket.id]);
     ids = linked.rows.map((r) => r.article_id);
   }
   let viaSearch = [];
   if (!ids.length) {
-    viaSearch = await bothy.search({ q: ticket.title, limit: 3, handler: true, preferCollectionId: projectCollectionId, orFallback: true });
+    viaSearch = await troveKb.search({ q: ticket.title, limit: 3, handler: true, preferCollectionId: projectCollectionId, orFallback: true });
     ids = viaSearch.map((h) => h.article_id);
   }
   ids = [...new Set(ids)].slice(0, MAX_ARTICLES);
-  const settled = await Promise.allSettled(ids.map((id) => bothy.getArticle(id, { handler: true })));
+  const settled = await Promise.allSettled(ids.map((id) => troveKb.getArticle(id, { handler: true })));
   const articles = settled.filter((s) => s.status === 'fulfilled').map((s) => s.value);
   return { articles, hits: viaSearch };
 }
 
-// The passage Bothy matched for this ticket in each article, when any.
+// The passage Trove KB matched for this ticket in each article, when any.
 async function matchedPassages({ ticket, articles, hits }) {
   const byId = new Map(hits.map((h) => [h.article_id, h]));
   const missing = articles.filter((a) => !byId.has(a.article_id));
   // One search per collection that still needs a passage.
   const collections = [...new Set(missing.map((a) => a.collection_id).filter(Boolean))];
   await Promise.allSettled(collections.map(async (cid) => {
-    const r = await bothy.search({ q: ticket.title, limit: 20, handler: true, collectionId: cid, orFallback: true });
+    const r = await troveKb.search({ q: ticket.title, limit: 20, handler: true, collectionId: cid, orFallback: true });
     for (const h of r) if (!byId.has(h.article_id)) byId.set(h.article_id, h);
   }));
   return byId;
@@ -105,7 +105,7 @@ function buildDigest({ articles, passages }) {
   const lines = ['**Related knowledge**', ''];
   for (const a of articles) {
     // Public site when the article is there, else the in-app reader. Never a
-    // link into Bothy itself: that is for Bothy admins only.
+    // link into Trove KB itself: that is for Trove KB admins only.
     const url = a.public_url || `/kb/article/${a.article_id}`;
     const where = [a.collection_name, a.category].filter(Boolean).join(' · ');
     lines.push(`- ${url ? `[${a.title}](${url})` : `**${a.title}**`}${where ? ` — ${where}` : ''}`);
@@ -178,7 +178,7 @@ async function aiSummary({ userId, ticket, articles, projectId, avail }) {
        !!projectContext, avail.eff.source]
     );
   } catch (err) {
-    console.error('bothyResolution log insert failed:', err.message);
+    console.error('troveKbResolution log insert failed:', err.message);
   }
   return {
     summary_md: String(result.text || '').trim(),
@@ -191,15 +191,15 @@ async function aiSummary({ userId, ticket, articles, projectId, avail }) {
 
 // Main entry. `ticket` must carry decrypted title/description and project_id.
 async function draft({ userId, ticket, articleIds, wantAi }) {
-  const settings = await bothy.getSettings();
-  if (!settings.enabled) throw httpError(503, 'Bothy is not configured');
+  const settings = await troveKb.getSettings();
+  if (!settings.enabled) throw httpError(503, 'Trove KB is not configured');
 
-  const proj = await pool.query(`SELECT bothy_collection_id FROM projects WHERE id = $1`, [ticket.project_id]);
-  const projectCollectionId = proj.rows[0]?.bothy_collection_id || null;
+  const proj = await pool.query(`SELECT trove_kb_collection_id FROM projects WHERE id = $1`, [ticket.project_id]);
+  const projectCollectionId = proj.rows[0]?.trove_kb_collection_id || null;
 
   const { articles, hits } = await pickArticles({ ticket, articleIds, projectCollectionId });
   if (!articles.length) {
-    return { digest_md: '', articles: [], ai: { available: false, reason: 'no_articles', note: 'No Bothy articles are linked to this ticket and nothing matched its title.' } };
+    return { digest_md: '', articles: [], ai: { available: false, reason: 'no_articles', note: 'No Trove KB articles are linked to this ticket and nothing matched its title.' } };
   }
   const passages = await matchedPassages({ ticket, articles, hits });
   const digest_md = buildDigest({ articles, passages });

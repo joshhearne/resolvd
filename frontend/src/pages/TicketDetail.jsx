@@ -37,9 +37,9 @@ import { isUrlLike, truncateRef } from "../utils/externalRef";
 import PageShell from "../components/PageShell";
 import CannedPicker from "../components/CannedPicker";
 import RunbookPanel from "../components/RunbookPanel";
-import BothyKnowledge from "../components/BothyKnowledge";
+import TroveKbKnowledge from "../components/TroveKbKnowledge";
 import AssistBriefModal from "../components/AssistBriefModal";
-import BothyRunbookPanel from "../components/BothyRunbookPanel";
+import TroveKbRunbookPanel from "../components/TroveKbRunbookPanel";
 
 // External ticket refs may hold multiple vendor IDs separated by comma
 // or semicolon (e.g. "VND-1234, VND-5678" or "VND-1234;VND-5678").
@@ -450,11 +450,11 @@ export default function TicketDetail() {
   // up with the next comment POST + cleared. One-shot — discarded if
   // the user edits the body further before submitting.
   const [commentAiLogId, setCommentAiLogId] = useState(null);
-  // Bothy knowledge brief (scope a response before rewriting it).
-  const [bothyStatus, setBothyStatus] = useState(null);
+  // Trove KB knowledge brief (scope a response before rewriting it).
+  const [troveKbStatus, setTroveKbStatus] = useState(null);
   const [briefOpen, setBriefOpen] = useState(false);
   useEffect(() => {
-    api.get("/api/bothy/status").then(setBothyStatus).catch(() => setBothyStatus({ enabled: false }));
+    api.get("/api/trove-kb/status").then(setTroveKbStatus).catch(() => setTroveKbStatus({ enabled: false }));
   }, []);
   const [commentFiles, setCommentFiles] = useState([]);
   const [submittingComment, setSubmittingComment] = useState(false);
@@ -2225,26 +2225,26 @@ export default function TicketDetail() {
                       placeholder="Add a comment... (Ctrl+Enter to post)"
                       mentionProjectId={ticket?.project_id}
                     />
-                    {(isAdmin || canHandleNotes) && bothyStatus?.enabled && (
+                    {(isAdmin || canHandleNotes) && troveKbStatus?.enabled && (
                       <div className="flex flex-wrap items-center gap-2 text-xs">
                         <button
                           type="button"
                           onClick={() => setBriefOpen(true)}
                           className="inline-flex items-center gap-1 px-2 py-1 rounded border border-border-strong text-fg-muted hover:text-fg hover:bg-surface-2"
-                          title="Gather what the user reported, your draft, project context, and matching Bothy articles. Review, correct, then build a reply and resolution (no AI unless you ask)."
+                          title="Gather what the user reported, your draft, project context, and matching Trove KB articles. Review, correct, then build a reply and resolution (no AI unless you ask)."
                         >
                           📚 Scope with knowledge
                         </button>
                         <span className="text-fg-dim">
-                          {bothyStatus?.ai?.available ? "AI rewrite optional" : "No AI token: builds from documentation only"}
+                          {troveKbStatus?.ai?.available ? "AI rewrite optional" : "No AI token: builds from documentation only"}
                         </span>
                         <AssistBriefModal
                           open={briefOpen}
                           onClose={() => setBriefOpen(false)}
                           ticketId={ticket.id}
                           draft={commentBody}
-                          aiAvailable={bothyStatus?.ai?.available === true}
-                          aiNote={bothyStatus?.ai?.note || null}
+                          aiAvailable={troveKbStatus?.ai?.available === true}
+                          aiNote={troveKbStatus?.ai?.note || null}
                           onUseReply={(text, meta) => {
                             setCommentBody(text);
                             setCommentAiLogId(meta?.logId || null);
@@ -2497,7 +2497,7 @@ export default function TicketDetail() {
 
             {activeTab === "runbook" && canHandleNotes && (
               <div className="p-4 space-y-4">
-                <BothyRunbookPanel
+                <TroveKbRunbookPanel
                   ticket={ticket}
                   user={user}
                   onApplyCanned={(rendered) => {
@@ -2505,7 +2505,7 @@ export default function TicketDetail() {
                     setActiveTab("comments");
                   }}
                 />
-                {bothyStatus?.local_kb_enabled !== false && (
+                {troveKbStatus?.local_kb_enabled !== false && (
                   <RunbookPanel
                     ticket={ticket}
                     user={user}
@@ -3968,21 +3968,21 @@ function KnowledgePanel({ ticketId, projectId, canEdit, isAdmin, ticketResolved,
     } catch (e) { /* onResolutionChange toasts on failure */ }
   }
 
-  const [bothyFlags, setBothyFlags] = useState(null);
+  const [troveKbFlags, setTroveKbFlags] = useState(null);
   useEffect(() => {
-    api.get("/api/bothy/status").then(setBothyFlags).catch(() => setBothyFlags({ enabled: false }));
+    api.get("/api/trove-kb/status").then(setTroveKbFlags).catch(() => setTroveKbFlags({ enabled: false }));
   }, []);
   async function promoteToKb() {
     if (!resolutionSummary || resolutionSummary.trim().length < 20) {
       toast.error("Add a resolution summary first (20+ chars).");
       return;
     }
-    // Bothy is the documentation platform: when it is on, a promotion
+    // Trove KB is the documentation platform: when it is on, a promotion
     // becomes an internal-only draft in the project's collection.
-    if (bothyFlags?.enabled) {
+    if (troveKbFlags?.enabled) {
       try {
-        const article = await api.post(`/api/bothy/tickets/${ticketId}/promote`, {});
-        toast.success("Draft article created in Bothy");
+        const article = await api.post(`/api/trove-kb/tickets/${ticketId}/promote`, {});
+        toast.success("Draft article created in Trove KB");
         await loadAll();
         window.location.href = article.staff_url ? article.staff_url : `/kb/article/${article.article_id}?ticket=${ticketId}`;
       } catch (e) { toast.error(e.message); }
@@ -4046,7 +4046,7 @@ function KnowledgePanel({ ticketId, projectId, canEdit, isAdmin, ticketResolved,
           </div>
         )}
 
-        {canEdit && bothyFlags?.local_kb_enabled !== false && (
+        {canEdit && troveKbFlags?.local_kb_enabled !== false && (
           <div className="relative">
             <input
               type="text"
@@ -4075,8 +4075,8 @@ function KnowledgePanel({ ticketId, projectId, canEdit, isAdmin, ticketResolved,
         )}
       </div>
 
-      {/* Bothy (company knowledge base) */}
-      <BothyKnowledge
+      {/* Trove KB (company knowledge base) */}
+      <TroveKbKnowledge
         ticketId={ticketId}
         canEdit={canEdit}
         onDraft={(md) => {

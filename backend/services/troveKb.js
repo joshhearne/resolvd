@@ -1,4 +1,4 @@
-// An article is public when Bothy gives it a public address: its collection
+// An article is public when Trove KB gives it a public address: its collection
 // is on the public site, the site is on, and the article is not held back
 // (`internal_only`). Search hits do not carry that, so a non-handler search
 // fetches each hit (cached) and filters. Strict mode refuses anything that
@@ -10,21 +10,24 @@ function publicEnough(settings, article) {
   return !settings.public_strict;
 }
 
-// Bothy — the company documentation platform (external knowledge base).
+// Trove KB — the company documentation platform (external knowledge base).
 //
-// Resolvd is a trusted reader of Bothy: one API key, held here encrypted,
+// Resolvd is a trusted reader of Trove KB: one API key, held here encrypted,
 // and Resolvd decides on its own side who sees which collections.
 // Handlers (global Admin/Manager/Tech, or project handlers) see the
 // "internal" and "public" collections an admin mapped; everyone else
-// sees "public" only. Nothing about Resolvd users is sent to Bothy.
+// sees "public" only. Nothing about Resolvd users is sent to Trove KB.
 //
-// Transport: Bothy's REST knowledge base routes under {base_url}/api/v1/kb
+// Transport: Trove KB's REST knowledge base routes under {base_url}/api/v1/kb
 // (collections, search, articles, upsert/archive by external id).
 
 const { pool } = require('../db/pool');
 const { encrypt, decrypt } = require('./crypto');
 const kms = require('./kms');
 
+// Encryption context of the stored key. Kept at the old product name on
+// purpose: it is bound into the ciphertext (AAD), so renaming it would make
+// every saved key unreadable. Not a table name.
 const KEY_CTX = 'bothy_settings.api_key';
 const SETTINGS_TTL_MS = 30 * 1000;
 const RESULT_TTL_MS = 60 * 1000;
@@ -75,14 +78,14 @@ function uuidList(v, label) {
 async function getSettings({ withKey = false } = {}) {
   const now = Date.now();
   if (!_settings || now - _settingsAt > SETTINGS_TTL_MS) {
-    const r = await pool.query(`SELECT * FROM bothy_settings WHERE id = 1`);
+    const r = await pool.query(`SELECT * FROM trove_kb_settings WHERE id = 1`);
     const row = r.rows[0] || {};
     let apiKey = null;
     if (kms.isAvailable() && row.api_key_enc) {
       try {
         apiKey = (await decrypt(row.api_key_enc, KEY_CTX)).toString('utf8');
       } catch (err) {
-        console.error('bothy: api key decrypt failed:', err.message);
+        console.error('troveKb: api key decrypt failed:', err.message);
       }
     }
     const internal = row.internal_collection_ids || [];
@@ -98,8 +101,8 @@ async function getSettings({ withKey = false } = {}) {
       public_collection_ids: pub.filter((id) => !internal.includes(id)),
       collection_names: row.collection_names || {},
       suggestions_enabled: row.suggestions_enabled !== false,
-      // Non-handlers see an article only when Bothy says it is on the public
-      // site (`public: true` on the hit). Until Bothy returns that flag, strict
+      // Non-handlers see an article only when Trove KB says it is on the public
+      // site (`public: true` on the hit). Until Trove KB returns that flag, strict
       // mode means non-handlers see nothing; off means whole-collection trust.
       public_strict: row.public_strict !== false,
       // The built-in per-project KB stays until the migration turns it off.
@@ -135,49 +138,49 @@ async function patchSettings(partial) {
     for (const [k, v] of Object.entries(names)) clean[String(k).toLowerCase()] = String(v).slice(0, 200);
     updates.collection_names = JSON.stringify(clean);
   }
-  await pool.query(`INSERT INTO bothy_settings (id) VALUES (1) ON CONFLICT DO NOTHING`);
+  await pool.query(`INSERT INTO trove_kb_settings (id) VALUES (1) ON CONFLICT DO NOTHING`);
   const cols = Object.keys(updates);
   if (cols.length) {
     const sets = cols.map((c, i) => `${c} = $${i + 1}`).join(', ');
-    await pool.query(`UPDATE bothy_settings SET ${sets}, updated_at = NOW() WHERE id = 1`, cols.map((c) => updates[c]));
+    await pool.query(`UPDATE trove_kb_settings SET ${sets}, updated_at = NOW() WHERE id = 1`, cols.map((c) => updates[c]));
   }
   invalidateCache();
   return getSettings();
 }
 
 async function setApiKey(plaintext) {
-  await pool.query(`INSERT INTO bothy_settings (id) VALUES (1) ON CONFLICT DO NOTHING`);
+  await pool.query(`INSERT INTO trove_kb_settings (id) VALUES (1) ON CONFLICT DO NOTHING`);
   if (plaintext == null || String(plaintext).trim() === '') {
-    await pool.query(`UPDATE bothy_settings SET api_key_enc = NULL, last_error = NULL, updated_at = NOW() WHERE id = 1`);
+    await pool.query(`UPDATE trove_kb_settings SET api_key_enc = NULL, last_error = NULL, updated_at = NOW() WHERE id = 1`);
     invalidateCache();
     return;
   }
   if (!kms.isAvailable()) {
-    throw httpError(400, 'RESOLVD_MASTER_KEY not configured — the Bothy API key cannot be stored until it is (Admin → Encryption).');
+    throw httpError(400, 'RESOLVD_MASTER_KEY not configured — the Trove KB API key cannot be stored until it is (Admin → Encryption).');
   }
   const enc = await encrypt(Buffer.from(String(plaintext).trim(), 'utf8'), KEY_CTX);
   // A new key is a fresh start; the next test records its own outcome.
-  await pool.query(`UPDATE bothy_settings SET api_key_enc = $1, last_error = NULL, updated_at = NOW() WHERE id = 1`, [enc]);
+  await pool.query(`UPDATE trove_kb_settings SET api_key_enc = $1, last_error = NULL, updated_at = NOW() WHERE id = 1`, [enc]);
   invalidateCache();
 }
 
 async function recordOutcome(error) {
   if (error) {
-    await pool.query(`UPDATE bothy_settings SET last_error = $1, updated_at = NOW() WHERE id = 1`, [String(error).slice(0, 500)]);
+    await pool.query(`UPDATE trove_kb_settings SET last_error = $1, updated_at = NOW() WHERE id = 1`, [String(error).slice(0, 500)]);
   } else {
-    await pool.query(`UPDATE bothy_settings SET last_ok_at = NOW(), last_error = NULL, updated_at = NOW() WHERE id = 1`);
+    await pool.query(`UPDATE trove_kb_settings SET last_ok_at = NOW(), last_error = NULL, updated_at = NOW() WHERE id = 1`);
   }
   _settings = null;
 }
 
 // ─── Transport (REST /api/v1) ────────────────────────────────────────────
 //
-// Bothy's REST knowledge base routes. Error shape: { error: { code, message } }.
+// Trove KB's REST knowledge base routes. Error shape: { error: { code, message } }.
 // Lists come back as { data, next_cursor }. Never includes the key in errors.
 
 async function rest(path, { method = 'GET', body, settings } = {}) {
   const cfg = settings || await getSettings({ withKey: true });
-  if (!cfg.base_url || !cfg._apiKey) throw httpError(503, 'Bothy is not configured');
+  if (!cfg.base_url || !cfg._apiKey) throw httpError(503, 'Trove KB is not configured');
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
   let res;
@@ -188,25 +191,25 @@ async function rest(path, { method = 'GET', body, settings } = {}) {
       headers: {
         Accept: 'application/json',
         Authorization: `Bearer ${cfg._apiKey}`,
-        'User-Agent': 'Resolvd-Bothy/2',
+        'User-Agent': 'Resolvd-TroveKb/2',
         ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
       },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     });
   } catch (err) {
     clearTimeout(timer);
-    if (err.name === 'AbortError') throw httpError(504, 'Bothy did not answer in time');
-    throw httpError(502, `Could not reach Bothy: ${err.message}`);
+    if (err.name === 'AbortError') throw httpError(504, 'Trove KB did not answer in time');
+    throw httpError(502, `Could not reach Trove KB: ${err.message}`);
   }
   clearTimeout(timer);
   if (res.status === 204) return null;
   let json = null;
   try { json = await res.json(); } catch { json = null; }
-  if (res.status === 401) throw httpError(502, 'Bothy rejected the API key');
-  if (res.status === 403) throw httpError(502, json?.error?.message || 'The Bothy API key is not allowed to do that');
-  if (res.status === 404) throw httpError(404, json?.error?.message || 'Not found in Bothy');
-  if (res.status === 400) throw httpError(400, json?.error?.message || 'Bothy rejected the request');
-  if (!res.ok) throw httpError(502, json?.error?.message || `Bothy answered HTTP ${res.status}`);
+  if (res.status === 401) throw httpError(502, 'Trove KB rejected the API key');
+  if (res.status === 403) throw httpError(502, json?.error?.message || 'The Trove KB API key is not allowed to do that');
+  if (res.status === 404) throw httpError(404, json?.error?.message || 'Not found in Trove KB');
+  if (res.status === 400) throw httpError(400, json?.error?.message || 'Trove KB rejected the request');
+  if (!res.ok) throw httpError(502, json?.error?.message || `Trove KB answered HTTP ${res.status}`);
   return json;
 }
 
@@ -232,7 +235,7 @@ async function cached(key, fn) {
 
 // ─── Visibility ─────────────────────────────────────────────────────────
 
-// Which Bothy collection ids a caller may read. `handler` is the
+// Which Trove KB collection ids a caller may read. `handler` is the
 // Resolvd-side decision (global role or project handler). Returns
 // { ids: string[] | null, scopeOf(id) } where ids === null means "no
 // filter: everything the key can read" (handlers when nothing is mapped).
@@ -257,7 +260,7 @@ function articleUrls(settings, articleId, collectionId) {
 }
 
 // Words worth searching from free text: longer tokens, no stop words.
-// Bothy's search ANDs every word (websearch_to_tsquery), so a whole ticket
+// Trove KB's search ANDs every word (websearch_to_tsquery), so a whole ticket
 // title often matches nothing; "a OR b OR c" of its key terms is the fallback.
 const STOP = new Set('the a an and or of to in on for with is are was were be been it this that these those from by at as into about after before when then than so if not no yes you your they their we our i me my he she his her them us can could would should will just also very please thanks thank hi hello user users issue problem ticket help need needs needed'.split(' '));
 function keyTerms(text, max = 8) {
@@ -273,7 +276,7 @@ function keyTerms(text, max = 8) {
 
 // ─── Reads ──────────────────────────────────────────────────────────────
 
-// Collections the key can read, straight from Bothy (admin mapping UI,
+// Collections the key can read, straight from Trove KB (admin mapping UI,
 // test connection). Not filtered by visibility.
 async function listCollections({ settings } = {}) {
   const out = await rest('/kb/collections', { settings });
@@ -336,7 +339,7 @@ function shapeArticle(settings, a) {
     format: a.format || 'markdown',
     scope: urls.scope,
     staff_url: urls.staff_url,
-    // Bothy's own public address wins; fall back to ours for the same site.
+    // Trove KB's own public address wins; fall back to ours for the same site.
     public_url: a.public_url || urls.public_url,
   };
 }
@@ -347,7 +350,7 @@ function shapeArticle(settings, a) {
 // retry with its key terms joined by OR (title-driven suggestions and briefs).
 async function search({ q, limit = 10, collectionId = null, kind = null, handler = false, preferCollectionId = null, orFallback = false }) {
   const settings = await getSettings({ withKey: true });
-  if (!settings.enabled) throw httpError(503, 'Bothy is not configured');
+  if (!settings.enabled) throw httpError(503, 'Trove KB is not configured');
   const query = String(q || '').trim();
   if (!query) return [];
   const exact = await searchOnce({ settings, query, limit, collectionId, kind, handler, preferCollectionId });
@@ -421,7 +424,7 @@ async function fetchArticle(settings, id) {
 // collections, or (non-handlers) not confirmed public.
 async function getArticle(articleId, { handler = false } = {}) {
   const settings = await getSettings({ withKey: true });
-  if (!settings.enabled) throw httpError(503, 'Bothy is not configured');
+  if (!settings.enabled) throw httpError(503, 'Trove KB is not configured');
   const id = String(articleId || '').toLowerCase();
   if (!/^[0-9a-f-]{36}$/.test(id)) throw httpError(404, 'Article not found');
   let article;
@@ -433,11 +436,11 @@ async function getArticle(articleId, { handler = false } = {}) {
   return article;
 }
 
-// Articles in one collection, optionally by kind. Pages through Bothy's
+// Articles in one collection, optionally by kind. Pages through Trove KB's
 // cursor up to `max` rows. Handler-only (callers decide).
 async function listArticles({ collectionId, kind = null, category = null, max = 500 }) {
   const settings = await getSettings({ withKey: true });
-  if (!settings.enabled) throw httpError(503, 'Bothy is not configured');
+  if (!settings.enabled) throw httpError(503, 'Trove KB is not configured');
   const out = [];
   let cursor = null;
   for (let page = 0; page < 20 && out.length < max; page++) {
@@ -460,7 +463,7 @@ async function listArticles({ collectionId, kind = null, category = null, max = 
 // write scope and a write grant on the collection.
 async function upsertArticle({ collectionId, externalId, title, body, category, subcategory, kind, sourceUrl, internalOnly }) {
   const settings = await getSettings({ withKey: true });
-  if (!settings.enabled) throw httpError(503, 'Bothy is not configured');
+  if (!settings.enabled) throw httpError(503, 'Trove KB is not configured');
   const payload = { title, body };
   if (category) payload.category = category;
   if (subcategory) payload.subcategory = subcategory;
@@ -475,23 +478,23 @@ async function upsertArticle({ collectionId, externalId, title, body, category, 
 
 async function archiveArticle({ collectionId, externalId }) {
   const settings = await getSettings({ withKey: true });
-  if (!settings.enabled) throw httpError(503, 'Bothy is not configured');
+  if (!settings.enabled) throw httpError(503, 'Trove KB is not configured');
   await rest(`/kb/collections/${collectionId}/articles/${encodeURIComponent(externalId)}`, { method: 'DELETE', settings });
   _results.clear();
 }
 
 // Admin "Test connection": lists collections, records the outcome, and
 // refreshes the name snapshot so the mapping UI and link pills have
-// names even when Bothy is down later.
+// names even when Trove KB is down later.
 async function testConnection() {
   const settings = await getSettings({ withKey: true });
-  if (!settings.base_url) throw httpError(400, 'Set the Bothy URL first');
-  if (!settings._apiKey) throw httpError(400, settings.kms_available ? 'Save a Bothy API key first' : 'RESOLVD_MASTER_KEY not configured');
+  if (!settings.base_url) throw httpError(400, 'Set the Trove KB URL first');
+  if (!settings._apiKey) throw httpError(400, settings.kms_available ? 'Save a Trove KB API key first' : 'RESOLVD_MASTER_KEY not configured');
   try {
     const collections = await listCollections({ settings });
     const names = { ...settings.collection_names };
     for (const c of collections) names[c.id] = c.name;
-    await pool.query(`UPDATE bothy_settings SET collection_names = $1, updated_at = NOW() WHERE id = 1`, [JSON.stringify(names)]);
+    await pool.query(`UPDATE trove_kb_settings SET collection_names = $1, updated_at = NOW() WHERE id = 1`, [JSON.stringify(names)]);
     await recordOutcome(null);
     return { ok: true, collections };
   } catch (err) {

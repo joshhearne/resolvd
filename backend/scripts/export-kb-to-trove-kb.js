@@ -1,20 +1,20 @@
 #!/usr/bin/env node
 // Export Resolvd kb_articles (BlockNote JSON) to Markdown files with YAML
-// frontmatter in the layout Bothy's importer reads, split into two archives:
-//   internal/  agent_only articles and drafts   -> Bothy collection "MOT IT Internal"
-//   public/    everything else                  -> Bothy collection "MOT IT Public"
+// frontmatter in the layout Trove KB's importer reads, split into two archives:
+//   internal/  agent_only articles and drafts   -> Trove KB collection "MOT IT Internal"
+//   public/    everything else                  -> Trove KB collection "MOT IT Public"
 // Runbooks: each top-level list item ends with {#<first 8 hex of BlockNote block id>}
 // so per-ticket progress (ticket_runbook_runs.step_states keyed by block id) can be
 // re-keyed later; the mapping is written to runbook-step-map.json.
 //
-// Usage: node export-kb-to-bothy.js <articles.json> <out-dir>
-//   articles.json = json_agg of kb_articles joined to projects (see docs/BOTHY_INTEGRATION.md)
+// Usage: node export-kb-to-trove-kb.js <articles.json> <out-dir>
+//   articles.json = json_agg of kb_articles joined to projects (see docs/TROVE_KB_INTEGRATION.md)
 'use strict';
 const fs = require('fs');
 const path = require('path');
 
 const [,, src, out] = process.argv;
-if (!src || !out) { console.error('usage: export-kb-to-bothy.js <articles.json> <out-dir>'); process.exit(1); }
+if (!src || !out) { console.error('usage: export-kb-to-trove-kb.js <articles.json> <out-dir>'); process.exit(1); }
 const articles = JSON.parse(fs.readFileSync(src, 'utf8'));
 
 function inline(nodes) {

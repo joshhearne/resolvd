@@ -179,7 +179,7 @@ router.get('/projects', async (req, res) => {
              COALESCE(ai_context_enabled, TRUE) AS ai_context_enabled,
              (ai_context_md IS NOT NULL AND length(trim(ai_context_md)) > 0) AS has_context,
              COALESCE(length(ai_context_md), 0) AS context_length,
-             bothy_collection_id
+             trove_kb_collection_id
         FROM projects
        WHERE status = 'active'
        ORDER BY name ASC
@@ -194,7 +194,7 @@ router.get('/projects', async (req, res) => {
 router.get('/projects/:id', async (req, res) => {
   try {
     const r = await pool.query(
-      `SELECT id, name, prefix, ai_context_md, ai_context_enabled, bothy_collection_id
+      `SELECT id, name, prefix, ai_context_md, ai_context_enabled, trove_kb_collection_id
          FROM projects WHERE id = $1`,
       [req.params.id]
     );
@@ -208,15 +208,15 @@ router.get('/projects/:id', async (req, res) => {
 
 router.patch('/projects/:id', async (req, res) => {
   try {
-    const { ai_context_md, ai_context_enabled, bothy_collection_id } = req.body || {};
+    const { ai_context_md, ai_context_enabled, trove_kb_collection_id } = req.body || {};
     const updates = {};
-    if (bothy_collection_id !== undefined) {
-      // Bothy knowledge base collection this project belongs to. UUID or null.
-      const v = bothy_collection_id == null ? '' : String(bothy_collection_id).trim().toLowerCase();
+    if (trove_kb_collection_id !== undefined) {
+      // Trove KB knowledge base collection this project belongs to. UUID or null.
+      const v = trove_kb_collection_id == null ? '' : String(trove_kb_collection_id).trim().toLowerCase();
       if (v && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(v)) {
-        return res.status(400).json({ error: 'bothy_collection_id must be a UUID' });
+        return res.status(400).json({ error: 'trove_kb_collection_id must be a UUID' });
       }
-      updates.bothy_collection_id = v || null;
+      updates.trove_kb_collection_id = v || null;
     }
     if (ai_context_md !== undefined) {
       const md = (ai_context_md ?? '').toString();
@@ -228,7 +228,7 @@ router.patch('/projects/:id', async (req, res) => {
     }
     if (Object.keys(updates).length === 0) {
       const r = await pool.query(
-        `SELECT id, name, prefix, ai_context_md, ai_context_enabled, bothy_collection_id FROM projects WHERE id = $1`,
+        `SELECT id, name, prefix, ai_context_md, ai_context_enabled, trove_kb_collection_id FROM projects WHERE id = $1`,
         [req.params.id]
       );
       return res.json(r.rows[0] || {});
@@ -237,7 +237,7 @@ router.patch('/projects/:id', async (req, res) => {
     const sets = cols.map((c, i) => `${c} = $${i + 1}`).join(', ');
     const r = await pool.query(
       `UPDATE projects SET ${sets}, updated_at = NOW() WHERE id = $${cols.length + 1}
-        RETURNING id, name, prefix, ai_context_md, ai_context_enabled, bothy_collection_id`,
+        RETURNING id, name, prefix, ai_context_md, ai_context_enabled, trove_kb_collection_id`,
       [...cols.map(c => updates[c]), req.params.id]
     );
     if (!r.rows[0]) return res.status(404).json({ error: 'Project not found' });

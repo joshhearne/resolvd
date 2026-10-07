@@ -438,22 +438,22 @@ function ProjectContextsPane() {
   const [projects, setProjects] = useState([]);
   const [selectedId, setSelectedId] = useState(null);
   const [detail, setDetail] = useState(null);
-  const [editing, setEditing] = useState({ md: "", enabled: true, bothy: "" });
+  const [editing, setEditing] = useState({ md: "", enabled: true, troveKb: "" });
   const [saving, setSaving] = useState(false);
   const [loading, setLoading] = useState(true);
-  // Known Bothy collections (id -> name), from the Bothy integration's
+  // Known Trove KB collections (id -> name), from the Trove KB integration's
   // last successful connection test. Drives the datalist; any UUID is accepted.
-  const [bothyNames, setBothyNames] = useState({});
-  const [bothyLive, setBothyLive] = useState(null); // [{id,name,articles}] from Bothy, or null when unreachable
-  const [bothyManual, setBothyManual] = useState(false);
+  const [troveKbNames, setTroveKbNames] = useState({});
+  const [troveKbLive, setTroveKbLive] = useState(null); // [{id,name,articles}] from Trove KB, or null when unreachable
+  const [troveKbManual, setTroveKbManual] = useState(false);
   useEffect(() => {
-    api.get("/api/bothy-settings").then((b) => setBothyNames(b?.collection_names || {})).catch(() => {});
-    api.get("/api/bothy-settings/collections").then(setBothyLive).catch(() => setBothyLive(null));
+    api.get("/api/trove-kb-settings").then((b) => setTroveKbNames(b?.collection_names || {})).catch(() => {});
+    api.get("/api/trove-kb-settings/collections").then(setTroveKbLive).catch(() => setTroveKbLive(null));
   }, []);
-  const bothyOptions = (() => {
+  const troveKbOptions = (() => {
     const out = new Map();
-    for (const c of bothyLive || []) out.set(c.id, { id: c.id, name: c.name, articles: c.articles });
-    for (const [id, name] of Object.entries(bothyNames)) if (!out.has(id)) out.set(id, { id, name, articles: null });
+    for (const c of troveKbLive || []) out.set(c.id, { id: c.id, name: c.name, articles: c.articles });
+    for (const [id, name] of Object.entries(troveKbNames)) if (!out.has(id)) out.set(id, { id, name, articles: null });
     return [...out.values()].sort((a, b) => a.name.localeCompare(b.name));
   })();
 
@@ -472,7 +472,7 @@ function ProjectContextsPane() {
     api.get(`/api/ai-settings/projects/${selectedId}`)
       .then((d) => {
         setDetail(d);
-        setEditing({ md: d.ai_context_md || "", enabled: d.ai_context_enabled !== false, bothy: d.bothy_collection_id || "" });
+        setEditing({ md: d.ai_context_md || "", enabled: d.ai_context_enabled !== false, troveKb: d.trove_kb_collection_id || "" });
       })
       .catch(() => setDetail(null));
   }, [selectedId]);
@@ -483,7 +483,7 @@ function ProjectContextsPane() {
       const r = await api.patch(`/api/ai-settings/projects/${selectedId}`, {
         ai_context_md: editing.md || null,
         ai_context_enabled: editing.enabled,
-        bothy_collection_id: editing.bothy.trim() || null,
+        trove_kb_collection_id: editing.troveKb.trim() || null,
       });
       setDetail(r);
       // Reflect updated has_context flag in the left list
@@ -493,7 +493,7 @@ function ProjectContextsPane() {
             ? {
                 ...p,
                 ai_context_enabled: r.ai_context_enabled,
-                bothy_collection_id: r.bothy_collection_id || null,
+                trove_kb_collection_id: r.trove_kb_collection_id || null,
                 has_context: !!(r.ai_context_md && r.ai_context_md.trim()),
                 context_length: (r.ai_context_md || "").length,
               }
@@ -543,8 +543,8 @@ function ProjectContextsPane() {
                         {p.name}
                       </span>
                       <span className="flex items-center gap-1">
-                        {p.bothy_collection_id && (
-                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-300" title="Bothy collection mapped">KB</span>
+                        {p.trove_kb_collection_id && (
+                          <span className="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-600 dark:text-emerald-300" title="Trove KB collection mapped">KB</span>
                         )}
                         {p.has_context && (
                           <span className="text-[10px] px-1.5 py-0.5 rounded bg-brand/15 text-brand">
@@ -583,37 +583,37 @@ function ProjectContextsPane() {
                 </label>
               </div>
               <div className="mb-3 rounded-md border border-border bg-surface-2/50 p-3">
-                <label className="block text-sm font-medium text-fg">Bothy collection ID</label>
+                <label className="block text-sm font-medium text-fg">Trove KB collection ID</label>
                 <p className="text-[11px] text-fg-muted mb-2">
                   The knowledge base collection this project's documentation lives in. Ticket suggestions search it first and resolution drafts prefer it.
                 </p>
                 {(() => {
-                  const known = bothyOptions.some((o) => o.id === editing.bothy);
-                  const manual = bothyManual || (!!editing.bothy && !known);
+                  const known = troveKbOptions.some((o) => o.id === editing.troveKb);
+                  const manual = troveKbManual || (!!editing.troveKb && !known);
                   return manual ? (
                     <div className="flex items-center gap-2">
                       <input
-                        value={editing.bothy}
-                        onChange={(e) => setEditing((p) => ({ ...p, bothy: e.target.value.trim() }))}
+                        value={editing.troveKb}
+                        onChange={(e) => setEditing((p) => ({ ...p, troveKb: e.target.value.trim() }))}
                         placeholder="00000000-0000-0000-0000-000000000000"
                         className="flex-1 border border-border-strong rounded-md px-2 py-1.5 text-xs font-mono"
                       />
-                      {bothyOptions.length > 0 && (
-                        <button type="button" onClick={() => setBothyManual(false)} className="text-[11px] text-brand hover:underline whitespace-nowrap">Pick from list</button>
+                      {troveKbOptions.length > 0 && (
+                        <button type="button" onClick={() => setTroveKbManual(false)} className="text-[11px] text-brand hover:underline whitespace-nowrap">Pick from list</button>
                       )}
                     </div>
                   ) : (
                     <div className="flex items-center gap-2">
                       <select
-                        value={editing.bothy}
+                        value={editing.troveKb}
                         onChange={(e) => {
-                          if (e.target.value === "__manual__") { setBothyManual(true); return; }
-                          setEditing((p) => ({ ...p, bothy: e.target.value }));
+                          if (e.target.value === "__manual__") { setTroveKbManual(true); return; }
+                          setEditing((p) => ({ ...p, troveKb: e.target.value }));
                         }}
                         className="flex-1 border border-border-strong rounded-md px-2 py-1.5 text-sm"
                       >
                         <option value="">— none —</option>
-                        {bothyOptions.map((o) => (
+                        {troveKbOptions.map((o) => (
                           <option key={o.id} value={o.id}>{o.name}{o.articles != null ? ` (${o.articles})` : ""}</option>
                         ))}
                         <option value="__manual__">Paste a collection ID…</option>
@@ -621,13 +621,13 @@ function ProjectContextsPane() {
                     </div>
                   );
                 })()}
-                {editing.bothy && (
-                  <div className="text-[11px] text-fg-dim mt-1 font-mono">{editing.bothy}{bothyNames[editing.bothy] ? ` · ${bothyNames[editing.bothy]}` : ""}</div>
+                {editing.troveKb && (
+                  <div className="text-[11px] text-fg-dim mt-1 font-mono">{editing.troveKb}{troveKbNames[editing.troveKb] ? ` · ${troveKbNames[editing.troveKb]}` : ""}</div>
                 )}
-                {bothyLive === null && bothyOptions.length === 0 && (
-                  <div className="text-[11px] text-fg-dim mt-1">Bothy not reachable or not connected. Paste the collection ID from Bothy → Admin → Knowledge base.</div>
+                {troveKbLive === null && troveKbOptions.length === 0 && (
+                  <div className="text-[11px] text-fg-dim mt-1">Trove KB not reachable or not connected. Paste the collection ID from Trove KB → Admin → Knowledge base.</div>
                 )}
-                {editing.bothy && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(editing.bothy) && (
+                {editing.troveKb && !/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(editing.troveKb) && (
                   <div className="text-[11px] text-amber-500 mt-1">Not a UUID yet</div>
                 )}
               </div>

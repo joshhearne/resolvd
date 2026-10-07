@@ -7,7 +7,7 @@
 //   draft       the tech's response as written
 //   corrections what the tech adds that the user left out ("only after the
 //               lid is closed") — the tribal knowledge that fixes the scope
-// plus the project context an admin wrote and the Bothy articles that match.
+// plus the project context an admin wrote and the Trove KB articles that match.
 // The tech reviews it in a form, includes/excludes articles, writes
 // corrections, then composes:
 //   extractive  (default, no AI) reply = the draft, plus public article links;
@@ -19,8 +19,8 @@
 // corrections carried into the next brief on the same ticket.
 
 const { pool } = require('../db/pool');
-const bothy = require('./bothy');
-const resolution = require('./bothyResolution');
+const troveKb = require('./troveKb');
+const resolution = require('./troveKbResolution');
 const aiRewrite = require('./aiRewrite');
 const { isProjectHandler } = require('./ticketHelpers');
 
@@ -86,7 +86,7 @@ async function ticketComments(ticket) {
 
 async function projectInfo(projectId) {
   const r = await pool.query(
-    `SELECT id, name, bothy_collection_id, ai_context_md, COALESCE(ai_context_enabled, TRUE) AS ai_context_enabled FROM projects WHERE id = $1`,
+    `SELECT id, name, trove_kb_collection_id, ai_context_md, COALESCE(ai_context_enabled, TRUE) AS ai_context_enabled FROM projects WHERE id = $1`,
     [projectId]
   );
   return r.rows[0] || {};
@@ -107,10 +107,10 @@ async function lastCorrections(ticketId) {
 async function findArticles({ ticket, draft, collectionId }) {
   const byId = new Map();
   const add = (hits) => { for (const h of hits) if (!byId.has(h.article_id)) byId.set(h.article_id, h); };
-  try { add(await bothy.search({ q: ticket.title, limit: MAX_ARTICLES, handler: true, preferCollectionId: collectionId, orFallback: true })); } catch (err) { console.warn('assist title search:', err.message); }
+  try { add(await troveKb.search({ q: ticket.title, limit: MAX_ARTICLES, handler: true, preferCollectionId: collectionId, orFallback: true })); } catch (err) { console.warn('assist title search:', err.message); }
   const terms = keyTerms(draft);
   if (terms) {
-    try { add(await bothy.search({ q: terms.split(' ').join(' OR '), limit: MAX_ARTICLES, handler: true, preferCollectionId: collectionId })); } catch (err) { console.warn('assist draft search:', err.message); }
+    try { add(await troveKb.search({ q: terms.split(' ').join(' OR '), limit: MAX_ARTICLES, handler: true, preferCollectionId: collectionId })); } catch (err) { console.warn('assist draft search:', err.message); }
   }
   return [...byId.values()].slice(0, MAX_ARTICLES).map((h, i) => ({
     article_id: h.article_id,
@@ -131,10 +131,10 @@ async function findArticles({ ticket, draft, collectionId }) {
 // ─── Brief ──────────────────────────────────────────────────────────────
 
 async function buildBrief({ ticket, draft }) {
-  const settings = await bothy.getSettings();
+  const settings = await troveKb.getSettings();
   const project = await projectInfo(ticket.project_id);
   const { reported, team } = await ticketComments(ticket);
-  const articles = settings.enabled ? await findArticles({ ticket, draft, collectionId: project.bothy_collection_id }) : [];
+  const articles = settings.enabled ? await findArticles({ ticket, draft, collectionId: project.trove_kb_collection_id }) : [];
   return {
     ticket: { id: ticket.id, title: ticket.title, description: trimTo(ticket.description, 4000), submitted_by_name: ticket.submitted_by_name || null },
     reported: { trusted: true, items: reported },
@@ -143,13 +143,13 @@ async function buildBrief({ ticket, draft }) {
     corrections: await lastCorrections(ticket.id),
     project: {
       id: project.id, name: project.name,
-      collection_id: project.bothy_collection_id || null,
-      collection_name: project.bothy_collection_id ? settings.collection_names[project.bothy_collection_id] || null : null,
+      collection_id: project.trove_kb_collection_id || null,
+      collection_name: project.trove_kb_collection_id ? settings.collection_names[project.trove_kb_collection_id] || null : null,
       context_md: project.ai_context_enabled ? (project.ai_context_md || '') : '',
       context_enabled: project.ai_context_enabled !== false,
     },
     articles,
-    bothy_enabled: settings.enabled,
+    troveKb_enabled: settings.enabled,
   };
 }
 
@@ -270,7 +270,7 @@ async function compose({ userId, ticket, rawBrief, wantAi }) {
   if (!brief.draft.text && !wantAi) throw httpError(400, 'Write a response first');
 
   const includedIds = brief.articles.filter((a) => a.included).map((a) => a.article_id);
-  const settled = await Promise.allSettled(includedIds.map((id) => bothy.getArticle(id, { handler: true })));
+  const settled = await Promise.allSettled(includedIds.map((id) => troveKb.getArticle(id, { handler: true })));
   const fullArticles = settled.filter((s) => s.status === 'fulfilled').map((s) => s.value);
 
   let mode = 'extractive';

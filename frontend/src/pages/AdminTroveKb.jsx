@@ -2,11 +2,11 @@ import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
 
-// Admin → Integrations → Bothy. Two panes:
-//   Connection   — Bothy URL, public KB URL, API key, enabled, Test
-//   Collections  — which Bothy collections Resolvd shows, and to whom:
+// Admin → Integrations → Trove KB. Two panes:
+//   Connection   — Trove KB URL, public KB URL, API key, enabled, Test
+//   Collections  — which Trove KB collections Resolvd shows, and to whom:
 //                  Internal (handlers only) / Public (everyone) / Hidden
-// Resolvd holds ONE Bothy API key and enforces visibility itself; Bothy
+// Resolvd holds ONE Trove KB API key and enforces visibility itself; Trove KB
 // never learns who the Resolvd user is.
 
 const SECTIONS = [
@@ -15,23 +15,23 @@ const SECTIONS = [
   { key: "migration", label: "Replace local KB" },
 ];
 
-export default function AdminBothy() {
+export default function AdminTroveKb() {
   const [section, setSection] = useState("connection");
   const [settings, setSettings] = useState(null);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
 
   useEffect(() => {
-    api.get("/api/bothy-settings")
+    api.get("/api/trove-kb-settings")
       .then(setSettings)
-      .catch((e) => toast.error(e.message || "Failed to load Bothy settings"))
+      .catch((e) => toast.error(e.message || "Failed to load Trove KB settings"))
       .finally(() => setLoading(false));
   }, []);
 
   async function patch(partial) {
     setBusy(true);
     try {
-      const updated = await api.patch("/api/bothy-settings", partial);
+      const updated = await api.patch("/api/trove-kb-settings", partial);
       setSettings(updated);
       toast.success("Saved");
       return updated;
@@ -49,7 +49,7 @@ export default function AdminBothy() {
   return (
     <div className="flex flex-col md:flex-row gap-6 items-start">
       <aside className="md:w-48 md:flex-shrink-0 md:sticky md:top-4 w-full">
-        <h1 className="text-lg font-semibold text-fg mb-1">Bothy</h1>
+        <h1 className="text-lg font-semibold text-fg mb-1">Trove KB</h1>
         <p className="text-xs text-fg-muted mb-3">Company knowledge base</p>
         <nav className="space-y-0.5">
           {SECTIONS.map((s) => (
@@ -83,7 +83,7 @@ export default function AdminBothy() {
 
 function StatusLine({ settings }) {
   if (!settings.kms_available) {
-    return <Note tone="warn">RESOLVD_MASTER_KEY is not configured, so the Bothy API key cannot be stored. Set it up under Admin → Encryption first.</Note>;
+    return <Note tone="warn">RESOLVD_MASTER_KEY is not configured, so the Trove KB API key cannot be stored. Set it up under Admin → Encryption first.</Note>;
   }
   if (!settings.has_api_key) return <Note>No API key saved yet.</Note>;
   if (settings.last_error) return <Note tone="warn">Last attempt failed: {settings.last_error}</Note>;
@@ -115,17 +115,17 @@ function ConnectionPane({ settings, setSettings, patch, busy }) {
   async function saveKey() {
     if (!keyInput.trim()) return;
     try {
-      const r = await api.post("/api/bothy-settings/api-key", { api_key: keyInput.trim() });
+      const r = await api.post("/api/trove-kb-settings/api-key", { api_key: keyInput.trim() });
       setSettings((s) => ({ ...s, has_api_key: r.has_api_key, enabled: r.enabled, last_error: null }));
       setKeyInput("");
-      toast.success("Bothy API key saved");
+      toast.success("Trove KB API key saved");
     } catch (e) { toast.error(e.message); }
   }
 
   async function clearKey() {
-    if (!confirm("Remove the Bothy API key? Resolvd stops reading Bothy until a new one is saved.")) return;
+    if (!confirm("Remove the Trove KB API key? Resolvd stops reading Trove KB until a new one is saved.")) return;
     try {
-      const r = await api.post("/api/bothy-settings/api-key", { api_key: "" });
+      const r = await api.post("/api/trove-kb-settings/api-key", { api_key: "" });
       setSettings((s) => ({ ...s, has_api_key: r.has_api_key, enabled: r.enabled }));
       toast.success("Key removed");
     } catch (e) { toast.error(e.message); }
@@ -135,14 +135,14 @@ function ConnectionPane({ settings, setSettings, patch, busy }) {
     setTesting(true);
     setTestResult(null);
     try {
-      const r = await api.post("/api/bothy-settings/test", {});
+      const r = await api.post("/api/trove-kb-settings/test", {});
       setTestResult(r);
-      const fresh = await api.get("/api/bothy-settings");
+      const fresh = await api.get("/api/trove-kb-settings");
       setSettings(fresh);
       toast.success(`Connected. ${r.collections.length} collection${r.collections.length === 1 ? "" : "s"} readable.`);
     } catch (e) {
       toast.error(e.message || "Test failed");
-      try { setSettings(await api.get("/api/bothy-settings")); } catch { /* keep */ }
+      try { setSettings(await api.get("/api/trove-kb-settings")); } catch { /* keep */ }
     } finally { setTesting(false); }
   }
 
@@ -153,7 +153,7 @@ function ConnectionPane({ settings, setSettings, patch, busy }) {
           <div>
             <h2 className="text-base font-semibold text-fg">Connection</h2>
             <p className="text-xs text-fg-muted mt-1">
-              Create an API key in Bothy (Admin → API keys): scope <code>read</code>, knowledge base only, and grant it read on each collection Resolvd should see.
+              Create an API key in Trove KB (Admin → API keys): scope <code>read</code>, knowledge base only, and grant it read on each collection Resolvd should see.
             </p>
           </div>
           <label className="flex items-center gap-2 text-sm whitespace-nowrap">
@@ -171,12 +171,12 @@ function ConnectionPane({ settings, setSettings, patch, busy }) {
 
         <div className="grid gap-3 sm:grid-cols-2">
           <label className="block text-sm">
-            <span className="text-fg-muted text-xs">Bothy URL (staff)</span>
+            <span className="text-fg-muted text-xs">Trove KB URL (staff)</span>
             <input
               type="url"
               value={baseUrl}
               onChange={(e) => setBaseUrl(e.target.value)}
-              placeholder="https://bothy.example.com"
+              placeholder="https://troveKb.example.com"
               className="mt-1 w-full bg-surface-2 border border-border rounded px-2 py-1.5 text-sm"
             />
           </label>
@@ -205,7 +205,7 @@ function ConnectionPane({ settings, setSettings, patch, busy }) {
               type={showKey ? "text" : "password"}
               value={keyInput}
               onChange={(e) => setKeyInput(e.target.value)}
-              placeholder={settings.has_api_key ? "•••••••• (saved) — paste to replace" : "bothy_…"}
+              placeholder={settings.has_api_key ? "•••••••• (saved) — paste to replace" : "trove_…"}
               autoComplete="off"
               className="flex-1 min-w-[220px] bg-surface-2 border border-border rounded px-2 py-1.5 text-sm font-mono"
             />
@@ -236,7 +236,7 @@ function ConnectionPane({ settings, setSettings, patch, busy }) {
       <section className="bg-surface border border-border rounded-lg p-4 space-y-3">
         <h2 className="text-base font-semibold text-fg">Held-back articles</h2>
         <p className="text-xs text-fg-muted">
-          Bothy can hold single articles back from its public site. Resolvd reads through an API key, which sees them anyway, so this decides what non-handlers (Submitters, Viewers) get.
+          Trove KB can hold single articles back from its public site. Resolvd reads through an API key, which sees them anyway, so this decides what non-handlers (Submitters, Viewers) get.
         </p>
         <label className="flex items-start gap-2 text-sm">
           <input
@@ -247,8 +247,8 @@ function ConnectionPane({ settings, setSettings, patch, busy }) {
             className="mt-0.5"
           />
           <span>
-            <span className="font-medium">Strict:</span> non-handlers see an article only when Bothy confirms it is on the public site.
-            <span className="block text-xs text-fg-muted mt-0.5">Until Bothy returns that confirmation on search results, non-handlers see nothing from Bothy. Off = trust the whole Public collection, held-back articles included.</span>
+            <span className="font-medium">Strict:</span> non-handlers see an article only when Trove KB confirms it is on the public site.
+            <span className="block text-xs text-fg-muted mt-0.5">Until Trove KB returns that confirmation on search results, non-handlers see nothing from Trove KB. Off = trust the whole Public collection, held-back articles included.</span>
           </span>
         </label>
       </section>
@@ -262,7 +262,7 @@ function ConnectionPane({ settings, setSettings, patch, busy }) {
             disabled={busy}
             onChange={(e) => patch({ suggestions_enabled: e.target.checked })}
           />
-          Suggest Bothy articles on tickets from the ticket title
+          Suggest Trove KB articles on tickets from the ticket title
         </label>
       </section>
     </div>
@@ -276,7 +276,7 @@ function CollectionsPane({ settings, patch, busy }) {
 
   useEffect(() => {
     let cancelled = false;
-    api.get("/api/bothy-settings/collections")
+    api.get("/api/trove-kb-settings/collections")
       .then((rows) => { if (!cancelled) setLive(rows); })
       .catch((e) => { if (!cancelled) setLiveError(e.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
@@ -286,7 +286,7 @@ function CollectionsPane({ settings, patch, busy }) {
   const internal = new Set(settings.internal_collection_ids || []);
   const pub = new Set(settings.public_collection_ids || []);
 
-  // Live list first; mapped ids Bothy no longer reports are kept so the
+  // Live list first; mapped ids Trove KB no longer reports are kept so the
   // admin can still un-map them.
   const rows = [];
   const seen = new Set();
@@ -323,8 +323,8 @@ function CollectionsPane({ settings, patch, busy }) {
         </p>
       </div>
 
-      {loading && <div className="text-sm text-fg-muted">Loading collections from Bothy…</div>}
-      {liveError && <Note tone="warn">Could not list collections from Bothy: {liveError}. Saved mappings are shown below.</Note>}
+      {loading && <div className="text-sm text-fg-muted">Loading collections from Trove KB…</div>}
+      {liveError && <Note tone="warn">Could not list collections from Trove KB: {liveError}. Saved mappings are shown below.</Note>}
 
       {!loading && rows.length === 0 && <div className="text-sm text-fg-dim italic">No collections readable with this key.</div>}
 
@@ -337,7 +337,7 @@ function CollectionsPane({ settings, patch, busy }) {
                 <div className="flex-1 min-w-[200px]">
                   <div className="text-sm font-medium text-fg">{row.name}</div>
                   <div className="text-[11px] text-fg-dim font-mono">
-                    {row.articles != null ? `${row.articles} articles · ` : ""}{row.id}{row.live ? "" : " · not reported by Bothy"}
+                    {row.articles != null ? `${row.articles} articles · ` : ""}{row.id}{row.live ? "" : " · not reported by Trove KB"}
                   </div>
                 </div>
                 <div className="inline-flex rounded-md border border-border overflow-hidden text-xs">
@@ -371,7 +371,7 @@ function MigrationPane({ settings, patch, busy }) {
 
   async function loadPlan() {
     setLoading(true); setError(null);
-    try { setPlan(await api.get("/api/bothy-settings/migration/plan")); }
+    try { setPlan(await api.get("/api/trove-kb-settings/migration/plan")); }
     catch (e) { setError(e.message); }
     finally { setLoading(false); }
   }
@@ -379,13 +379,13 @@ function MigrationPane({ settings, patch, busy }) {
 
   async function apply() {
     if (!plan) return;
-    const msg = `Move ${plan.links_movable} ticket link${plan.links_movable === 1 ? "" : "s"} and ${plan.runs_movable} runbook run${plan.runs_movable === 1 ? "" : "s"} to Bothy, archive ${plan.articles.filter((a) => a.bothy_article_id).length} local articles, and turn the local knowledge base off?${plan.missing ? `\n\n${plan.missing} local article(s) have no Bothy twin and will be left as they are.` : ""}\n\nLocal rows are kept for rollback.`;
+    const msg = `Move ${plan.links_movable} ticket link${plan.links_movable === 1 ? "" : "s"} and ${plan.runs_movable} runbook run${plan.runs_movable === 1 ? "" : "s"} to Trove KB, archive ${plan.articles.filter((a) => a.trove_kb_article_id).length} local articles, and turn the local knowledge base off?${plan.missing ? `\n\n${plan.missing} local article(s) have no Trove KB twin and will be left as they are.` : ""}\n\nLocal rows are kept for rollback.`;
     if (!confirm(msg)) return;
     setApplying(true);
     try {
-      const r = await api.post("/api/bothy-settings/migration/apply", {});
+      const r = await api.post("/api/trove-kb-settings/migration/apply", {});
       setResult(r);
-      toast.success("Local knowledge base replaced by Bothy");
+      toast.success("Local knowledge base replaced by Trove KB");
       await loadPlan();
       try { await patch({}); } catch { /* refresh only */ }
     } catch (e) { toast.error(e.message); }
@@ -398,8 +398,8 @@ function MigrationPane({ settings, patch, busy }) {
         <div>
           <h2 className="text-base font-semibold text-fg">Replace the local knowledge base</h2>
           <p className="text-xs text-fg-muted mt-1">
-            Local articles were exported to Bothy with <code>external_id = resolvd:kb:&lt;id&gt;</code>. This matches each one to its Bothy twin,
-            copies ticket links, re-keys runbook progress onto Bothy step ids, archives the local articles, and hides the local editor.
+            Local articles were exported to Trove KB with <code>external_id = resolvd:kb:&lt;id&gt;</code>. This matches each one to its Trove KB twin,
+            copies ticket links, re-keys runbook progress onto Trove KB step ids, archives the local articles, and hides the local editor.
             Nothing is deleted.
           </p>
         </div>
@@ -409,7 +409,7 @@ function MigrationPane({ settings, patch, busy }) {
         </label>
       </div>
 
-      {loading && <div className="text-sm text-fg-muted">Matching local articles against Bothy…</div>}
+      {loading && <div className="text-sm text-fg-muted">Matching local articles against Trove KB…</div>}
       {error && <Note tone="warn">{error}</Note>}
       {result && <Note tone="ok">Done: {result.links_copied} links copied, {result.runs_moved} runbook runs moved ({result.runs_steps_dropped} step states had no matching step), {result.articles_archived} local articles archived{result.skipped_missing ? `, ${result.skipped_missing} skipped (no twin)` : ""}.</Note>}
 
@@ -417,14 +417,14 @@ function MigrationPane({ settings, patch, busy }) {
         <>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-2 text-xs">
             <Stat label="Local articles" value={plan.articles.length} />
-            <Stat label="Matched in Bothy" value={plan.articles.length - plan.missing} warn={plan.missing > 0} />
+            <Stat label="Matched in Trove KB" value={plan.articles.length - plan.missing} warn={plan.missing > 0} />
             <Stat label="Ticket links" value={`${plan.links_movable} / ${plan.links_total}`} />
             <Stat label="Runbook runs" value={`${plan.runs_movable} / ${plan.runs.length}`} />
           </div>
           <div className="overflow-x-auto border border-border rounded-md">
             <table className="w-full text-xs">
               <thead className="bg-surface-2 text-fg-muted">
-                <tr><th className="text-left px-2 py-1.5">Local</th><th className="text-left px-2 py-1.5">Project</th><th className="text-left px-2 py-1.5">Kind</th><th className="text-right px-2 py-1.5">Links</th><th className="text-right px-2 py-1.5">Runs</th><th className="text-left px-2 py-1.5">Bothy twin</th></tr>
+                <tr><th className="text-left px-2 py-1.5">Local</th><th className="text-left px-2 py-1.5">Project</th><th className="text-left px-2 py-1.5">Kind</th><th className="text-right px-2 py-1.5">Links</th><th className="text-right px-2 py-1.5">Runs</th><th className="text-left px-2 py-1.5">Trove KB twin</th></tr>
               </thead>
               <tbody className="divide-y divide-border">
                 {plan.articles.map((a) => (
@@ -435,9 +435,9 @@ function MigrationPane({ settings, patch, busy }) {
                     <td className="px-2 py-1.5 text-right font-mono">{a.links}</td>
                     <td className="px-2 py-1.5 text-right font-mono">{a.runs}</td>
                     <td className="px-2 py-1.5">
-                      {a.bothy_article_id ? (
+                      {a.trove_kb_article_id ? (
                         <span className={a.match === "ok" ? "text-emerald-600 dark:text-emerald-300" : "text-amber-500"}>
-                          {a.bothy_collection} {a.match === "kind_mismatch" ? `(kind: ${a.bothy_kind})` : ""}
+                          {a.troveKb_collection} {a.match === "kind_mismatch" ? `(kind: ${a.troveKb_kind})` : ""}
                         </span>
                       ) : <span className="text-red-500">no match</span>}
                     </td>
@@ -447,11 +447,11 @@ function MigrationPane({ settings, patch, busy }) {
             </table>
           </div>
           {plan.runs.some((r) => r.steps && r.steps.matched < r.steps.total) && (
-            <Note tone="warn">Some runbook runs have step states that no longer match a step in Bothy; those checkmarks would be dropped.</Note>
+            <Note tone="warn">Some runbook runs have step states that no longer match a step in Trove KB; those checkmarks would be dropped.</Note>
           )}
           <div className="flex items-center gap-3">
             <button onClick={apply} disabled={applying || plan.links_movable + plan.runs_movable + (plan.articles.length - plan.missing) === 0} className="btn btn-primary btn-sm">
-              {applying ? "Applying…" : "Replace local KB with Bothy"}
+              {applying ? "Applying…" : "Replace local KB with Trove KB"}
             </button>
             <button onClick={loadPlan} disabled={loading} className="btn btn-secondary btn-sm">Re-check</button>
           </div>
