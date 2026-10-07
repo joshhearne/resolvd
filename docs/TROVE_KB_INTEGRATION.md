@@ -239,6 +239,15 @@ external_id, kind}` so Resolvd can drop its cache instead of polling.
   `resolvd:ticket:<id>` into the project's collection, internal-only, category =
   project, subcategory Drafts) — needs the key to have the `write` scope and a
   write grant on that collection.
+- **Browsing** (2026-10-07): `/kb` lists readable collections as cards;
+  `/kb/collection/:id` = category/subcategory rail with counts
+  (`GET /api/trove-kb/collections/:id`, tree built from Trove's flat pairs),
+  article list (`GET /api/trove-kb/articles`, sort name|modified, cursor paging,
+  kind filter), scoped search. Non-handler pages are public-confirmed per row,
+  so a page may come back shorter than requested.
+- **New collections**: `syncCollections()` hourly, on test, and on demand. Public
+  ones auto-mapped Public when `auto_map_public` (default on);
+  `known_collection_ids` preserves an admin's Hidden choice.
 - Not done: the suggestions *banner* still uses the local ranker; no UI yet for
   browsing saved briefs (the API exists); `audience` still pending in Trove KB.
 
