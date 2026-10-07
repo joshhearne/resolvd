@@ -13,7 +13,7 @@ const PUBLIC = '14920cca-851a-4752-a547-b08478fc2288';
 const ART_PUB = '11111111-1111-4111-8111-111111111111';
 const ART_HELD = '22222222-2222-4222-8222-222222222222';
 
-let troveKb; let pool; let calls;
+let troveKb; let pool; let calls; let AUDIENCE = false;
 
 function jsonResponse(status, body, headers = {}) {
   return new Response(JSON.stringify(body), { status, headers: { 'Content-Type': 'application/json', ...headers } });
@@ -53,6 +53,13 @@ beforeEach(() => {
   globalThis.fetch = vi.fn(async (url, init = {}) => {
     const u = new URL(url);
     calls.push({ path: u.pathname + u.search, method: init.method || 'GET', auth: init.headers?.Authorization });
+    if (u.pathname === '/api/v1/openapi.json') {
+      return jsonResponse(200, { paths: AUDIENCE ? {
+        '/kb/search': { get: { parameters: [{ name: 'audience' }] } },
+        '/kb/articles': { get: { parameters: [{ name: 'audience' }] } },
+        '/kb/articles/{id}': { get: { parameters: [{ name: 'audience' }] } },
+      } : {} });
+    }
     if (u.pathname === '/api/v1/kb/collections') {
       return jsonResponse(200, { data: [
         { id: INTERNAL, name: 'MOT IT Internal', public: false, writable: true, articles: 9 },
@@ -122,6 +129,22 @@ describe('services/troveKb (REST client)', () => {
     const held = await troveKb.getArticle(ART_HELD, { handler: true });
     expect(held.internal_only).toBe(true);
     expect(held.steps[0]).toMatchObject({ id: 'abc12345', canned: 'Fidium VM PIN Reset' });
+  });
+
+  it('hands hold-back filtering to Trove KB when it declares `audience`', async () => {
+    AUDIENCE = true;
+    troveKb.invalidateCache();
+    try {
+      const hits = await troveKb.search({ q: 'match', handler: false });
+      const searches = calls.filter((c) => c.path.startsWith('/api/v1/kb/search'));
+      expect(searches.every((c) => c.path.includes('audience=public'))).toBe(true);
+      // No per-hit article fetches: Trove KB already filtered.
+      expect(calls.some((c) => c.path.startsWith('/api/v1/kb/articles/'))).toBe(false);
+      expect(hits.every((h) => h.public === true)).toBe(true);
+      const art = await troveKb.getArticle(ART_PUB, { handler: false });
+      expect(calls.at(-1).path).toBe(`/api/v1/kb/articles/${ART_PUB}?audience=public`);
+      expect(art.public).toBe(true);
+    } finally { AUDIENCE = false; troveKb.invalidateCache(); }
   });
 
   it('retries with OR of key terms when the exact query finds nothing', async () => {

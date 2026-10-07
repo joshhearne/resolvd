@@ -38,6 +38,7 @@ const REQUEST_TIMEOUT_MS = 12 * 1000;
 let _settings = null;
 let _settingsAt = 0;
 const _results = new Map(); // key -> { at, value }
+let _features = { at: 0, value: null }; // OpenAPI-derived capabilities, see features()
 
 function httpError(status, message) {
   const e = new Error(message);
@@ -50,6 +51,7 @@ function invalidateCache() {
   _settingsAt = 0;
   _results.clear();
   _collectionsCache = null;
+  _features = { at: 0, value: null };
 }
 
 function normalizeUrl(v) {
@@ -221,7 +223,7 @@ function verifyWebhookSignature(secret, rawBody, header) {
 function invalidateArticle(articleId) {
   const id = String(articleId || '').toLowerCase();
   for (const k of [..._results.keys()]) {
-    if (k === `article:${id}` || k.startsWith('search:')) _results.delete(k);
+    if (k === `article:key:${id}` || k === `article:public:${id}` || k.startsWith('search:') || k.startsWith('list:')) _results.delete(k);
   }
   _collectionsCache = null;
 }
@@ -465,8 +467,13 @@ async function searchOnce({ settings, query, limit, collectionId, kind, handler,
     } catch { /* fan out as before */ }
   }
 
-  const run = (cid) => cached(`search:${cid || '*'}:${kind || ''}:${lim}:${query}`, async () =>
-    (await rest(`/kb/search${qs({ q: query, limit: lim, collection_id: cid, kind })}`, { settings }))?.data || []);
+  // Non-handlers read as the public site would. When Trove KB honors
+  // `audience`, the result is already public-only; otherwise each hit is
+  // confirmed below.
+  const viaAudience = !handler && await audienceSupported(settings);
+  const audience = viaAudience ? 'public' : null;
+  const run = (cid) => cached(`search:${audience || 'key'}:${cid || '*'}:${kind || ''}:${lim}:${query}`, async () =>
+    (await rest(`/kb/search${qs({ q: query, limit: lim, collection_id: cid, kind, audience })}`, { settings }))?.data || []);
 
   let hits;
   if (targets === null) {
@@ -496,17 +503,20 @@ async function searchOnce({ settings, query, limit, collectionId, kind, handler,
     seen.add(h.id);
     out.push(shapeHit(settings, h));
   }
-  if (!handler) {
+  if (!handler && viaAudience) {
+    for (const h of out) h.public = true;
+  } else if (!handler) {
     // Confirm each hit is really public before a non-handler sees it.
     const checks = await Promise.allSettled(out.map((h) => fetchArticle(settings, h.article_id)));
     out = out.filter((h, i) => checks[i].status === 'fulfilled' && publicEnough(settings, checks[i].value));
-    for (const [i, h] of out.entries()) h.public = true, void i;
+    for (const h of out) h.public = true;
   }
   return out.slice(0, lim);
 }
 
-async function fetchArticle(settings, id) {
-  return cached(`article:${id}`, async () => shapeArticle(settings, await rest(`/kb/articles/${id}`, { settings })));
+async function fetchArticle(settings, id, audience = null) {
+  return cached(`article:${audience || 'key'}:${id}`, async () =>
+    shapeArticle(settings, await rest(`/kb/articles/${id}${qs({ audience })}`, { settings })));
 }
 
 // One article with its whole body. 404 when outside the caller's visible
@@ -516,12 +526,14 @@ async function getArticle(articleId, { handler = false } = {}) {
   if (!settings.enabled) throw httpError(503, 'Trove KB is not configured');
   const id = String(articleId || '').toLowerCase();
   if (!/^[0-9a-f-]{36}$/.test(id)) throw httpError(404, 'Article not found');
+  const viaAudience = !handler && await audienceSupported(settings);
   let article;
-  try { article = await fetchArticle(settings, id); }
+  try { article = await fetchArticle(settings, id, viaAudience ? 'public' : null); }
   catch (err) { if (err.httpStatus === 404) throw httpError(404, 'Article not found'); throw err; }
   const vis = visibleCollections(settings, handler);
   if (vis.ids !== null && !vis.ids.includes(article.collection_id)) throw httpError(404, 'Article not found');
-  if (!handler && !publicEnough(settings, article)) throw httpError(404, 'Article not found');
+  if (!handler && !viaAudience && !publicEnough(settings, article)) throw httpError(404, 'Article not found');
+  if (viaAudience) article.public = true;
   return article;
 }
 
@@ -579,14 +591,16 @@ async function getCollection(collectionId, { handler = false, kind = null } = {}
   const id = String(collectionId || '').toLowerCase();
   const vis = visibleCollections(settings, handler);
   if (vis.ids !== null && !vis.ids.includes(id)) throw httpError(404, 'Collection not found');
-  const d = await cached(`collection:${id}:${kind || ''}`, () => rest(`/kb/collections/${id}${qs({ kind })}`, { settings }));
-  if (!handler && d.public !== true && settings.public_strict) throw httpError(404, 'Collection not found');
+  const viaAudience = !handler && await audienceSupported(settings);
+  const audience = viaAudience ? 'public' : null;
+  const d = await cached(`collection:${audience || 'key'}:${id}:${kind || ''}`, () => rest(`/kb/collections/${id}${qs({ kind, audience })}`, { settings }));
+  if (!handler && !viaAudience && d.public !== true && settings.public_strict) throw httpError(404, 'Collection not found');
   // Kind counts: Trove KB will return `kinds`; until then derive the runbook
   // count from a second, kind-filtered read of the categories.
   let kinds = d.kinds && typeof d.kinds === 'object' ? d.kinds : null;
   if (!kinds && !kind) {
     try {
-      const rb = await cached(`collection:${id}:runbook`, () => rest(`/kb/collections/${id}?kind=runbook`, { settings }));
+      const rb = await cached(`collection:${audience || 'key'}:${id}:runbook`, () => rest(`/kb/collections/${id}${qs({ kind: 'runbook', audience })}`, { settings }));
       const runbooks = (rb.categories || []).reduce((n, r) => n + (r.articles || 0), 0);
       kinds = { article: Math.max(0, (d.articles || 0) - runbooks), runbook: runbooks };
     } catch { kinds = null; }
@@ -622,8 +636,10 @@ async function listArticlesPage({ collectionId, category = null, subcategory = n
   const lim = Math.max(1, Math.min(handler ? 200 : 50, Number(limit) || 50));
   const s = ['name', 'modified'].includes(sort) ? sort : 'name';
   const d = ['asc', 'desc'].includes(dir) ? dir : 'asc';
-  const key = `list:${id}:${category || ''}:${subcategory || ''}:${kind || ''}:${sourceType || ''}:${s}:${d}:${lim}:${cursor || ''}`;
-  const r = await cached(key, () => rest(`/kb/articles${qs({ collection_id: id, category, subcategory, kind, source_type: sourceType, sort: s, dir: d, limit: lim, cursor })}`, { settings }));
+  const viaAudience = !handler && await audienceSupported(settings);
+  const audience = viaAudience ? 'public' : null;
+  const key = `list:${audience || 'key'}:${id}:${category || ''}:${subcategory || ''}:${kind || ''}:${sourceType || ''}:${s}:${d}:${lim}:${cursor || ''}`;
+  const r = await cached(key, () => rest(`/kb/articles${qs({ collection_id: id, category, subcategory, kind, source_type: sourceType, audience, sort: s, dir: d, limit: lim, cursor })}`, { settings }));
   let rows = (r?.data || []).map((a) => ({
     article_id: a.id, external_id: a.external_id || null, title: a.title, kind: a.kind || 'article',
     source_type: a.source_type || null,
@@ -631,7 +647,9 @@ async function listArticlesPage({ collectionId, category = null, subcategory = n
     collection_id: id, collection_name: settings.collection_names[id] || null,
     ...articleUrls(settings, a.id, id),
   }));
-  if (!handler) {
+  if (!handler && viaAudience) {
+    rows = rows.map((row) => ({ ...row, public: true }));
+  } else if (!handler) {
     const checks = await Promise.allSettled(rows.map((row) => fetchArticle(settings, row.article_id)));
     rows = rows.filter((row, i) => checks[i].status === 'fulfilled' && publicEnough(settings, checks[i].value))
       .map((row, i) => ({ ...row, public: true, public_url: checks[i]?.value?.public_url || row.public_url }));
@@ -675,19 +693,27 @@ async function syncCollections() {
 // with X-Trove-Reader. Until Trove KB ships these routes, every call reports
 // `available: false` (probed once per five minutes) and the UI stays hidden.
 
-let _reactionsAvailable = { at: 0, value: null };
-
-async function reactionsAvailable(settings) {
+// What this Trove KB offers, read from its OpenAPI once per five minutes:
+// the reactions routes, and `audience` on reads (Trove KB applies its own
+// public-site rules, so non-handler reads need no per-hit confirmation).
+async function features(settings) {
   const now = Date.now();
-  if (_reactionsAvailable.value !== null && now - _reactionsAvailable.at < 5 * 60 * 1000) return _reactionsAvailable.value;
-  let value = false;
+  if (_features.value && now - _features.at < 5 * 60 * 1000) return _features.value;
+  let value = { reactions: false, audience: false };
   try {
     const spec = await cached('openapi', () => rest('/openapi.json', { settings }));
-    value = !!spec?.paths?.['/kb/articles/{id}/reactions'];
-  } catch { value = false; }
-  _reactionsAvailable = { at: now, value };
+    const paths = spec?.paths || {};
+    const hasParam = (p, name) => (paths[p]?.get?.parameters || []).some((x) => x.name === name);
+    value = {
+      reactions: !!paths['/kb/articles/{id}/reactions'],
+      audience: hasParam('/kb/search', 'audience') && hasParam('/kb/articles', 'audience') && hasParam('/kb/articles/{id}', 'audience'),
+    };
+  } catch { /* keep false */ }
+  _features = { at: now, value };
   return value;
 }
+async function reactionsAvailable(settings) { return (await features(settings)).reactions; }
+async function audienceSupported(settings) { return (await features(settings)).audience; }
 
 function readerHeaders(email) {
   if (!email) throw httpError(400, 'A reader email is required');
@@ -782,6 +808,8 @@ module.exports = {
   setVote,
   listFavorites,
   reactionsAvailable,
+  audienceSupported,
+  features,
   syncCollections,
   upsertArticle,
   archiveArticle,
