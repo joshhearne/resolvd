@@ -19,6 +19,20 @@ function httpError(status, message) { const e = new Error(message); e.httpStatus
 
 const stepIdFromBlock = (blockId) => String(blockId || '').replace(/-/g, '').slice(0, 8).toLowerCase();
 
+// Re-key a run's step_states from BlockNote block ids to Trove KB step ids.
+// A state whose block has no step on the runbook is dropped (counted).
+// Pure, so the migration can be tested against the exported step map.
+function rekeyStepStates(stepStates, stepIds) {
+  const ids = stepIds instanceof Set ? stepIds : new Set(stepIds || []);
+  const next = {};
+  let dropped = 0;
+  for (const [blockId, state] of Object.entries(stepStates || {})) {
+    const sid = stepIdFromBlock(blockId);
+    if (ids.has(sid)) next[sid] = state; else dropped += 1;
+  }
+  return { next, dropped };
+}
+
 // external_id -> Trove KB article, across every mapped collection.
 async function troveKbIndex() {
   const s = await troveKb.getSettings();
@@ -110,11 +124,8 @@ async function apply({ userId }) {
         const stepIds = new Set((twin.steps || []).map((st) => st.id));
         const runs = await client.query(`SELECT id, step_states FROM ticket_runbook_runs WHERE article_id = $1 AND trove_kb_article_id IS NULL`, [a.local_id]);
         for (const run of runs.rows) {
-          const next = {};
-          for (const [blockId, state] of Object.entries(run.step_states || {})) {
-            const sid = stepIdFromBlock(blockId);
-            if (stepIds.has(sid)) next[sid] = state; else out.runs_steps_dropped += 1;
-          }
+          const { next, dropped } = rekeyStepStates(run.step_states, stepIds);
+          out.runs_steps_dropped += dropped;
           await client.query(
             `UPDATE ticket_runbook_runs SET trove_kb_article_id = $1, trove_kb_title = $2, step_states = $3::jsonb, article_id = NULL WHERE id = $4`,
             [a.trove_kb_article_id, twin.title, JSON.stringify(next), run.id]
@@ -141,4 +152,4 @@ async function apply({ userId }) {
   return out;
 }
 
-module.exports = { plan, apply, stepIdFromBlock };
+module.exports = { plan, apply, stepIdFromBlock, rekeyStepStates };
