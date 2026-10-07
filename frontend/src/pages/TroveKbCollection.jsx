@@ -14,6 +14,7 @@ export default function TroveKbCollection() {
   const category = params.get("category") ?? "";
   const subcategory = params.get("subcategory") ?? "";
   const kind = params.get("kind") ?? "";
+  const sourceType = params.get("source_type") ?? "";
   const sort = params.get("sort") ?? "name";
   const dir = params.get("dir") ?? "asc";
   const q = params.get("q") ?? "";
@@ -38,7 +39,7 @@ export default function TroveKbCollection() {
   }, [id]);
 
   function set(next) {
-    const merged = { category, subcategory, kind, sort, dir, q, ...next };
+    const merged = { category, subcategory, kind, source_type: sourceType, sort, dir, q, ...next };
     const out = {};
     for (const [k, v] of Object.entries(merged)) if (v) out[k] = v;
     setParams(out);
@@ -49,12 +50,12 @@ export default function TroveKbCollection() {
     if (q.trim().length >= 2) return;
     let cancelled = false;
     setLoading(true); setArticles([]); setCursor(null); setHits(null);
-    api.get(`/api/trove-kb/articles?collection_id=${id}&category=${encodeURIComponent(category)}&subcategory=${encodeURIComponent(subcategory)}&kind=${kind}&sort=${sort}&dir=${dir}&limit=50`)
+    api.get(`/api/trove-kb/articles?collection_id=${id}&category=${encodeURIComponent(category)}&subcategory=${encodeURIComponent(subcategory)}&kind=${kind}&source_type=${sourceType}&sort=${sort}&dir=${dir}&limit=50`)
       .then((r) => { if (cancelled) return; setArticles(r.articles); setCursor(r.next_cursor); })
       .catch((e) => { if (!cancelled) toast.error(e.message); })
       .finally(() => { if (!cancelled) setLoading(false); });
     return () => { cancelled = true; };
-  }, [id, category, subcategory, kind, sort, dir, q]);
+  }, [id, category, subcategory, kind, sourceType, sort, dir, q]);
 
   // Scoped search.
   useEffect(() => {
@@ -73,7 +74,7 @@ export default function TroveKbCollection() {
     if (!cursor) return;
     setMore(true);
     try {
-      const r = await api.get(`/api/trove-kb/articles?collection_id=${id}&category=${encodeURIComponent(category)}&subcategory=${encodeURIComponent(subcategory)}&kind=${kind}&sort=${sort}&dir=${dir}&limit=50&cursor=${encodeURIComponent(cursor)}`);
+      const r = await api.get(`/api/trove-kb/articles?collection_id=${id}&category=${encodeURIComponent(category)}&subcategory=${encodeURIComponent(subcategory)}&kind=${kind}&source_type=${sourceType}&sort=${sort}&dir=${dir}&limit=50&cursor=${encodeURIComponent(cursor)}`);
       setArticles((a) => [...a, ...r.articles]);
       setCursor(r.next_cursor);
     } catch (e) { toast.error(e.message); }
@@ -92,8 +93,41 @@ export default function TroveKbCollection() {
     );
   }
 
+  // Document types: article vs runbook from `kinds`, and the source
+  // format (PDF, Word, native) from `source_types` once Trove KB reports it.
+  // Shown only when there is more than one thing to choose between.
+  const kinds = collection?.kinds || null;
+  const hasKinds = kinds && kinds.article > 0 && kinds.runbook > 0;
+  const sourceTypes = (collection?.source_types || []).filter((t) => t.articles > 0);
+  const hasSources = sourceTypes.length > 1;
+  const SOURCE_LABEL = { md: "Article", html: "Article", txt: "Text", pdf: "PDF", docx: "Word", doc: "Word", xlsx: "Excel", pptx: "PowerPoint" };
+  const seg = (active, onClick, label, count) => (
+    <button key={label} onClick={onClick} className={`px-2 py-1 rounded text-xs inline-flex items-center gap-1 ${active ? "bg-accent/10 text-accent font-medium" : "text-fg-muted hover:bg-surface-2 hover:text-fg"}`}>
+      {label}{count != null && <span className="font-mono text-[10px] opacity-70">{count}</span>}
+    </button>
+  );
+  const typeBlock = collection && (hasKinds || hasSources) && (
+    <div className="pb-2 mb-2 border-b border-border space-y-1">
+      <div className="px-2 text-[10px] uppercase tracking-wide text-fg-dim">Type</div>
+      {hasKinds && (
+        <div className="flex flex-wrap gap-1 px-1">
+          {seg(!kind, () => set({ kind: "" }), "All", kinds.article + kinds.runbook)}
+          {seg(kind === "article", () => set({ kind: "article" }), "Articles", kinds.article)}
+          {seg(kind === "runbook", () => set({ kind: "runbook" }), "Runbooks", kinds.runbook)}
+        </div>
+      )}
+      {hasSources && (
+        <div className="flex flex-wrap gap-1 px-1">
+          {seg(!sourceType, () => set({ source_type: "" }), "Any format", null)}
+          {sourceTypes.map((t) => seg(sourceType === t.source_type, () => set({ source_type: t.source_type }), SOURCE_LABEL[t.source_type] || t.source_type.toUpperCase(), t.articles))}
+        </div>
+      )}
+    </div>
+  );
+
   const rail = collection && (
     <nav className="space-y-0.5 text-sm">
+      {typeBlock}
       <button onClick={() => { set({ category: "", subcategory: "" }); setRailOpen(false); }} className={`w-full text-left px-2 py-1.5 rounded flex items-center justify-between ${!category ? "bg-accent/10 text-accent font-medium" : "text-fg-muted hover:bg-surface-2 hover:text-fg"}`}>
         <span>All articles</span>{total != null && <span className="text-[11px] font-mono">{total}</span>}
       </button>
@@ -150,9 +184,9 @@ export default function TroveKbCollection() {
         <div className="flex-1 min-w-0 space-y-3">
           <div className="flex flex-wrap items-center gap-2 text-xs">
             <button onClick={() => setRailOpen((v) => !v)} className="lg:hidden btn btn-secondary btn-sm">☰ {category || "All categories"}</button>
-            <select value={kind} onChange={(e) => set({ kind: e.target.value })} className="bg-surface-2 border border-border rounded px-2 py-1">
-              <option value="">All kinds</option><option value="article">Articles</option><option value="runbook">Runbooks</option>
-            </select>
+            {!hasKinds && kind && (
+              <button onClick={() => set({ kind: "" })} className="text-fg-muted hover:text-fg">× {kind === "runbook" ? "Runbooks" : "Articles"} only</button>
+            )}
             {!q && (
               <select value={`${sort}:${dir}`} onChange={(e) => { const [s, d] = e.target.value.split(":"); set({ sort: s, dir: d }); }} className="bg-surface-2 border border-border rounded px-2 py-1">
                 <option value="name:asc">Title A–Z</option><option value="name:desc">Title Z–A</option>

@@ -132,6 +132,7 @@ router.get('/articles', async (req, res) => {
     const page = await troveKb.listArticlesPage({
       collectionId: cid, category: str(req.query.category), subcategory: str(req.query.subcategory),
       kind: ['article', 'runbook'].includes(req.query.kind) ? req.query.kind : null,
+      sourceType: /^[a-z0-9]{1,16}$/i.test(String(req.query.source_type || '')) ? String(req.query.source_type).toLowerCase() : null,
       sort: req.query.sort, dir: req.query.dir, limit: req.query.limit, cursor: str(req.query.cursor),
       handler: isGlobalHandler(req.session.user),
     });
@@ -170,6 +171,58 @@ router.get('/articles/:id', async (req, res) => {
     }
     res.json(scrubStaffUrl(req.session.user, await troveKb.getArticle(req.params.id, { handler })));
   } catch (err) { fail(res, err, 'article'); }
+});
+
+// ─── Reactions: favorites and helpful votes, shared with the public site ──
+
+function readerOf(req) { return req.session.user?.email || req.session.user?.upn || null; }
+
+router.get('/favorites', async (req, res) => {
+  try {
+    const email = readerOf(req);
+    if (!email) return res.json({ available: false, articles: [] });
+    const out = await troveKb.listFavorites({ email, handler: isGlobalHandler(req.session.user), limit: Math.min(100, Number(req.query.limit) || 50) });
+    res.json({ ...out, articles: scrubStaffUrl(req.session.user, out.articles) });
+  } catch (err) { fail(res, err, 'favorites'); }
+});
+
+router.get('/articles/:id/reactions', async (req, res) => {
+  try {
+    if (!UUID_RE.test(req.params.id)) return res.status(404).json({ error: 'Article not found' });
+    const email = readerOf(req);
+    if (!email) return res.json({ available: false });
+    res.json(await troveKb.getReactions(req.params.id, { email, handler: isGlobalHandler(req.session.user) }));
+  } catch (err) { fail(res, err, 'reactions'); }
+});
+
+router.put('/articles/:id/favorite', async (req, res) => {
+  try {
+    if (!UUID_RE.test(req.params.id)) return res.status(404).json({ error: 'Article not found' });
+    await troveKb.setFavorite(req.params.id, { email: readerOf(req), handler: isGlobalHandler(req.session.user), on: true });
+    res.status(204).end();
+  } catch (err) { fail(res, err, 'favorite'); }
+});
+router.delete('/articles/:id/favorite', async (req, res) => {
+  try {
+    if (!UUID_RE.test(req.params.id)) return res.status(404).json({ error: 'Article not found' });
+    await troveKb.setFavorite(req.params.id, { email: readerOf(req), handler: isGlobalHandler(req.session.user), on: false });
+    res.status(204).end();
+  } catch (err) { fail(res, err, 'unfavorite'); }
+});
+router.put('/articles/:id/vote', async (req, res) => {
+  try {
+    if (!UUID_RE.test(req.params.id)) return res.status(404).json({ error: 'Article not found' });
+    if (typeof req.body?.helpful !== 'boolean') return res.status(400).json({ error: 'helpful (boolean) required' });
+    await troveKb.setVote(req.params.id, { email: readerOf(req), handler: isGlobalHandler(req.session.user), helpful: req.body.helpful });
+    res.status(204).end();
+  } catch (err) { fail(res, err, 'vote'); }
+});
+router.delete('/articles/:id/vote', async (req, res) => {
+  try {
+    if (!UUID_RE.test(req.params.id)) return res.status(404).json({ error: 'Article not found' });
+    await troveKb.setVote(req.params.id, { email: readerOf(req), handler: isGlobalHandler(req.session.user), helpful: null });
+    res.status(204).end();
+  } catch (err) { fail(res, err, 'unvote'); }
 });
 
 // ─── Ticket links ────────────────────────────────────────────────────────

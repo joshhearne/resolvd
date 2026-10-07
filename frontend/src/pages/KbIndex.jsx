@@ -15,6 +15,10 @@ export default function KbIndex() {
   const [hits, setHits] = useState(null);
   const [searching, setSearching] = useState(false);
   const [view, setView] = useViewMode("kb-collections", "cards");
+  const [favorites, setFavorites] = useState(null);
+  useEffect(() => {
+    api.get("/api/trove-kb/favorites").then((r) => setFavorites(r?.available ? r.articles : null)).catch(() => setFavorites(null));
+  }, []);
 
   useEffect(() => {
     api.get("/api/trove-kb/status")
@@ -139,6 +143,23 @@ export default function KbIndex() {
               {troveKb.public_url && <a href={troveKb.public_url} target="_blank" rel="noreferrer" className="text-brand hover:underline">Public site ↗</a>}
             </div>
           )}
+        </section>
+      )}
+
+      {troveKb?.has_visible && !hits && favorites && favorites.length > 0 && (
+        <section className="space-y-2">
+          <h2 className="text-sm font-semibold text-fg-muted uppercase tracking-wide">My favorites</h2>
+          <ul className="rounded-lg border border-border bg-surface divide-y divide-border">
+            {favorites.slice(0, 10).map((a) => (
+              <li key={a.article_id}>
+                <Link to={`/kb/article/${a.article_id}`} className="flex items-center gap-3 px-4 py-2.5 hover:bg-surface-2 group">
+                  <span className="text-amber-400">★</span>
+                  <span className="flex-1 min-w-0 text-sm text-fg group-hover:text-accent truncate">{a.title}</span>
+                  <span className="text-[11px] text-fg-dim truncate max-w-[40%]">{[a.collection_name, a.category].filter(Boolean).join(" · ")}</span>
+                </Link>
+              </li>
+            ))}
+          </ul>
         </section>
       )}
 

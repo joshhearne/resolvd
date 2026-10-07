@@ -3,6 +3,7 @@ import { Link, useParams, useSearchParams } from "react-router-dom";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
 import MarkdownContent from "../components/MarkdownContent";
+import TroveKbReactions from "../components/TroveKbReactions";
 
 // Reads one Trove KB article inside Resolvd. The body is Markdown from
 // Trove KB; images inside it are relative to Trove KB and need a signed-in
@@ -58,9 +59,13 @@ export default function TroveKbArticle() {
             <div className="rounded-md border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">{article.note}</div>
           )}
 
+          <TroveKbReactions articleId={article.article_id} />
+
           <div className="text-sm text-fg">
             <MarkdownContent>{article.body || "_This article has no text._"}</MarkdownContent>
           </div>
+
+          <TroveKbReactions articleId={article.article_id} className="border-t border-border pt-3" />
 
           {(article.attachments?.documents?.length > 0 || article.attachments?.images?.length > 0) && (
             <footer className="border-t border-border pt-3 text-xs text-fg-muted">

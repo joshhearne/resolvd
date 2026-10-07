@@ -245,7 +245,7 @@ async function recordOutcome(error) {
 // Trove KB's REST knowledge base routes. Error shape: { error: { code, message } }.
 // Lists come back as { data, next_cursor }. Never includes the key in errors.
 
-async function rest(path, { method = 'GET', body, settings } = {}) {
+async function rest(path, { method = 'GET', body, settings, headers } = {}) {
   const cfg = settings || await getSettings({ withKey: true });
   if (!cfg.base_url || !cfg._apiKey) throw httpError(503, 'Trove KB is not configured');
   const controller = new AbortController();
@@ -260,6 +260,7 @@ async function rest(path, { method = 'GET', body, settings } = {}) {
         Authorization: `Bearer ${cfg._apiKey}`,
         'User-Agent': 'Resolvd-TroveKb/2',
         ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+        ...(headers || {}),
       },
       ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
     });
@@ -382,6 +383,7 @@ function shapeHit(settings, hit) {
     article_id: id,
     title: hit.title,
     kind: hit.kind || 'article',
+    source_type: hit.source_type || null,
     public: typeof hit.public === 'boolean' ? hit.public : null,
     collection_id: collectionId,
     collection_name: hit.collection?.name || settings.collection_names[collectionId] || null,
@@ -402,6 +404,7 @@ function shapeArticle(settings, a) {
     article_id: a.id,
     title: a.title,
     kind: a.kind || 'article',
+    source_type: a.source_type || null,
     steps: Array.isArray(a.steps) ? a.steps : [],
     internal_only: a.internal_only === true,
     public: !!a.public_url,
@@ -578,6 +581,16 @@ async function getCollection(collectionId, { handler = false, kind = null } = {}
   if (vis.ids !== null && !vis.ids.includes(id)) throw httpError(404, 'Collection not found');
   const d = await cached(`collection:${id}:${kind || ''}`, () => rest(`/kb/collections/${id}${qs({ kind })}`, { settings }));
   if (!handler && d.public !== true && settings.public_strict) throw httpError(404, 'Collection not found');
+  // Kind counts: Trove KB will return `kinds`; until then derive the runbook
+  // count from a second, kind-filtered read of the categories.
+  let kinds = d.kinds && typeof d.kinds === 'object' ? d.kinds : null;
+  if (!kinds && !kind) {
+    try {
+      const rb = await cached(`collection:${id}:runbook`, () => rest(`/kb/collections/${id}?kind=runbook`, { settings }));
+      const runbooks = (rb.categories || []).reduce((n, r) => n + (r.articles || 0), 0);
+      kinds = { article: Math.max(0, (d.articles || 0) - runbooks), runbook: runbooks };
+    } catch { kinds = null; }
+  }
   const tree = new Map();
   for (const row of d.categories || []) {
     const cat = row.category || '';
@@ -592,13 +605,15 @@ async function getCollection(collectionId, { handler = false, kind = null } = {}
     id: d.id, name: d.name, description: d.description || null, site_url: d.site_url || null,
     public: d.public === true, articles: d.articles ?? null,
     scope: vis.scopeOf(id) || (vis.ids === null ? 'internal' : null),
+    kinds,
+    source_types: Array.isArray(d.source_types) ? d.source_types : null,
     categories,
   };
 }
 
 // One page of a collection's articles. Non-handlers only get articles
 // confirmed public (one cached article read per row, page capped).
-async function listArticlesPage({ collectionId, category = null, subcategory = null, kind = null, sort = 'name', dir = 'asc', limit = 50, cursor = null, handler = false }) {
+async function listArticlesPage({ collectionId, category = null, subcategory = null, kind = null, sourceType = null, sort = 'name', dir = 'asc', limit = 50, cursor = null, handler = false }) {
   const settings = await getSettings({ withKey: true });
   if (!settings.enabled) throw httpError(503, 'Trove KB is not configured');
   const id = String(collectionId || '').toLowerCase();
@@ -607,10 +622,11 @@ async function listArticlesPage({ collectionId, category = null, subcategory = n
   const lim = Math.max(1, Math.min(handler ? 200 : 50, Number(limit) || 50));
   const s = ['name', 'modified'].includes(sort) ? sort : 'name';
   const d = ['asc', 'desc'].includes(dir) ? dir : 'asc';
-  const key = `list:${id}:${category || ''}:${subcategory || ''}:${kind || ''}:${s}:${d}:${lim}:${cursor || ''}`;
-  const r = await cached(key, () => rest(`/kb/articles${qs({ collection_id: id, category, subcategory, kind, sort: s, dir: d, limit: lim, cursor })}`, { settings }));
+  const key = `list:${id}:${category || ''}:${subcategory || ''}:${kind || ''}:${sourceType || ''}:${s}:${d}:${lim}:${cursor || ''}`;
+  const r = await cached(key, () => rest(`/kb/articles${qs({ collection_id: id, category, subcategory, kind, source_type: sourceType, sort: s, dir: d, limit: lim, cursor })}`, { settings }));
   let rows = (r?.data || []).map((a) => ({
     article_id: a.id, external_id: a.external_id || null, title: a.title, kind: a.kind || 'article',
+    source_type: a.source_type || null,
     category: a.category || null, subcategory: a.subcategory || null, date_modified: a.date_modified || null,
     collection_id: id, collection_name: settings.collection_names[id] || null,
     ...articleUrls(settings, a.id, id),
@@ -653,6 +669,78 @@ async function syncCollections() {
   return { live: live.length, new_collections: seen, auto_mapped: added };
 }
 
+// ─── Reactions (favorites, helpful votes), shared with kb.gomotx.com ───────
+//
+// Trove KB keys a reader by a hash of their email; the API names the reader
+// with X-Trove-Reader. Until Trove KB ships these routes, every call reports
+// `available: false` (probed once per five minutes) and the UI stays hidden.
+
+let _reactionsAvailable = { at: 0, value: null };
+
+async function reactionsAvailable(settings) {
+  const now = Date.now();
+  if (_reactionsAvailable.value !== null && now - _reactionsAvailable.at < 5 * 60 * 1000) return _reactionsAvailable.value;
+  let value = false;
+  try {
+    const spec = await cached('openapi', () => rest('/openapi.json', { settings }));
+    value = !!spec?.paths?.['/kb/articles/{id}/reactions'];
+  } catch { value = false; }
+  _reactionsAvailable = { at: now, value };
+  return value;
+}
+
+function readerHeaders(email) {
+  if (!email) throw httpError(400, 'A reader email is required');
+  return { 'X-Trove-Reader': String(email).trim().toLowerCase() };
+}
+
+async function restAs(email, path, opts = {}) {
+  const settings = opts.settings || await getSettings({ withKey: true });
+  // rest() builds its own headers; add the reader header by wrapping fetch args.
+  return rest(path, { ...opts, settings, headers: readerHeaders(email) });
+}
+
+async function getReactions(articleId, { email, handler = false }) {
+  const settings = await getSettings({ withKey: true });
+  if (!settings.enabled) throw httpError(503, 'Trove KB is not configured');
+  if (!(await reactionsAvailable(settings))) return { available: false };
+  await getArticle(articleId, { handler }); // visibility, 404 when out of reach
+  const r = await restAs(email, `/kb/articles/${articleId}/reactions`, { settings });
+  return { available: true, favorites: r.favorites ?? 0, helpful_up: r.helpful_up ?? 0, helpful_down: r.helpful_down ?? 0,
+           helpfulness: r.helpfulness ?? null, mine: { favorite: !!r.mine?.favorite, vote: r.mine?.vote || null } };
+}
+
+async function setFavorite(articleId, { email, handler = false, on }) {
+  const settings = await getSettings({ withKey: true });
+  if (!(await reactionsAvailable(settings))) throw httpError(503, 'Reactions are not available in Trove KB yet');
+  await getArticle(articleId, { handler });
+  await restAs(email, `/kb/articles/${articleId}/favorite`, { method: on ? 'PUT' : 'DELETE', settings });
+  for (const k of [..._results.keys()]) if (k.startsWith('favorites:')) _results.delete(k);
+}
+
+async function setVote(articleId, { email, handler = false, helpful }) {
+  const settings = await getSettings({ withKey: true });
+  if (!(await reactionsAvailable(settings))) throw httpError(503, 'Reactions are not available in Trove KB yet');
+  await getArticle(articleId, { handler });
+  if (helpful === null) await restAs(email, `/kb/articles/${articleId}/vote`, { method: 'DELETE', settings });
+  else await restAs(email, `/kb/articles/${articleId}/vote`, { method: 'PUT', body: { helpful: !!helpful }, settings });
+}
+
+async function listFavorites({ email, handler = false, limit = 50 }) {
+  const settings = await getSettings({ withKey: true });
+  if (!settings.enabled) return { available: false, articles: [] };
+  if (!(await reactionsAvailable(settings))) return { available: false, articles: [] };
+  const r = await cached(`favorites:${String(email).toLowerCase()}:${limit}`, () => restAs(email, `/kb/favorites${qs({ limit })}`, { settings }));
+  const vis = visibleCollections(settings, handler);
+  const rows = (r?.data || []).map((a) => ({
+    article_id: a.id, title: a.title, kind: a.kind || 'article', source_type: a.source_type || null,
+    category: a.category || null, subcategory: a.subcategory || null, favorited_at: a.favorited_at || null,
+    collection_id: a.collection?.id || null, collection_name: a.collection?.name || settings.collection_names[a.collection?.id] || null,
+    ...articleUrls(settings, a.id, a.collection?.id || null),
+  })).filter((a) => vis.ids === null || vis.ids.includes(a.collection_id));
+  return { available: true, articles: rows };
+}
+
 // Admin "Test connection": lists collections, records the outcome, and
 // refreshes the name snapshot so the mapping UI and link pills have
 // names even when Trove KB is down later.
@@ -689,6 +777,11 @@ module.exports = {
   listArticles,
   listArticlesPage,
   getCollection,
+  getReactions,
+  setFavorite,
+  setVote,
+  listFavorites,
+  reactionsAvailable,
   syncCollections,
   upsertArticle,
   archiveArticle,
