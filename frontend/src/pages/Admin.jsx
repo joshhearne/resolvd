@@ -38,6 +38,7 @@ const NAV_GROUPS = [
     label: "Integrations",
     items: [
       { to: "/admin/ai-assist", label: "AI Assist", keywords: ["claude", "gpt", "openai", "rewrite", "summarize"] },
+      { to: "/admin/bothy", label: "Bothy knowledge base", keywords: ["kb", "documentation", "docs", "articles", "runbooks", "knowledge"] },
       { to: "/admin/alert-sources", label: "Integrations", keywords: ["zabbix", "alerts", "webhook", "monitor"] },
       { to: "/admin/software-aliases", label: "Software aliases", manager: true, keywords: ["asset normalization"] },
       { to: "/admin/inbound", label: "Inbound email", manager: true, keywords: ["unmatched queue", "discard", "spam"] },

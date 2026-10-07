@@ -3014,6 +3014,86 @@ Thanks,
     await client.query(`ALTER TABLE auto_resolve_settings ADD COLUMN IF NOT EXISTS reply_stale_days INTEGER NOT NULL DEFAULT 30`);
     await client.query(`ALTER TABLE auto_resolve_settings ADD COLUMN IF NOT EXISTS suppress_ooo_replies BOOLEAN NOT NULL DEFAULT TRUE`);
 
+    // ── Bothy (external knowledge base) ──────────────────────────────────
+    // Bothy (bothy.gomotx.com) is the company documentation platform.
+    // Resolvd reads articles from it with ONE API key and enforces who
+    // sees what on its own side: handlers (Admin/Manager/Tech or project
+    // handlers) see internal + public collections, everyone else public
+    // only. Collection ids are Bothy UUIDs; names are a display snapshot
+    // refreshed on every successful "test connection". Key is encrypted
+    // under RESOLVD_MASTER_KEY like ai_settings.org_api_key_enc.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS bothy_settings (
+        id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+        enabled BOOLEAN NOT NULL DEFAULT FALSE,
+        base_url TEXT,
+        public_url TEXT,
+        api_key_enc BYTEA,
+        internal_collection_ids TEXT[] NOT NULL DEFAULT '{}'::text[],
+        public_collection_ids TEXT[] NOT NULL DEFAULT '{}'::text[],
+        collection_names JSONB NOT NULL DEFAULT '{}'::jsonb,
+        suggestions_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        last_ok_at TIMESTAMPTZ,
+        last_error TEXT,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`INSERT INTO bothy_settings (id) VALUES (1) ON CONFLICT DO NOTHING`);
+    // Non-handlers only see articles Bothy marks public (held-back articles stay hidden).
+    await client.query(`ALTER TABLE bothy_settings ADD COLUMN IF NOT EXISTS public_strict BOOLEAN NOT NULL DEFAULT TRUE`);
+    // The built-in per-project KB stays on until "Replace local knowledge base" runs.
+    await client.query(`ALTER TABLE bothy_settings ADD COLUMN IF NOT EXISTS local_kb_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
+    // Runbook runs can point at a Bothy runbook (uuid) instead of a local
+    // article. step_states is then keyed by Bothy step id.
+    await client.query(`ALTER TABLE ticket_runbook_runs ADD COLUMN IF NOT EXISTS bothy_article_id UUID`);
+    await client.query(`ALTER TABLE ticket_runbook_runs ALTER COLUMN article_id DROP NOT NULL`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ticket_runbook_runs_bothy ON ticket_runbook_runs(ticket_id, bothy_article_id) WHERE bothy_article_id IS NOT NULL`);
+    await client.query(`ALTER TABLE ticket_runbook_runs ADD COLUMN IF NOT EXISTS bothy_title TEXT`);
+
+    // Ticket -> Bothy article junction. Separate from ticket_kb_links
+    // (local articles, integer ids) so the local KB keeps working until
+    // its content has moved. title/collection_name are snapshots so a
+    // ticket still shows what it was linked to when Bothy is unreachable.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ticket_bothy_links (
+        ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+        article_id UUID NOT NULL,
+        title TEXT NOT NULL,
+        collection_id UUID,
+        collection_name TEXT,
+        kind TEXT NOT NULL DEFAULT 'manual'
+             CHECK (kind IN ('manual', 'suggested_accepted', 'system')),
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (ticket_id, article_id)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_bothy_links_article ON ticket_bothy_links(article_id)`);
+    // A project's home collection in Bothy: suggestions search it first,
+    // resolution drafts prefer it, and (later) promote-to-KB writes to it.
+    await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS bothy_collection_id UUID`);
+
+    // Knowledge briefs: the audited inputs behind an assisted response.
+    // One row per "scope with knowledge" run on a ticket: what the user
+    // reported (trusted), the tech's draft (trusted), corrections the
+    // tech added (the tribal knowledge the user left out), the project
+    // context in force, the Bothy articles included/excluded, and what
+    // was produced (extractive or AI). This is where a poorly scoped
+    // prompt gets fixed and where that fix is reviewable afterwards.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ticket_assist_briefs (
+        id SERIAL PRIMARY KEY,
+        ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        inputs JSONB NOT NULL DEFAULT '{}'::jsonb,
+        output JSONB,
+        mode TEXT NOT NULL DEFAULT 'extractive' CHECK (mode IN ('extractive', 'ai')),
+        ai_log_id INTEGER REFERENCES ai_rewrite_logs(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_assist_briefs_ticket ON ticket_assist_briefs(ticket_id, created_at DESC)`);
+
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');

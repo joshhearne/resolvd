@@ -1,0 +1,519 @@
+// An article is public when Bothy gives it a public address: its collection
+// is on the public site, the site is on, and the article is not held back
+// (`internal_only`). Search hits do not carry that, so a non-handler search
+// fetches each hit (cached) and filters. Strict mode refuses anything that
+// cannot be confirmed; lenient mode trusts the collection mapping.
+function publicEnough(settings, article) {
+  if (article && typeof article.public === 'boolean') return article.public;
+  if (article && article.public_url) return true;
+  if (article && article.internal_only === true) return false;
+  return !settings.public_strict;
+}
+
+// Bothy — the company documentation platform (external knowledge base).
+//
+// Resolvd is a trusted reader of Bothy: one API key, held here encrypted,
+// and Resolvd decides on its own side who sees which collections.
+// Handlers (global Admin/Manager/Tech, or project handlers) see the
+// "internal" and "public" collections an admin mapped; everyone else
+// sees "public" only. Nothing about Resolvd users is sent to Bothy.
+//
+// Transport: Bothy's REST knowledge base routes under {base_url}/api/v1/kb
+// (collections, search, articles, upsert/archive by external id).
+
+const { pool } = require('../db/pool');
+const { encrypt, decrypt } = require('./crypto');
+const kms = require('./kms');
+
+const KEY_CTX = 'bothy_settings.api_key';
+const SETTINGS_TTL_MS = 30 * 1000;
+const RESULT_TTL_MS = 60 * 1000;
+const REQUEST_TIMEOUT_MS = 12 * 1000;
+
+let _settings = null;
+let _settingsAt = 0;
+const _results = new Map(); // key -> { at, value }
+
+function httpError(status, message) {
+  const e = new Error(message);
+  e.httpStatus = status;
+  return e;
+}
+
+function invalidateCache() {
+  _settings = null;
+  _settingsAt = 0;
+  _results.clear();
+}
+
+function normalizeUrl(v) {
+  if (v == null) return null;
+  const s = String(v).trim().replace(/\/+$/, '');
+  if (!s) return null;
+  let u;
+  try { u = new URL(s); } catch { throw httpError(400, `Not a URL: ${s}`); }
+  if (!['http:', 'https:'].includes(u.protocol)) throw httpError(400, 'URL must be http or https');
+  return s;
+}
+
+function uuidList(v, label) {
+  if (v == null) return undefined;
+  if (!Array.isArray(v)) throw httpError(400, `${label} must be an array`);
+  const out = [];
+  for (const raw of v) {
+    const s = String(raw).trim().toLowerCase();
+    if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/.test(s)) {
+      throw httpError(400, `${label}: '${raw}' is not a UUID`);
+    }
+    if (!out.includes(s)) out.push(s);
+  }
+  return out;
+}
+
+// ─── Settings ───────────────────────────────────────────────────────────
+
+async function getSettings({ withKey = false } = {}) {
+  const now = Date.now();
+  if (!_settings || now - _settingsAt > SETTINGS_TTL_MS) {
+    const r = await pool.query(`SELECT * FROM bothy_settings WHERE id = 1`);
+    const row = r.rows[0] || {};
+    let apiKey = null;
+    if (kms.isAvailable() && row.api_key_enc) {
+      try {
+        apiKey = (await decrypt(row.api_key_enc, KEY_CTX)).toString('utf8');
+      } catch (err) {
+        console.error('bothy: api key decrypt failed:', err.message);
+      }
+    }
+    const internal = row.internal_collection_ids || [];
+    const pub = row.public_collection_ids || [];
+    _settings = {
+      admin_enabled: row.enabled === true,
+      // Usable only when switched on, pointed somewhere, and the key can
+      // be read. Without RESOLVD_MASTER_KEY the key cannot be decrypted.
+      enabled: row.enabled === true && !!row.base_url && !!apiKey,
+      base_url: row.base_url || null,
+      public_url: row.public_url || null,
+      internal_collection_ids: internal,
+      public_collection_ids: pub.filter((id) => !internal.includes(id)),
+      collection_names: row.collection_names || {},
+      suggestions_enabled: row.suggestions_enabled !== false,
+      // Non-handlers see an article only when Bothy says it is on the public
+      // site (`public: true` on the hit). Until Bothy returns that flag, strict
+      // mode means non-handlers see nothing; off means whole-collection trust.
+      public_strict: row.public_strict !== false,
+      // The built-in per-project KB stays until the migration turns it off.
+      local_kb_enabled: row.local_kb_enabled !== false,
+      last_ok_at: row.last_ok_at || null,
+      last_error: row.last_error || null,
+      has_api_key: !!row.api_key_enc,
+      kms_available: kms.isAvailable(),
+      updated_at: row.updated_at || null,
+      _apiKey: apiKey,
+    };
+    _settingsAt = now;
+  }
+  return withKey ? { ..._settings } : { ..._settings, _apiKey: null };
+}
+
+async function patchSettings(partial) {
+  const updates = {};
+  if (partial.enabled !== undefined) updates.enabled = !!partial.enabled;
+  if (partial.suggestions_enabled !== undefined) updates.suggestions_enabled = !!partial.suggestions_enabled;
+  if (partial.public_strict !== undefined) updates.public_strict = !!partial.public_strict;
+  if (partial.local_kb_enabled !== undefined) updates.local_kb_enabled = !!partial.local_kb_enabled;
+  if (partial.base_url !== undefined) updates.base_url = normalizeUrl(partial.base_url);
+  if (partial.public_url !== undefined) updates.public_url = normalizeUrl(partial.public_url);
+  const internal = uuidList(partial.internal_collection_ids, 'internal_collection_ids');
+  const pub = uuidList(partial.public_collection_ids, 'public_collection_ids');
+  if (internal !== undefined) updates.internal_collection_ids = internal;
+  if (pub !== undefined) updates.public_collection_ids = pub;
+  if (partial.collection_names !== undefined) {
+    const names = partial.collection_names;
+    if (!names || typeof names !== 'object' || Array.isArray(names)) throw httpError(400, 'collection_names must be an object');
+    const clean = {};
+    for (const [k, v] of Object.entries(names)) clean[String(k).toLowerCase()] = String(v).slice(0, 200);
+    updates.collection_names = JSON.stringify(clean);
+  }
+  await pool.query(`INSERT INTO bothy_settings (id) VALUES (1) ON CONFLICT DO NOTHING`);
+  const cols = Object.keys(updates);
+  if (cols.length) {
+    const sets = cols.map((c, i) => `${c} = $${i + 1}`).join(', ');
+    await pool.query(`UPDATE bothy_settings SET ${sets}, updated_at = NOW() WHERE id = 1`, cols.map((c) => updates[c]));
+  }
+  invalidateCache();
+  return getSettings();
+}
+
+async function setApiKey(plaintext) {
+  await pool.query(`INSERT INTO bothy_settings (id) VALUES (1) ON CONFLICT DO NOTHING`);
+  if (plaintext == null || String(plaintext).trim() === '') {
+    await pool.query(`UPDATE bothy_settings SET api_key_enc = NULL, last_error = NULL, updated_at = NOW() WHERE id = 1`);
+    invalidateCache();
+    return;
+  }
+  if (!kms.isAvailable()) {
+    throw httpError(400, 'RESOLVD_MASTER_KEY not configured — the Bothy API key cannot be stored until it is (Admin → Encryption).');
+  }
+  const enc = await encrypt(Buffer.from(String(plaintext).trim(), 'utf8'), KEY_CTX);
+  // A new key is a fresh start; the next test records its own outcome.
+  await pool.query(`UPDATE bothy_settings SET api_key_enc = $1, last_error = NULL, updated_at = NOW() WHERE id = 1`, [enc]);
+  invalidateCache();
+}
+
+async function recordOutcome(error) {
+  if (error) {
+    await pool.query(`UPDATE bothy_settings SET last_error = $1, updated_at = NOW() WHERE id = 1`, [String(error).slice(0, 500)]);
+  } else {
+    await pool.query(`UPDATE bothy_settings SET last_ok_at = NOW(), last_error = NULL, updated_at = NOW() WHERE id = 1`);
+  }
+  _settings = null;
+}
+
+// ─── Transport (REST /api/v1) ────────────────────────────────────────────
+//
+// Bothy's REST knowledge base routes. Error shape: { error: { code, message } }.
+// Lists come back as { data, next_cursor }. Never includes the key in errors.
+
+async function rest(path, { method = 'GET', body, settings } = {}) {
+  const cfg = settings || await getSettings({ withKey: true });
+  if (!cfg.base_url || !cfg._apiKey) throw httpError(503, 'Bothy is not configured');
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), REQUEST_TIMEOUT_MS);
+  let res;
+  try {
+    res = await fetch(`${cfg.base_url}/api/v1${path}`, {
+      method,
+      signal: controller.signal,
+      headers: {
+        Accept: 'application/json',
+        Authorization: `Bearer ${cfg._apiKey}`,
+        'User-Agent': 'Resolvd-Bothy/2',
+        ...(body !== undefined ? { 'Content-Type': 'application/json' } : {}),
+      },
+      ...(body !== undefined ? { body: JSON.stringify(body) } : {}),
+    });
+  } catch (err) {
+    clearTimeout(timer);
+    if (err.name === 'AbortError') throw httpError(504, 'Bothy did not answer in time');
+    throw httpError(502, `Could not reach Bothy: ${err.message}`);
+  }
+  clearTimeout(timer);
+  if (res.status === 204) return null;
+  let json = null;
+  try { json = await res.json(); } catch { json = null; }
+  if (res.status === 401) throw httpError(502, 'Bothy rejected the API key');
+  if (res.status === 403) throw httpError(502, json?.error?.message || 'The Bothy API key is not allowed to do that');
+  if (res.status === 404) throw httpError(404, json?.error?.message || 'Not found in Bothy');
+  if (res.status === 400) throw httpError(400, json?.error?.message || 'Bothy rejected the request');
+  if (!res.ok) throw httpError(502, json?.error?.message || `Bothy answered HTTP ${res.status}`);
+  return json;
+}
+
+const qs = (params) => {
+  const u = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) if (v !== undefined && v !== null && v !== '') u.set(k, String(v));
+  const str = u.toString();
+  return str ? `?${str}` : '';
+};
+
+// Memoize a read for RESULT_TTL_MS. Errors are not cached.
+async function cached(key, fn) {
+  const hit = _results.get(key);
+  const now = Date.now();
+  if (hit && now - hit.at < RESULT_TTL_MS) return hit.value;
+  const value = await fn();
+  _results.set(key, { at: now, value });
+  if (_results.size > 500) {
+    for (const [k, v] of _results) if (now - v.at > RESULT_TTL_MS) _results.delete(k);
+  }
+  return value;
+}
+
+// ─── Visibility ─────────────────────────────────────────────────────────
+
+// Which Bothy collection ids a caller may read. `handler` is the
+// Resolvd-side decision (global role or project handler). Returns
+// { ids: string[] | null, scopeOf(id) } where ids === null means "no
+// filter: everything the key can read" (handlers when nothing is mapped).
+function visibleCollections(settings, handler) {
+  const internal = settings.internal_collection_ids;
+  const pub = settings.public_collection_ids;
+  const scopeOf = (id) => (internal.includes(id) ? 'internal' : pub.includes(id) ? 'public' : null);
+  if (handler) {
+    const ids = [...internal, ...pub];
+    return { ids: ids.length ? ids : null, scopeOf };
+  }
+  return { ids: pub, scopeOf };
+}
+
+function articleUrls(settings, articleId, collectionId) {
+  const scope = collectionId && settings.public_collection_ids.includes(collectionId) ? 'public' : 'internal';
+  return {
+    scope,
+    staff_url: settings.base_url ? `${settings.base_url}/kb/articles/${articleId}` : null,
+    public_url: scope === 'public' && settings.public_url ? `${settings.public_url}/pub/kb/articles/${articleId}` : null,
+  };
+}
+
+// Words worth searching from free text: longer tokens, no stop words.
+// Bothy's search ANDs every word (websearch_to_tsquery), so a whole ticket
+// title often matches nothing; "a OR b OR c" of its key terms is the fallback.
+const STOP = new Set('the a an and or of to in on for with is are was were be been it this that these those from by at as into about after before when then than so if not no yes you your they their we our i me my he she his her them us can could would should will just also very please thanks thank hi hello user users issue problem ticket help need needs needed'.split(' '));
+function keyTerms(text, max = 8) {
+  const seen = new Set();
+  const out = [];
+  for (const raw of String(text || '').toLowerCase().split(/[^a-z0-9]+/)) {
+    if (raw.length < 3 || STOP.has(raw) || seen.has(raw)) continue;
+    seen.add(raw); out.push(raw);
+    if (out.length >= max) break;
+  }
+  return out;
+}
+
+// ─── Reads ──────────────────────────────────────────────────────────────
+
+// Collections the key can read, straight from Bothy (admin mapping UI,
+// test connection). Not filtered by visibility.
+async function listCollections({ settings } = {}) {
+  const out = await rest('/kb/collections', { settings });
+  return (out?.data || []).map((c) => ({
+    id: c.id,
+    name: c.name,
+    description: c.description || null,
+    site_url: c.site_url || null,
+    articles: c.articles ?? null,
+    public: c.public === true,
+    writable: !!c.writable,
+    created_at: c.created_at || null,
+  }));
+}
+
+function plainSnippet(text) {
+  return String(text || '').replace(/<\/?mark>/g, '').replace(/\s+/g, ' ').trim();
+}
+
+function shapeHit(settings, hit) {
+  const collectionId = hit.collection?.id || null;
+  const id = hit.id || hit.article_id;
+  return {
+    article_id: id,
+    title: hit.title,
+    kind: hit.kind || 'article',
+    public: typeof hit.public === 'boolean' ? hit.public : null,
+    collection_id: collectionId,
+    collection_name: hit.collection?.name || settings.collection_names[collectionId] || null,
+    category: hit.category || null,
+    subcategory: hit.subcategory || null,
+    source_url: hit.source_url || null,
+    date_modified: hit.date_modified || null,
+    snippet: plainSnippet(hit.matched?.snippet),
+    heading: hit.matched?.heading || null,
+    ...articleUrls(settings, id, collectionId),
+  };
+}
+
+function shapeArticle(settings, a) {
+  const collectionId = a.collection?.id || null;
+  const urls = articleUrls(settings, a.id, collectionId);
+  return {
+    article_id: a.id,
+    title: a.title,
+    kind: a.kind || 'article',
+    steps: Array.isArray(a.steps) ? a.steps : [],
+    internal_only: a.internal_only === true,
+    public: !!a.public_url,
+    collection_id: collectionId,
+    collection_name: a.collection?.name || settings.collection_names[collectionId] || null,
+    category: a.category || null,
+    subcategory: a.subcategory || null,
+    source_url: a.source_url || null,
+    external_id: a.external_id || null,
+    date_created: a.date_created || null,
+    date_modified: a.date_modified || a.updated_at || null,
+    attachments: a.attachments || { documents: [], images: [] },
+    body: String(a.body || ''),
+    format: a.format || 'markdown',
+    scope: urls.scope,
+    staff_url: urls.staff_url,
+    // Bothy's own public address wins; fall back to ours for the same site.
+    public_url: a.public_url || urls.public_url,
+  };
+}
+
+// `preferCollectionId` (a project's home collection) is searched first and
+// its hits lead the list; the rest follow in mapping order.
+// `orFallback`: when the exact query finds nothing and has several words,
+// retry with its key terms joined by OR (title-driven suggestions and briefs).
+async function search({ q, limit = 10, collectionId = null, kind = null, handler = false, preferCollectionId = null, orFallback = false }) {
+  const settings = await getSettings({ withKey: true });
+  if (!settings.enabled) throw httpError(503, 'Bothy is not configured');
+  const query = String(q || '').trim();
+  if (!query) return [];
+  const exact = await searchOnce({ settings, query, limit, collectionId, kind, handler, preferCollectionId });
+  if (exact.length || !orFallback) return exact;
+  const terms = keyTerms(query);
+  if (terms.length < 2) return exact;
+  return searchOnce({ settings, query: terms.join(' OR '), limit, collectionId, kind, handler, preferCollectionId });
+}
+
+async function searchOnce({ settings, query, limit, collectionId, kind, handler, preferCollectionId }) {
+  const lim = Math.max(1, Math.min(50, Number(limit) || 10));
+  const vis = visibleCollections(settings, handler);
+
+  let targets;
+  if (collectionId) {
+    if (vis.ids !== null && !vis.ids.includes(collectionId)) return [];
+    targets = [collectionId];
+  } else {
+    targets = vis.ids; // null => one unfiltered call
+  }
+  if (Array.isArray(targets) && targets.length === 0) return [];
+  const prefer = preferCollectionId && !collectionId
+    && (vis.ids === null || vis.ids.includes(preferCollectionId)) ? preferCollectionId : null;
+  if (prefer && Array.isArray(targets)) targets = [prefer, ...targets.filter((id) => id !== prefer)];
+
+  const run = (cid) => cached(`search:${cid || '*'}:${kind || ''}:${lim}:${query}`, async () =>
+    (await rest(`/kb/search${qs({ q: query, limit: lim, collection_id: cid, kind })}`, { settings }))?.data || []);
+
+  let hits;
+  if (targets === null) {
+    hits = await run(null);
+    if (prefer) {
+      try {
+        const lead = await run(prefer);
+        const leadIds = new Set(lead.map((h) => h.id));
+        hits = [...lead, ...hits.filter((h) => !leadIds.has(h.id))];
+      } catch { /* keep the unfiltered order */ }
+    }
+  } else {
+    const settled = await Promise.allSettled(targets.map((cid) => run(cid)));
+    hits = [];
+    let firstErr = null;
+    for (const s of settled) {
+      if (s.status === 'fulfilled') hits.push(...s.value);
+      else if (!firstErr) firstErr = s.reason;
+    }
+    if (!hits.length && firstErr) throw firstErr;
+  }
+
+  const seen = new Set();
+  let out = [];
+  for (const h of hits) {
+    if (seen.has(h.id)) continue;
+    seen.add(h.id);
+    out.push(shapeHit(settings, h));
+  }
+  if (!handler) {
+    // Confirm each hit is really public before a non-handler sees it.
+    const checks = await Promise.allSettled(out.map((h) => fetchArticle(settings, h.article_id)));
+    out = out.filter((h, i) => checks[i].status === 'fulfilled' && publicEnough(settings, checks[i].value));
+    for (const [i, h] of out.entries()) h.public = true, void i;
+  }
+  return out.slice(0, lim);
+}
+
+async function fetchArticle(settings, id) {
+  return cached(`article:${id}`, async () => shapeArticle(settings, await rest(`/kb/articles/${id}`, { settings })));
+}
+
+// One article with its whole body. 404 when outside the caller's visible
+// collections, or (non-handlers) not confirmed public.
+async function getArticle(articleId, { handler = false } = {}) {
+  const settings = await getSettings({ withKey: true });
+  if (!settings.enabled) throw httpError(503, 'Bothy is not configured');
+  const id = String(articleId || '').toLowerCase();
+  if (!/^[0-9a-f-]{36}$/.test(id)) throw httpError(404, 'Article not found');
+  let article;
+  try { article = await fetchArticle(settings, id); }
+  catch (err) { if (err.httpStatus === 404) throw httpError(404, 'Article not found'); throw err; }
+  const vis = visibleCollections(settings, handler);
+  if (vis.ids !== null && !vis.ids.includes(article.collection_id)) throw httpError(404, 'Article not found');
+  if (!handler && !publicEnough(settings, article)) throw httpError(404, 'Article not found');
+  return article;
+}
+
+// Articles in one collection, optionally by kind. Pages through Bothy's
+// cursor up to `max` rows. Handler-only (callers decide).
+async function listArticles({ collectionId, kind = null, category = null, max = 500 }) {
+  const settings = await getSettings({ withKey: true });
+  if (!settings.enabled) throw httpError(503, 'Bothy is not configured');
+  const out = [];
+  let cursor = null;
+  for (let page = 0; page < 20 && out.length < max; page++) {
+    const r = await rest(`/kb/articles${qs({ collection_id: collectionId, kind, category, limit: 200, cursor })}`, { settings });
+    for (const a of r?.data || []) {
+      out.push({
+        article_id: a.id, external_id: a.external_id || null, title: a.title, kind: a.kind || 'article',
+        category: a.category || null, subcategory: a.subcategory || null, date_modified: a.date_modified || null,
+        collection_id: collectionId, collection_name: settings.collection_names[collectionId] || null,
+        ...articleUrls(settings, a.id, collectionId),
+      });
+    }
+    cursor = r?.next_cursor || null;
+    if (!cursor) break;
+  }
+  return out.slice(0, max);
+}
+
+// Create or replace an article by external id. Needs the key to hold the
+// write scope and a write grant on the collection.
+async function upsertArticle({ collectionId, externalId, title, body, category, subcategory, kind, sourceUrl, internalOnly }) {
+  const settings = await getSettings({ withKey: true });
+  if (!settings.enabled) throw httpError(503, 'Bothy is not configured');
+  const payload = { title, body };
+  if (category) payload.category = category;
+  if (subcategory) payload.subcategory = subcategory;
+  if (kind) payload.kind = kind;
+  if (sourceUrl) payload.source_url = sourceUrl;
+  if (typeof internalOnly === 'boolean') payload.internal_only = internalOnly;
+  const r = await rest(`/kb/collections/${collectionId}/articles/${encodeURIComponent(externalId)}`, { method: 'PUT', body: payload, settings });
+  _results.clear();
+  const a = r?.data || r;
+  return a && a.id ? shapeArticle(settings, a) : a;
+}
+
+async function archiveArticle({ collectionId, externalId }) {
+  const settings = await getSettings({ withKey: true });
+  if (!settings.enabled) throw httpError(503, 'Bothy is not configured');
+  await rest(`/kb/collections/${collectionId}/articles/${encodeURIComponent(externalId)}`, { method: 'DELETE', settings });
+  _results.clear();
+}
+
+// Admin "Test connection": lists collections, records the outcome, and
+// refreshes the name snapshot so the mapping UI and link pills have
+// names even when Bothy is down later.
+async function testConnection() {
+  const settings = await getSettings({ withKey: true });
+  if (!settings.base_url) throw httpError(400, 'Set the Bothy URL first');
+  if (!settings._apiKey) throw httpError(400, settings.kms_available ? 'Save a Bothy API key first' : 'RESOLVD_MASTER_KEY not configured');
+  try {
+    const collections = await listCollections({ settings });
+    const names = { ...settings.collection_names };
+    for (const c of collections) names[c.id] = c.name;
+    await pool.query(`UPDATE bothy_settings SET collection_names = $1, updated_at = NOW() WHERE id = 1`, [JSON.stringify(names)]);
+    await recordOutcome(null);
+    return { ok: true, collections };
+  } catch (err) {
+    await recordOutcome(err.message);
+    throw err;
+  }
+}
+
+module.exports = {
+  getSettings,
+  patchSettings,
+  setApiKey,
+  testConnection,
+  listCollections,
+  visibleCollections,
+  articleUrls,
+  search,
+  getArticle,
+  listArticles,
+  upsertArticle,
+  archiveArticle,
+  rest,
+  keyTerms,
+  invalidateCache,
+};

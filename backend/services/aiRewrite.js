@@ -346,6 +346,7 @@ module.exports = {
   testConnection,
   saveUserApiKey,
   loadUserAssistConfig,
+  resolveProjectContext,
   applyRewriteLog,
   listProviders,
   isOrgEnabled,

@@ -24,6 +24,7 @@ import AdminSupport from "./pages/AdminSupport";
 import AdminEncryption from "./pages/AdminEncryption";
 import AdminEmailBackends from "./pages/AdminEmailBackends";
 import AdminAiAssist from "./pages/AdminAiAssist";
+import AdminBothy from "./pages/AdminBothy";
 import AdminMerge from "./pages/AdminMerge";
 import AdminAlertSources from "./pages/AdminAlertSources";
 import AdminSoftwareAliases from "./pages/AdminSoftwareAliases";
@@ -58,6 +59,7 @@ import Help from "./pages/Help";
 import KbIndex from "./pages/KbIndex";
 import KbProject from "./pages/KbProject";
 import KbArticle from "./pages/KbArticle";
+import BothyArticle from "./pages/BothyArticle";
 import KbEditor from "./pages/KbEditor";
 
 function ProtectedRoute({ children, adminOnly = false, handlerOnly = false }) {
@@ -225,6 +227,7 @@ function AppRoutes() {
           }
         />
         <Route path="kb" element={<ProtectedRoute><KbIndex /></ProtectedRoute>} />
+        <Route path="kb/article/:id" element={<ProtectedRoute><BothyArticle /></ProtectedRoute>} />
         <Route path="kb/:projectId" element={<ProtectedRoute><KbProject /></ProtectedRoute>} />
         <Route path="kb/:projectId/new" element={<ProtectedRoute><KbEditor /></ProtectedRoute>} />
         <Route path="kb/:projectId/:slug" element={<ProtectedRoute><KbArticle /></ProtectedRoute>} />
@@ -250,6 +253,7 @@ function AppRoutes() {
           <Route path="encryption" element={<AdminEncryption />} />
           <Route path="email-backends" element={<AdminEmailBackends />} />
           <Route path="ai-assist" element={<AdminAiAssist />} />
+          <Route path="bothy" element={<AdminBothy />} />
           <Route path="merge" element={<AdminMerge />} />
           <Route path="alert-sources" element={<AdminAlertSources />} />
           <Route path="integrations" element={<AdminAlertSources />} />

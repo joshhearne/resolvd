@@ -37,6 +37,9 @@ import { isUrlLike, truncateRef } from "../utils/externalRef";
 import PageShell from "../components/PageShell";
 import CannedPicker from "../components/CannedPicker";
 import RunbookPanel from "../components/RunbookPanel";
+import BothyKnowledge from "../components/BothyKnowledge";
+import AssistBriefModal from "../components/AssistBriefModal";
+import BothyRunbookPanel from "../components/BothyRunbookPanel";
 
 // External ticket refs may hold multiple vendor IDs separated by comma
 // or semicolon (e.g. "VND-1234, VND-5678" or "VND-1234;VND-5678").
@@ -447,6 +450,12 @@ export default function TicketDetail() {
   // up with the next comment POST + cleared. One-shot — discarded if
   // the user edits the body further before submitting.
   const [commentAiLogId, setCommentAiLogId] = useState(null);
+  // Bothy knowledge brief (scope a response before rewriting it).
+  const [bothyStatus, setBothyStatus] = useState(null);
+  const [briefOpen, setBriefOpen] = useState(false);
+  useEffect(() => {
+    api.get("/api/bothy/status").then(setBothyStatus).catch(() => setBothyStatus({ enabled: false }));
+  }, []);
   const [commentFiles, setCommentFiles] = useState([]);
   const [submittingComment, setSubmittingComment] = useState(false);
   const [shareWithVendor, setShareWithVendor] = useState(false);
@@ -2216,6 +2225,41 @@ export default function TicketDetail() {
                       placeholder="Add a comment... (Ctrl+Enter to post)"
                       mentionProjectId={ticket?.project_id}
                     />
+                    {(isAdmin || canHandleNotes) && bothyStatus?.enabled && (
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <button
+                          type="button"
+                          onClick={() => setBriefOpen(true)}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded border border-border-strong text-fg-muted hover:text-fg hover:bg-surface-2"
+                          title="Gather what the user reported, your draft, project context, and matching Bothy articles. Review, correct, then build a reply and resolution (no AI unless you ask)."
+                        >
+                          📚 Scope with knowledge
+                        </button>
+                        <span className="text-fg-dim">
+                          {bothyStatus?.ai?.available ? "AI rewrite optional" : "No AI token: builds from documentation only"}
+                        </span>
+                        <AssistBriefModal
+                          open={briefOpen}
+                          onClose={() => setBriefOpen(false)}
+                          ticketId={ticket.id}
+                          draft={commentBody}
+                          aiAvailable={bothyStatus?.ai?.available === true}
+                          aiNote={bothyStatus?.ai?.note || null}
+                          onUseReply={(text, meta) => {
+                            setCommentBody(text);
+                            setCommentAiLogId(meta?.logId || null);
+                          }}
+                          onUseResolution={async (md) => {
+                            try {
+                              await api.patch(`/api/tickets/${ticket.id}`, { resolution_summary: md });
+                              const refreshed = await api.get(`/api/tickets/${ticket.id}`);
+                              setTicket(refreshed);
+                              toast.success("Resolution saved");
+                            } catch (e) { toast.error(e.message); }
+                          }}
+                        />
+                      </div>
+                    )}
                     {(isAdmin || canHandleNotes) && vendorContacts.length > 0 && (
                       <label className="flex items-center gap-2 text-xs text-fg-muted">
                         <input type="checkbox" checked={shareWithVendor}
@@ -2452,15 +2496,27 @@ export default function TicketDetail() {
             )}
 
             {activeTab === "runbook" && canHandleNotes && (
-              <RunbookPanel
-                ticket={ticket}
-                user={user}
-                projectMembers={projectMembers}
-                onApplyCanned={(rendered) => {
-                  setCommentBody(rendered);
-                  setActiveTab("comments");
-                }}
-              />
+              <div className="p-4 space-y-4">
+                <BothyRunbookPanel
+                  ticket={ticket}
+                  user={user}
+                  onApplyCanned={(rendered) => {
+                    setCommentBody(rendered);
+                    setActiveTab("comments");
+                  }}
+                />
+                {bothyStatus?.local_kb_enabled !== false && (
+                  <RunbookPanel
+                    ticket={ticket}
+                    user={user}
+                    projectMembers={projectMembers}
+                    onApplyCanned={(rendered) => {
+                      setCommentBody(rendered);
+                      setActiveTab("comments");
+                    }}
+                  />
+                )}
+              </div>
             )}
 
             {activeTab === "attachments" && (
@@ -3912,9 +3968,24 @@ function KnowledgePanel({ ticketId, projectId, canEdit, isAdmin, ticketResolved,
     } catch (e) { /* onResolutionChange toasts on failure */ }
   }
 
+  const [bothyFlags, setBothyFlags] = useState(null);
+  useEffect(() => {
+    api.get("/api/bothy/status").then(setBothyFlags).catch(() => setBothyFlags({ enabled: false }));
+  }, []);
   async function promoteToKb() {
     if (!resolutionSummary || resolutionSummary.trim().length < 20) {
       toast.error("Add a resolution summary first (20+ chars).");
+      return;
+    }
+    // Bothy is the documentation platform: when it is on, a promotion
+    // becomes an internal-only draft in the project's collection.
+    if (bothyFlags?.enabled) {
+      try {
+        const article = await api.post(`/api/bothy/tickets/${ticketId}/promote`, {});
+        toast.success("Draft article created in Bothy");
+        await loadAll();
+        window.location.href = article.staff_url ? article.staff_url : `/kb/article/${article.article_id}?ticket=${ticketId}`;
+      } catch (e) { toast.error(e.message); }
       return;
     }
     try {
@@ -3975,7 +4046,7 @@ function KnowledgePanel({ ticketId, projectId, canEdit, isAdmin, ticketResolved,
           </div>
         )}
 
-        {canEdit && (
+        {canEdit && bothyFlags?.local_kb_enabled !== false && (
           <div className="relative">
             <input
               type="text"
@@ -4003,6 +4074,16 @@ function KnowledgePanel({ ticketId, projectId, canEdit, isAdmin, ticketResolved,
           </div>
         )}
       </div>
+
+      {/* Bothy (company knowledge base) */}
+      <BothyKnowledge
+        ticketId={ticketId}
+        canEdit={canEdit}
+        onDraft={(md) => {
+          setResDraft((prev) => (prev && prev.trim() ? `${prev.trim()}\n\n${md}` : md));
+          setResEdit(true);
+        }}
+      />
 
       {/* Suggestions */}
       {canEdit && suggestions.length > 0 && (

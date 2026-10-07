@@ -1,11 +1,50 @@
 import React, { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
 
 export default function KbIndex() {
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [bothy, setBothy] = useState(null);
+  const [collections, setCollections] = useState([]);
+  const [params, setParams] = useSearchParams();
+  const [q, setQ] = useState(params.get("q") || "");
+  const [collectionId, setCollectionId] = useState(params.get("collection") || "");
+  const [hits, setHits] = useState(null);
+  const [searching, setSearching] = useState(false);
+
+  useEffect(() => {
+    api.get("/api/bothy/status")
+      .then((st) => {
+        setBothy(st);
+        if (st?.has_visible) api.get("/api/bothy/collections").then(setCollections).catch(() => setCollections([]));
+      })
+      .catch(() => setBothy({ enabled: false }));
+  }, []);
+
+  // Search runs from the URL (?q=&collection=) so results are linkable.
+  useEffect(() => {
+    const term = (params.get("q") || "").trim();
+    const cid = params.get("collection") || "";
+    setQ(term); setCollectionId(cid);
+    if (!bothy?.has_visible || term.length < 2) { setHits(null); return; }
+    let cancelled = false;
+    setSearching(true);
+    api.get(`/api/bothy/search?q=${encodeURIComponent(term)}&limit=25${cid ? `&collection_id=${cid}` : ""}`)
+      .then((r) => { if (!cancelled) setHits(r); })
+      .catch((e) => { if (!cancelled) { setHits([]); toast.error(e.message); } })
+      .finally(() => { if (!cancelled) setSearching(false); });
+    return () => { cancelled = true; };
+  }, [params, bothy?.has_visible]);
+
+  function submitSearch(e) {
+    e.preventDefault();
+    const next = {};
+    if (q.trim()) next.q = q.trim();
+    if (collectionId) next.collection = collectionId;
+    setParams(next);
+  }
 
   useEffect(() => {
     api
@@ -38,11 +77,89 @@ export default function KbIndex() {
       <header>
         <h1 className="text-2xl font-semibold tracking-tight text-fg">Knowledge Base</h1>
         <p className="text-sm text-fg-muted mt-1">
-          Per-project documentation. Pick a project to browse or edit its articles.
+          {bothy?.has_visible
+            ? "Search the company knowledge base, or browse the per-project articles below."
+            : "Per-project documentation. Pick a project to browse or edit its articles."}
         </p>
       </header>
 
-      {loading ? (
+      {bothy?.has_visible && (
+        <section className="rounded-lg border border-border bg-surface p-5 space-y-4">
+          <form onSubmit={submitSearch} className="flex flex-col sm:flex-row gap-2">
+            <input
+              type="search"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Search documentation…"
+              className="flex-1 bg-surface-2 border border-border rounded px-3 py-2 text-sm"
+            />
+            {collections.length > 1 && (
+              <select
+                value={collectionId}
+                onChange={(e) => setCollectionId(e.target.value)}
+                className="bg-surface-2 border border-border rounded px-2 py-2 text-sm"
+              >
+                <option value="">All collections</option>
+                {collections.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}{c.scope === "internal" ? " (internal)" : ""}</option>
+                ))}
+              </select>
+            )}
+            <button type="submit" className="btn btn-primary btn-sm">Search</button>
+          </form>
+
+          {searching && <div className="text-sm text-fg-muted">Searching…</div>}
+
+          {!searching && hits && (
+            hits.length === 0 ? (
+              <div className="text-sm text-fg-dim italic">No articles matched.</div>
+            ) : (
+              <ul className="divide-y divide-border">
+                {hits.map((h) => (
+                  <li key={h.article_id} className="py-3">
+                    <Link to={`/kb/article/${h.article_id}`} className="text-base font-medium text-fg hover:text-accent">
+                      {h.title}
+                    </Link>
+                    <div className="text-[11px] text-fg-dim mt-0.5">
+                      {[h.collection_name, h.category, h.subcategory].filter(Boolean).join(" · ")}
+                      {h.scope === "public" && <span className="ml-2 uppercase text-emerald-600 dark:text-emerald-300">public</span>}
+                    </div>
+                    {h.snippet && <p className="text-sm text-fg-muted mt-1 line-clamp-2">{h.snippet}</p>}
+                  </li>
+                ))}
+              </ul>
+            )
+          )}
+
+          {!hits && collections.length > 0 && (
+            <div className="flex flex-wrap gap-2">
+              {collections.map((c) => (
+                <button
+                  key={c.id}
+                  type="button"
+                  onClick={() => { setCollectionId(c.id); if (q.trim()) setParams({ q: q.trim(), collection: c.id }); }}
+                  className={`text-xs px-2.5 py-1 rounded-full border ${collectionId === c.id ? "border-accent text-accent bg-accent/10" : "border-border text-fg-muted hover:text-fg hover:bg-surface-2"}`}
+                  title={c.scope === "internal" ? "Internal: handlers only" : "Public collection"}
+                >
+                  {c.name}{c.articles != null ? ` · ${c.articles}` : ""}
+                </button>
+              ))}
+              {bothy.base_url && (
+                <a href={`${bothy.base_url}/kb`} target="_blank" rel="noreferrer" className="text-xs px-2.5 py-1 text-brand hover:underline">Open Bothy ↗</a>
+              )}
+              {bothy.public_url && (
+                <a href={bothy.public_url} target="_blank" rel="noreferrer" className="text-xs px-2.5 py-1 text-brand hover:underline">Public site ↗</a>
+              )}
+            </div>
+          )}
+        </section>
+      )}
+
+      {bothy?.has_visible && bothy?.local_kb_enabled !== false && (
+        <h2 className="text-sm font-semibold text-fg-muted uppercase tracking-wide pt-2">Project articles</h2>
+      )}
+
+      {bothy?.local_kb_enabled === false ? null : loading ? (
         <div className="text-fg-muted text-sm">Loading…</div>
       ) : projects.length === 0 ? (
         <div className="rounded-lg border border-border bg-surface p-8 text-center">
