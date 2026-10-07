@@ -3080,6 +3080,25 @@ Thanks,
     await client.query(`ALTER TABLE trove_kb_settings ADD COLUMN IF NOT EXISTS auto_map_public BOOLEAN NOT NULL DEFAULT TRUE`);
     await client.query(`ALTER TABLE trove_kb_settings ADD COLUMN IF NOT EXISTS known_collection_ids TEXT[] NOT NULL DEFAULT '{}'::text[]`);
     await client.query(`ALTER TABLE trove_kb_settings ADD COLUMN IF NOT EXISTS collections_synced_at TIMESTAMPTZ`);
+
+    // Noise filter for knowledge briefs: comments that must never be fed to
+    // a brief, by regex, literal text, or author. Built-in rules are seeded
+    // as rows so an admin can disable or edit them without a redeploy.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS trove_kb_noise_rules (
+        id SERIAL PRIMARY KEY,
+        kind TEXT NOT NULL CHECK (kind IN ('regex', 'literal', 'user')),
+        pattern TEXT,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        note TEXT,
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        builtin BOOLEAN NOT NULL DEFAULT FALSE,
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CHECK ((kind = 'user' AND user_id IS NOT NULL) OR (kind <> 'user' AND pattern IS NOT NULL AND length(pattern) > 0))
+      )
+    `);
     // Runbook runs can point at a Trove KB runbook (uuid) instead of a local
     // article. step_states is then keyed by Trove KB step id.
     await client.query(`ALTER TABLE ticket_runbook_runs ADD COLUMN IF NOT EXISTS trove_kb_article_id UUID`);

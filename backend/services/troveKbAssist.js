@@ -49,24 +49,10 @@ function keyTerms(text, max = 8) {
   return out.join(' ');
 }
 
-// Comments that carry no knowledge about the problem and must never
-// reach a brief: SLA warnings and breaches (they arrive as ordinary
-// comments from the help desk mailbox, not as system rows), ticket moves
-// between projects, merges, and automatic replies. Matched on the body
-// so the rule holds whichever account or route wrote the row.
-const NOISE_PATTERNS = [
-  /\[[A-Z0-9]+-\d+\]\s*SLA\s+(warning|breach)\b/i,      // "[INC-0528] SLA breach: resolve window missed"
-  /\bSLA\s+(warning|breach)\s*:/i,
-  /\b(response|resolve)\s+SLA\b.*\b(closing|missed|breached|due)\b/i,
-  /^\s*Ticket moved(?: \(bulk\))? from project\b/im,
-  /^\s*(Ticket|Tickets?) (merged|split|reopened|auto-?closed|closed automatically)\b/im,
-  /^\s*(Automatic reply|Auto-?reply|Out of office)\b/im,
-];
-function isNoiseComment(body) {
-  const text = String(body || '');
-  if (!text.trim()) return true;
-  return NOISE_PATTERNS.some((re) => re.test(text));
-}
+// Comments that carry no knowledge about the problem never reach a brief:
+// the admin-managed noise rules (SLA notices, moves, auto-replies, named
+// accounts) in services/troveKbNoise.js decide.
+const noise = require('./troveKbNoise');
 
 async function ticketComments(ticket) {
   const r = await pool.query(
@@ -83,7 +69,7 @@ async function ticketComments(ticket) {
   const reported = [];
   const team = [];
   for (const c of r.rows) {
-    if (isNoiseComment(c.body)) continue;
+    if (await noise.isNoise({ body: c.body, user_id: c.user_id })) continue;
     let handler = false;
     if (c.user_id) {
       if (!handlerCache.has(c.user_id)) {
@@ -365,4 +351,4 @@ async function getBrief(ticketId, id) {
   return r.rows[0] || null;
 }
 
-module.exports = { buildBrief, compose, listBriefs, getBrief, keyTerms, splitSections, isNoiseComment, NOISE_PATTERNS };
+module.exports = { buildBrief, compose, listBriefs, getBrief, keyTerms, splitSections };

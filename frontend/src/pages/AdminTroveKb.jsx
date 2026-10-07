@@ -12,6 +12,7 @@ import { api } from "../utils/api";
 const SECTIONS = [
   { key: "connection", label: "Connection" },
   { key: "collections", label: "Collections" },
+  { key: "noise", label: "Assist noise filter" },
   { key: "migration", label: "Replace local KB" },
 ];
 
@@ -73,6 +74,7 @@ export default function AdminTroveKb() {
         {section === "collections" && (
           <CollectionsPane settings={settings} patch={patch} busy={busy} />
         )}
+        {section === "noise" && <NoisePane />}
         {section === "migration" && (
           <MigrationPane settings={settings} patch={patch} busy={busy} />
         )}
@@ -612,5 +614,148 @@ function WebhookSection({ settings, setSettings }) {
         <button onClick={refresh} disabled={refreshing} className="btn btn-secondary btn-sm">{refreshing ? "Refreshing…" : "Refresh now"}</button>
       </div>
     </section>
+  );
+}
+
+
+// Noise filter for knowledge briefs: comments matching any enabled rule
+// (regex, literal text, or a specific account) never reach a brief.
+// Built-ins are rows too, so they can be switched off or edited here.
+function NoisePane() {
+  const [rules, setRules] = useState([]);
+  const [users, setUsers] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [form, setForm] = useState({ kind: "regex", pattern: "", user_id: "", note: "" });
+  const [saving, setSaving] = useState(false);
+  const [sample, setSample] = useState("");
+  const [sampleUser, setSampleUser] = useState("");
+  const [result, setResult] = useState(null);
+  const [editing, setEditing] = useState(null); // { id, pattern, note }
+
+  async function load() {
+    try { setRules(await api.get("/api/trove-kb-settings/noise-rules")); }
+    catch (e) { toast.error(e.message); }
+    finally { setLoading(false); }
+  }
+  useEffect(() => {
+    load();
+    api.get("/api/users").then((u) => setUsers(Array.isArray(u) ? u : [])).catch(() => setUsers([]));
+  }, []);
+
+  async function add(e) {
+    e.preventDefault();
+    setSaving(true);
+    try {
+      await api.post("/api/trove-kb-settings/noise-rules", {
+        kind: form.kind,
+        pattern: form.kind === "user" ? undefined : form.pattern,
+        user_id: form.kind === "user" ? Number(form.user_id) : undefined,
+        note: form.note || null,
+      });
+      setForm({ kind: form.kind, pattern: "", user_id: "", note: "" });
+      toast.success("Rule added");
+      await load();
+    } catch (err) { toast.error(err.message); }
+    finally { setSaving(false); }
+  }
+  async function toggle(r) {
+    try { await api.patch(`/api/trove-kb-settings/noise-rules/${r.id}`, { enabled: !r.enabled }); await load(); }
+    catch (err) { toast.error(err.message); }
+  }
+  async function remove(r) {
+    if (!confirm(`Delete this ${r.builtin ? "built-in " : ""}rule?${r.builtin ? " You can disable it instead." : ""}`)) return;
+    try { await api.delete(`/api/trove-kb-settings/noise-rules/${r.id}`); await load(); }
+    catch (err) { toast.error(err.message); }
+  }
+  async function saveEdit() {
+    try {
+      await api.patch(`/api/trove-kb-settings/noise-rules/${editing.id}`, { pattern: editing.pattern, note: editing.note });
+      setEditing(null); toast.success("Saved"); await load();
+    } catch (err) { toast.error(err.message); }
+  }
+  async function test(e) {
+    e.preventDefault();
+    try { setResult(await api.post("/api/trove-kb-settings/noise-rules/test", { body: sample, user_id: sampleUser ? Number(sampleUser) : null })); }
+    catch (err) { toast.error(err.message); }
+  }
+
+  const kindLabel = { regex: "Regex", literal: "Contains", user: "Account" };
+
+  return (
+    <div className="space-y-4">
+      <section className="bg-surface border border-border rounded-lg p-4 space-y-3">
+        <div>
+          <h2 className="text-base font-semibold text-fg">Assist noise filter</h2>
+          <p className="text-xs text-fg-muted mt-1">
+            When "Scope with knowledge" gathers a ticket's comments, anything matching an enabled rule is left out: SLA notices, moves, auto-replies, or everything a particular account posts. System comments and muted comments are always left out.
+          </p>
+        </div>
+
+        <form onSubmit={add} className="grid gap-2 sm:grid-cols-[120px_1fr_auto] items-start">
+          <select value={form.kind} onChange={(e) => setForm((f) => ({ ...f, kind: e.target.value }))} className="bg-surface-2 border border-border rounded px-2 py-1.5 text-sm">
+            <option value="regex">Regex</option><option value="literal">Contains text</option><option value="user">Account</option>
+          </select>
+          {form.kind === "user" ? (
+            <select value={form.user_id} onChange={(e) => setForm((f) => ({ ...f, user_id: e.target.value }))} className="bg-surface-2 border border-border rounded px-2 py-1.5 text-sm" required>
+              <option value="">Pick an account…</option>
+              {users.map((u) => <option key={u.id} value={u.id}>{u.display_name || u.email} ({u.email})</option>)}
+            </select>
+          ) : (
+            <input value={form.pattern} onChange={(e) => setForm((f) => ({ ...f, pattern: e.target.value }))} placeholder={form.kind === "regex" ? String.raw`e.g. ^\s*Ticket moved from project\b  (case-insensitive, multiline)` : "e.g. Sent from my iPhone"} className="bg-surface-2 border border-border rounded px-2 py-1.5 text-sm font-mono" required />
+          )}
+          <button type="submit" disabled={saving} className="btn btn-primary btn-sm">Add rule</button>
+          <input value={form.note} onChange={(e) => setForm((f) => ({ ...f, note: e.target.value }))} placeholder="Note (optional): why this is noise" className="sm:col-span-3 bg-surface-2 border border-border rounded px-2 py-1.5 text-xs" />
+        </form>
+
+        {loading ? <div className="text-sm text-fg-muted">Loading…</div> : (
+          <div className="divide-y divide-border border border-border rounded-md">
+            {rules.map((r) => (
+              <div key={r.id} className={`px-3 py-2 flex flex-wrap items-start gap-3 ${r.enabled ? "" : "opacity-60"}`}>
+                <input type="checkbox" checked={!!r.enabled} onChange={() => toggle(r)} className="mt-1" title={r.enabled ? "Enabled" : "Disabled"} />
+                <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-surface-2 text-fg-muted mt-0.5 w-16 text-center">{kindLabel[r.kind]}</span>
+                <div className="flex-1 min-w-[200px]">
+                  {editing?.id === r.id ? (
+                    <div className="space-y-1">
+                      <input value={editing.pattern} onChange={(e) => setEditing((x) => ({ ...x, pattern: e.target.value }))} className="w-full bg-surface-2 border border-border rounded px-2 py-1 text-xs font-mono" />
+                      <input value={editing.note || ""} onChange={(e) => setEditing((x) => ({ ...x, note: e.target.value }))} placeholder="Note" className="w-full bg-surface-2 border border-border rounded px-2 py-1 text-xs" />
+                      <div className="flex gap-2 text-xs"><button onClick={saveEdit} className="text-brand hover:underline">Save</button><button onClick={() => setEditing(null)} className="text-fg-muted hover:text-fg">Cancel</button></div>
+                    </div>
+                  ) : (
+                    <>
+                      <div className="text-sm font-mono text-fg break-all">{r.kind === "user" ? `${r.user_name || "?"} <${r.user_email || r.user_id}>` : r.pattern}</div>
+                      {r.note && <div className="text-[11px] text-fg-muted">{r.note}</div>}
+                    </>
+                  )}
+                </div>
+                <div className="flex items-center gap-2 text-[11px] mt-1">
+                  {r.builtin && <span className="text-fg-dim">built-in</span>}
+                  {r.kind !== "user" && editing?.id !== r.id && <button onClick={() => setEditing({ id: r.id, pattern: r.pattern, note: r.note })} className="text-brand hover:underline">Edit</button>}
+                  <button onClick={() => remove(r)} className="text-red-600 hover:underline">Delete</button>
+                </div>
+              </div>
+            ))}
+          </div>
+        )}
+      </section>
+
+      <section className="bg-surface border border-border rounded-lg p-4 space-y-3">
+        <h3 className="text-sm font-semibold text-fg">Try a comment</h3>
+        <form onSubmit={test} className="space-y-2">
+          <textarea value={sample} onChange={(e) => setSample(e.target.value)} rows={4} placeholder="Paste a comment body to see which rules catch it…" className="w-full bg-surface-2 border border-border rounded px-2 py-1.5 text-xs font-mono" />
+          <div className="flex flex-wrap items-center gap-2">
+            <select value={sampleUser} onChange={(e) => setSampleUser(e.target.value)} className="bg-surface-2 border border-border rounded px-2 py-1.5 text-xs">
+              <option value="">Any author</option>
+              {users.map((u) => <option key={u.id} value={u.id}>{u.display_name || u.email}</option>)}
+            </select>
+            <button type="submit" className="btn btn-secondary btn-sm">Test</button>
+            {result && (
+              <span className={`text-xs ${result.noise ? "text-amber-600 dark:text-amber-300" : "text-emerald-600 dark:text-emerald-300"}`}>
+                {result.noise ? "Would be left out" : "Would be kept"}{result.matches.length ? ` · matched: ${result.matches.map((m) => `#${m.id}${m.enabled ? "" : " (disabled)"}`).join(", ")}` : ""}
+              </span>
+            )}
+          </div>
+        </form>
+      </section>
+    </div>
   );
 }

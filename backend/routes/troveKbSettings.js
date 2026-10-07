@@ -9,6 +9,7 @@ const express = require('express');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const troveKb = require('../services/troveKb');
 const migration = require('../services/troveKbMigration');
+const noise = require('../services/troveKbNoise');
 
 const router = express.Router();
 router.use(requireAuth, requireRole('Admin'));
@@ -131,6 +132,28 @@ router.get('/migration/plan', async (req, res) => {
 router.post('/migration/apply', async (req, res) => {
   try { res.json(await migration.apply({ userId: req.session.user.id })); }
   catch (err) { fail(res, err, 'migration apply'); }
+});
+
+// Knowledge-brief noise filter: regex / literal / user rules.
+router.get('/noise-rules', async (req, res) => {
+  try { res.json(await noise.listRules()); }
+  catch (err) { fail(res, err, 'noise list'); }
+});
+router.post('/noise-rules', async (req, res) => {
+  try { res.status(201).json(await noise.createRule({ ...(req.body || {}), createdBy: req.session.user.id })); }
+  catch (err) { fail(res, err, 'noise create'); }
+});
+router.patch('/noise-rules/:id', async (req, res) => {
+  try { res.json(await noise.updateRule(Number(req.params.id), req.body || {})); }
+  catch (err) { fail(res, err, 'noise update'); }
+});
+router.delete('/noise-rules/:id', async (req, res) => {
+  try { await noise.deleteRule(Number(req.params.id)); res.json({ ok: true }); }
+  catch (err) { fail(res, err, 'noise delete'); }
+});
+router.post('/noise-rules/test', async (req, res) => {
+  try { res.json(await noise.testText({ body: String(req.body?.body || ''), user_id: req.body?.user_id ?? null })); }
+  catch (err) { fail(res, err, 'noise test'); }
 });
 
 module.exports = router;
