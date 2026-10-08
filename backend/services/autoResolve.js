@@ -112,9 +112,24 @@ const SYSTEM_NOTICE_PATTERNS = [
   /^\s*(?:\[[A-Z0-9]+-\d+\]\s*)?(Response|Resolve)\s+window\s+closing\b/im,
   /^\s*(?:\[[A-Z0-9]+-\d+\]\s*)?(No response within target|Resolve target missed)\b/im,
 ];
+// Any notification Resolvd itself sent, recognised by the plain-text shape
+// every one of them has: the site name on the first line, "[REF] <event>" on
+// the second, and a "[View Ticket](<our url>/tickets/<id>)" link. A human
+// reply quoting one still has their own words above it, so the first lines
+// are theirs, not ours.
+const NOTIFICATION_SUBJECTS = /^\s*(?:\[[A-Z0-9]+-\d+\]\s*)?(Ticket (closed|resolved|reopened|updated|created|moved|assigned|merged)|Assigned to you|New (comment|reply|ticket)|Mentioned you|Follow-?up due|SLA\b)/i;
 function detectSystemNotice({ subject, body, fromAddress } = {}) {
-  const text = `${subject || ''}\n${String(body || '').slice(0, 600)}`;
+  const bodyText = String(body || '').replace(/\r\n?/g, '\n');
+  const text = `${subject || ''}\n${bodyText.slice(0, 600)}`;
   for (const re of SYSTEM_NOTICE_PATTERNS) if (re.test(text)) return 'sla';
+
+  const site = String(process.env.FRONTEND_URL || '').trim().replace(/\/+$/, '');
+  const lines = bodyText.trim().split('\n').map((l) => l.trim()).filter(Boolean);
+  const refOnSecondLine = lines.length >= 2 && lines[0].length <= 80 && /^\[[A-Z0-9]+-\d+\]\s+\S/.test(lines[1]);
+  const viewLink = site && bodyText.includes(`[View Ticket](${site}/tickets/`);
+  if (refOnSecondLine && (viewLink || NOTIFICATION_SUBJECTS.test(lines[1]))) return 'notification';
+  if (viewLink && NOTIFICATION_SUBJECTS.test(String(subject || ''))) return 'notification';
+
   const ours = String(process.env.MAIL_FROM || '').trim().toLowerCase();
   const from = String(fromAddress || '').trim().toLowerCase();
   if (ours && from && from === ours && /resolvd|\[[A-Z0-9]+-\d+\]/i.test(text)) return 'notification';
