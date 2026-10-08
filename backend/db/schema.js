@@ -2773,6 +2773,9 @@ async function initSchema() {
     // canned RFQ template as {consumable.reorder_qty} so admins can fire
     // the vendor email without retyping the quantity on every restock.
     await client.query(`ALTER TABLE consumables ADD COLUMN IF NOT EXISTS reorder_qty INTEGER NOT NULL DEFAULT 0`);
+    // location — free-text bin/shelf/room where this stock lives. Printed
+    // on the standalone consumable shelf label (renderConsumableShelfLabel).
+    await client.query(`ALTER TABLE consumables ADD COLUMN IF NOT EXISTS location TEXT`);
 
     // Seed two global canned responses for consumable restock workflows.
     // Idempotent: inserts only when no global response already carries

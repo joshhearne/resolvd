@@ -71,8 +71,8 @@ router.post('/', requireAuth, requireRole(...HANDLER_ROLES), async (req, res) =>
     const r = await pool.query(
       `INSERT INTO consumables (part_no, title, category, vendor_company_id,
                                 current_stock, low_stock_threshold, reorder_qty, notes,
-                                purchase_url, vendor_part_no, is_metered)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
+                                purchase_url, vendor_part_no, is_metered, location)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
        RETURNING id`,
       [
         part_no,
@@ -86,6 +86,7 @@ router.post('/', requireAuth, requireRole(...HANDLER_ROLES), async (req, res) =>
         b.purchase_url ? String(b.purchase_url).trim() : null,
         b.vendor_part_no ? String(b.vendor_part_no).trim() : null,
         !!b.is_metered,
+        b.location ? String(b.location).trim() : null,
       ]
     );
     res.status(201).json({ id: r.rows[0].id });
@@ -105,7 +106,7 @@ router.patch('/:id(\\d+)', requireAuth, requireRole(...HANDLER_ROLES), async (re
       return res.status(400).json({ error: 'Use POST /:id/move to adjust stock' });
     }
     const fields = ['part_no', 'title', 'category', 'vendor_company_id', 'low_stock_threshold', 'reorder_qty',
-                    'notes', 'is_archived',
+                    'notes', 'is_archived', 'location',
                     'purchase_url', 'vendor_part_no', 'is_metered'];
     const sets = [];
     const values = [];
@@ -209,10 +210,10 @@ router.get('/:id(\\d+)/movements', requireAuth, requireRole(...HANDLER_ROLES), a
   }
 });
 
-// POST /api/consumables/:id/print-label — render a delivery label for
-// this consumable. Optional body: { ticket_id, requestor_name, location }.
-// When ticket_id is supplied, the renderer fills the SR ref + submitter
-// at print time; otherwise just the consumable info goes on the label.
+// POST /api/consumables/:id/print-label — render a standalone shelf/bin
+// label for this consumable (no ticket in play): part_no, title,
+// location, notes. The ticket-tied delivery label is a separate flow
+// (POST /api/tickets/:id/print-label).
 router.post('/:id(\\d+)/print-label', requireAuth, requireRole(...HANDLER_ROLES), async (req, res) => {
   try {
     const cons = await pool.query(`SELECT * FROM consumables WHERE id = $1`, [Number(req.params.id)]);
@@ -223,24 +224,8 @@ router.post('/:id(\\d+)/print-label', requireAuth, requireRole(...HANDLER_ROLES)
     if (!cfg?.enabled) return res.status(400).json({ error: 'Label printer disabled' });
     if (!cfg.host) return res.status(400).json({ error: 'Label printer host not configured' });
 
-    const b = req.body || {};
-    let ticket = null;
-    if (b.ticket_id) {
-      const t = await pool.query(
-        `SELECT id, internal_ref FROM tickets WHERE id = $1`,
-        [Number(b.ticket_id)]
-      );
-      if (t.rows[0]) ticket = t.rows[0];
-    }
-
-    const zpl = labelTemplates.renderConsumableLabel({
-      ticket: ticket || { id: cons.rows[0].id, internal_ref: cons.rows[0].part_no },
-      requestor: b.requestor_name ? String(b.requestor_name).trim() : '',
-      location: b.location ? String(b.location).trim() : '',
-      consumable: {
-        part_number: cons.rows[0].part_no,
-        title: cons.rows[0].title,
-      },
+    const zpl = labelTemplates.renderConsumableShelfLabel({
+      consumable: cons.rows[0],
     }, cfg);
     await labelPrinter.print(zpl);
     res.json({ ok: true });

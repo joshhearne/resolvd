@@ -351,6 +351,7 @@ function ConsumableDetailPage({ id }) {
             </h1>
             <div className="text-xs text-fg-dim mt-0.5">
               {detail.category && <>Category: {detail.category} · </>}
+              {detail.location && <>Location: {detail.location} · </>}
               {detail.vendor_company_name && <>Vendor: {detail.vendor_company_name} · </>}
               {detail.vendor_part_no && <>Vendor P/N: <span className="font-mono">{detail.vendor_part_no}</span> · </>}
               Updated <HybridTime value={detail.updated_at} />
@@ -437,6 +438,10 @@ function ConsumableDetailPage({ id }) {
                 className="bg-surface-2 border border-border rounded px-2 py-1">
                 <option value="0">No</option><option value="1">Yes</option>
               </select>
+            </label>
+            <label className="flex flex-col gap-1 sm:col-span-2">Location
+              <input value={cur("location") || ""} onChange={(e) => setField("location", e.target.value)}
+                className="bg-surface-2 border border-border rounded px-2 py-1" placeholder="bin / shelf / room (prints on the shelf label)" />
             </label>
             <label className="flex flex-col gap-1 sm:col-span-2">Notes
               <textarea value={cur("notes") || ""} onChange={(e) => setField("notes", e.target.value)}

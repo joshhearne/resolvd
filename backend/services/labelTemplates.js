@@ -139,9 +139,47 @@ function renderConsumableLabel({ ticket, requestor, location, consumable }, cfg)
   return lines.join('\n');
 }
 
+// Standalone consumable shelf/bin label — printed from the consumable
+// page with no ticket in play, to mark stock or a shelf space. Tight
+// stacked layout, distinct from the ticket delivery label above:
+//   {part_no}   (faux-bold lead)
+//   {title}     (description, tight under the part number)
+//   {location}  (bin / shelf / room)
+//   {notes}     (single line; runs off the right edge if long — by design)
+// Fixed Y positions so the layout is predictable; absent fields leave a
+// gap rather than reflowing.
+function renderConsumableShelfLabel({ consumable }, cfg) {
+  const lines = [header(cfg)];
+  const x = 20;
+  const c = consumable || {};
+
+  const partNo = zplEsc(c.part_no || `#${c.id || ''}`);
+  const pSize = scale(cfg, 30);
+  // Faux-bold via 1-dot horizontal double-strike (matches asset label).
+  lines.push(`^FO${x},${scale(cfg, 8)}^A0N,${pSize},${pSize}^FD${partNo}^FS`);
+  lines.push(`^FO${x + 1},${scale(cfg, 8)}^A0N,${pSize},${pSize}^FD${partNo}^FS`);
+
+  if (c.title) {
+    const s = scale(cfg, 20);
+    lines.push(`^FO${x},${scale(cfg, 42)}^A0N,${s},${s}^FD${zplEsc(c.title)}^FS`);
+  }
+  if (c.location) {
+    const s = scale(cfg, 20);
+    lines.push(`^FO${x},${scale(cfg, 68)}^A0N,${s},${s}^FD${zplEsc(c.location)}^FS`);
+  }
+  if (c.notes) {
+    const s = scale(cfg, 18);
+    lines.push(`^FO${x},${scale(cfg, 94)}^A0N,${s},${s}^FD${zplEsc(c.notes)}^FS`);
+  }
+
+  lines.push(footer());
+  return lines.join('\n');
+}
+
 module.exports = {
   renderTestLabel,
   renderAssetLabel,
   renderConsumableLabel,
+  renderConsumableShelfLabel,
   zplEsc,
 };
