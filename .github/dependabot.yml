@@ -16,6 +16,10 @@
           update-types:
             - minor
             - patch
+      ignore:
+        # ESM-only from v3; the backend is CommonJS and uses Node's global fetch instead.
+        - dependency-name: node-fetch
+          update-types: ["version-update:semver-major"]
 
     - package-ecosystem: npm
       directory: /frontend
@@ -28,24 +32,53 @@
           update-types:
             - minor
             - patch
+      ignore:
+        # Planned migrations, done deliberately and together, not as bumps.
+        - dependency-name: react
+          update-types: ["version-update:semver-major"]
+        - dependency-name: react-dom
+          update-types: ["version-update:semver-major"]
+        - dependency-name: "@types/react"
+          update-types: ["version-update:semver-major"]
+        - dependency-name: "@types/react-dom"
+          update-types: ["version-update:semver-major"]
+        - dependency-name: react-router-dom
+          update-types: ["version-update:semver-major"]
+        - dependency-name: vite
+          update-types: ["version-update:semver-major"]
+        - dependency-name: tailwindcss
+          update-types: ["version-update:semver-major"]
+        - dependency-name: "@azure/msal-browser"
+          update-types: ["version-update:semver-major"]
 
     - package-ecosystem: docker
       directory: /backend
       schedule:
         interval: weekly
         day: monday
+      ignore:
+        # Stay on the current LTS line; a new Node major is a deliberate move.
+        - dependency-name: node
+          update-types: ["version-update:semver-major"]
 
     - package-ecosystem: docker
       directory: /frontend
       schedule:
         interval: weekly
         day: monday
+      ignore:
+        - dependency-name: node
+          update-types: ["version-update:semver-major"]
 
     - package-ecosystem: docker-compose
       directory: /
       schedule:
         interval: weekly
         day: monday
+      ignore:
+        # A Postgres major needs pg_upgrade or dump/restore of the data volume.
+        - dependency-name: postgres
+          update-types: ["version-update:semver-major"]
 
     - package-ecosystem: github-actions
       directory: /
