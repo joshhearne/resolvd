@@ -3,7 +3,6 @@
 // retry from Graph, so the only way back in is to replay it.
 //
 // Usage: node scripts/reingest-message.js '<internetMessageId>' [accountId]
-const fetch = require('node-fetch');
 const { pool } = require('../db/pool');
 const { decryptRow } = require('../services/fields');
 const eb = require('../services/emailBackends');

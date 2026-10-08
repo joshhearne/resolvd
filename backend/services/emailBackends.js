@@ -7,7 +7,6 @@
 // Gmail (gmail_user): refresh via google-auth-library OAuth2Client.
 // SMTP: no token refresh.
 
-const fetch = require('node-fetch');
 const { OAuth2Client } = require('google-auth-library');
 const { pool } = require('../db/pool');
 const { buildWritePatch, decryptRow, decryptRows } = require('./fields');

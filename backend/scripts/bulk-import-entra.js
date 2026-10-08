@@ -22,7 +22,6 @@
 // Output: per-user status line + a final summary { created, skipped,
 // errors, total }.
 
-const fetch = require('node-fetch');
 const { pool } = require('../db/pool');
 const eb = require('../services/emailBackends');
 const { autoProvisionSubmitter, findExistingUserByEmail } = require('../services/userAutoProvision');

@@ -7,8 +7,6 @@
 // Goes via the real HTTP endpoint rather than calling the handler
 // directly so behaviour is identical to an externally-fed payload.
 
-const fetch = require('node-fetch');
-
 async function feedToGeneric(payload) {
   const secret = process.env.INBOUND_WEBHOOK_SECRET;
   if (!secret) {

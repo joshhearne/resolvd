@@ -16,7 +16,6 @@
 // The access token is refreshed via emailBackends.refreshIfNeeded
 // before any Graph call so renewal/fetch survive token expiry.
 
-const fetch = require('node-fetch');
 const crypto = require('crypto');
 const { pool } = require('../db/pool');
 const eb = require('./emailBackends');

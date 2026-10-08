@@ -1,6 +1,5 @@
 // Read-only: dump internet headers + the ingest-relevant decision inputs for
 // one message in a monitored mailbox, and replay the isAutoLoop() check.
-const fetch = require('node-fetch');
 const { pool } = require('../db/pool');
 const { decryptRow } = require('../services/fields');
 const eb = require('../services/emailBackends');

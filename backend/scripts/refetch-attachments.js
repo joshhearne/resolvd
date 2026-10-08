@@ -12,7 +12,6 @@ const { pool } = require('../db/pool');
 const { buildWritePatch, getMode } = require('../services/fields');
 const { encrypt } = require('../services/crypto');
 const { fetchMessageAsPayload } = require('../services/graphInbox');
-const fetch = require('node-fetch');
 const eb = require('../services/emailBackends');
 
 const GRAPH = 'https://graph.microsoft.com/v1.0';

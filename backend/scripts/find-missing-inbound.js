@@ -4,7 +4,6 @@
 // drop it on ingest?"
 //
 // Usage: node scripts/find-missing-inbound.js '<message-id>' [sinceISO]
-const fetch = require('node-fetch');
 const { pool } = require('../db/pool');
 const { decryptRow } = require('../services/fields');
 const eb = require('../services/emailBackends');

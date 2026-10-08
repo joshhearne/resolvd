@@ -1,5 +1,4 @@
 const msal = require('@azure/msal-node');
-const fetch = require('node-fetch');
 const { getAuthSettings } = require('../../services/authSettings');
 
 const SCOPES = ['https://graph.microsoft.com/User.Read', 'offline_access'];

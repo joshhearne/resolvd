@@ -9,7 +9,6 @@
 // In-process 24h cache keyed by lowercased email. Network failures /
 // 401/403/404 degrade to null so the UI never surfaces a Google error.
 
-const fetch = require('node-fetch');
 const { pool } = require('../db/pool');
 const eb = require('./emailBackends');
 

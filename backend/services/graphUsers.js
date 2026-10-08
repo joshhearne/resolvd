@@ -9,7 +9,6 @@
 // null so callers fall back to local data without surfacing an error
 // in the UI.
 
-const fetch = require('node-fetch');
 const { pool } = require('../db/pool');
 const eb = require('./emailBackends');
 

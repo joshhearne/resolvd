@@ -1,5 +1,4 @@
 const msal = require('@azure/msal-node');
-const fetch = require('node-fetch');
 const nodemailer = require('nodemailer');
 const { google } = require('googleapis');
 const { getAuthSettings } = require('./authSettings');

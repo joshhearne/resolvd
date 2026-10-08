@@ -9,7 +9,6 @@
 // touch. Otherwise the user lands with name = email and no credentials —
 // the alert to admins includes a link so they can populate the profile.
 
-const fetch = require('node-fetch');
 const { pool } = require('../db/pool');
 const { notifyAdmins } = require('./notifications');
 const directoryLookup = require('./directoryLookup');

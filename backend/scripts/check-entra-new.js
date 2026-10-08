@@ -9,7 +9,6 @@
 //
 // Output: one line per new licensed user + a final summary.
 
-const fetch = require('node-fetch');
 const { pool } = require('../db/pool');
 const eb = require('../services/emailBackends');
 const { findExistingUserByEmail } = require('../services/userAutoProvision');

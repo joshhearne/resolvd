@@ -2,7 +2,6 @@
 // speaks /v1/chat/completions (Azure OpenAI, OpenRouter, vLLM, LM Studio).
 // User configures endpoint URL + model in their AI Assist prefs.
 
-const fetch = require('node-fetch');
 const { fromResponse, fromFetchError } = require('./errors');
 
 const PROVIDER = 'OpenAI';
