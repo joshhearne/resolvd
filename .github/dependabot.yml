@@ -54,6 +54,9 @@
           update-types: ["version-update:semver-major"]
         - dependency-name: "@vitejs/plugin-react"
           update-types: ["version-update:semver-major"]
+        # BlockNote 0.5x pulls Mantine 9, which needs React 19; it only serves the
+        # retired local KB editor and goes with the React migration.
+        - dependency-name: "@blocknote/*"
 
     - package-ecosystem: docker
       directory: /backend
