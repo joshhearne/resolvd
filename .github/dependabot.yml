@@ -50,6 +50,10 @@
           update-types: ["version-update:semver-major"]
         - dependency-name: "@azure/msal-browser"
           update-types: ["version-update:semver-major"]
+        - dependency-name: "@azure/msal-react"
+          update-types: ["version-update:semver-major"]
+        - dependency-name: "@vitejs/plugin-react"
+          update-types: ["version-update:semver-major"]
 
     - package-ecosystem: docker
       directory: /backend
