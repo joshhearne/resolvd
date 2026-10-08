@@ -21,7 +21,7 @@
     "express": "^4.18.3",
     "express-rate-limit": "^8.7.0",
     "express-session": "^1.18.0",
-    "google-auth-library": "^9.7.0",
+    "google-auth-library": "^11.1.0",
     "googleapis": "^183.0.0",
     "marked": "^18.1.0",
     "multer": "^2.4.0",
