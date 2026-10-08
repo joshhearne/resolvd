@@ -1205,6 +1205,12 @@ async function initSchema() {
     // window — set to 0 to disable independently of the toggle.
     await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS dedup_alert_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
     await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS dedup_alert_decay_days INTEGER NOT NULL DEFAULT 7`);
+    // Integration-wide promotion delay. Applies to every create_ticket
+    // rule on this source that doesn't set its own delay_minutes (a
+    // rule's own delay overrides this baseline upward). 0 = promote
+    // immediately. Lets a whole noisy source defer ticket creation so
+    // alerts that self-heal within the window never spawn a ticket.
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS default_delay_minutes INTEGER NOT NULL DEFAULT 0`);
     // When enabled, the source also feeds the inventory module. Multiple
     // sources can feed inventory simultaneously; phase 2 adds a priority
     // list for dedup. For now the latest write wins per (source_system,

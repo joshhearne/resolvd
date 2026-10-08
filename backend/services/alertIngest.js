@@ -217,15 +217,22 @@ async function evaluateAndAct(client, source, alertRow) {
     );
     return { decision: rule.action, rule_id: rule.id };
   }
-  // create_ticket
-  if (rule.delay_minutes && rule.delay_minutes > 0) {
+  // create_ticket. Effective delay = the rule's own delay when set,
+  // else the integration-wide baseline. A rule's delay overrides the
+  // source baseline upward; a rule cannot drop below it. When the delay
+  // elapses the scheduler re-evaluates and promotes only if the alert is
+  // still firing — self-healing alerts clear without ever opening a ticket.
+  const effectiveDelay = (rule.delay_minutes && rule.delay_minutes > 0)
+    ? rule.delay_minutes
+    : (source.default_delay_minutes || 0);
+  if (effectiveDelay > 0) {
     await client.query(
       `UPDATE alerts
           SET next_evaluation_at = NOW() + ($1::int * INTERVAL '1 minute')
         WHERE id = $2`,
-      [rule.delay_minutes, alertRow.id]
+      [effectiveDelay, alertRow.id]
     );
-    return { decision: 'delayed', rule_id: rule.id, delay_minutes: rule.delay_minutes };
+    return { decision: 'delayed', rule_id: rule.id, delay_minutes: effectiveDelay };
   }
   const ticketId = await promoteAlertToTicket(client, source, alertRow, rule, null);
   return { decision: 'created_ticket', rule_id: rule.id, ticket_id: ticketId };

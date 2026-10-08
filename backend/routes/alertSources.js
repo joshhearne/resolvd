@@ -262,6 +262,17 @@ router.patch('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
         values.push(body[k]);
       }
     }
+    // Integration-wide promotion delay. Clamp 0..10080 (7 days), same
+    // bound as per-rule delay_minutes.
+    if (Object.prototype.hasOwnProperty.call(body, 'default_delay_minutes')) {
+      const n = Number(body.default_delay_minutes);
+      if (!Number.isFinite(n) || n < 0 || n > 7 * 24 * 60) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'default_delay_minutes 0..10080' });
+      }
+      sets.push(`default_delay_minutes = $${p++}`);
+      values.push(Math.floor(n));
+    }
     if (Object.prototype.hasOwnProperty.call(body, 'severity_map')) {
       sets.push(`severity_map = $${p++}::jsonb`);
       values.push(JSON.stringify(body.severity_map || {}));

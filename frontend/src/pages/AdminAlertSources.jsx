@@ -574,6 +574,9 @@ function SourceDetail({ source, projects, presets, adapters, onBack, onPatch, on
   const [dedupDecayDays, setDedupDecayDays] = useState(
     source.dedup_alert_decay_days != null ? String(source.dedup_alert_decay_days) : "7"
   );
+  const [defaultDelay, setDefaultDelay] = useState(
+    source.default_delay_minutes != null ? String(source.default_delay_minutes) : "0"
+  );
   const [companies, setCompanies] = useState([]);
   useEffect(() => {
     api.get('/api/companies').then(setCompanies).catch(() => setCompanies([]));
@@ -600,6 +603,7 @@ function SourceDetail({ source, projects, presets, adapters, onBack, onPatch, on
     setInventoryCompanyId(source.inventory_company_id ? String(source.inventory_company_id) : "");
     setDedupEnabled(source.dedup_alert_enabled !== false);
     setDedupDecayDays(source.dedup_alert_decay_days != null ? String(source.dedup_alert_decay_days) : "7");
+    setDefaultDelay(source.default_delay_minutes != null ? String(source.default_delay_minutes) : "0");
     setBackfillResult(null);
   }, [source.id]);
 
@@ -627,6 +631,7 @@ function SourceDetail({ source, projects, presets, adapters, onBack, onPatch, on
       inventory_company_id: inventoryCompanyId ? Number(inventoryCompanyId) : null,
       dedup_alert_enabled: dedupEnabled,
       dedup_alert_decay_days: Math.max(0, Math.min(365, Number(dedupDecayDays) || 0)),
+      default_delay_minutes: Math.max(0, Math.min(7 * 24 * 60, Number(defaultDelay) || 0)),
     };
     // Only include api_token if the input has a value — empty string means
     // "leave alone". Set to null explicitly via the Clear button.
@@ -732,6 +737,23 @@ function SourceDetail({ source, projects, presets, adapters, onBack, onPatch, on
             onChange={(e) => setEnabled(e.target.checked)}
           />
           Enabled (incoming alerts accepted)
+        </label>
+        <label className="text-xs text-fg-muted flex flex-col gap-1 sm:col-span-2">
+          Delay ticket creation (minutes)
+          <input
+            type="number"
+            min="0"
+            max="10080"
+            value={defaultDelay}
+            onChange={(e) => setDefaultDelay(e.target.value)}
+            className="bg-surface-2 border border-border rounded px-2 py-1 text-sm font-mono w-24"
+          />
+          <span className="text-[11px] text-fg-dim">
+            0 = fire immediately. Applies to every promotion rule on this
+            source that doesn't set its own delay. If the alert recovers
+            before the window elapses, no ticket is created. A rule's own
+            Delay (below) overrides this baseline upward.
+          </span>
         </label>
       </div>
 
