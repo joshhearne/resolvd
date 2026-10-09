@@ -202,9 +202,11 @@ function SectionDashboard({ role }) {
       }
       <p className="text-sm text-fg leading-relaxed">
         The Dashboard is your home screen — a live grid of status tiles, priority distribution chart,
-        SLA card, Active alerts widget, Time-in-status report, plus Recent Activity and Pending Review.
+        SLA card, Active alerts widget, My tasks card, Time-in-status report, plus Recent Activity and Pending Review.
+        (v0.10.0) Every number on the page is a link: status tiles, priority bars, MTD breach cards, and the SLA
+        cards each open the ticket list pre-filtered to exactly that set.
       </p>
-      <HelpScreenshot src="/help/dashboard-overview.png" alt="Dashboard with status tiles, priority distribution, SLA card, and active alerts widget" />
+      <HelpScreenshot src="/help/dashboard-overview.png?v=2" alt="Dashboard with status tiles, priority distribution, SLA card, and active alerts widget" />
 
       <h3 className="text-sm font-semibold text-fg pt-1">Global filters (v0.7.0)</h3>
       <p className="text-sm text-fg leading-relaxed">
@@ -215,9 +217,12 @@ function SectionDashboard({ role }) {
       </p>
 
       <div className="space-y-0">
-        <Feature name="Status tiles (Open / In Progress / etc.)" roles="all" />
+        <Feature name="Status tiles (Open / In Progress / etc.)" roles="all" note="(v0.10.0) Tiles are buckets, not 1:1 statuses — In Progress also counts Acknowledged; Awaiting Input adds On Hold + External Escalation; Flagged for Review adds Reopened; Closed adds Resolved. Ticket-list presets use the same sets." />
+        <Feature name="Clickable drill-downs" roles="all" note="(v0.10.0) Priority bars, MTD breach cards, and SLA cards link to the ticket list with ?active=1 / ?sla=open|breached|mtd_response|mtd_resolve so the number and the list always agree." />
+        <Feature name="My tasks card" roles="all" note="(v0.10.0) Overdue / Due today / Tomorrow from your personal tasks, with an inline complete checkbox. See Schedules + Tasks." />
+        <Feature name="Vendor wait — per-vendor breakdown" roles={HANDLER} note="(v0.10.0) Hover the Vendor wait stat for each vendor's share; a pulsing dot marks vendors with a ticket currently paused on them." />
         <Feature name="Priority distribution bar chart" roles="all" />
-        <Feature name="SLA — Month to date card" roles="all" note="MTD breach counts, currently breached, open w/ SLA clock, per-project breakdown." />
+        <Feature name="SLA — Month to date card" roles="all" note="MTD breach counts, currently breached, open w/ SLA clock, per-project breakdown. (v0.10.0) Live counts exclude closed legacy tickets and no longer double-count a ticket owing both response and resolve." />
         <Feature name="Active alerts widget" roles={HANDLER} note="Top 8 firing alerts from configured monitoring sources." />
         <Feature name="Time-in-status report" roles="all" note="Total + average + entry count per status, sourced from status_change audit." />
         <Feature name="Recent activity feed" roles="all" />
@@ -294,9 +299,10 @@ function SectionNewTicket({ role }) {
       }
       {canSubmit && <>
         <p className="text-sm text-fg leading-relaxed">
-          Submit a new ticket via <strong>+ New Ticket</strong> in the nav. Title, description, impact, and urgency are the required inputs — the system computes a priority score automatically.
+          Submit a new ticket via <strong>+ New Ticket</strong> in the nav or the global <strong>New</strong> menu in the header. Title, description, impact, and urgency are the required inputs — the system computes a priority score automatically.
+          (v0.10.0) Projects with custom forms add a <strong>Category → Form</strong> picker; the form decides which custom fields appear and which are required. See the Forms + Fields section.
         </p>
-        <HelpScreenshot src="/help/new-ticket-form.png?v=2" alt="New ticket form with project picker, title, description, attachment dropzone, and impact / urgency selects" />
+        <HelpScreenshot src="/help/new-ticket-form.png?v=3" alt="New ticket form with project picker, title, description, attachment dropzone, and impact / urgency selects" />
         <div className="space-y-0">
           <Feature name="Submit ticket" roles={["Admin","Manager","Submitter"]} />
           <Feature name="Markdown in description" roles={["Admin","Manager","Submitter"]} note="Full GFM: bold, italic, code blocks, lists, tables." />
@@ -305,6 +311,9 @@ function SectionNewTicket({ role }) {
           <Feature name="Duplicate detection" roles={["Admin","Manager","Submitter"]} note="System warns if a similar open ticket already exists." />
           <Feature name="Select project" roles={PRIV} note="Submitters are scoped to projects they belong to." />
           <Feature name="Assign to a user" roles={PRIV} note="Submitters cannot set the assignee at creation." />
+          <Feature name="Pick a category + form" roles={["Admin","Manager","Submitter"]} note="(v0.10.0) Only shown when the project has forms. The category's default form is pre-selected. Agent-only fields stay hidden from the submitter; sensitive fields are masked once saved." />
+          <Feature name="Deep-linkable new-ticket URLs" roles={["Admin","Manager","Submitter"]} note="(v0.10.0) /tickets/new/<project-prefix>/<category-slug>/<form-slug>?<field-slug>=<value> pre-selects the form and pre-fills fields. Admin → Forms has a shareable-link builder." />
+          <Feature name="Computed fields" roles="all" note="(v0.10.0) Formula fields (e.g. a UPN derived from first + last name + domain) are evaluated on create — nothing to type." />
         </div>
         <OverrideNote />
       </>}
@@ -331,8 +340,8 @@ function SectionTicketDetail({ role }) {
         <b> Notes</b> (handler-only — see the Notes section), <b>Runbook</b> (handler-only, see Knowledge Base),
         and <b>Resolution</b> appear for handlers (Admin / Manager / Tech globally, or anyone with a handler
         role override / Agent flag on the ticket's project).
-        <b> Activity</b> shows the audit log. Knowledge-base suggestions surface on the Resolution tab when the
-        ranker matches an article to the ticket title.
+        <b> Activity</b> shows the audit log. Knowledge-base suggestions surface on the Resolution tab (local KB) and
+        in the Trove KB block (when the integration is on) when an article matches the ticket title.
       </p>
 
       <h3 className="text-sm font-semibold text-fg">Comments</h3>
@@ -353,12 +362,14 @@ function SectionTicketDetail({ role }) {
       <div className="space-y-0">
         <Feature name="Mark comment vendor-visible" roles={HANDLER} note="(v0.9.0) Any project handler can share a comment with the attached vendor contacts — same gate as Notes. Previously Admin / Manager only." />
         <Feature name="Insert canned response" roles={["Admin","Manager","Tech","Submitter"]} note="📋 popover next to the composer. Tags like {ticket.ref}, {submitter.firstName} render server-side at insert time." />
-        <Feature name="Post & Close / Post & Reopen" roles={HANDLER} note="Change ticket status in the same action as posting." />
+        <Feature name="Post & <any status>" roles={HANDLER} note="(v0.10.0) The Post & menu lists every internal status the ticket can transition to, including custom ones, and falls back to the full list when no transitions are configured. Admins curate it per status via the Post & menu toggle in Admin → Statuses." />
+        <Feature name="Scope with knowledge (brief)" roles={HANDLER} note="(v0.10.0) Button on the composer assembles what the user reported, what the team said, your draft, project context, and matched Trove KB articles into a reviewable brief. Builds without AI by default; rewrite with AI when AI Assist allows it. Admin-managed noise rules keep SLA notices, moves, merges, and auto-replies out." />
+        <Feature name="Show original email" roles={HANDLER} note="(v0.10.0) Inbound descriptions and comments keep the stripped source (signature, quoted history, M365 banners) behind a lazy-fetched toggle." />
         <Feature name="Edit a posted comment" roles={["Admin","Manager","Tech","Submitter"]} note="Author can edit own; Admin / Manager can edit anyone's. System comments and inbound vendor replies are locked. The Edit action only appears on the most recent non-system comment — once anyone posts a reply, the prior comment is frozen (post a follow-up correction instead). Editing clears AI provenance and is audited as comment_edited. The '(edited)' indicator only appears once a non-author has either viewed the original in the UI or been fanned out to via email — quick edits before anyone sees the comment stay silent. Vendor outbound is not re-sent." />
         <Feature name="Mute / delete comments" roles={PRIV} note="Muting hides vendor replies without deleting." />
       </div>
 
-      <HelpScreenshot src="/help/ticket-detail-meta.png" alt="Ticket detail metadata panel — internal + external status, priority, assignee, followers, vendor contacts, blockers, and follow-up reminders" />
+      <HelpScreenshot src="/help/ticket-detail-meta.png?v=2" alt="Ticket detail metadata panel — internal + external status, priority, assignee, followers, vendor contacts, blockers, and follow-up reminders" />
       <h3 className="text-sm font-semibold text-fg">Status &amp; Fields</h3>
       <div className="space-y-0">
         <Feature name="View status and all metadata" roles="all" />
@@ -368,9 +379,14 @@ function SectionTicketDetail({ role }) {
         <Feature name="One-click advance status" roles={HANDLER} note="Advances to the next logical status in the workflow." />
         <Feature name="Change external / vendor status" roles={PRIV} />
         <Feature name="Priority override" roles={HANDLER} note="Manually pin priority regardless of computed score." />
-        <Feature name="Assign ticket" roles={HANDLER} />
+        <Feature name="Assign ticket" roles={HANDLER} note="(v0.10.0) Inline picker on the ticket header: assign to me, change, clear. Pool matches the project's assignment-policy pool." />
+        <Feature name="Custom Fields card" roles={HANDLER} note="(v0.10.0) Form fields captured at create plus agent-only fields handlers fill in. Per-field or save-all. Sensitive values are revealed only to the handler editing them." />
+        <Feature name="Trove KB block (when enabled)" roles="all" note="(v0.10.0) Linked articles (title + collection snapshotted), title-based suggestions from the project's mapped collection, search-to-link, and a Resolution draft built from matched passages + runbook steps. Internal articles are visible to project handlers only." />
+        <Feature name="Vendor-reply auto-status" roles="all" note="(v0.10.0) On externally-engaged tickets an inbound vendor ack moves the external status to In Progress; a 'completed / resolved' reply moves external to Resolved and internal to Pending Review. Internal status is otherwise untouched so the ticket stays on your queue." />
+        <Feature name="Print consumable delivery label" roles={HANDLER} note="(v0.10.0) Pick a consumable from the ticket (auto-matched from the alert tag or ticket text; ↻ Rescan re-runs the match). First print allocates one unit and logs the movement; reprints don't decrement. Refused at zero stock with a restock prompt." />
         <Feature name="Set blocker" roles={HANDLER} note="Block on another ticket or flag as awaiting team input." />
-        <Feature name="Auto-resume on inbound reply" roles="all" note="A ticket in an `awaiting_input` status automatically transitions to `in_progress` when any inbound email reply lands on it (vendor reply or matched inbound queue entry). Audited as status_change_auto." />
+        <Feature name="Auto-resume on inbound reply" roles="all" note="A ticket in an `awaiting_input` status automatically transitions to `in_progress` when any inbound email reply lands on it (vendor reply or matched inbound queue entry). Audited as status_change_auto. (v0.10.0) Out-of-office auto-replies are excluded: they land as muted comments with no status change or fanout." />
+        <Feature name="[REF] reply routing" roles="all" note="(v0.10.0) Any inbound mail carrying the ticket reference ([ACME-0042]) — vendor contact or internal participant — is appended to that ticket. An admin-set staleness threshold decides when an old ref falls through to a new ticket instead. Settings under Admin → Statuses." />
         <Feature name="Schedule follow-up reminder" roles={HANDLER} />
         <Feature name="Link asset (Inventory)" roles={HANDLER} note="Surfaces the asset hostname in place of an opaque id and feeds cross-project history on the asset detail page." />
         <Feature name="Resolution summary" roles={HANDLER} note="One-line summary captured at close time. Drives the 'Fix applied' ticket-list filter together with linked KB articles." />
@@ -441,13 +457,19 @@ function SectionAdmin({ role }) {
           System-wide configuration. The left-rail nav groups sections by area
           — <strong>People</strong>, <strong>Workflow</strong>, <strong>Integrations</strong>,
           <strong>Site</strong>, <strong>Data</strong> — and collapses into a hamburger
-          drawer on mobile. Some sub-sections are Admin-only even for Managers.
+          drawer on mobile. Some sub-sections are Admin-only even for Managers. (v0.10.0) A search box above
+          the nav filters pages by label, group, or keyword alias (try <code>OOO</code>, <code>blocklist</code>,
+          <code>oauth</code>, <code>recurring</code>).
         </p>
-        <HelpScreenshot src="/help/admin-left-rail-nav.png" alt="Admin panel left-rail navigation grouped into People, Workflow, Integrations, Site, and Data" />
+        <HelpScreenshot src="/help/admin-left-rail-nav.png?v=2" alt="Admin panel left-rail navigation grouped into People, Workflow, Integrations, Site, and Data" />
         <div className="space-y-0">
-          <Feature name="Users — invite, deactivate, reset passwords" roles={["Admin"]} note="Manager role cannot manage other users." />
+          <Feature name="Users — invite, deactivate, reset passwords" roles={["Admin"]} note="Manager role cannot manage other users. (v0.10.0) Bulk select bar (refresh from directory, enable, disable), bulk Entra import, and auto-provision via Graph then Google Directory. auth_settings.allow_email_unknown_users gates the local fallback." />
+          <Feature name="Forms / Fields — categories, forms, custom fields" roles={["Admin"]} note="(v0.10.0) Project-scoped category → form → field model. Per-form required flags, agent-only + sensitive fields, multiselect, computed (formula) fields, {field.<slug>} tags, deep-link builder. See the Forms + Fields section." />
+          <Feature name="Schedules — recurring ticket templates" roles={["Admin"]} note="(v0.10.0) Daily / weekly / monthly / yearly presets or raw cron, timezone-aware, with an end condition. Each fire creates a real ticket; optionally starts a runbook run. See Schedules + Tasks." />
+          <Feature name="Trove KB — knowledge base integration" roles={["Admin"]} note="(v0.10.0) Optional. Base URL, public URL, API key, per-collection Internal / Public / Hidden, webhook secret, hourly collection sync, Check for changes now, noise rules for briefs. Replace local KB is a separate, optional step — the built-in KB keeps working beside it. See Knowledge Base." />
+          <Feature name="Dedup-omit rules — drop noisy inbound" roles={PRIV} note="(v0.10.0) Regex / literal rules that keep known-noise inbound mail from creating or touching tickets." />
           <Feature name="Companies — vendor / customer / internal directories" roles={PRIV} note="Three kinds: vendors keep project-scoped contacts; customers link to projects via a join table; internal companies model your org with members + auto-add domains for SSO first-login." />
-          <Feature name="Statuses — workflow status configuration" roles={PRIV} note="Semantic tags, transitions, sort order." />
+          <Feature name="Statuses — workflow status configuration" roles={PRIV} note="Semantic tags, transitions, sort order. (v0.10.0) Per-status Post & menu toggle, [REF] reply-routing staleness threshold, and OOO suppression live here too." />
           <Feature name="Canned responses — reusable comment templates" roles={PRIV} note="Tag substitution ({ticket.ref}, {submitter.name}, etc) rendered server-side; project-scoped picker. (v0.9.0) Body editor is the same MarkdownEditor as the comment composer — write/preview tabs, formatting toolbar, AI rewrite. Hyperlinks via [label](url) render at display time." />
           <Feature name="Email Templates render markdown" roles={PRIV} note="(v0.9.0) Vendor outbound runs the template body through marked with a paragraph/list/heading/anchor allowlist; anchors get target=_blank + rel=noopener noreferrer. Raw HTML is sanitized out." />
           <Feature name="Merge tickets — search-driven duplicate consolidation" roles={PRIV} note="Two-slot picker by ref/title/description, swap-winner toggle, project locks to first pick." />
@@ -466,7 +488,7 @@ function SectionAdmin({ role }) {
           <Feature name="Assignment policies" roles={PRIV} note="Per-project auto-assign on ticket create + on escalation reassign_agent. Round-robin / least-open-tickets / fixed." />
           <Feature name="Asset types" roles={PRIV} note="Per-type field schemas for Inventory (laptop / server / printer / generic). Sensitive fields land in the encrypted column." />
           <Feature name="Software aliases — canonical product names" roles={PRIV} note="Maps 'M365 Apps' / 'Office 365' / 'Microsoft 365 Apps for Enterprise' to one canonical product so reports don't fragment." />
-          <Feature name="Custom fields" roles={PRIV} note="Per-entity (ticket / asset) custom fields: text / number / select / multiselect / date / boolean. Values stored separately keyed by entity id." />
+          <Feature name="Custom fields" roles={PRIV} note="Per-entity (ticket / asset / consumable) custom fields: text / number / select / multiselect / date / boolean. Values stored separately keyed by entity id. (v0.10.0) Ticket fields moved under Forms / Fields; Assets / Fields and consumable defs stay here." />
           <Feature name="AI Assist — provider, model, project context" roles={PRIV} note="BYO-AI org config + per-user keys; rewrite surfaces on comments, descriptions, canned responses." />
           <Feature name="Authentication — MFA policy, SSO / Azure AD" roles={["Admin"]} />
           <Feature name="Branding — logo, site name, colors, locale defaults" roles={PRIV} />
@@ -520,7 +542,8 @@ function SectionNotifications({ role }) {
       <div className="space-y-0">
         <Feature name="6×3 channel matrix" roles="all" note="Per-event toggles for in-app / email / push. Account → Preferences → Notifications." />
         <Feature name="Email digest cadence" roles="all" note="Instant / hourly / 12h / daily / off. Pending review + follow-up bypass." />
-        <Feature name="In-app tray with all 6 event types" roles="all" note="Bell icon. Mention rows scroll-and-flash to the specific comment." />
+        <Feature name="In-app tray with all 6 event types" roles="all" note="Bell icon. Mention rows scroll-and-flash to the specific comment. (v0.10.0) Mention emails deep-link to the response too." />
+        <Feature name="New-ticket fanout to Admins / Managers" roles={PRIV} note="(v0.10.0) Every create path — form, inbound email, alert promotion — notifies active Admins and Managers. In-app on, email off by default." />
         <Feature name="Browser push (opt-in)" roles="all" note="Requires permission per device. Mention defaults on; other events default off." />
         <Feature name="Mark all read" roles="all" />
         <Feature name="Auto-follow on comment + mention" roles={["Admin","Manager","Submitter"]} note="Posting a comment subscribes you to the ticket; being mentioned subscribes you." />
@@ -567,6 +590,10 @@ function SectionSla({ role }) {
         <Feature name="Configure SLA policies" roles={["Admin"]} note="Admin → SLA policies. Per-priority defaults + project overrides." />
         <Feature name="Breach notifications" roles="all" note="Assignee, followers, and submitter receive in-app + immediate email on breach." />
         <Feature name="Pause-on-blocker" roles="all" note="Vendor / customer wait time excluded from the clock automatically." />
+        <Feature name="Handler self-reply counts as first response" roles="all" note="(v0.10.0) When the submitter is also a handler (alert-promoted tickets), their reply still closes the response clock." />
+        <Feature name="No response breach during Resolved grace" roles="all" note="(v0.10.0) Tickets that resolved before a manual reply no longer trip the response breach every tick." />
+        <Feature name="Submitter breach notifications are opt-in" roles={["Admin"]} note="(v0.10.0) auth_settings.sla_notify_submitter_default is off by default; per-priority chains can opt in with a notify_submitter action." />
+        <Feature name="Inbound + alert tickets stamp SLA on create" roles="all" note="(v0.10.0) Email- and alert-created tickets get their SLA policy and assignment inside the create transaction, honoring business hours." />
       </div>
     </div>
   );
@@ -774,6 +801,8 @@ function SectionAccount({ role }) {
         <Feature name="Password — change password" roles="all" note="Not available if SSO is your only login method." />
         <Feature name="MFA — enroll TOTP authenticator" roles="all" note="May be required by your Admin's policy." />
         <Feature name="Preferences — behavior toggles" roles="all" note="Compact mode, Ctrl+Enter to post, auto-follow on comment, email notification preferences." />
+        <Feature name="Preferences — comment signature" roles="all" note="Markdown sign-off appended to your comments; scope vendor-only (default) or all. 2000-char cap with a live counter." />
+        <Feature name="Sessions + SSO return" roles="all" note="(v0.10.0) Sessions are a 30-day rolling window instead of a fixed 8 hours. After a Microsoft login you land on the page you asked for, not the dashboard." />
       </div>
     </div>
   );
@@ -811,18 +840,21 @@ function SectionConsumables({ role }) {
     <div className="space-y-4">
       {isHandler ? <FullAccess /> : <NoAccess note="Consumables is handler-only — same as Inventory." />}
       <p className="text-sm text-fg leading-relaxed">
-        <b>Consumables</b> (v0.9.0) tracks supply inventory — toner, drums, batteries, spare keyboards, anything
+        <b>Consumables</b> tracks supply inventory — toner, drums, batteries, spare keyboards, anything
         interchangeable that Inventory shouldn't store per-serial. Stock changes always run UPDATE + ledger INSERT in
         the same transaction so every adjustment carries actor + reason + timestamp.
       </p>
-      <HelpScreenshot src="/help/consumables-list.png" alt="Consumables list with low-stock chips and archive toggle" />
+      <HelpScreenshot src="/help/consumables-list.png?v=2" alt="Consumables list with low-stock chips and archive toggle" />
       <div className="space-y-0">
         <Feature name="View consumables list" roles={HANDLER} note="Search box, low-stock chip, archive toggle, per-vendor counts." />
         <Feature name="Create / edit / archive a consumable" roles={HANDLER} note="part_no unique. vendor_company_id links to a vendor for reorder context." />
         <Feature name="Adjust stock with reason + note" roles={HANDLER} note="POST /:id/move atomic; reasons: received / issued / returned / disposed / count_correction / loss. ticket_id optional — link an issuance back to the ticket that consumed it." />
         <Feature name="Per-item ledger" roles={HANDLER} note="Newest-first list of every movement. Append-only — corrections happen via a new count_correction row, not by editing history." />
-        <Feature name="Low-stock badge" roles={HANDLER} note="Red chip when current_stock <= low_stock_threshold. Informational only; no notification fires yet." />
-        <Feature name="Print consumable label" roles={HANDLER} note="Zebra :9100. Lead line = part_no, vendor on the property line, QR encodes /consumables/<id> deep-link." />
+        <Feature name="Low-stock badge + comment" roles={HANDLER} note="Red chip when current_stock <= low_stock_threshold. (v0.10.0) Crossing the line during a ticket dispatch posts a 🟡 system comment on that ticket." />
+        <Feature name="Print consumable label" roles={HANDLER} note="Zebra :9100. Lead line = part_no, vendor on the property line, QR encodes /consumables/<id> deep-link. (v0.10.0) A standalone shelf label prints the location line for bin / shelf marking." />
+        <Feature name="Allocation on delivery-label print" roles={HANDLER} note="(v0.10.0) Printing a delivery label from a ticket locks the row, decrements by 1, and logs a movement with host + date. Reprints log a zero-delta movement. At zero stock the print is refused (409), a system comment lands on the ticket, and Admins get a restock notification." />
+        <Feature name="Restock workflow" roles={HANDLER} note="(v0.10.0) purchase_url, vendor_part_no, is_metered, reorder_qty, and location per consumable. The restock notification carries the right CTA — purchase link for self-serve, vendor contact copy for metered. Two canned responses are seeded under consumable_restock with {consumable.*} / {vendor.*} tags." />
+        <Feature name="Alert-time stock match" roles={HANDLER} note="(v0.10.0) Alert ingest matches a part.number tag against consumables at promotion time and posts a system comment for unmatched / out-of-stock / low cases before anyone tries to print." />
       </div>
     </div>
   );
@@ -869,32 +901,128 @@ function SectionKb({ role }) {
   const isHandler = HANDLER.includes(role);
   return (
     <div className="space-y-4">
-      {isHandler ? <FullAccess /> : <PartialAccess note="You can read published articles in projects you're a member of, but cannot author or edit." />}
+      {isHandler ? <FullAccess /> : <PartialAccess note="You can read published local articles in projects you're a member of, and public Trove KB collections if the integration is on. Authoring, internal collections, briefs, and the Trove KB staff UI are handler / Admin only." />}
       <p className="text-sm text-fg leading-relaxed">
-        <b>Knowledge Base</b> is per-project rich-text documentation built on the BlockNote editor. Every project
-        owns its own articles, version history, and tag taxonomy. Articles drive the suggestion ranker on the
-        ticket Resolution tab and feed the close-time "Promote to KB" nudge.
+        Resolvd ships a <b>built-in Knowledge Base</b>: per-project rich-text articles on the BlockNote editor with
+        version history, tags, agent-only visibility, and runbook checklists. (v0.10.0) It can also read
+        <a href="https://trove-kb.com/" target="_blank" rel="noopener noreferrer" className="text-brand underline"> Trove KB</a>,
+        our documentation platform, as an optional integration. Three ways to run it: local only (the default — nothing
+        changes on upgrade), local and Trove KB <em>side by side</em>, or Trove KB only after an Admin runs
+        <b> Replace local KB</b>. Either way, Resolvd keeps the ticket-side state: links, runbook step progress,
+        resolution drafts, briefs.
       </p>
-      <HelpScreenshot src="/help/kb-index.png" alt="Knowledge Base project index with tag filter chips and article cards" />
+      <HelpScreenshot src="/help/kb-index.png?v=3" alt="Knowledge Base landing page listing local project KBs, with Trove KB collections above when the integration is on" />
+
+      <h3 className="text-sm font-semibold text-fg">Built-in KB</h3>
       <div className="space-y-0">
         <Feature name="Browse project articles" roles="all" />
         <Feature name="Tag filter chips (AND across tags)" roles="all" />
         <Feature name="Create / edit / archive articles" roles={HANDLER} />
-        <Feature name="Agent-only article visibility" roles={HANDLER} note="Toggle on an article to restrict both read AND write to project handlers — same gate as the Notes feature (global Admin/Manager/Tech, or an Agent / handler-override on the project). Non-handlers don't see the article in lists, suggestions, or ticket links. Only a global Admin can delete an agent-only article." />
-        <Feature name="Runbook kind (checklist articles)" roles={HANDLER} note="Set Kind=Runbook on an article to mark it as a step-by-step checklist. Step bodies use BlockNote check-list-item blocks; any @canned:<title> token inside a step becomes a clickable pill on the ticket Runbook tab that prefills the Comment composer with the rendered template. Boxes persist per-ticket so handoffs resume where the last handler left off." />
+        <Feature name="Agent-only article visibility" roles={HANDLER} note="Toggle on an article to restrict both read AND write to project handlers — same gate as Notes. Non-handlers don't see the article in lists, suggestions, or ticket links. Only a global Admin can delete an agent-only article." />
+        <Feature name="Runbook kind (checklist articles)" roles={HANDLER} note="Set Kind=Runbook to mark an article as a step-by-step checklist. Any @canned:<title> token inside a step becomes a clickable pill on the ticket Runbook tab. Boxes persist per ticket so handoffs resume where the last handler left off." />
         <Feature name="Version history + restore" roles={HANDLER} note="Every save snapshots a version with optional change_summary; restore writes a fresh version marked 'Restored from vN'." />
-        <Feature name="Promote ticket to KB" roles={PRIV} note="Drafts a new article seeded from the ticket title + description + resolution_summary. Admin / Manager only." />
+        <Feature name="Promote ticket to KB" roles={PRIV} note="Drafts a new article seeded from the ticket title + description + resolution_summary. Lands in the local KB, or in Trove KB as an internal-only draft when the project is mapped to a collection." />
         <Feature name="Suggested article on ticket open" roles="all" note="pg_trgm ranker over title + tags + keywords. Auto-surfaces high-confidence matches; manual picker for the long tail." />
-        <Feature name="Star projects across Projects + KB" roles="all" note="Starred projects float to the top in both navs — shared between Projects list and KB project picker." />
+      </div>
+
+      <h3 className="text-sm font-semibold text-fg">Trove KB integration (v0.10.0, optional)</h3>
+      <p className="text-sm text-fg leading-relaxed">
+        Configure at <b>Admin → Integrations → Trove KB</b>: base URL, API key, per-collection Internal / Public / Hidden.
+        Trove KB owns that content; Resolvd reads it over REST and decides who sees what. Project ↔ collection mapping
+        lives in <b>Admin → AI Assist → Project contexts</b>.
+      </p>
+      <div className="space-y-0">
+        <Feature name="Browse collections" roles="all" note="Collections appear on /kb above the local project cards. A collection opens to a category / subcategory rail with counts, an Articles / Runbooks type filter, cards-or-list view remembered per browser, sort, and a scoped search. Articles render as Markdown at /kb/article/<id>." />
+        <Feature name="Favorites + helpful votes" roles="all" note="Stored under your email in Trove KB, so a star here is the same star on the public Trove KB site. /kb lists My favorites." />
+        <Feature name="Link Trove KB articles to a ticket" roles="all" note="Trove KB block on the ticket: title-based suggestions from the project's mapped collection, search-to-link. Title + collection are snapshotted so the ticket still reads right if Trove KB is down." />
+        <Feature name="Resolution draft" roles={HANDLER} note="Extractive digest per linked article — matched passage, link, runbook steps — with an AI summary on top when you may use AI Assist." />
+        <Feature name="Knowledge briefs" roles={HANDLER} note="Scope with knowledge on the comment composer. Every run is stored with its inputs + output. Internal articles never leak into a vendor-visible reply. Admin-managed noise rules keep SLA notices, moves, merges, and auto-replies out." />
+        <Feature name="Runbooks from Trove KB" roles={HANDLER} note="kind: runbook articles carry steps with stable ids; step state is per ticket. A step's canned field becomes the 📋 pill. Schedules can start a run on every fire." />
+        <Feature name="Replace local KB (optional)" roles={["Admin"]} note="Shows a plan first — each local article's twin in Trove KB, links, runs, step coverage — then moves links and runbook progress, archives local articles, and hides the local KB. Local tables stay one release for rollback. Skip it to keep both." />
+        <Feature name="Links into the Trove KB staff UI" roles={["Admin"]} note="Edit / manage buttons open Trove KB directly. Everyone else stays inside Resolvd." />
       </div>
       <div className="bg-surface-2 border border-border rounded-lg p-3 text-xs text-fg-muted space-y-1">
-        <p className="font-semibold text-fg">Tags vs. keywords</p>
+        <p className="font-semibold text-fg">Who sees what (Trove KB)</p>
+        <p>
+          Project handlers see <em>Internal</em> + <em>Public</em> collections; everyone else sees Public collections
+          only, and only articles Trove KB confirms are public. Strict mode (default on) hides a collection from
+          non-handlers until Trove KB says it's public. New public collections auto-map Public when the toggle is on;
+          a Hidden choice is never undone. Trove KB posts signed webhooks that drop Resolvd's 60-second cache;
+          collections sync hourly and on demand.
+        </p>
+      </div>
+      <div className="bg-surface-2 border border-border rounded-lg p-3 text-xs text-fg-muted space-y-1">
+        <p className="font-semibold text-fg">Tags vs. keywords (built-in KB)</p>
         <p>
           <em>Tags</em> surface as filter chips on the KB index and are meant for human navigation
           ("network", "printer", "VPN"). <em>Keywords</em> don't show as chips but boost the
           suggestion ranker's similarity score — use them for SKU codes, model numbers, error
           strings that shouldn't clutter the chip row but are searchable signal.
         </p>
+      </div>
+    </div>
+  );
+}
+
+function SectionForms({ role }) {
+  const isAdmin = role === "Admin";
+  const isHandler = HANDLER.includes(role);
+  return (
+    <div className="space-y-4">
+      {isAdmin
+        ? <FullAccess />
+        : isHandler
+          ? <PartialAccess note="Handlers fill agent-only fields on tickets and use {field.*} tags in canned responses. Designing categories, forms, and fields is Admin-only." />
+          : <PartialAccess note="You'll see a Category → Form picker on New Ticket when your project has forms. Admins design them." />}
+      <p className="text-sm text-fg leading-relaxed">
+        (v0.10.0) <b>Forms</b> let a project ask different questions for different kinds of request.
+        The model is <b>Category → Form → Field</b>, scoped per project: a field is required only on the forms
+        that opt in, so a mandatory HR field never bleeds into a DevOps ticket. Configure at
+        <b> Admin → Forms / Fields</b>.
+      </p>
+      <HelpScreenshot src="/help/admin-forms.png" alt="Admin → Forms with a category, its forms, and the field list including a computed field" />
+      <div className="space-y-0">
+        <Feature name="Categories + forms per project" roles={["Admin"]} note="Each category can name a default form, auto-selected on New Ticket. Forms carry a default title / description." />
+        <Feature name="Field definitions" roles={["Admin"]} note="Project-local with tag-prefixed slugs (hr-username) and a collision guard. Soft-archive only. Types: text / number / date / bool / select / multiselect." />
+        <Feature name="Agent-only fields" roles={HANDLER} note="Hidden from the submitter's form; handlers fill them on the ticket's Custom Fields card, per field or save-all." />
+        <Feature name="Sensitive fields" roles={HANDLER} note="Masked after save; revealed only to the handler editing or composing with them." />
+        <Feature name="{field.<slug>} tags" roles={HANDLER} note="Resolve in canned responses and vendor email templates (hyphen-tolerant, HTML-escaped in HTML templates). Tag pickers insert at the caret and expose a project-scoped Custom fields chip group." />
+        <Feature name="Deep links" roles="all" note="/tickets/new/<prefix>/<category>/<form>?<field>=<value> — resolves left to right; selects pre-fill by 1-based option number. Shareable-link builder on the admin page." />
+        <Feature name="Computed fields" roles={["Admin"]} note="A safe formula over {field.*}, {ticket.*}, {submitter.*}, {assignee.*}, {actor.*}. Functions: slice left right upper lower cap pad trim len digits replace match concat default if datepart; ~ concatenates. No eval, no globals. Evaluated on create and via Recompute. Live preview in the editor." />
+      </div>
+      <div className="bg-surface-2 border border-border rounded-lg p-3 text-xs text-fg-muted space-y-1">
+        <p className="font-semibold text-fg">Example — derive a UPN for HR onboarding</p>
+        <pre className="whitespace-pre-wrap font-mono text-[11px] text-fg">{'lower(left({field.hr-first-name}, 1) ~ {field.hr-last-name}) ~ "@" ~ {field.hr-domain}'}</pre>
+      </div>
+    </div>
+  );
+}
+
+function SectionSchedules({ role }) {
+  const isAdmin = role === "Admin";
+  return (
+    <div className="space-y-4">
+      {isAdmin ? <FullAccess /> : <PartialAccess note="Personal tasks are available to everyone. Recurring ticket schedules are configured by Admins." />}
+      <p className="text-sm text-fg leading-relaxed">
+        (v0.10.0) Two kinds of recurring work. <b>Schedules</b> create real tickets on a cadence — monthly patch
+        windows, quarterly access reviews, weekly backup checks. <b>Tasks</b> are your own to-do list: no fanout,
+        no SLA, optionally pinned to a ticket.
+      </p>
+      <h3 className="text-sm font-semibold text-fg">Recurring ticket schedules</h3>
+      <HelpScreenshot src="/help/admin-ticket-schedules.png" alt="Admin → Schedules listing recurring ticket templates with cadence, next fire, and last run" />
+      <div className="space-y-0">
+        <Feature name="Create a schedule" roles={["Admin"]} note="Admin → Schedules. Presets: daily / weekly / monthly by day / monthly nth weekday / yearly, or a raw cron expression. Timezone-aware. End: indefinite, after N fires, or until a date." />
+        <Feature name="Template" roles={["Admin"]} note="Project, title, description, impact, urgency, optional assignee + requestor, contacts, followers (auto-added every fire), and a Trove KB runbook that starts a run on every fire." />
+        <Feature name="Every fire is a first-class ticket" roles="all" note="Ref, SLA policy, contacts, deduped followers, audit. ticket_schedule_runs is the ledger (ok / error). A failed fire still advances next_fire_at so a broken template never busy-loops." />
+        <Feature name="Fire now" roles={["Admin"]} note="Materialize a ticket immediately to test the template." />
+      </div>
+      <h3 className="text-sm font-semibold text-fg">Personal tasks</h3>
+      <HelpScreenshot src="/help/tasks-page.png" alt="Tasks page with pending / completed / cancelled chips and a recurring task" />
+      <div className="space-y-0">
+        <Feature name="Create a task" roles="all" note="/tasks, or the global New menu in the header, or from a ticket page (the task carries the ticket ref). Title + body are encrypted at rest." />
+        <Feature name="One-off or recurring" roles="all" note="A single due date, or the same presets as schedules. Reschedule and skip from the row." />
+        <Feature name="Dashboard My tasks card" roles="all" note="Overdue / Due today / Tomorrow with an inline complete checkbox." />
+        <Feature name="Private by design" roles="all" note="Owner-scoped. Nobody is notified; tasks never appear on tickets or in audit." />
       </div>
     </div>
   );
@@ -909,12 +1037,16 @@ function SectionAlerts({ role }) {
         The <b>Alerts</b> page is the deduped state-machined view of every alert ingested from a configured
         monitoring source. Distinct from the immutable per-event audit log — one row per
         <code>(source, external_event_id)</code> pair, transitioning <code>firing</code> → <code>recovered</code> as
-        the vendor fires + clears.
+        the vendor fires + clears. (v0.10.0) A fourth state, <code>acknowledged</code>, means a human has the alert's
+        ticket in hand — it drops off the default Problems board without rewriting the ticket.
       </p>
       <div className="space-y-0">
         <Feature name="View alerts list + state" roles={HANDLER} />
         <Feature name="Drill into alert detail" roles={HANDLER} note="Linked ticket (if promoted), source-mapped asset, raw payload." />
         <Feature name="Promote alert → ticket manually" roles={HANDLER} />
+        <Feature name="Acknowledge / unacknowledge" roles={HANDLER} note="(v0.10.0) Flips automatically when the alert's ticket leaves Open (single or bulk). A refire of the same event_id flips it back to firing. State dropdown → chip toggles on the Alerts page, plus bulk Acknowledge / Unacknowledge." />
+        <Feature name="Promotion delay per source" roles={PRIV} note="(v0.10.0) Integration-wide delay before a firing alert becomes a ticket, so flapping alerts that recover inside the window never open one." />
+        <Feature name="Dedup note on new pairs" roles={HANDLER} note="(v0.10.0) A new (source, event) pair lists recent tickets from the same submitter and flags rows where the same consumable was already dispatched." />
         <Feature name="Auto-promotion via alert rules" roles={PRIV} note="Admin / Manager configure rules per source: severity threshold + optional title regex → promote_ticket / notify_only / ignore." />
         <Feature name="Dashboard 'Active alerts' widget" roles={HANDLER} note="Top 8 firing alerts on the dashboard for quick triage." />
       </div>
@@ -956,7 +1088,9 @@ function SectionEscalations({ role }) {
           Org-Wide (project_id NULL) steps and project-scoped steps both apply if both exist — different from
           <em> sla_policies</em> / <em> assignment_policies</em> which pick one or the other. Use <code>priority_op</code>
           (`=`, `&lt;`, `&gt;`, `&lt;=`, `&gt;=`) to cover priority ranges with a single row.
-          <code>delay_minutes</code> is the grace after the trigger before the step fires.
+          <code>delay_minutes</code> is the grace after the trigger before the step fires. (v0.10.0) When the
+          policy pins business hours, the delay walks through the window — a 30-minute step on a 4:55 PM breach
+          fires the next business morning, not at 5:25 PM.
         </p>
       </div>
     </div>
@@ -974,6 +1108,8 @@ const SECTIONS = [
   { id: "inventory",      label: "Inventory + Assets",   icon: "🖥" },
   { id: "consumables",    label: "Consumables",          icon: "🧰" },
   { id: "kb",             label: "Knowledge Base",       icon: "📚" },
+  { id: "forms",          label: "Forms + Fields",       icon: "🧾" },
+  { id: "schedules",      label: "Schedules + Tasks",    icon: "🔁" },
   { id: "alerts",         label: "Alerts",               icon: "🚨" },
   { id: "admin",          label: "Admin Panel",          icon: "⚙" },
   { id: "notifications",  label: "Notifications",        icon: "🔔" },
@@ -999,6 +1135,8 @@ function renderSection(id, role) {
     case "inventory":     return <SectionInventory role={role} />;
     case "consumables":   return <SectionConsumables role={role} />;
     case "kb":            return <SectionKb role={role} />;
+    case "forms":         return <SectionForms role={role} />;
+    case "schedules":     return <SectionSchedules role={role} />;
     case "alerts":        return <SectionAlerts role={role} />;
     case "admin":         return <SectionAdmin role={role} />;
     case "notifications": return <SectionNotifications role={role} />;
