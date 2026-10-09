@@ -50,6 +50,8 @@ function resolveZabbixMacros(source, event) {
 async function ingestAlertEvent({ source, preset, event, rawPayload }) {
   resolveZabbixMacros(source, event);
   return transaction(async (client) => {
+    if (event.item_key) await trackMonitoredItem(client, source, event);
+
     // Dedup the immutable event log first — re-firing recoveries from
     // a flaky webhook shouldn't duplicate audit rows. We still always
     // upsert the alerts row regardless, so refire_count tracks reality.
@@ -101,6 +103,35 @@ async function ingestAlertEvent({ source, preset, event, rawPayload }) {
   });
 }
 
+// Register / refresh the monitored item and correlate the event with
+// that item's open outage. A problem while the item already has an
+// open alert re-fires that alert instead of opening a second one; a
+// recovery closes the item's latest unrecovered alert. Rewrites
+// event.external_event_id in place so the rest of the pipeline keys
+// off the correlated alert.
+async function trackMonitoredItem(client, source, event) {
+  await client.query(
+    `INSERT INTO alert_monitored_items (source_id, item_key, label, detail, last_state)
+       VALUES ($1, $2, $3, $4, $5)
+       ON CONFLICT (source_id, item_key) DO UPDATE
+         SET label = COALESCE(EXCLUDED.label, alert_monitored_items.label),
+             detail = COALESCE(EXCLUDED.detail, alert_monitored_items.detail),
+             last_state = COALESCE(EXCLUDED.last_state, alert_monitored_items.last_state),
+             last_seen_at = NOW()`,
+    [source.id, event.item_key, event.item_label || null, event.item_detail || null, event.item_state || null]
+  );
+  const openStates = event.event_type === 'problem'
+    ? ['firing', 'acknowledged']
+    : ['firing', 'acknowledged', 'suppressed'];
+  const open = await client.query(
+    `SELECT external_event_id FROM alerts
+      WHERE source_id = $1 AND item_key = $2 AND state = ANY($3::text[])
+      ORDER BY first_seen_at DESC LIMIT 1`,
+    [source.id, event.item_key, openStates]
+  );
+  if (open.rows[0]) event.external_event_id = open.rows[0].external_event_id;
+}
+
 async function upsertFiringAlert(client, source, event, externalRef, rawPayload) {
   const sev = event.severity || null;
   const sevRank = severityRank(sev);
@@ -114,6 +145,7 @@ async function upsertFiringAlert(client, source, event, externalRef, rawPayload)
   const baseCols = [
     'source_id', 'external_event_id', 'external_ref', 'state',
     'severity', 'severity_rank', 'user_email', 'vendor_ref', 'raw_payload',
+    'item_key',
   ];
   // rawPayload is the unparsed body the vendor posted (forwarded via
   // ingestAlertEvent). Older callers (or replay paths) sometimes pass
@@ -124,6 +156,7 @@ async function upsertFiringAlert(client, source, event, externalRef, rawPayload)
     source.id, event.external_event_id, externalRef, 'firing',
     sev, sevRank, event.user_email || null, event.vendor_ref || null,
     JSON.stringify(rawForStore),
+    event.item_key || null,
   ];
   const cols = [...baseCols, ...patch.cols];
   const vals = [...baseVals, ...patch.values];
@@ -188,11 +221,11 @@ async function markRecovered(client, source, event, externalRef) {
   // so the Alerts page still surfaces it.
   const ins = await client.query(
     `INSERT INTO alerts (source_id, external_event_id, external_ref, state,
-                          first_seen_at, last_seen_at, recovered_at, raw_payload)
-       VALUES ($1, $2, $3, 'recovered', NOW(), NOW(), NOW(), $4::jsonb)
+                          first_seen_at, last_seen_at, recovered_at, raw_payload, item_key)
+       VALUES ($1, $2, $3, 'recovered', NOW(), NOW(), NOW(), $4::jsonb, $5)
        ON CONFLICT (source_id, external_event_id) DO NOTHING
        RETURNING id, ticket_id, external_ref`,
-    [source.id, event.external_event_id, externalRef, JSON.stringify(event.raw || {})]
+    [source.id, event.external_event_id, externalRef, JSON.stringify(event.raw || {}), event.item_key || null]
   );
   return ins.rows[0] || null;
 }
@@ -256,7 +289,15 @@ async function promoteAlertToTicket(client, source, alertRow, rule, actingUserId
   const priority = overrides.priority
     ? Math.max(1, Math.min(5, Number(overrides.priority)))
     : resolvePriority(preset, alertRow.severity, source.severity_map);
-  const projectId = overrides.project_id || source.default_project_id;
+  // A project pin on the alert's monitored item beats both the rule
+  // override and the source default.
+  const pin = await client.query(
+    `SELECT i.project_id FROM alerts a
+       JOIN alert_monitored_items i ON i.source_id = a.source_id AND i.item_key = a.item_key
+      WHERE a.id = $1`,
+    [alertRow.id]
+  );
+  const projectId = pin.rows[0]?.project_id || overrides.project_id || source.default_project_id;
   const internalRef = await nextInternalRef(client, projectId);
 
   let resolvedUserId = null;

@@ -140,6 +140,14 @@ router.post('/in/:token', async (req, res) => {
     };
   }
 
+  // Valid payload the adapter deliberately drops (vendor test pings,
+  // pending / maintenance heartbeats). Acknowledge so the sender's
+  // test button shows success.
+  if (event?.ignore) {
+    await markProcessed(inboundId, null);
+    return res.status(202).json({ ok: true, ignored: event.reason || true });
+  }
+
   if (!event) {
     const err = 'no mapping available — register an adapter or configure a field_map';
     await markError(inboundId, err);
@@ -196,6 +204,10 @@ router.post('/:preset/:token', async (req, res) => {
   } catch (err) {
     await markError(inboundId, `map: ${err.message}`);
     return res.status(400).json({ error: err.message });
+  }
+  if (event?.ignore) {
+    await markProcessed(inboundId, null);
+    return res.status(202).json({ ok: true, ignored: event.reason || true });
   }
 
   try {

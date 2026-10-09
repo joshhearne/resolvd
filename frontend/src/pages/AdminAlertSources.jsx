@@ -543,11 +543,22 @@ function NewTokenBanner({ token, source, onDismiss }) {
         <CopyButton value={token} />
       </div>
       {source && (
-        <div className="text-xs text-amber-800 dark:text-amber-300">
-          Webhook URL:{" "}
-          <code className="font-mono">
-            {window.location.origin}/api/webhooks/{source.preset}/{token}
-          </code>
+        <div className="text-xs text-amber-800 dark:text-amber-300 space-y-1">
+          <div className="flex items-center gap-2">
+            <span>Webhook URL:</span>
+            <code className="font-mono break-all">
+              {window.location.origin}/api/webhooks/in/{token}
+            </code>
+            <CopyButton value={`${window.location.origin}/api/webhooks/in/${token}`} />
+          </div>
+          <div>
+            The token is the last segment of the URL; no header needed.
+            {source.preset === "uptime-kuma" && (
+              <> For Uptime Kuma on the same Docker host, post to{" "}
+                <code className="font-mono break-all">http://resolvd-nginx/api/webhooks/in/{token}</code>{" "}
+                so alerts stay off the tunnel.</>
+            )}
+          </div>
         </div>
       )}
     </div>
@@ -806,6 +817,30 @@ function SourceDetail({ source, projects, presets, adapters, onBack, onPatch, on
             </code>
             <CopyButton value={`${window.location.origin}/api/webhooks/in/<your-token>`} />
           </div>
+        </div>
+      )}
+
+      {source.preset === "uptime-kuma" && (
+        <div className="space-y-2 pt-3 border-t border-border">
+          <div className="text-sm font-medium text-fg">Uptime Kuma setup</div>
+          <p className="text-xs text-fg-muted">
+            In Kuma: Settings → Notifications → Setup Notification → type{" "}
+            <b>Webhook</b>, Request Body <b>application/json</b>, Post URL = the
+            generic intake URL above with this source's token. Attach it to
+            individual monitors, not to groups, or a group and its child will
+            each open a ticket. DOWN opens a ticket, UP resolves it; Kuma sends
+            nothing during its maintenance windows.
+          </p>
+          <label className="text-xs text-fg-muted flex flex-col gap-1 max-w-md">
+            Uptime Kuma URL (adds a "View in Kuma" link to tickets)
+            <input
+              value={apiUrl}
+              onChange={(e) => setApiUrl(e.target.value)}
+              placeholder="https://uptime-kuma.example.com"
+              className="bg-surface-2 border border-border rounded px-2 py-1 text-sm font-mono"
+            />
+          </label>
+          <button onClick={saveCore} className="btn btn-primary btn-sm">Save</button>
         </div>
       )}
 
@@ -1137,6 +1172,8 @@ function SourceDetail({ source, projects, presets, adapters, onBack, onPatch, on
       <FieldMapSection source={source} onReload={onReload} />
 
       <AlertRulesSection source={source} />
+
+      <MonitoredItemsSection source={source} projects={projects} />
 
       <InboundEventsSection source={source} />
 
@@ -2070,6 +2107,113 @@ function AlertRulesSection({ source }) {
   );
 }
 
+// Things this integration watches, discovered as alerts arrive. Pinning
+// an item to a project routes its tickets there, overriding rule
+// overrides and the source's default project.
+function MonitoredItemsSection({ source, projects }) {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState(null);
+
+  async function load() {
+    setLoading(true);
+    try {
+      const r = await api.get(`/api/alert-sources/${source.id}/items`);
+      setItems(Array.isArray(r) ? r : []);
+    } catch { setItems([]); }
+    finally { setLoading(false); }
+  }
+  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [source.id]);
+
+  const defaultProject = projects.find((p) => p.id === source.default_project_id);
+
+  async function pin(item, projectId) {
+    setBusyId(item.id);
+    try {
+      await api.patch(`/api/alert-sources/${source.id}/items/${item.id}`, {
+        project_id: projectId ? Number(projectId) : null,
+      });
+      toast.success(projectId ? "Item pinned" : "Pin cleared");
+      await load();
+    } catch (e) { toast.error(e.message); }
+    finally { setBusyId(null); }
+  }
+
+  async function remove(item) {
+    if (!window.confirm(`Forget "${item.label || item.item_key}"? It reappears (unpinned) on its next alert.`)) return;
+    try {
+      await api.delete(`/api/alert-sources/${source.id}/items/${item.id}`);
+      toast.success("Item removed");
+      await load();
+    } catch (e) { toast.error(e.message); }
+  }
+
+  return (
+    <div className="space-y-2 pt-3 border-t border-border">
+      <div className="text-sm font-medium text-fg">Monitored items</div>
+      <p className="text-xs text-fg-muted">
+        Discovered automatically the first time an alert arrives for them.
+        Pin an item to a project to send its tickets there instead of the
+        default ({defaultProject ? `${defaultProject.prefix} · ${defaultProject.name}` : "source default"}).
+        A pin beats any rule's project override.
+      </p>
+      {loading ? (
+        <div className="text-xs text-fg-dim italic">Loading items…</div>
+      ) : items.length === 0 ? (
+        <div className="text-xs text-fg-dim italic">No items discovered yet.</div>
+      ) : (
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="text-fg-muted">
+              <tr>
+                <th className="text-left py-1 px-2">Item</th>
+                <th className="text-left py-1 px-2">State</th>
+                <th className="text-left py-1 px-2">Last seen</th>
+                <th className="text-left py-1 px-2">Alerts</th>
+                <th className="text-left py-1 px-2">Project</th>
+                <th className="text-right py-1 px-2"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {items.map((it) => (
+                <tr key={it.id}>
+                  <td className="py-1 px-2">
+                    <div className="text-fg">{it.label || it.item_key}</div>
+                    {it.detail && <div className="text-fg-dim font-mono">{it.detail}</div>}
+                  </td>
+                  <td className="py-1 px-2">
+                    <span className={it.last_state === "down" ? "text-red-500" : "text-fg-muted"}>
+                      {it.last_state || "—"}
+                    </span>
+                  </td>
+                  <td className="py-1 px-2 whitespace-nowrap"><HybridTime value={it.last_seen_at} /></td>
+                  <td className="py-1 px-2 font-mono">{it.alert_count}</td>
+                  <td className="py-1 px-2">
+                    <select
+                      value={it.project_id || ""}
+                      disabled={busyId === it.id}
+                      onChange={(e) => pin(it, e.target.value)}
+                      className="bg-surface-2 border border-border rounded px-2 py-1 text-xs"
+                    >
+                      <option value="">Default{defaultProject ? ` (${defaultProject.prefix})` : ""}</option>
+                      {projects.map((p) => (
+                        <option key={p.id} value={p.id}>{p.prefix} · {p.name}</option>
+                      ))}
+                    </select>
+                  </td>
+                  <td className="py-1 px-2 text-right">
+                    <button onClick={() => remove(it)} className="text-red-500 hover:underline">Forget</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function summarizeMatch(c) {
   if (!c) return "(any)";
   const bits = [];
@@ -2104,7 +2248,10 @@ function RuleEditor({ draft, setDraft, onSave, onCancel, saving }) {
         <span className="block text-[11px] text-fg-muted">{label}</span>
         <input
           value={Array.isArray(m[key]) ? m[key].join(", ") : (m[key] || "")}
-          onChange={(e) => setM({ [key]: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })}
+          // Keep the raw text while typing; splitting here ate trailing
+          // commas before the next term could be typed. normalizeMatch
+          // splits on save.
+          onChange={(e) => setM({ [key]: e.target.value })}
           placeholder={placeholder}
           className="w-full bg-surface-2 border border-border rounded px-2 py-1 text-xs"
         />

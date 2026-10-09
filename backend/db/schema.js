@@ -2610,6 +2610,34 @@ async function initSchema() {
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_alert_rules_integration ON alert_rules(integration_id, enabled, priority)`);
 
+    // Monitored items: one row per thing an integration watches (an
+    // Uptime Kuma monitor, a host, a container), discovered the first
+    // time an alert for it arrives. Admins can pin an item to a project;
+    // the pin wins over rule overrides and the source default when the
+    // alert is promoted to a ticket.
+    //
+    // alerts.item_key ties alert rows to their item and lets adapters
+    // whose vendors don't send a per-outage id (Kuma sends only a
+    // monitor id) correlate a recovery with the open outage.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS alert_monitored_items (
+        id SERIAL PRIMARY KEY,
+        source_id INTEGER NOT NULL REFERENCES external_alert_source(id) ON DELETE CASCADE,
+        item_key TEXT NOT NULL,
+        label TEXT,
+        detail TEXT,
+        project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+        pinned_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        pinned_at TIMESTAMPTZ,
+        last_state TEXT,
+        first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(source_id, item_key)
+      )
+    `);
+    await client.query(`ALTER TABLE alerts ADD COLUMN IF NOT EXISTS item_key TEXT`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_alerts_item ON alerts(source_id, item_key) WHERE item_key IS NOT NULL`);
+
     // Seed a default "create ticket for anything" rule per existing
     // integration so existing deployments keep producing tickets out of
     // the box. Admins edit the rule to add filters as they go.

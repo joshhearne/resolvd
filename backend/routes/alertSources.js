@@ -6,6 +6,7 @@ const {
   PRESETS,
   DEFAULT_ZABBIX_SEVERITY_MAP,
   DEFAULT_ACTION1_SEVERITY_MAP,
+  DEFAULT_UPTIME_KUMA_SEVERITY_MAP,
   getPreset,
 } = require('../services/alertMappers');
 const { buildWritePatch, decryptRow } = require('../services/fields');
@@ -19,6 +20,7 @@ const PRESET_NAMES = Object.keys(PRESETS);
 const PRESET_DEFAULT_SEVERITY_MAPS = {
   zabbix: DEFAULT_ZABBIX_SEVERITY_MAP,
   action1: DEFAULT_ACTION1_SEVERITY_MAP,
+  'uptime-kuma': DEFAULT_UPTIME_KUMA_SEVERITY_MAP,
 };
 
 // Strip secrets before returning. token_hash + api_token_enc are bytea
@@ -852,6 +854,70 @@ router.delete('/:id/rules/:ruleId', requireAuth, requireRole('Admin', 'Manager')
     res.json({ ok: true });
   } catch (err) {
     console.error('rules delete:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// Monitored items — things this integration watches, discovered as
+// alerts arrive. project_id pins the item's tickets to a project,
+// overriding rule overrides and the source default.
+router.get('/:id/items', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT i.*, p.prefix AS project_prefix, p.name AS project_name,
+              (SELECT COUNT(*)::int FROM alerts a
+                WHERE a.source_id = i.source_id AND a.item_key = i.item_key) AS alert_count
+         FROM alert_monitored_items i
+         LEFT JOIN projects p ON p.id = i.project_id
+        WHERE i.source_id = $1
+        ORDER BY i.label ASC NULLS LAST, i.item_key ASC`,
+      [Number(req.params.id)]
+    );
+    res.json(r.rows);
+  } catch (err) {
+    console.error('items list:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+router.patch('/:id/items/:itemId', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+  const raw = req.body?.project_id;
+  const projectId = raw === null || raw === '' || raw === undefined ? null : Number(raw);
+  if (projectId !== null && !Number.isInteger(projectId)) {
+    return res.status(400).json({ error: 'project_id must be an integer or null' });
+  }
+  try {
+    if (projectId !== null) {
+      const p = await pool.query(`SELECT 1 FROM projects WHERE id = $1`, [projectId]);
+      if (!p.rows[0]) return res.status(400).json({ error: 'Unknown project' });
+    }
+    const r = await pool.query(
+      `UPDATE alert_monitored_items
+          SET project_id = $1,
+              pinned_by = CASE WHEN $1::int IS NULL THEN NULL ELSE $2::int END,
+              pinned_at = CASE WHEN $1::int IS NULL THEN NULL ELSE NOW() END
+        WHERE id = $3 AND source_id = $4
+        RETURNING *`,
+      [projectId, req.session?.user?.id || null, Number(req.params.itemId), Number(req.params.id)]
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'Item not found' });
+    res.json(r.rows[0]);
+  } catch (err) {
+    console.error('items patch:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+router.delete('/:id/items/:itemId', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+  try {
+    const r = await pool.query(
+      `DELETE FROM alert_monitored_items WHERE id = $1 AND source_id = $2 RETURNING id`,
+      [Number(req.params.itemId), Number(req.params.id)]
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'Item not found' });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('items delete:', err);
     res.status(500).json({ error: 'Database error' });
   }
 });

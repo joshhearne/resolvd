@@ -284,9 +284,74 @@ const DEFAULT_ACTION1_SEVERITY_MAP = {
   Info: 5,
 };
 
+// Uptime Kuma "Webhook" notification, default JSON body:
+//   { heartbeat: { monitorID, status, time, msg, timezone, ... },
+//     monitor:   { id, name, pathName, type, url, hostname, port,
+//                  docker_container, ... },
+//     msg: "[name] [🔴 Down] ..." }
+// status: 0 DOWN, 1 UP, 2 PENDING, 3 MAINTENANCE. Kuma only notifies
+// on DOWN and DOWN->UP and stays silent during maintenance windows.
+// The "Test" button posts heartbeat/monitor = null.
+//
+// Kuma has no per-outage id, so external_event_id is monitor+time and
+// item_key lets the ingest pipeline pair a recovery with the open
+// outage for that monitor. Returns { ignore, reason } for payloads
+// that are valid but shouldn't become alerts.
+const KUMA_STATUS = { 0: 'DOWN', 1: 'UP', 2: 'PENDING', 3: 'MAINTENANCE' };
+
+function uptimeKuma(payload) {
+  if (!payload || typeof payload !== 'object') {
+    throw new Error('payload required');
+  }
+  const { heartbeat, monitor } = payload;
+  if (!heartbeat && !monitor) {
+    return { ignore: true, reason: 'test notification' };
+  }
+  if (!heartbeat || !monitor) throw new Error('heartbeat and monitor required');
+  const monitorId = monitor.id ?? heartbeat.monitorID;
+  if (monitorId == null || monitorId === '') throw new Error('monitor.id required');
+
+  const status = Number(heartbeat.status);
+  let eventType;
+  if (status === 0) eventType = 'problem';
+  else if (status === 1) eventType = 'recovery';
+  else return { ignore: true, reason: `status ${KUMA_STATUS[status] || heartbeat.status}` };
+
+  const name = String(monitor.pathName || monitor.name || `Monitor ${monitorId}`).trim();
+  const target = monitor.docker_container
+    || monitor.url
+    || (monitor.hostname ? `${monitor.hostname}${monitor.port ? `:${monitor.port}` : ''}` : null);
+  const time = String(heartbeat.localDateTime || heartbeat.time || '').trim();
+  const lines = [
+    `**Monitor:** ${name}${monitor.type ? ` (${monitor.type})` : ''}`,
+    target ? `**Target:** \`${target}\`` : null,
+    heartbeat.msg ? `**Message:** ${heartbeat.msg}` : null,
+    time ? `**${eventType === 'problem' ? 'Down since' : 'Up at'}:** ${time}${heartbeat.timezone ? ` (${heartbeat.timezone})` : ''}` : null,
+  ].filter(Boolean);
+
+  return {
+    external_event_id: `${monitorId}:${heartbeat.time || Date.now()}`,
+    event_type: eventType,
+    severity: 'Down',
+    title: `${name} is ${eventType === 'problem' ? 'DOWN' : 'UP'}`,
+    description: lines.join('\n'),
+    vendor_ref: null,
+    user_email: null,
+    item_key: `monitor:${monitorId}`,
+    item_label: name,
+    item_detail: target ? `${monitor.type || 'monitor'} · ${target}` : (monitor.type || null),
+    item_state: eventType === 'problem' ? 'down' : 'up',
+  };
+}
+
+// Kuma carries no severity; every notification is a DOWN. Admins
+// tune via the per-source severity map (key "Down").
+const DEFAULT_UPTIME_KUMA_SEVERITY_MAP = { Down: 2 };
+
 const PRESETS = {
   zabbix: { mapper: zabbix, defaultSeverityMap: DEFAULT_ZABBIX_SEVERITY_MAP },
   action1: { mapper: action1, defaultSeverityMap: DEFAULT_ACTION1_SEVERITY_MAP },
+  'uptime-kuma': { mapper: uptimeKuma, defaultSeverityMap: DEFAULT_UPTIME_KUMA_SEVERITY_MAP },
 };
 
 function getPreset(name) {
@@ -312,4 +377,5 @@ module.exports = {
   PRESETS,
   DEFAULT_ZABBIX_SEVERITY_MAP,
   DEFAULT_ACTION1_SEVERITY_MAP,
+  DEFAULT_UPTIME_KUMA_SEVERITY_MAP,
 };

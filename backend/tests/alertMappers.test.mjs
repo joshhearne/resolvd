@@ -155,3 +155,57 @@ describe('alertMappers — resolvePriority (action1)', () => {
     expect(resolvePriority(a1, 'Information', { Information: 2 })).toBe(2);
   });
 });
+
+describe('alertMappers — uptime-kuma preset', () => {
+  const kuma = PRESETS['uptime-kuma'].mapper;
+  const monitor = {
+    id: 7, name: 'resolvd-backend', pathName: 'issues / resolvd-backend',
+    type: 'docker', docker_container: 'resolvd-backend',
+  };
+
+  it('maps a DOWN heartbeat to a problem keyed by monitor + time', () => {
+    const event = kuma({
+      heartbeat: { monitorID: 7, status: 0, time: '2026-10-09 20:00:00.000', msg: 'container exited', timezone: 'America/Chicago' },
+      monitor,
+      msg: '[resolvd-backend] [🔴 Down] container exited',
+    });
+    expect(event.event_type).toBe('problem');
+    expect(event.external_event_id).toBe('7:2026-10-09 20:00:00.000');
+    expect(event.item_key).toBe('monitor:7');
+    expect(event.item_label).toBe('issues / resolvd-backend');
+    expect(event.item_state).toBe('down');
+    expect(event.title).toBe('issues / resolvd-backend is DOWN');
+    expect(event.severity).toBe('Down');
+    expect(event.description).toContain('container exited');
+    expect(event.description).toContain('`resolvd-backend`');
+  });
+
+  it('maps an UP heartbeat to a recovery on the same item', () => {
+    const event = kuma({ heartbeat: { monitorID: 7, status: 1, time: 't2', msg: '' }, monitor });
+    expect(event.event_type).toBe('recovery');
+    expect(event.item_key).toBe('monitor:7');
+    expect(event.item_state).toBe('up');
+  });
+
+  it('ignores the Test button payload, pending and maintenance beats', () => {
+    expect(kuma({ heartbeat: null, monitor: null, msg: 'Testing' })).toMatchObject({ ignore: true });
+    expect(kuma({ heartbeat: { status: 2 }, monitor })).toMatchObject({ ignore: true });
+    expect(kuma({ heartbeat: { status: 3 }, monitor })).toMatchObject({ ignore: true });
+  });
+
+  it('describes http monitors by URL and host monitors by host:port', () => {
+    const http = kuma({ heartbeat: { status: 0, time: 't' }, monitor: { id: 1, name: 'Site', type: 'http', url: 'https://example.com' } });
+    expect(http.item_detail).toBe('http · https://example.com');
+    const port = kuma({ heartbeat: { status: 0, time: 't' }, monitor: { id: 2, name: 'SMTP', type: 'port', hostname: 'mail', port: 25 } });
+    expect(port.item_detail).toBe('port · mail:25');
+  });
+
+  it('throws on a half-formed payload', () => {
+    expect(() => kuma({ heartbeat: { status: 0 } })).toThrow();
+    expect(() => kuma(null)).toThrow();
+  });
+
+  it('defaults Down to priority 2', () => {
+    expect(resolvePriority(PRESETS['uptime-kuma'], 'Down', {})).toBe(2);
+  });
+});

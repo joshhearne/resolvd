@@ -58,6 +58,7 @@ services:
       - ./nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
     networks:
       - internal
+      - alert-intake
     depends_on:
       - backend
       - frontend
@@ -68,4 +69,11 @@ volumes:
 
 networks:
   internal:
+    driver: bridge
+  # Shared with monitoring containers (Uptime Kuma) so they can POST to
+  # /api/webhooks/in/<token> via resolvd-nginx without reaching the
+  # backend or Postgres directly. Fixed name so other projects can
+  # join it as an external network.
+  alert-intake:
+    name: resolvd-alert-intake
     driver: bridge
