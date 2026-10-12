@@ -36,6 +36,9 @@ const pushRoutes = require('./routes/push');
 const systemHealthRoutes = require('./routes/systemHealth');
 const webhookRoutes = require('./routes/webhooks');
 const alertSourceRoutes = require('./routes/alertSources');
+const statusPageRoutes = require('./routes/statusPages');
+const maintenanceRoutes = require('./routes/maintenance');
+const calendarRoutes = require('./routes/calendar');
 const alertRoutes = require('./routes/alerts');
 const assetRoutes = require('./routes/assets');
 const assetTypeRoutes = require('./routes/assetTypes');
@@ -110,6 +113,9 @@ app.use('/api/webhooks', webhookRoutes);
 // Build identity — public, no auth, no PII. Sits before the support
 // guard since it's not user-scoped.
 app.use('/api/version', versionRoutes);
+// Calendar feeds authenticate via URL token (calendar apps can't log
+// in); the owner-management routes under /me use the session.
+app.use('/api/calendar', calendarRoutes);
 // Support routes mounted BEFORE the JIT guard so support principals can
 // poll their own grant status (/api/support/grants/me) and admins can
 // approve/revoke without being self-locked out.
@@ -146,6 +152,8 @@ app.use('/api/push', pushRoutes);
 app.use('/api/system-health', systemHealthRoutes);
 app.use('/api/alert-sources', alertSourceRoutes);
 app.use('/api/alerts', alertRoutes);
+app.use('/api/status-pages', statusPageRoutes);
+app.use('/api/maintenance', maintenanceRoutes);
 app.use('/api/software-aliases', require('./routes/softwareAliases'));
 app.use('/api/assets', assetRoutes);
 app.use('/api/label-printer', labelPrinterRoutes);

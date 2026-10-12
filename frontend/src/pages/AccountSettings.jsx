@@ -35,6 +35,9 @@ export default function AccountSettings() {
         <NavLink to="/account/settings/preferences" className={tabClass}>
           Preferences
         </NavLink>
+        <NavLink to="/account/settings/calendar" className={tabClass}>
+          Calendar
+        </NavLink>
       </div>
       <Outlet />
     </PageShell>

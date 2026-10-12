@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
 import HybridTime from "../components/HybridTime";
+import { StateDot, stateInfo, fmtUptime } from "../utils/itemState";
 
 const PRESET_LABELS = {
   zabbix: "Zabbix",
@@ -572,6 +573,12 @@ function SourceDetail({ source, projects, presets, adapters, onBack, onPatch, on
   const [enabled, setEnabled] = useState(!!source.enabled);
   const [sevText, setSevText] = useState(JSON.stringify(source.severity_map || {}, null, 2));
   const [apiUrl, setApiUrl] = useState(source.api_url || "");
+  const [webUrl, setWebUrl] = useState(source.web_url || "");
+  // Kuma: the setup box owns the 'status' capability so ticking it and
+  // hitting that box's Save can't silently drop the toggle.
+  const hasStatusCap = (src) => !Array.isArray(src.capabilities) || !src.capabilities.length
+    || src.capabilities.includes("status");
+  const [liveStatus, setLiveStatus] = useState(hasStatusCap(source));
   const [apiTokenInput, setApiTokenInput] = useState("");
   const [apiClientId, setApiClientId] = useState(source.api_client_id || "");
   const [pollInterval, setPollInterval] = useState(
@@ -605,6 +612,8 @@ function SourceDetail({ source, projects, presets, adapters, onBack, onPatch, on
     setEnabled(!!source.enabled);
     setSevText(JSON.stringify(source.severity_map || {}, null, 2));
     setApiUrl(source.api_url || "");
+    setWebUrl(source.web_url || "");
+    setLiveStatus(hasStatusCap(source));
     setApiTokenInput("");
     setApiClientId(source.api_client_id || "");
     setPollInterval(
@@ -636,6 +645,7 @@ function SourceDetail({ source, projects, presets, adapters, onBack, onPatch, on
       enabled,
       severity_map: parsedSev,
       api_url: apiUrl.trim() || null,
+      web_url: webUrl.trim() || null,
       api_client_id: apiClientId.trim() || null,
       poll_interval_minutes: Math.max(0, Math.min(60, Number(pollInterval) || 0)),
       affect_inventory: affectInventory,
@@ -647,6 +657,11 @@ function SourceDetail({ source, projects, presets, adapters, onBack, onPatch, on
     // Only include api_token if the input has a value — empty string means
     // "leave alone". Set to null explicitly via the Clear button.
     if (apiTokenInput.trim()) patch.api_token = apiTokenInput.trim();
+    if (source.preset === "uptime-kuma") {
+      const caps = (Array.isArray(source.capabilities) && source.capabilities.length
+        ? source.capabilities : ["alerts"]).filter((c) => c !== "status");
+      patch.capabilities = liveStatus ? [...caps, "status"] : caps;
+    }
     await onPatch(patch);
     setApiTokenInput("");
     toast.success("Saved");
@@ -831,15 +846,58 @@ function SourceDetail({ source, projects, presets, adapters, onBack, onPatch, on
             each open a ticket. DOWN opens a ticket, UP resolves it; Kuma sends
             nothing during its maintenance windows.
           </p>
-          <label className="text-xs text-fg-muted flex flex-col gap-1 max-w-md">
-            Uptime Kuma URL (adds a "View in Kuma" link to tickets)
-            <input
-              value={apiUrl}
-              onChange={(e) => setApiUrl(e.target.value)}
-              placeholder="https://uptime-kuma.example.com"
-              className="bg-surface-2 border border-border rounded px-2 py-1 text-sm font-mono"
-            />
+          <p className="text-xs text-fg-muted">
+            <b>Live status</b> (status pages, uptime, monitored-item discovery):
+            create a key in Kuma under Settings → API Keys, paste it below,
+            tick “Poll live status”, and Save. Resolvd reads Kuma's{" "}
+            <code>/metrics</code> about once a minute.
+            {source.api_last_error && (
+              <span className="block text-red-600 mt-1">Last poll error: {source.api_last_error}</span>
+            )}
+            {source.last_status_poll_at && !source.api_last_error && (
+              <span className="block mt-1">Last poll: <HybridTime value={source.last_status_poll_at} /></span>
+            )}
+          </p>
+          <label className="flex items-center gap-2 text-sm text-fg">
+            <input type="checkbox" checked={liveStatus} onChange={(e) => setLiveStatus(e.target.checked)} />
+            Poll live status from Kuma
           </label>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <label className="text-xs text-fg-muted flex flex-col gap-1">
+              Kuma API base (polled from the Resolvd server)
+              <input
+                value={apiUrl}
+                onChange={(e) => setApiUrl(e.target.value)}
+                placeholder="http://uptime-kuma:3001"
+                className="bg-surface-2 border border-border rounded px-2 py-1 text-sm font-mono"
+              />
+            </label>
+            <label className="text-xs text-fg-muted flex flex-col gap-1">
+              Kuma web URL (for "Open in Uptime Kuma" links)
+              <input
+                value={webUrl}
+                onChange={(e) => setWebUrl(e.target.value)}
+                placeholder="https://uptime-kuma.example.com"
+                className="bg-surface-2 border border-border rounded px-2 py-1 text-sm font-mono"
+              />
+            </label>
+            <label className="text-xs text-fg-muted flex flex-col gap-1">
+              Kuma API key
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="password"
+                  value={apiTokenInput}
+                  onChange={(e) => setApiTokenInput(e.target.value)}
+                  placeholder={source.api_token_set ? "•••••• (set)" : "paste key"}
+                  className="flex-1 bg-surface-2 border border-border rounded px-2 py-1 text-sm font-mono"
+                />
+                {source.api_token_set && (
+                  <button type="button" onClick={clearApiToken}
+                    className="text-xs text-red-600 hover:underline whitespace-nowrap">Clear</button>
+                )}
+              </div>
+            </label>
+          </div>
           <button onClick={saveCore} className="btn btn-primary btn-sm">Save</button>
         </div>
       )}
@@ -1493,6 +1551,7 @@ const ALL_CAPABILITIES = [
   { value: "software",        label: "Software",         hint: "Per-device installed software inventory." },
   { value: "vulnerabilities", label: "Vulnerabilities",  hint: "Per-CVE rows where the vendor exposes them." },
   { value: "companies",       label: "Companies",        hint: "Map vendor orgs / customers to Resolvd companies." },
+  { value: "status",          label: "Live status",      hint: "Poll monitor state + uptime for status pages." },
 ];
 
 function CapabilitiesSection({ source, adapters, onPatch, onReload }) {
@@ -2127,17 +2186,20 @@ function MonitoredItemsSection({ source, projects }) {
 
   const defaultProject = projects.find((p) => p.id === source.default_project_id);
 
-  async function pin(item, projectId) {
+  async function patchItem(item, body, msg) {
     setBusyId(item.id);
     try {
-      await api.patch(`/api/alert-sources/${source.id}/items/${item.id}`, {
-        project_id: projectId ? Number(projectId) : null,
-      });
-      toast.success(projectId ? "Item pinned" : "Pin cleared");
+      await api.patch(`/api/alert-sources/${source.id}/items/${item.id}`, body);
+      toast.success(msg);
       await load();
     } catch (e) { toast.error(e.message); }
     finally { setBusyId(null); }
   }
+  function pin(item, projectId) {
+    return patchItem(item, { project_id: projectId ? Number(projectId) : null }, projectId ? "Item pinned" : "Pin cleared");
+  }
+  const services = items.filter((i) => i.item_type === "group" || items.some((c) => c.parent_item_id === i.id));
+  const labelById = Object.fromEntries(items.map((i) => [i.id, i.label || i.item_key]));
 
   async function remove(item) {
     if (!window.confirm(`Forget "${item.label || item.item_key}"? It reappears (unpinned) on its next alert.`)) return;
@@ -2155,7 +2217,12 @@ function MonitoredItemsSection({ source, projects }) {
         Discovered automatically the first time an alert arrives for them.
         Pin an item to a project to send its tickets there instead of the
         default ({defaultProject ? `${defaultProject.prefix} · ${defaultProject.name}` : "source default"}).
-        A pin beats any rule's project override.
+        A pin beats any rule's project override; a service's pin covers its
+        components unless they have their own. Components roll up into their
+        service on status pages: a <b>primary</b> component down takes the
+        service down, any other component down is a partial outage. Uptime
+        Kuma groups are services; components join them automatically on
+        their first alert, or set them here.
       </p>
       {loading ? (
         <div className="text-xs text-fg-dim italic">Loading items…</div>
@@ -2169,7 +2236,9 @@ function MonitoredItemsSection({ source, projects }) {
                 <th className="text-left py-1 px-2">Item</th>
                 <th className="text-left py-1 px-2">State</th>
                 <th className="text-left py-1 px-2">Last seen</th>
+                <th className="text-left py-1 px-2">Uptime 24h</th>
                 <th className="text-left py-1 px-2">Alerts</th>
+                <th className="text-left py-1 px-2">Service</th>
                 <th className="text-left py-1 px-2">Project</th>
                 <th className="text-right py-1 px-2"></th>
               </tr>
@@ -2177,17 +2246,53 @@ function MonitoredItemsSection({ source, projects }) {
             <tbody>
               {items.map((it) => (
                 <tr key={it.id}>
-                  <td className="py-1 px-2">
-                    <div className="text-fg">{it.label || it.item_key}</div>
+                  <td className={`py-1 px-2 ${it.parent_item_id ? "pl-6" : ""}`}>
+                    <div className="text-fg">
+                      {it.parent_item_id ? "↳ " : ""}{it.label || it.item_key}
+                      {it.item_type === "group" && (
+                        <span className="ml-1.5 text-[10px] uppercase tracking-wide text-fg-dim">service</span>
+                      )}
+                    </div>
                     {it.detail && <div className="text-fg-dim font-mono">{it.detail}</div>}
                   </td>
                   <td className="py-1 px-2">
-                    <span className={it.last_state === "down" ? "text-red-500" : "text-fg-muted"}>
-                      {it.last_state || "—"}
+                    <span className={`inline-flex items-center gap-1.5 ${stateInfo(it.last_state).text}`}>
+                      <StateDot state={it.active ? (it.last_state || "unknown") : "unknown"} />
+                      {it.active ? (it.last_state || "—") : "not reported"}
                     </span>
                   </td>
-                  <td className="py-1 px-2 whitespace-nowrap"><HybridTime value={it.last_seen_at} /></td>
+                  <td className="py-1 px-2 whitespace-nowrap"><HybridTime value={it.polled_at || it.last_seen_at} /></td>
+                  <td className="py-1 px-2 font-mono">{fmtUptime(it.uptime_1d)}</td>
                   <td className="py-1 px-2 font-mono">{it.alert_count}</td>
+                  <td className="py-1 px-2 whitespace-nowrap">
+                    {it.item_type === "group" ? (
+                      <span className="text-fg-dim">—</span>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={it.parent_item_id || ""}
+                          disabled={busyId === it.id}
+                          onChange={(e) => patchItem(it,
+                            { parent_item_id: e.target.value ? Number(e.target.value) : null },
+                            e.target.value ? "Added to service" : "Removed from service")}
+                          className="bg-surface-2 border border-border rounded px-2 py-1 text-xs max-w-[12rem]"
+                        >
+                          <option value="">None</option>
+                          {services.filter((sv) => sv.id !== it.id).map((sv) => (
+                            <option key={sv.id} value={sv.id}>{labelById[sv.id]}</option>
+                          ))}
+                        </select>
+                        {it.parent_item_id && (
+                          <label className="flex items-center gap-1 text-fg-muted" title="Service is down when this is down">
+                            <input type="checkbox" checked={!!it.is_primary} disabled={busyId === it.id}
+                              onChange={(e) => patchItem(it, { is_primary: e.target.checked },
+                                e.target.checked ? "Marked primary" : "Primary cleared")} />
+                            Primary
+                          </label>
+                        )}
+                      </div>
+                    )}
+                  </td>
                   <td className="py-1 px-2">
                     <select
                       value={it.project_id || ""}

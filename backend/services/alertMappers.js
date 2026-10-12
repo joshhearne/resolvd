@@ -338,9 +338,15 @@ function uptimeKuma(payload) {
     vendor_ref: null,
     user_email: null,
     item_key: `monitor:${monitorId}`,
-    item_label: name,
+    // Bare monitor name: the group shows as the parent service.
+    item_label: String(monitor.name || name).trim(),
     item_detail: target ? `${monitor.type || 'monitor'} · ${target}` : (monitor.type || null),
     item_state: eventType === 'problem' ? 'down' : 'up',
+    // Kuma group = service. path is [..., group, monitor].
+    parent_key: monitor.parent != null ? `monitor:${monitor.parent}` : null,
+    parent_label: Array.isArray(monitor.path) && monitor.path.length > 1
+      ? String(monitor.path[monitor.path.length - 2])
+      : null,
   };
 }
 

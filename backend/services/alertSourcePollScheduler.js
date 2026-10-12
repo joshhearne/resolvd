@@ -97,12 +97,57 @@ async function tickOnce() {
   // re-evaluates. If the alert is still firing and a create_ticket
   // rule still matches, promote.
   await sweepDelayedAlerts().catch((err) => console.error('delayed alert sweep error:', err.message));
+  await sweepStatus().catch((err) => console.error('status sweep error:', err.message));
   return results;
+}
+
+// Live status poll for adapters exposing pullStatus() (Uptime Kuma).
+// Runs about once a minute per source, gated by the 'status'
+// capability so an admin can switch it off per integration.
+const STATUS_POLL_SECONDS = 55;
+
+async function sweepStatus() {
+  const vendors = registry.all()
+    .filter((a) => typeof a.pullStatus === 'function')
+    .map((a) => a.vendor);
+  if (!vendors.length) return;
+  const r = await pool.query(`
+    SELECT * FROM external_alert_source
+     WHERE enabled = TRUE
+       AND COALESCE(vendor, preset) = ANY($1::text[])
+       AND (last_status_poll_at IS NULL
+            OR last_status_poll_at < NOW() - ($2::int * INTERVAL '1 second'))
+  `, [vendors, STATUS_POLL_SECONDS]);
+  const { transaction } = require('../db/pool');
+  const { applyStatusSnapshot } = require('./monitoredItems');
+  for (const row of r.rows) {
+    const adapter = adapterFor(row);
+    if (!adapter || !hasCapability(row, adapter, 'status')) continue;
+    await decryptRow('external_alert_source', row);
+    try {
+      const snapshot = await adapter.pullStatus(row);
+      await transaction((client) => applyStatusSnapshot(client, row, snapshot));
+      await pool.query(
+        `UPDATE external_alert_source
+            SET last_status_poll_at = NOW(), api_last_ok_at = NOW(), api_last_error = NULL
+          WHERE id = $1`,
+        [row.id]
+      );
+    } catch (err) {
+      await pool.query(
+        `UPDATE external_alert_source
+            SET last_status_poll_at = NOW(), api_last_error = $2
+          WHERE id = $1`,
+        [row.id, `status poll: ${String(err.message).slice(0, 500)}`]
+      );
+    }
+  }
 }
 
 async function sweepDelayedAlerts() {
   const { pickRule } = require('./alertEvaluator');
-  const { promoteAlertToTicket } = require('./alertIngest');
+  const { promoteAlertToTicket, deferForMaintenance } = require('./alertIngest');
+  const { activeMaintenanceFor } = require('./monitoredItems');
   const { transaction } = require('../db/pool');
   const due = await pool.query(`
     SELECT a.id AS alert_id, a.source_id
@@ -142,6 +187,13 @@ async function sweepDelayedAlerts() {
         );
         const rule = pickRule(rulesQ.rows, alertRow);
         if (rule && rule.action === 'create_ticket') {
+          // Window extended or a new one opened since the alert was
+          // deferred: push the re-check out again instead of promoting.
+          const mw = await activeMaintenanceFor(client, alertRow.source_id, alertRow.item_key);
+          if (mw) {
+            await deferForMaintenance(client, alertRow.id, mw);
+            return;
+          }
           await promoteAlertToTicket(client, src.rows[0], { ...alertRow, event: {} }, rule, null);
         } else {
           // Rule changed / removed — drop the pending eval but leave

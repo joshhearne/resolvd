@@ -2638,6 +2638,128 @@ async function initSchema() {
     await client.query(`ALTER TABLE alerts ADD COLUMN IF NOT EXISTS item_key TEXT`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_alerts_item ON alerts(source_id, item_key) WHERE item_key IS NOT NULL`);
 
+    // Live status for monitored items, filled by adapters that expose a
+    // pullStatus() (Uptime Kuma /metrics). last_state is shared with the
+    // webhook path; state_since marks the last change. active = FALSE
+    // when the item stopped appearing in its source's poll.
+    await client.query(`ALTER TABLE alert_monitored_items ADD COLUMN IF NOT EXISTS external_id TEXT`);
+    await client.query(`ALTER TABLE alert_monitored_items ADD COLUMN IF NOT EXISTS item_type TEXT`);
+    await client.query(`ALTER TABLE alert_monitored_items ADD COLUMN IF NOT EXISTS uptime_1d NUMERIC(7,6)`);
+    await client.query(`ALTER TABLE alert_monitored_items ADD COLUMN IF NOT EXISTS uptime_30d NUMERIC(7,6)`);
+    await client.query(`ALTER TABLE alert_monitored_items ADD COLUMN IF NOT EXISTS response_ms INTEGER`);
+    await client.query(`ALTER TABLE alert_monitored_items ADD COLUMN IF NOT EXISTS cert_days INTEGER`);
+    await client.query(`ALTER TABLE alert_monitored_items ADD COLUMN IF NOT EXISTS polled_at TIMESTAMPTZ`);
+    await client.query(`ALTER TABLE alert_monitored_items ADD COLUMN IF NOT EXISTS state_since TIMESTAMPTZ`);
+    await client.query(`ALTER TABLE alert_monitored_items ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE`);
+    // Services: an item can belong to a parent item (Uptime Kuma group
+    // monitor = service, its monitors = components). is_primary marks
+    // the component the service can't run without; when it is down the
+    // service is down, when only supporting components are down the
+    // service is a partial outage.
+    await client.query(`ALTER TABLE alert_monitored_items ADD COLUMN IF NOT EXISTS parent_item_id INTEGER REFERENCES alert_monitored_items(id) ON DELETE SET NULL`);
+    await client.query(`ALTER TABLE alert_monitored_items ADD COLUMN IF NOT EXISTS is_primary BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_monitored_items_parent ON alert_monitored_items(parent_item_id) WHERE parent_item_id IS NOT NULL`);
+    // Separate API base (polled, often an internal Docker URL) from the
+    // human-facing web URL used for links in tickets.
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS web_url TEXT`);
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS last_status_poll_at TIMESTAMPTZ`);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS alert_item_state_changes (
+        id BIGSERIAL PRIMARY KEY,
+        item_id INTEGER NOT NULL REFERENCES alert_monitored_items(id) ON DELETE CASCADE,
+        from_state TEXT,
+        to_state TEXT NOT NULL,
+        via TEXT,
+        changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_item_state_changes ON alert_item_state_changes(item_id, changed_at DESC)`);
+
+    // Status pages: admin-curated views over monitored items, visible
+    // to every logged-in user. section is free text; items render
+    // grouped by section in sort_order.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS status_pages (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        slug TEXT NOT NULL UNIQUE,
+        description TEXT,
+        sort_order INTEGER NOT NULL DEFAULT 100,
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS status_page_items (
+        id SERIAL PRIMARY KEY,
+        page_id INTEGER NOT NULL REFERENCES status_pages(id) ON DELETE CASCADE,
+        item_id INTEGER NOT NULL REFERENCES alert_monitored_items(id) ON DELETE CASCADE,
+        section TEXT,
+        display_name TEXT,
+        sort_order INTEGER NOT NULL DEFAULT 100,
+        UNIQUE(page_id, item_id)
+      )
+    `);
+
+    // Maintenance windows. While a window covering an item is active,
+    // alerts for that item are recorded but not promoted to tickets;
+    // promotion is re-checked when the window ends. work_notes is the
+    // "what was done" write-up shown on status pages.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS maintenance_windows (
+        id SERIAL PRIMARY KEY,
+        title TEXT NOT NULL,
+        description TEXT,
+        work_notes TEXT,
+        starts_at TIMESTAMPTZ NOT NULL,
+        ends_at TIMESTAMPTZ NOT NULL,
+        ticket_id INTEGER REFERENCES tickets(id) ON DELETE SET NULL,
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CHECK (ends_at > starts_at)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_maintenance_windows_time ON maintenance_windows(starts_at, ends_at)`);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS maintenance_window_items (
+        window_id INTEGER NOT NULL REFERENCES maintenance_windows(id) ON DELETE CASCADE,
+        item_id INTEGER NOT NULL REFERENCES alert_monitored_items(id) ON DELETE CASCADE,
+        PRIMARY KEY (window_id, item_id)
+      )
+    `);
+
+    // Scheduled work calendars. A maintenance window belongs to a
+    // project (its project feed) and is assigned to the techs doing the
+    // work (their personal feeds).
+    await client.query(`
+      ALTER TABLE maintenance_windows
+        ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS maintenance_window_assignees (
+        window_id INTEGER NOT NULL REFERENCES maintenance_windows(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        PRIMARY KEY (window_id, user_id)
+      )
+    `);
+    // One subscribable .ics token per user. Calendar apps can't log in,
+    // so the token in the URL is the credential: looked up by hash,
+    // kept encrypted so the user can copy their links again, revoked by
+    // regenerating.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS calendar_feeds (
+        user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        token_hash TEXT NOT NULL UNIQUE,
+        token_enc BYTEA NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_used_at TIMESTAMPTZ
+      )
+    `);
+
     // Seed a default "create ticket for anything" rule per existing
     // integration so existing deployments keep producing tickets out of
     // the box. Admins edit the rule to add filters as they go.

@@ -172,7 +172,7 @@ describe('alertMappers — uptime-kuma preset', () => {
     expect(event.event_type).toBe('problem');
     expect(event.external_event_id).toBe('7:2026-10-09 20:00:00.000');
     expect(event.item_key).toBe('monitor:7');
-    expect(event.item_label).toBe('issues / resolvd-backend');
+    expect(event.item_label).toBe('resolvd-backend');
     expect(event.item_state).toBe('down');
     expect(event.title).toBe('issues / resolvd-backend is DOWN');
     expect(event.severity).toBe('Down');

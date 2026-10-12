@@ -24,6 +24,7 @@ const sla = require('./sla');
 const assignmentPolicies = require('./assignmentPolicies');
 const { notifyManagersAndAdmins } = require('./notifications');
 const { fanoutNewTicket, fanoutAssignment } = require('./notificationFanout');
+const { setItemState, activeMaintenanceFor } = require('./monitoredItems');
 
 // Zabbix templates frequently ship URLs containing the user macro
 // `{$ZABBIX.URL}` which Zabbix itself doesn't expand for outbound
@@ -110,16 +111,30 @@ async function ingestAlertEvent({ source, preset, event, rawPayload }) {
 // event.external_event_id in place so the rest of the pipeline keys
 // off the correlated alert.
 async function trackMonitoredItem(client, source, event) {
-  await client.query(
-    `INSERT INTO alert_monitored_items (source_id, item_key, label, detail, last_state)
-       VALUES ($1, $2, $3, $4, $5)
+  let parentId = null;
+  if (event.parent_key) {
+    const parent = await client.query(
+      `INSERT INTO alert_monitored_items (source_id, item_key, label, item_type)
+         VALUES ($1, $2, $3, 'group')
+         ON CONFLICT (source_id, item_key) DO UPDATE
+           SET label = COALESCE(alert_monitored_items.label, EXCLUDED.label)
+       RETURNING id`,
+      [source.id, event.parent_key, event.parent_label || null]
+    );
+    parentId = parent.rows[0].id;
+  }
+  const item = await client.query(
+    `INSERT INTO alert_monitored_items (source_id, item_key, label, detail)
+       VALUES ($1, $2, $3, $4)
        ON CONFLICT (source_id, item_key) DO UPDATE
          SET label = COALESCE(EXCLUDED.label, alert_monitored_items.label),
              detail = COALESCE(EXCLUDED.detail, alert_monitored_items.detail),
-             last_state = COALESCE(EXCLUDED.last_state, alert_monitored_items.last_state),
-             last_seen_at = NOW()`,
-    [source.id, event.item_key, event.item_label || null, event.item_detail || null, event.item_state || null]
+             parent_item_id = COALESCE($5, alert_monitored_items.parent_item_id),
+             last_seen_at = NOW()
+     RETURNING id`,
+    [source.id, event.item_key, event.item_label || null, event.item_detail || null, parentId]
   );
+  await setItemState(client, item.rows[0].id, event.item_state, 'webhook');
   const openStates = event.event_type === 'problem'
     ? ['firing', 'acknowledged']
     : ['firing', 'acknowledged', 'suppressed'];
@@ -240,6 +255,17 @@ async function evaluateAndAct(client, source, alertRow) {
   const rule = pickRule(rules.rows, alertRow);
   await client.query(`UPDATE alerts SET evaluated_at = NOW() WHERE id = $1`, [alertRow.id]);
 
+  // Item under a maintenance window: keep the alert, skip the ticket.
+  // Re-evaluate when the window closes so an item still down after
+  // maintenance gets its ticket then.
+  if (rule && rule.action === 'create_ticket') {
+    const mw = await activeMaintenanceFor(client, source.id, alertRow.event?.item_key);
+    if (mw) {
+      await deferForMaintenance(client, alertRow.id, mw);
+      return { decision: 'maintenance', rule_id: rule.id, maintenance_id: mw.id };
+    }
+  }
+
   if (!rule) {
     return { decision: 'no_rule_match' };
   }
@@ -271,6 +297,13 @@ async function evaluateAndAct(client, source, alertRow) {
   return { decision: 'created_ticket', rule_id: rule.id, ticket_id: ticketId };
 }
 
+async function deferForMaintenance(client, alertId, mw) {
+  await client.query(
+    `UPDATE alerts SET next_evaluation_at = $1, suppression_reason = $2 WHERE id = $3`,
+    [mw.ends_at, `maintenance:${mw.id} (${mw.title})`, alertId]
+  );
+}
+
 // Extracted from the previous monolithic ingest. Called by:
 //   - auto-promote from evaluateAndAct
 //   - scheduler when a delayed alert clears its window
@@ -289,11 +322,13 @@ async function promoteAlertToTicket(client, source, alertRow, rule, actingUserId
   const priority = overrides.priority
     ? Math.max(1, Math.min(5, Number(overrides.priority)))
     : resolvePriority(preset, alertRow.severity, source.severity_map);
-  // A project pin on the alert's monitored item beats both the rule
-  // override and the source default.
+  // A project pin on the alert's monitored item (or, failing that, on
+  // its parent service) beats both the rule override and the source
+  // default.
   const pin = await client.query(
-    `SELECT i.project_id FROM alerts a
+    `SELECT COALESCE(i.project_id, parent.project_id) AS project_id FROM alerts a
        JOIN alert_monitored_items i ON i.source_id = a.source_id AND i.item_key = a.item_key
+       LEFT JOIN alert_monitored_items parent ON parent.id = i.parent_item_id
       WHERE a.id = $1`,
     [alertRow.id]
   );
@@ -757,4 +792,4 @@ async function logEvent(client, source, event, rawPayload, ticketId) {
   );
 }
 
-module.exports = { ingestAlertEvent, promoteAlertToTicket };
+module.exports = { ingestAlertEvent, promoteAlertToTicket, deferForMaintenance };

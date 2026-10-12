@@ -37,6 +37,9 @@ services:
       - uploads-data:/data/uploads
     networks:
       - internal
+      # Polls Uptime Kuma's /metrics (http://uptime-kuma:3001) for live
+      # monitored-item status. Postgres stays on internal only.
+      - alert-intake
     depends_on:
       postgres:
         condition: service_healthy
@@ -70,10 +73,10 @@ volumes:
 networks:
   internal:
     driver: bridge
-  # Shared with monitoring containers (Uptime Kuma) so they can POST to
-  # /api/webhooks/in/<token> via resolvd-nginx without reaching the
-  # backend or Postgres directly. Fixed name so other projects can
-  # join it as an external network.
+  # Shared with monitoring containers (Uptime Kuma): they POST alerts
+  # to /api/webhooks/in/<token> via resolvd-nginx, and the backend polls
+  # their status APIs. Postgres is not on it. Fixed name so other
+  # projects can join it as an external network.
   alert-intake:
     name: resolvd-alert-intake
     driver: bridge

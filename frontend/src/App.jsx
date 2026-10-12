@@ -45,12 +45,15 @@ import Inventory from "./pages/Inventory";
 import Consumables from "./pages/Consumables";
 import Alerts from "./pages/Alerts";
 import AlertDetail from "./pages/AlertDetail";
+import StatusPages from "./pages/StatusPages";
+import Maintenance from "./pages/Maintenance";
 import Login from "./pages/Login";
 import MfaChallenge from "./pages/MfaChallenge";
 import MfaSetup from "./pages/MfaSetup";
 import AccountSettings from "./pages/AccountSettings";
 import AccountPreferences from "./pages/AccountPreferences";
 import AccountProfile from "./pages/account/AccountProfile";
+import AccountCalendar from "./pages/account/AccountCalendar";
 import AccountPassword from "./pages/account/AccountPassword";
 import ForgotPassword from "./pages/ForgotPassword";
 import ResetPassword from "./pages/ResetPassword";
@@ -162,6 +165,7 @@ function AppRoutes() {
           <Route path="password" element={<AccountPassword />} />
           <Route path="mfa" element={<MfaSetup />} />
           <Route path="preferences" element={<AccountPreferences />} />
+          <Route path="calendar" element={<AccountCalendar />} />
         </Route>
         <Route
           path="projects"
@@ -187,6 +191,9 @@ function AppRoutes() {
             </ProtectedRoute>
           }
         />
+        <Route path="status" element={<ProtectedRoute><StatusPages /></ProtectedRoute>} />
+        <Route path="status/:slug" element={<ProtectedRoute><StatusPages /></ProtectedRoute>} />
+        <Route path="maintenance" element={<ProtectedRoute><Maintenance /></ProtectedRoute>} />
         <Route
           path="alerts/:id"
           element={
