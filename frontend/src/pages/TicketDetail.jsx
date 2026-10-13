@@ -3972,7 +3972,7 @@ function KnowledgePanel({ ticketId, projectId, canEdit, isAdmin, ticketResolved,
   useEffect(() => {
     api.get("/api/trove-kb/status").then(setTroveKbFlags).catch(() => setTroveKbFlags({ enabled: false }));
   }, []);
-  async function promoteToKb() {
+  async function promoteToKb(kind = "article") {
     if (!resolutionSummary || resolutionSummary.trim().length < 20) {
       toast.error("Add a resolution summary first (20+ chars).");
       return;
@@ -3981,8 +3981,14 @@ function KnowledgePanel({ ticketId, projectId, canEdit, isAdmin, ticketResolved,
     // becomes an internal-only draft in the project's collection.
     if (troveKbFlags?.enabled) {
       try {
-        const article = await api.post(`/api/trove-kb/tickets/${ticketId}/promote`, {});
-        toast.success("Draft article created in Trove KB");
+        const article = await api.post(`/api/trove-kb/tickets/${ticketId}/promote`, { kind });
+        const what = kind === "runbook" ? "Draft runbook" : "Draft article";
+        if (article.fallback_from) {
+          toast(`${what} saved to ${article.collection_name}: Resolvd can't write to ${article.fallback_from} yet.`,
+            { icon: "⚠️", duration: 8000 });
+        } else {
+          toast.success(`${what} created in ${article.collection_name || "Trove KB"}`);
+        }
         await loadAll();
         window.location.href = article.staff_url ? article.staff_url : `/kb/article/${article.article_id}?ticket=${ticketId}`;
       } catch (e) { toast.error(e.message); }
@@ -4113,15 +4119,34 @@ function KnowledgePanel({ ticketId, projectId, canEdit, isAdmin, ticketResolved,
         <div className="flex items-center justify-between">
           <div className="text-[11px] text-fg-muted uppercase tracking-wide">Resolution summary</div>
           <div className="flex items-center gap-2">
-            {isAdmin && resolutionSummary && (
+            {isAdmin && resolutionSummary && (troveKbFlags?.enabled ? (
+              <span className="text-[11px] text-fg-muted">
+                Promote to KB:{" "}
+                <button
+                  onClick={() => promoteToKb("article")}
+                  className="text-brand hover:underline"
+                  title="Draft an article: Symptom from the description, Resolution from this summary"
+                >
+                  Article
+                </button>
+                {" · "}
+                <button
+                  onClick={() => promoteToKb("runbook")}
+                  className="text-brand hover:underline"
+                  title="Draft a runbook: each paragraph or list item of this summary becomes a step"
+                >
+                  Runbook
+                </button>
+              </span>
+            ) : (
               <button
-                onClick={promoteToKb}
+                onClick={() => promoteToKb("article")}
                 className="text-[11px] text-brand hover:underline"
                 title="Draft a KB article seeded with this resolution + the ticket description"
               >
                 Promote to KB →
               </button>
-            )}
+            ))}
             {canEdit && !resEdit && (
               <button
                 onClick={() => setResEdit(true)}

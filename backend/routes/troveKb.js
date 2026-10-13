@@ -18,6 +18,7 @@ const { isProjectHandler, GLOBAL_HANDLER_ROLES } = require('../services/ticketHe
 const troveKb = require('../services/troveKb');
 const troveKbResolution = require('../services/troveKbResolution');
 const troveKbAssist = require('../services/troveKbAssist');
+const { buildPromoteBody, pickTargetCollection } = require('../services/kbPromote');
 
 const router = express.Router();
 router.use(requireAuth);
@@ -26,7 +27,11 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
 
 function fail(res, err, label) {
   if (err.status) return res.status(err.status).json({ error: err.error });
-  if (err.httpStatus) return res.status(err.httpStatus).json({ error: err.message });
+  if (err.httpStatus) {
+    // Upstream failures (Trove KB refused or unreachable) are worth a log line.
+    if (err.httpStatus >= 500) console.error(`troveKb ${label}: ${err.httpStatus} ${err.message}`);
+    return res.status(err.httpStatus).json({ error: err.message });
+  }
   console.error(`troveKb ${label}:`, err);
   return res.status(500).json({ error: 'Database error' });
 }
@@ -503,14 +508,17 @@ router.delete('/tickets/:id/runbook-runs/:articleId', async (req, res) => {
   } catch (err) { fail(res, err, 'runbook run delete'); }
 });
 
-// ─── Promote a ticket to a Trove KB article ────────────────────────────────
-// POST /api/trove-kb/tickets/:id/promote — writes a draft article (Symptom /
-// Resolution) into the project's collection, internal-only, and links it.
-// Needs the key to hold the write scope + a write grant on that collection.
+// ─── Promote a ticket to Trove KB ──────────────────────────────────────────
+// POST /api/trove-kb/tickets/:id/promote { kind: 'article' | 'runbook' }
+// Writes an internal-only draft (Symptom / Resolution, or a runbook whose
+// steps come from the resolution) and links it to the ticket. It lands in
+// the project's collection when Resolvd's key may write there; otherwise
+// in the first writable internal collection, and the response says so.
 router.post('/tickets/:id/promote', async (req, res) => {
   try {
     const user = req.session.user;
     if (!['Admin', 'Manager'].includes(user.role)) return res.status(403).json({ error: 'Forbidden' });
+    const kind = req.body?.kind === 'runbook' ? 'runbook' : 'article';
     const { ticket } = await loadTicket(user, Number(req.params.id));
     const full = await pool.query(
       `SELECT t.id, t.project_id, t.internal_ref, t.title, t.title_enc, t.description, t.description_enc,
@@ -522,32 +530,47 @@ router.post('/tickets/:id/promote', async (req, res) => {
     await decryptRows('tickets', full.rows);
     const t = full.rows[0];
     const s = await troveKb.getSettings();
-    const collectionId = t.trove_kb_collection_id || s.internal_collection_ids[0] || null;
-    if (!collectionId) return res.status(400).json({ error: 'No Trove KB collection mapped for this project (Admin → AI Assist → Project contexts)' });
+    const projectCollectionId = t.trove_kb_collection_id || s.internal_collection_ids[0] || null;
+    if (!projectCollectionId) {
+      return res.status(400).json({ error: 'No Trove KB collection mapped for this project (Admin → AI Assist → Project contexts)' });
+    }
+    const collections = await troveKb.listCollections();
+    const { target, fallbackFrom } = pickTargetCollection({
+      projectCollectionId, internalIds: s.internal_collection_ids, collections,
+    });
+    const nameOf = (c) => c?.name || s.collection_names[c?.id] || 'the project collection';
+    if (!target) {
+      return res.status(403).json({
+        error: `Resolvd's Trove KB key can't write to ${nameOf(fallbackFrom)} or any internal collection. `
+          + 'Give the key write access to that collection in Trove KB (Admin → KB → Access).',
+      });
+    }
     const title = (t.title || `Untitled (${t.internal_ref})`).slice(0, 200);
-    const body = [
-      `# ${title}`, '',
-      '## Symptom', '', t.description || `Originally reported on ticket ${t.internal_ref}.`, '',
-      '## Resolution', '', t.resolution_summary || '_Record the resolution here._', '',
-      `_Promoted from ticket ${t.internal_ref}._`,
-    ].join('\n');
     const article = await troveKb.upsertArticle({
-      collectionId,
+      collectionId: target.id,
       externalId: `resolvd:ticket:${t.id}`,
-      title, body,
+      title,
+      body: buildPromoteBody({
+        kind, title, description: t.description, resolution: t.resolution_summary, ref: t.internal_ref,
+      }),
       category: t.project_name,
       subcategory: 'Drafts',
-      kind: 'article',
+      kind,
       internalOnly: true,
     });
     if (article?.article_id) {
       await pool.query(
         `INSERT INTO ticket_trove_kb_links (ticket_id, article_id, title, collection_id, collection_name, kind, created_by)
          VALUES ($1, $2, $3, $4, $5, 'system', $6) ON CONFLICT DO NOTHING`,
-        [t.id, article.article_id, article.title, collectionId, s.collection_names[collectionId] || null, user.id]
+        [t.id, article.article_id, article.title, target.id, nameOf(target), user.id]
       );
     }
-    res.status(201).json(scrubStaffUrl(user, article));
+    res.status(201).json({
+      ...scrubStaffUrl(user, article),
+      kind,
+      collection_name: nameOf(target),
+      fallback_from: fallbackFrom ? nameOf(fallbackFrom) : null,
+    });
   } catch (err) { fail(res, err, 'promote'); }
 });
 
