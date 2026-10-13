@@ -81,8 +81,8 @@ export default function AdminAlertSources() {
   const [adapters, setAdapters] = useState([]);
   const [newToken, setNewToken] = useState(null);
 
+  // Placeholder on the first load only; later refreshes swap in place.
   async function loadList() {
-    setLoading(true);
     try {
       setSources(await api.get("/api/alert-sources"));
     } catch (e) {
@@ -117,6 +117,12 @@ export default function AdminAlertSources() {
     if (selectedId) loadDetail(selectedId);
     else setDetail(null);
   }, [selectedId]);
+
+  // Switching sources starts the detail at the top.
+  function selectSource(id) {
+    setSelectedId(id);
+    window.scrollTo(0, 0);
+  }
 
   async function createSource(form) {
     try {
@@ -215,11 +221,13 @@ export default function AdminAlertSources() {
         />
       )}
 
-      <div className="flex flex-col lg:flex-row gap-4 items-stretch">
+      {/* Side-by-side only on very wide screens; below that the list
+          gives way to the selected source (switcher in its header). */}
+      <div className="flex flex-col 2xl:flex-row gap-4 items-stretch">
         <aside
           className={`
-            ${selectedId ? "hidden lg:block" : "block"}
-            lg:w-80 lg:flex-shrink-0 bg-surface border border-border rounded-lg overflow-hidden
+            ${selectedId ? "hidden 2xl:block" : "block"}
+            2xl:w-80 2xl:flex-shrink-0 bg-surface border border-border rounded-lg overflow-hidden
           `}
         >
           {loading ? (
@@ -237,7 +245,7 @@ export default function AdminAlertSources() {
                 return (
                 <button
                   key={s.id}
-                  onClick={() => setSelectedId(s.id)}
+                  onClick={() => selectSource(s.id)}
                   className={`w-full text-left px-3 py-2.5 hover:bg-surface-2 transition-colors ${
                     selectedId === s.id ? "bg-brand/5 border-l-2 border-brand" : ""
                   }`}
@@ -276,7 +284,7 @@ export default function AdminAlertSources() {
           )}
         </aside>
 
-        <section className={`flex-1 min-w-0 ${selectedId ? "block" : "hidden lg:block"}`}>
+        <section className={`flex-1 min-w-0 ${selectedId ? "block" : "hidden 2xl:block"}`}>
           {!detail ? (
             <div className="bg-surface border border-border rounded-lg p-8 text-sm text-fg-dim italic text-center">
               Select a source on the left, or create a new one.
@@ -287,7 +295,9 @@ export default function AdminAlertSources() {
               projects={projects}
               presets={presets}
               adapters={adapters}
-              onBack={() => setSelectedId(null)}
+              sources={sources}
+              onSelect={selectSource}
+              onBack={() => selectSource(null)}
               onPatch={(patch) => patchSource(detail.id, patch)}
               onRotate={() => rotateToken(detail.id)}
               onDelete={() => deleteSource(detail.id)}
@@ -566,7 +576,7 @@ function NewTokenBanner({ token, source, onDismiss }) {
   );
 }
 
-function SourceDetail({ source, projects, presets, adapters, onBack, onPatch, onRotate, onDelete, onReload }) {
+function SourceDetail({ source, sources = [], onSelect, projects, presets, adapters, onBack, onPatch, onRotate, onDelete, onReload }) {
   const [name, setName] = useState(source.name);
   const [projectId, setProjectId] = useState(source.default_project_id || "");
   const [autoResolve, setAutoResolve] = useState(!!source.auto_resolve_on_recovery);
@@ -697,9 +707,21 @@ function SourceDetail({ source, projects, presets, adapters, onBack, onPatch, on
 
   return (
     <div className="bg-surface border border-border rounded-lg p-4 space-y-4">
-      <button onClick={onBack} className="lg:hidden text-xs text-fg-muted hover:text-fg">
-        ← Back to list
-      </button>
+      <div className="2xl:hidden flex items-center gap-3 flex-wrap">
+        <button onClick={onBack} className="text-xs text-fg-muted hover:text-fg">
+          ← All integrations
+        </button>
+        {sources.length > 1 && (
+          <select
+            value={source.id}
+            onChange={(e) => onSelect(Number(e.target.value))}
+            aria-label="Switch integration"
+            className="bg-surface-2 border border-border rounded px-2 py-1 text-xs max-w-[16rem]"
+          >
+            {sources.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+        )}
+      </div>
 
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
@@ -2173,14 +2195,18 @@ function MonitoredItemsSection({ source, projects }) {
   const [items, setItems] = useState([]);
   const [loading, setLoading] = useState(true);
   const [busyId, setBusyId] = useState(null);
+  const [query, setQuery] = useState("");
+  const [show, setShow] = useState("all");
 
-  async function load() {
-    setLoading(true);
+  // Only the first load shows the placeholder; refreshes after an edit
+  // swap rows in place so the table (and the scroll position) holds.
+  async function load({ quiet = false } = {}) {
+    if (!quiet) setLoading(true);
     try {
       const r = await api.get(`/api/alert-sources/${source.id}/items`);
       setItems(Array.isArray(r) ? r : []);
-    } catch { setItems([]); }
-    finally { setLoading(false); }
+    } catch (e) { if (quiet) toast.error(e.message); else setItems([]); }
+    finally { if (!quiet) setLoading(false); }
   }
   useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [source.id]);
 
@@ -2191,7 +2217,7 @@ function MonitoredItemsSection({ source, projects }) {
     try {
       await api.patch(`/api/alert-sources/${source.id}/items/${item.id}`, body);
       toast.success(msg);
-      await load();
+      await load({ quiet: true });
     } catch (e) { toast.error(e.message); }
     finally { setBusyId(null); }
   }
@@ -2200,13 +2226,27 @@ function MonitoredItemsSection({ source, projects }) {
   }
   const services = items.filter((i) => i.item_type === "group" || items.some((c) => c.parent_item_id === i.id));
   const labelById = Object.fromEntries(items.map((i) => [i.id, i.label || i.item_key]));
+  const isService = (i) => services.some((sv) => sv.id === i.id);
+
+  // Text matches the item's own name/key/detail or its service's name,
+  // so typing a service name shows the service with its components.
+  const q = query.trim().toLowerCase();
+  const visible = items.filter((it) => {
+    if (show === "services" && !isService(it)) return false;
+    if (show === "unassigned" && (isService(it) || it.parent_item_id)) return false;
+    if (show === "components" && !it.parent_item_id) return false;
+    if (show === "problems" && (!it.active || it.last_state === "up")) return false;
+    if (!q) return true;
+    return [it.label, it.item_key, it.detail, it.parent_item_id ? labelById[it.parent_item_id] : null]
+      .some((v) => v && String(v).toLowerCase().includes(q));
+  });
 
   async function remove(item) {
     if (!window.confirm(`Forget "${item.label || item.item_key}"? It reappears (unpinned) on its next alert.`)) return;
     try {
       await api.delete(`/api/alert-sources/${source.id}/items/${item.id}`);
       toast.success("Item removed");
-      await load();
+      await load({ quiet: true });
     } catch (e) { toast.error(e.message); }
   }
 
@@ -2229,6 +2269,32 @@ function MonitoredItemsSection({ source, projects }) {
       ) : items.length === 0 ? (
         <div className="text-xs text-fg-dim italic">No items discovered yet.</div>
       ) : (
+        <>
+        <div className="flex items-center gap-2 flex-wrap">
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Filter items…"
+            aria-label="Filter monitored items"
+            className="flex-1 min-w-[12rem] max-w-sm bg-surface-2 border border-border rounded px-2 py-1 text-xs"
+          />
+          <select
+            value={show}
+            onChange={(e) => setShow(e.target.value)}
+            aria-label="Show"
+            className="bg-surface-2 border border-border rounded px-2 py-1 text-xs"
+          >
+            <option value="all">All items</option>
+            <option value="unassigned">Not in a service</option>
+            <option value="services">Services</option>
+            <option value="components">Components</option>
+            <option value="problems">Not up</option>
+          </select>
+          <span className="text-xs text-fg-dim">
+            {visible.length === items.length ? `${items.length} items` : `${visible.length} of ${items.length}`}
+          </span>
+        </div>
         <div className="overflow-x-auto">
           <table className="w-full text-xs">
             <thead className="text-fg-muted">
@@ -2244,7 +2310,10 @@ function MonitoredItemsSection({ source, projects }) {
               </tr>
             </thead>
             <tbody>
-              {items.map((it) => (
+              {visible.length === 0 && (
+                <tr><td colSpan={8} className="py-3 px-2 text-fg-dim italic">No items match.</td></tr>
+              )}
+              {visible.map((it) => (
                 <tr key={it.id}>
                   <td className={`py-1 px-2 ${it.parent_item_id ? "pl-6" : ""}`}>
                     <div className="text-fg">
@@ -2314,6 +2383,7 @@ function MonitoredItemsSection({ source, projects }) {
             </tbody>
           </table>
         </div>
+        </>
       )}
     </div>
   );

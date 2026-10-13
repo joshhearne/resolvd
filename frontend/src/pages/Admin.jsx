@@ -93,11 +93,22 @@ function filterForRole(role) {
   })).filter((g) => g.items.length > 0);
 }
 
+const RAIL_KEY = "admin.rail.collapsed";
+
 export default function Admin() {
   const { user } = useAuth();
   const location = useLocation();
   const [mobileOpen, setMobileOpen] = useState(false);
   const [search, setSearch] = useState("");
+  // md+ only: fold the admin rail to a thin strip so wide admin pages
+  // (Integrations etc.) get the room on smaller laptops. Remembered.
+  const [railCollapsed, setRailCollapsed] = useState(() => {
+    try { return localStorage.getItem(RAIL_KEY) === "1"; } catch { return false; }
+  });
+  function setRailCollapsedPersist(v) {
+    setRailCollapsed(v);
+    try { localStorage.setItem(RAIL_KEY, v ? "1" : "0"); } catch { /* ignore */ }
+  }
 
   const groups = filterBySearch(filterForRole(user?.role), search);
 
@@ -136,7 +147,19 @@ export default function Admin() {
         </button>
       </div>
 
-      <div className="flex gap-6 items-start">
+      <div className={`flex items-start ${railCollapsed ? "gap-3" : "gap-6"}`}>
+        {railCollapsed && (
+          <div className="hidden md:block md:sticky md:top-4 shrink-0">
+            <button
+              onClick={() => setRailCollapsedPersist(false)}
+              className="btn btn-ghost btn-sm px-2"
+              title={`Show admin menu (${activeLabel})`}
+              aria-label="Show admin menu"
+            >
+              »
+            </button>
+          </div>
+        )}
         {/* ── Sidebar ── */}
         {mobileOpen && (
           <div
@@ -147,7 +170,7 @@ export default function Admin() {
         <aside
           className={`
             ${mobileOpen ? "fixed inset-y-0 left-0 z-50 w-64 bg-surface border-r border-border p-4 overflow-y-auto" : "hidden"}
-            md:block md:relative md:w-56 md:flex-shrink-0 md:bg-transparent md:border-0 md:p-0 md:sticky md:top-4
+            ${railCollapsed ? "md:hidden" : "md:block"} md:relative md:w-56 md:flex-shrink-0 md:bg-transparent md:border-0 md:p-0 md:sticky md:top-4
           `}
         >
           <div className="md:hidden flex items-center justify-between mb-3">
@@ -160,7 +183,8 @@ export default function Admin() {
               ✕
             </button>
           </div>
-          <div className="mb-4 relative">
+          <div className="mb-4 flex items-center gap-1">
+          <div className="relative flex-1 min-w-0">
             <input
               type="search"
               value={search}
@@ -179,6 +203,15 @@ export default function Admin() {
                 ✕
               </button>
             )}
+          </div>
+            <button
+              onClick={() => setRailCollapsedPersist(true)}
+              className="hidden md:inline-flex btn btn-ghost btn-sm px-2"
+              title="Hide admin menu"
+              aria-label="Hide admin menu"
+            >
+              «
+            </button>
           </div>
           <nav className="space-y-5">
             {groups.length === 0 && (

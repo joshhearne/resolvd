@@ -1,5 +1,5 @@
 import React, { useState, useRef, useEffect } from "react";
-import { Outlet, NavLink, Link, useNavigate } from "react-router-dom";
+import { Outlet, NavLink, Link, useNavigate, useLocation, useNavigationType } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useBranding } from "../context/BrandingContext";
 import { useTheme } from "../context/ThemeContext";
@@ -495,6 +495,14 @@ export default function Layout() {
   // in the user's pinned mode. Only meaningful while collapsed=true.
   const [transientOpen, setTransientOpen] = useState(false);
   const logoFilter = brandingLogoFilter(branding, resolved);
+  const { pathname } = useLocation();
+  const navType = useNavigationType();
+
+  // A new route starts at the top, not wherever the last page was
+  // scrolled. Back/forward (POP) is left alone.
+  useEffect(() => {
+    if (navType !== "POP") window.scrollTo(0, 0);
+  }, [pathname]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Effective collapsed for layout sizing (main margin). Mirrors the
   // Sidebar's internal computation so the content shifts in lockstep
