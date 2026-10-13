@@ -353,6 +353,28 @@ function CollectionsPane({ settings, patch, busy }) {
         </p>
       </div>
 
+      <div className="rounded-md border border-border p-3 space-y-1.5">
+        <label className="text-sm font-medium text-fg flex flex-col gap-1">
+          Promotions land in
+          <select
+            value={settings.promote_collection_id || ""}
+            disabled={busy || loading}
+            onChange={(e) => patch({ promote_collection_id: e.target.value || null })}
+            className="bg-surface-2 border border-border rounded px-2 py-1.5 text-sm font-normal max-w-md"
+          >
+            <option value="">The ticket’s project collection</option>
+            {(live || []).filter((c) => c.writable || c.id === settings.promote_collection_id).map((c) => (
+              <option key={c.id} value={c.id}>{c.name}{c.writable ? "" : " (read-only for this key)"}</option>
+            ))}
+          </select>
+        </label>
+        <p className="text-xs text-fg-muted">
+          “Promote to KB” on a ticket writes an internal-only draft article or runbook, filed under the project’s name.
+          Pick a private collection to keep your own write-ups apart from vendor and scraped collections.
+          Only collections this key can write to are listed. If the target can’t be written, the draft goes to the first writable internal collection.
+        </p>
+      </div>
+
       <div className="flex flex-wrap items-center gap-3 text-sm">
         <label className="flex items-center gap-2">
           <input type="checkbox" checked={settings.auto_map_public !== false} disabled={busy} onChange={(e) => patch({ auto_map_public: e.target.checked })} />

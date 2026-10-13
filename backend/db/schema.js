@@ -3239,6 +3239,10 @@ Thanks,
     await client.query(`ALTER TABLE trove_kb_settings ADD COLUMN IF NOT EXISTS auto_map_public BOOLEAN NOT NULL DEFAULT TRUE`);
     await client.query(`ALTER TABLE trove_kb_settings ADD COLUMN IF NOT EXISTS known_collection_ids TEXT[] NOT NULL DEFAULT '{}'::text[]`);
     await client.query(`ALTER TABLE trove_kb_settings ADD COLUMN IF NOT EXISTS collections_synced_at TIMESTAMPTZ`);
+    // Where "Promote to KB" writes: our own write-ups go to one private
+    // collection, kept apart from the vendor / scraped collections that
+    // projects are mapped to for reading. NULL = the project's collection.
+    await client.query(`ALTER TABLE trove_kb_settings ADD COLUMN IF NOT EXISTS promote_collection_id TEXT`);
 
     // Noise filter for knowledge briefs: comments that must never be fed to
     // a brief, by regex, literal text, or author. Built-in rules are seeded

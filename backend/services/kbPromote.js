@@ -39,17 +39,19 @@ function buildPromoteBody({ kind, title, description, resolution, ref }) {
   ].join('\n');
 }
 
-// Where a promotion lands: the project's collection when the key may
-// write there, otherwise the first writable internal collection.
+// Where a promotion lands: the configured promotions collection when
+// set, else the project's collection; either only when the key may write
+// there, otherwise the first writable internal collection.
 // collections: [{ id, name, writable }] from Trove KB.
-function pickTargetCollection({ projectCollectionId, internalIds, collections }) {
+function pickTargetCollection({ promoteCollectionId, projectCollectionId, internalIds, collections }) {
   const byId = new Map(collections.map((c) => [String(c.id).toLowerCase(), c]));
-  const wanted = projectCollectionId ? byId.get(String(projectCollectionId).toLowerCase()) : null;
+  const wantedId = promoteCollectionId || projectCollectionId;
+  const wanted = wantedId ? byId.get(String(wantedId).toLowerCase()) : null;
   if (wanted?.writable) return { target: wanted, fallbackFrom: null };
   const internal = (internalIds || [])
     .map((id) => byId.get(String(id).toLowerCase()))
     .find((c) => c?.writable);
-  return { target: internal || null, fallbackFrom: wanted || (projectCollectionId ? { id: projectCollectionId } : null) };
+  return { target: internal || null, fallbackFrom: wanted || (wantedId ? { id: wantedId } : null) };
 }
 
 module.exports = { buildPromoteBody, pickTargetCollection, hasTopLevelList, toSteps };

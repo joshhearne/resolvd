@@ -512,7 +512,8 @@ router.delete('/tickets/:id/runbook-runs/:articleId', async (req, res) => {
 // POST /api/trove-kb/tickets/:id/promote { kind: 'article' | 'runbook' }
 // Writes an internal-only draft (Symptom / Resolution, or a runbook whose
 // steps come from the resolution) and links it to the ticket. It lands in
-// the project's collection when Resolvd's key may write there; otherwise
+// the promotions collection (Admin → Trove KB → Collections) or, when none
+// is set, the project's collection, if Resolvd's key may write there; otherwise
 // in the first writable internal collection, and the response says so.
 router.post('/tickets/:id/promote', async (req, res) => {
   try {
@@ -531,11 +532,12 @@ router.post('/tickets/:id/promote', async (req, res) => {
     const t = full.rows[0];
     const s = await troveKb.getSettings();
     const projectCollectionId = t.trove_kb_collection_id || s.internal_collection_ids[0] || null;
-    if (!projectCollectionId) {
+    if (!s.promote_collection_id && !projectCollectionId) {
       return res.status(400).json({ error: 'No Trove KB collection mapped for this project (Admin → AI Assist → Project contexts)' });
     }
     const collections = await troveKb.listCollections();
     const { target, fallbackFrom } = pickTargetCollection({
+      promoteCollectionId: s.promote_collection_id,
       projectCollectionId, internalIds: s.internal_collection_ids, collections,
     });
     const nameOf = (c) => c?.name || s.collection_names[c?.id] || 'the project collection';

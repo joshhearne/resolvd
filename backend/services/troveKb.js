@@ -125,6 +125,7 @@ async function getSettings({ withKey = false } = {}) {
       auto_map_public: row.auto_map_public !== false,
       known_collection_ids: row.known_collection_ids || [],
       collections_synced_at: row.collections_synced_at || null,
+      promote_collection_id: row.promote_collection_id || null,
       has_api_key: !!row.api_key_enc,
       has_webhook_secret: !!row.webhook_secret_enc,
       last_webhook_at: row.last_webhook_at || null,
@@ -149,6 +150,14 @@ async function patchSettings(partial) {
   if (partial.auto_map_public !== undefined) updates.auto_map_public = !!partial.auto_map_public;
   const known = uuidList(partial.known_collection_ids, 'known_collection_ids');
   if (known !== undefined) updates.known_collection_ids = known;
+  if (partial.promote_collection_id !== undefined) {
+    const v = partial.promote_collection_id;
+    if (v === null || v === '') updates.promote_collection_id = null;
+    else {
+      const [id] = uuidList([v], 'promote_collection_id');
+      updates.promote_collection_id = id;
+    }
+  }
   if (partial.base_url !== undefined) updates.base_url = normalizeUrl(partial.base_url);
   if (partial.public_url !== undefined) updates.public_url = normalizeUrl(partial.public_url);
   const internal = uuidList(partial.internal_collection_ids, 'internal_collection_ids');

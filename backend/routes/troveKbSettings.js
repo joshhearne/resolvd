@@ -29,6 +29,7 @@ function present(s) {
     auto_map_public: s.auto_map_public,
     known_collection_ids: s.known_collection_ids,
     collections_synced_at: s.collections_synced_at,
+    promote_collection_id: s.promote_collection_id,
     last_ok_at: s.last_ok_at,
     last_error: s.last_error,
     has_api_key: s.has_api_key,

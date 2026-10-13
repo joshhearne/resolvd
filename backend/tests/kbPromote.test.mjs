@@ -45,6 +45,14 @@ describe('kbPromote', () => {
     expect(r.fallbackFrom.name).toBe('IDS G2 KB');
   });
 
+  it('prefers the promotions collection over the project mapping', () => {
+    const r = pickTargetCollection({
+      promoteCollectionId: 'bbb', projectCollectionId: 'aaa', internalIds: [], collections,
+    });
+    expect(r.target.name).toBe('MOT IT Internal');
+    expect(r.fallbackFrom).toBeNull();
+  });
+
   it('returns no target when nothing is writable', () => {
     const r = pickTargetCollection({ projectCollectionId: 'aaa', internalIds: ['aaa'], collections });
     expect(r.target).toBeNull();
