@@ -68,6 +68,7 @@ export default function StatusPages() {
           )}
         </div>
         <nav className="flex-1 min-h-0 overflow-y-auto px-2 pb-4 space-y-0.5" aria-label="Status pages">
+          {creating && <RailNewPage onCancel={() => setCreating(false)} onCreate={createPage} />}
           {pages === null && <div className="px-3 text-sm text-fg-dim italic">Loading…</div>}
           {pages?.map((p) => (
             <Link key={p.id} to={`/status/${p.slug}`} className={railLink(p.slug === slug)}
@@ -108,8 +109,9 @@ export default function StatusPages() {
         </div>
 
         <div className="flex-1 min-h-0 overflow-y-auto px-4 md:px-6 py-4 md:py-6">
+          {/* Phones only; md+ adds the new page at the top of the rail. */}
           {creating && (
-            <div className="max-w-5xl mx-auto mb-4">
+            <div className="md:hidden max-w-5xl mx-auto mb-4">
               <NewPageForm onCancel={() => setCreating(false)} onCreate={createPage} />
             </div>
           )}
@@ -128,6 +130,38 @@ export default function StatusPages() {
         </div>
       </div>
     </div>
+  );
+}
+
+// New-page row at the top of the rail: the existing pages shift down
+// beneath it, and saving opens the new page in the editor.
+function RailNewPage({ onCancel, onCreate }) {
+  const [name, setName] = useState("");
+  const [saving, setSaving] = useState(false);
+  async function submit(e) {
+    e.preventDefault();
+    if (!name.trim() || saving) return;
+    setSaving(true);
+    try { await onCreate(name.trim()); } finally { setSaving(false); }
+  }
+  return (
+    <form onSubmit={submit} className="px-1 pb-2 mb-1 border-b border-border space-y-1.5">
+      <input
+        autoFocus
+        value={name}
+        onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => { if (e.key === "Escape") onCancel(); }}
+        placeholder="New page name"
+        aria-label="New status page name"
+        className="w-full bg-surface-2 border border-brand/60 rounded-md px-2 py-1.5 text-sm"
+      />
+      <div className="flex justify-end gap-1.5">
+        <button type="button" onClick={onCancel} className="btn btn-ghost btn-sm">Cancel</button>
+        <button type="submit" className="btn btn-primary btn-sm" disabled={!name.trim() || saving}>
+          {saving ? "Saving…" : "Save"}
+        </button>
+      </div>
+    </form>
   );
 }
 
