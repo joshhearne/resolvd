@@ -381,8 +381,12 @@ function Sidebar({ collapsed, transientOpen, onSetCollapsed, onSetTransient, use
     { to: "/help", label: "Help", icon: Icon.HelpCircle, show: true },
   ];
 
+  // Fixed row height + identical padding in both modes so icons hold
+  // their exact position when the rail flies out (no vertical drift
+  // from the label's line-height, no horizontal jump from centering).
+  // px-3 on the w-14 rail already lands the 16px icon dead-center.
   const linkClass = ({ isActive }) =>
-    `relative flex items-center gap-3 ${effectiveCollapsed ? "px-2.5 justify-center" : "px-3"} py-2 rounded-md text-sm font-medium transition-colors ${
+    `relative flex items-center gap-3 h-9 px-3 rounded-md text-sm font-medium whitespace-nowrap transition-colors ${
       isActive
         ? "bg-surface-2 text-fg"
         : "text-fg-muted hover:bg-surface-2 hover:text-fg"
