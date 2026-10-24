@@ -61,6 +61,10 @@ const { securityHeaders } = require('./middleware/securityHeaders');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Express 5 defaults to the 'simple' query parser; keep v4's qs-based
+// parsing so bracketed params (axios arrays like ids[]=1) still nest.
+app.set('query parser', 'extended');
+
 // Set security response headers on every request. Cheap, runs first.
 app.use(securityHeaders);
 
@@ -75,6 +79,12 @@ app.use('/api/inbound', express.json({ limit: '30mb' }));
 app.use('/api/trove-kb/webhook', express.raw({ type: '*/*', limit: '256kb' }), require('./routes/troveKbWebhook'));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+// Express 5 leaves req.body undefined when no parser ran (v4 gave {}).
+// Keep the v4 shape so handlers can destructure bodyless POSTs.
+app.use((req, res, next) => {
+  if (req.body === undefined) req.body = {};
+  next();
+});
 
 // Trust proxy (nginx sits in front)
 app.set('trust proxy', 1);

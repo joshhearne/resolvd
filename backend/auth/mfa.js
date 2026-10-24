@@ -1,24 +1,39 @@
-const { authenticator } = require('otplib');
+const otplib = require('otplib');
 const QRCode = require('qrcode');
 const crypto = require('crypto');
 const argon2 = require('argon2');
 const { pool } = require('../db/pool');
 
-authenticator.options = { window: 1 };
+// Accept the previous/next 30s step to absorb clock drift.
+const EPOCH_TOLERANCE_SECONDS = 30;
+// otplib v12 issued 10-byte secrets; v13 rejects anything under 16 bytes by
+// default. Relax the floor so existing enrollments keep verifying. New
+// secrets still use v13's 20-byte default.
+const GUARDRAILS = otplib.createGuardrails({ MIN_SECRET_BYTES: 10 });
 
 function generateSecret() {
-  return authenticator.generateSecret();
+  return otplib.generateSecret();
 }
 
 async function buildOtpAuth({ secret, accountName, issuer }) {
-  const otpauth = authenticator.keyuri(accountName, issuer || 'IssueTracker', secret);
+  const otpauth = otplib.generateURI({ issuer: issuer || 'IssueTracker', label: accountName, secret });
   const qrDataUrl = await QRCode.toDataURL(otpauth);
   return { otpauth, qrDataUrl };
 }
 
 function verifyToken(secret, token) {
   if (!secret || !token) return false;
-  return authenticator.verify({ token: String(token).replace(/\s+/g, ''), secret });
+  try {
+    return otplib.verifySync({
+      token: String(token).replace(/\s+/g, ''),
+      secret,
+      epochTolerance: EPOCH_TOLERANCE_SECONDS,
+      guardrails: GUARDRAILS,
+    }).valid;
+  } catch {
+    // v13 throws on malformed tokens/secrets; treat as a failed check.
+    return false;
+  }
 }
 
 async function generateRecoveryCodes(userId, count = 10) {

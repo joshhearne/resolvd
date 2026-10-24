@@ -10,6 +10,7 @@
 const express = require('express');
 const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
+const { numericId } = require('../middleware/params');
 
 const router = express.Router();
 
@@ -45,7 +46,7 @@ router.get('/', requireAuth, requireRole(...HANDLER_ROLES), async (req, res) => 
 });
 
 // GET /api/consumables/:id
-router.get('/:id(\\d+)', requireAuth, requireRole(...HANDLER_ROLES), async (req, res) => {
+router.get('/:id', numericId, requireAuth, requireRole(...HANDLER_ROLES), async (req, res) => {
   try {
     const r = await pool.query(
       `SELECT c.*, co.name AS vendor_company_name
@@ -98,7 +99,7 @@ router.post('/', requireAuth, requireRole(...HANDLER_ROLES), async (req, res) =>
 });
 
 // PATCH /api/consumables/:id — metadata only (NOT current_stock; use /move).
-router.patch('/:id(\\d+)', requireAuth, requireRole(...HANDLER_ROLES), async (req, res) => {
+router.patch('/:id', numericId, requireAuth, requireRole(...HANDLER_ROLES), async (req, res) => {
   try {
     const id = Number(req.params.id);
     const b = req.body || {};
@@ -139,7 +140,7 @@ router.patch('/:id(\\d+)', requireAuth, requireRole(...HANDLER_ROLES), async (re
 
 // DELETE /api/consumables/:id — Admin only. Hard delete cascades the
 // ledger; admins who don't want that should archive via PATCH instead.
-router.delete('/:id(\\d+)', requireAuth, requireRole('Admin'), async (req, res) => {
+router.delete('/:id', numericId, requireAuth, requireRole('Admin'), async (req, res) => {
   try {
     const r = await pool.query(`DELETE FROM consumables WHERE id = $1 RETURNING id`, [Number(req.params.id)]);
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
@@ -153,7 +154,7 @@ router.delete('/:id(\\d+)', requireAuth, requireRole('Admin'), async (req, res) 
 // POST /api/consumables/:id/move — atomic stock adjustment + ledger.
 // Body: { delta (int, +/-), reason?, ticket_id?, note? }
 // 400 if delta would push current_stock below 0.
-router.post('/:id(\\d+)/move', requireAuth, requireRole(...HANDLER_ROLES), async (req, res) => {
+router.post('/:id/move', numericId, requireAuth, requireRole(...HANDLER_ROLES), async (req, res) => {
   const id = Number(req.params.id);
   const { delta, reason, ticket_id, note } = req.body || {};
   const d = Number(delta);
@@ -189,7 +190,7 @@ router.post('/:id(\\d+)/move', requireAuth, requireRole(...HANDLER_ROLES), async
 });
 
 // GET /api/consumables/:id/movements — ledger, newest-first.
-router.get('/:id(\\d+)/movements', requireAuth, requireRole(...HANDLER_ROLES), async (req, res) => {
+router.get('/:id/movements', numericId, requireAuth, requireRole(...HANDLER_ROLES), async (req, res) => {
   try {
     const r = await pool.query(
       `SELECT m.id, m.delta, m.reason, m.ticket_id, m.by_user_id, m.at, m.note,
@@ -214,7 +215,7 @@ router.get('/:id(\\d+)/movements', requireAuth, requireRole(...HANDLER_ROLES), a
 // label for this consumable (no ticket in play): part_no, title,
 // location, notes. The ticket-tied delivery label is a separate flow
 // (POST /api/tickets/:id/print-label).
-router.post('/:id(\\d+)/print-label', requireAuth, requireRole(...HANDLER_ROLES), async (req, res) => {
+router.post('/:id/print-label', numericId, requireAuth, requireRole(...HANDLER_ROLES), async (req, res) => {
   try {
     const cons = await pool.query(`SELECT * FROM consumables WHERE id = $1`, [Number(req.params.id)]);
     if (!cons.rows[0]) return res.status(404).json({ error: 'not found' });

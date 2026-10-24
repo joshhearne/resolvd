@@ -1,6 +1,7 @@
 const express = require('express');
 const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
+const { numericId } = require('../middleware/params');
 const { decryptRows } = require('../services/fields');
 
 const router = express.Router();
@@ -82,7 +83,7 @@ router.get('/', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req
 
 // GET /api/assets/:id — single asset incl. raw_data + linked user
 // details + tickets[]. Tickets decrypted via the standard helper.
-router.get('/:id(\\d+)', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+router.get('/:id', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const r = await pool.query(
       `SELECT a.*, u.display_name AS linked_user_name, u.email AS linked_user_email,
@@ -195,7 +196,7 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (re
 // PATCH /api/assets/:id — manual assets get the full editable set,
 // RMM-managed assets keep the narrow override set (sync clobbers
 // structural fields on every pull anyway).
-router.patch('/:id(\\d+)', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+router.patch('/:id', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const id = Number(req.params.id);
     const existing = await pool.query(`SELECT source_system FROM assets WHERE id = $1`, [id]);
@@ -238,7 +239,7 @@ router.patch('/:id(\\d+)', requireAuth, requireRole('Admin', 'Manager', 'Tech'),
 // DELETE /api/assets/:id — only manual assets are deletable; RMM-
 // managed ones should disappear via their source's lifecycle. Tickets
 // linked to a deleted asset get asset_id = NULL (FK ON DELETE SET NULL).
-router.delete('/:id(\\d+)', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+router.delete('/:id', numericId, requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
     const id = Number(req.params.id);
     const r = await pool.query(`SELECT source_system FROM assets WHERE id = $1`, [id]);
@@ -324,7 +325,7 @@ router.get('/export.csv', requireAuth, requireRole('Admin', 'Manager', 'Tech'), 
 // Returns canonical_name + canonical_vendor + last_alias_id so the UI
 // can show "Adobe Acrobat (was: Adobe Acrobat Pro DC 64-bit)" and link
 // the alias rule that won the match.
-router.get('/:id(\\d+)/software', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+router.get('/:id/software', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const id = Number(req.params.id);
     const q = (req.query.q || '').trim().toLowerCase();
@@ -357,7 +358,7 @@ router.get('/:id(\\d+)/software', requireAuth, requireRole('Admin', 'Manager', '
 // projects. Admin / Manager see every row; others are scoped to
 // projects they're members of. Useful for the asset detail page's
 // "what tickets touched this machine" panel.
-router.get('/:id(\\d+)/tickets', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+router.get('/:id/tickets', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const id = Number(req.params.id);
     const user = req.session.user;
@@ -399,7 +400,7 @@ router.get('/:id(\\d+)/tickets', requireAuth, requireRole('Admin', 'Manager', 'T
 // per-CVE data. Today returns the count columns the assets table
 // already carries; future vendors that ship per-CVE rows will
 // populate an asset_vulnerabilities table the UI is already reading.
-router.get('/:id(\\d+)/vulnerabilities', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+router.get('/:id/vulnerabilities', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const id = Number(req.params.id);
     const a = await pool.query(
@@ -424,7 +425,7 @@ router.get('/:id(\\d+)/vulnerabilities', requireAuth, requireRole('Admin', 'Mana
 
 // POST /api/assets/:id/sync-software — on-demand pull from the asset's
 // upstream RMM source.
-router.post('/:id(\\d+)/sync-software', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+router.post('/:id/sync-software', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const { syncSoftwareForAsset } = require('../services/action1Software');
     const result = await syncSoftwareForAsset(Number(req.params.id));
@@ -438,7 +439,7 @@ router.post('/:id(\\d+)/sync-software', requireAuth, requireRole('Admin', 'Manag
 // POST /api/assets/:id/print-label — render + send an asset label to
 // the configured Zebra. QR payload is `asset:<id>` so a scanner can
 // deep-link back to the inventory row.
-router.post('/:id(\\d+)/print-label', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+router.post('/:id/print-label', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const r = await pool.query(
       `SELECT id, hostname, serial, model, manufacturer, asset_tag FROM assets WHERE id = $1`,
@@ -463,7 +464,7 @@ router.post('/:id(\\d+)/print-label', requireAuth, requireRole('Admin', 'Manager
 // row to a user. 409 if asset already has an active checkout (caller
 // should check in first). Auto-syncs assets.linked_user_id so the
 // existing "linked user" column reflects the current holder.
-router.post('/:id(\\d+)/checkout', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+router.post('/:id/checkout', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   const assetId = Number(req.params.id);
   const { user_id, note } = req.body || {};
   const userId = user_id != null ? Number(user_id) : null;
@@ -503,7 +504,7 @@ router.post('/:id(\\d+)/checkout', requireAuth, requireRole('Admin', 'Manager', 
 // note. No-ops with 404 if there's no active row. Leaves
 // assets.linked_user_id alone so the most-recent holder is still
 // visible on the detail page; admin can clear it explicitly via PATCH.
-router.post('/:id(\\d+)/checkin', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+router.post('/:id/checkin', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   const assetId = Number(req.params.id);
   const { note } = req.body || {};
   try {
@@ -524,7 +525,7 @@ router.post('/:id(\\d+)/checkin', requireAuth, requireRole('Admin', 'Manager', '
 
 // GET /api/assets/:id/checkouts — chronological custody history.
 // Newest first. Decorates with holder + actor display names.
-router.get('/:id(\\d+)/checkouts', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+router.get('/:id/checkouts', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const r = await pool.query(
       `SELECT c.id, c.asset_id, c.user_id, c.out_at, c.out_by, c.out_note,

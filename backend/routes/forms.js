@@ -15,6 +15,7 @@
 const express = require('express');
 const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
+const { numericId } = require('../middleware/params');
 
 const router = express.Router();
 
@@ -175,7 +176,7 @@ router.get('/', requireAuth, async (req, res) => {
 
 // GET /api/forms/:id — the render contract: form meta + ordered fields with
 // the per-form `required` flag merged onto each def.
-router.get('/:id(\\d+)', requireAuth, async (req, res) => {
+router.get('/:id', numericId, requireAuth, async (req, res) => {
   try {
     const id = Number(req.params.id);
     const meta = await pool.query(
@@ -228,7 +229,7 @@ router.post('/', requireAuth, requireRole('Admin'), async (req, res) => {
   }
 });
 
-router.patch('/:id(\\d+)', requireAuth, requireRole('Admin'), async (req, res) => {
+router.patch('/:id', numericId, requireAuth, requireRole('Admin'), async (req, res) => {
   try {
     const id = Number(req.params.id);
     const sets = [];
@@ -262,7 +263,7 @@ router.patch('/:id(\\d+)', requireAuth, requireRole('Admin'), async (req, res) =
   }
 });
 
-router.delete('/:id(\\d+)', requireAuth, requireRole('Admin'), async (req, res) => {
+router.delete('/:id', numericId, requireAuth, requireRole('Admin'), async (req, res) => {
   try {
     const r = await pool.query(`DELETE FROM ticket_forms WHERE id = $1 RETURNING id`, [Number(req.params.id)]);
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
@@ -278,7 +279,7 @@ router.delete('/:id(\\d+)', requireAuth, requireRole('Admin'), async (req, res) 
 // PUT /api/forms/:id/fields — replace the form's field set in one shot.
 // Body: [{ field_def_id, required, sort_order }]. Each def must be a ticket
 // def that's either shared (project_id NULL) or local to this form's project.
-router.put('/:id(\\d+)/fields', requireAuth, requireRole('Admin'), async (req, res) => {
+router.put('/:id/fields', numericId, requireAuth, requireRole('Admin'), async (req, res) => {
   try {
     const formId = Number(req.params.id);
     const items = Array.isArray(req.body) ? req.body : [];
