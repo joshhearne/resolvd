@@ -18,9 +18,8 @@
 // recipient is an external party who has no key. Vault mode (Phase 4)
 // will route this through the browser instead.
 
-const path = require('path');
-const fsp = require('fs').promises;
 const { pool } = require('../db/pool');
+const storage = require('./storage');
 const { decryptRow, decryptRows } = require('./fields');
 const { decrypt } = require('./crypto');
 const { sendMail, baseHtml } = require('./email');
@@ -29,7 +28,6 @@ const { getBranding } = require('./branding');
 
 const APP_URL = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
 const REPLY_TO = process.env.INBOUND_REPLY_TO || null;
-const UPLOADS_DIR = process.env.UPLOADS_DIR || '/data/uploads';
 
 // Outbound attachment caps. Most enterprise mail relays cap a single
 // message at 25–35 MB total including base64 encoding overhead (~33%).
@@ -86,7 +84,8 @@ async function fetchUnsentAttachments({ ticketId }) {
       continue;
     }
     try {
-      const raw = await fsp.readFile(path.join(UPLOADS_DIR, row.filename));
+      const raw = await storage.get(row.filename);
+      if (!raw) throw new Error('file missing from storage');
       const data = row.encrypted_at_rest
         ? await decrypt(raw, `attachments.file:${row.filename}`, { raw: true })
         : raw;

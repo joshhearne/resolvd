@@ -71,21 +71,15 @@ function softwareVendors() {
 
 module.exports = { register, get, all, withCapability, inventoryVendors, softwareVendors };
 
-// Eager-load every adapter in this directory. Adapters self-register
-// via register() at require time, so a simple require() per file is
-// enough — no manifest to maintain. NOTE: this MUST run AFTER
-// module.exports is assigned so each adapter file's
-// `require('./registry')` gets the populated export object instead of
-// an empty placeholder (the Node CommonJS circular-require gotcha).
-const fs = require('fs');
-const path = require('path');
-function loadAll() {
-  const dir = __dirname;
-  for (const entry of fs.readdirSync(dir, { withFileTypes: true })) {
-    if (entry.name === 'registry.js') continue;
-    if (entry.isFile() && entry.name.endsWith('.js')) {
-      require(path.join(dir, entry.name));
-    }
-  }
-}
-loadAll();
+// Load every adapter. Adapters self-register via register() at require
+// time. This MUST run AFTER module.exports is assigned so each adapter
+// file's `require('./registry')` gets the populated export object instead
+// of an empty placeholder (the Node CommonJS circular-require gotcha).
+//
+// Listed explicitly (not discovered with readdirSync) so bundlers can see
+// them: the Cloudflare Workers build has no directory to scan. The
+// registry test fails if a file in this directory is missing here.
+require('./action1');
+require('./fieldMap');
+require('./uptimeKuma');
+require('./zabbix');

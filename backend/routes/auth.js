@@ -1,5 +1,6 @@
 const express = require('express');
 const rateLimit = require('express-rate-limit');
+const { storeFor } = require('../services/rateLimitStore');
 const { pool } = require('../db/pool');
 const { getAuthSettings } = require('../services/authSettings');
 const { sendPasswordResetEmail } = require('../services/email');
@@ -33,6 +34,7 @@ const loginLimiter = rateLimit({
   legacyHeaders: false,
   // Don't count successful logins against the rate limit — only failures.
   skipSuccessfulRequests: true,
+  store: storeFor('login'),
   message: { error: 'Too many login attempts. Try again later.' },
 });
 
@@ -43,6 +45,7 @@ const resetRequestLimiter = rateLimit({
   max: 5,
   standardHeaders: true,
   legacyHeaders: false,
+  store: storeFor('reset'),
   message: { error: 'Too many reset requests' },
 });
 

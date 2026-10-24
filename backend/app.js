@@ -1,0 +1,191 @@
+const express = require('express');
+const session = require('express-session');
+const pgSession = require('connect-pg-simple')(session);
+const cors = require('cors');
+
+const { pool } = require('./db/pool');
+
+const authRoutes = require('./routes/auth');
+const versionRoutes = require('./routes/version');
+const inviteRoutes = require('./routes/invites');
+const authSettingsRoutes = require('./routes/authSettings');
+const ticketRoutes = require('./routes/tickets');
+const commentRoutes = require('./routes/comments');
+const ticketNoteRoutes = require('./routes/ticketNotes');
+const userRoutes = require('./routes/users');
+const dashboardRoutes = require('./routes/dashboard');
+const viewRoutes = require('./routes/views');
+const projectRoutes = require('./routes/projects');
+const attachmentRoutes = require('./routes/attachments');
+const brandingRoutes = require('./routes/branding');
+const exportRoutes = require('./routes/export');
+const followerRoutes = require('./routes/followers');
+const statusRoutes = require('./routes/statuses');
+const supportRoutes = require('./routes/support');
+const companyRoutes = require('./routes/companies');
+const contactRoutes = require('./routes/contacts');
+const emailTemplateRoutes = require('./routes/emailTemplates');
+const inboundEmailRoutes = require('./routes/inboundEmail');
+const inboundProviderRoutes = require('./routes/inboundProviders');
+const emailBackendRoutes = require('./routes/emailBackends');
+const notificationRoutes = require('./routes/notifications');
+const pushRoutes = require('./routes/push');
+const systemHealthRoutes = require('./routes/systemHealth');
+const webhookRoutes = require('./routes/webhooks');
+const alertSourceRoutes = require('./routes/alertSources');
+const statusPageRoutes = require('./routes/statusPages');
+const maintenanceRoutes = require('./routes/maintenance');
+const calendarRoutes = require('./routes/calendar');
+const alertRoutes = require('./routes/alerts');
+const assetRoutes = require('./routes/assets');
+const assetTypeRoutes = require('./routes/assetTypes');
+const labelPrinterRoutes = require('./routes/labelPrinter');
+const consumableRoutes = require('./routes/consumables');
+const cannedResponseRoutes = require('./routes/cannedResponses');
+const slaRoutes = require('./routes/sla');
+const assignmentPolicyRoutes = require('./routes/assignmentPolicies');
+const dedupOmitRuleRoutes = require('./routes/dedupOmitRules');
+const escalationPolicyRoutes = require('./routes/escalationPolicies');
+const agentRoutes = require('./routes/agents');
+const customFieldRoutes = require('./routes/customFields');
+const aiAssistRoutes = require('./routes/aiAssist');
+const aiSettingsRoutes = require('./routes/aiSettings');
+const securityRoutes = require('./routes/security');
+const kbRoutes = require('./routes/kb');
+const { requireSupportAccessIfSupport } = require('./middleware/supportAccess');
+const { securityHeaders } = require('./middleware/securityHeaders');
+
+const app = express();
+
+// Express 5 defaults to the 'simple' query parser; keep v4's qs-based
+// parsing so bracketed params (axios arrays like ids[]=1) still nest.
+app.set('query parser', 'extended');
+
+// Set security response headers on every request. Cheap, runs first.
+app.use(securityHeaders);
+
+// Inbound webhook payloads carry the whole message — full body plus every
+// attachment inline as base64 — so they blow past the 100kb express default
+// the moment a vendor's mail has a signature image on it. Mounted ahead of
+// the global parser so only these routes get the bigger ceiling.
+app.use('/api/inbound', express.json({ limit: '30mb' }));
+
+// Trove KB webhooks carry an HMAC over the raw body, so this route takes
+// the body as bytes and sits ahead of the JSON parser and session auth.
+app.use('/api/trove-kb/webhook', express.raw({ type: '*/*', limit: '256kb' }), require('./routes/troveKbWebhook'));
+app.use(express.json());
+app.use(express.urlencoded({ extended: true }));
+// Express 5 leaves req.body undefined when no parser ran (v4 gave {}).
+// Keep the v4 shape so handlers can destructure bodyless POSTs.
+app.use((req, res, next) => {
+  if (req.body === undefined) req.body = {};
+  next();
+});
+
+// Trust proxy (nginx sits in front)
+app.set('trust proxy', 1);
+
+app.use(cors({
+  origin: process.env.FRONTEND_URL || 'http://localhost:5173',
+  credentials: true,
+}));
+
+app.use(session({
+  store: new pgSession({
+    pool,
+    tableName: 'session',
+    createTableIfMissing: true,
+    // The store's own prune timer outlives the request that arms it,
+    // which Workers don't allow; the Worker cron prunes instead.
+    pruneSessionInterval: process.env.RESOLVD_RUNTIME === 'workers' ? false : undefined,
+  }),
+  secret: process.env.SESSION_SECRET || 'changeme-in-production',
+  resave: false,
+  saveUninitialized: false,
+  // rolling: bump the cookie's maxAge on every response so an active user
+  // never gets logged out mid-work. The session only lapses after a full
+  // idle window (below), not on a fixed clock from login time.
+  rolling: true,
+  cookie: {
+    secure: process.env.COOKIE_SECURE === 'true',
+    httpOnly: true,
+    maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days idle
+    sameSite: 'lax',
+  },
+}));
+
+// Routes
+app.use('/auth', authRoutes);
+// Webhook receivers authenticate via URL token, not session. Mount before
+// the support JIT guard since they aren't tied to any user principal.
+app.use('/api/webhooks', webhookRoutes);
+// Build identity — public, no auth, no PII. Sits before the support
+// guard since it's not user-scoped.
+app.use('/api/version', versionRoutes);
+// Calendar feeds authenticate via URL token (calendar apps can't log
+// in); the owner-management routes under /me use the session.
+app.use('/api/calendar', calendarRoutes);
+// Support routes mounted BEFORE the JIT guard so support principals can
+// poll their own grant status (/api/support/grants/me) and admins can
+// approve/revoke without being self-locked out.
+app.use('/api/support', supportRoutes);
+
+// JIT guard: blocks role='Support' on every other /api/* path unless they
+// have an active, non-expired grant. No-op for non-Support users.
+app.use('/api', requireSupportAccessIfSupport);
+
+app.use('/api/invites', inviteRoutes);
+app.use('/api/auth-settings', authSettingsRoutes);
+app.use('/api/tickets', ticketRoutes);
+app.use('/api/tickets', commentRoutes);
+app.use('/api/tickets', ticketNoteRoutes);
+// commentRoutes also mounts /comments/:id/mute|unmute at /api/comments/...
+app.use('/api', commentRoutes);
+app.use('/api/users', userRoutes);
+app.use('/api/dashboard', dashboardRoutes);
+app.use('/api/views', viewRoutes);
+app.use('/api/projects', projectRoutes);
+app.use('/api', attachmentRoutes);
+app.use('/api/branding', brandingRoutes);
+app.use('/api/export', exportRoutes);
+app.use('/api/tickets/:ticketId', followerRoutes);
+app.use('/api/statuses', statusRoutes);
+app.use('/api/companies', companyRoutes);
+app.use('/api', contactRoutes);
+app.use('/api/email-templates', emailTemplateRoutes);
+app.use('/api/inbound', inboundEmailRoutes);
+app.use('/api/inbound', inboundProviderRoutes);
+app.use('/api/email-backends', emailBackendRoutes);
+app.use('/api/notifications', notificationRoutes);
+app.use('/api/push', pushRoutes);
+app.use('/api/system-health', systemHealthRoutes);
+app.use('/api/alert-sources', alertSourceRoutes);
+app.use('/api/alerts', alertRoutes);
+app.use('/api/status-pages', statusPageRoutes);
+app.use('/api/maintenance', maintenanceRoutes);
+app.use('/api/software-aliases', require('./routes/softwareAliases'));
+app.use('/api/assets', assetRoutes);
+app.use('/api/label-printer', labelPrinterRoutes);
+app.use('/api/consumables', consumableRoutes);
+app.use('/api/asset-types', assetTypeRoutes);
+app.use('/api/canned-responses', cannedResponseRoutes);
+app.use('/api/sla', slaRoutes);
+app.use('/api/assignment-policies', assignmentPolicyRoutes);
+app.use('/api/dedup-omit-rules', dedupOmitRuleRoutes);
+app.use('/api/escalation-policies', escalationPolicyRoutes);
+app.use('/api/agents', agentRoutes);
+app.use('/api/custom-field-defs', customFieldRoutes);
+app.use('/api/forms', require('./routes/forms'));
+app.use('/api/ai', aiAssistRoutes);
+app.use('/api/ai-settings', aiSettingsRoutes);
+app.use('/api/security', securityRoutes);
+app.use('/api/kb', kbRoutes);
+app.use('/api/trove-kb', require('./routes/troveKb'));
+app.use('/api/trove-kb-settings', require('./routes/troveKbSettings'));
+app.use('/api/ticket-schedules', require('./routes/ticketSchedules'));
+app.use('/api/tasks', require('./routes/tasks'));
+
+// Health check
+app.get('/health', (req, res) => res.json({ ok: true }));
+
+module.exports = app;

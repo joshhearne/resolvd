@@ -1,0 +1,49 @@
+# Cloudflare Workers deployment, the alternative to docker-compose.
+# Setup and the values to fill in: docs/deploy-cloudflare.md
+#
+# One Worker serves the built frontend (static assets) and runs the same
+# Express app the Docker backend runs, for /api/* and /auth/*.
+
+name = "resolvd"
+main = "worker/index.js"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["nodejs_compat"]
+
+# Native addons can't load in Workers; swap in pure-JS equivalents.
+[alias]
+"argon2" = "./worker/shims/argon2.js"
+
+[assets]
+directory = "../frontend/dist"
+binding = "ASSETS"
+not_found_handling = "single-page-application"
+run_worker_first = ["/api/*", "/auth/*", "/health"]
+
+# Postgres, through Hyperdrive (`wrangler hyperdrive create`). For
+# `wrangler dev`, set CLOUDFLARE_HYPERDRIVE_LOCAL_CONNECTION_STRING_HYPERDRIVE
+# to a local database URL instead.
+[[hyperdrive]]
+binding = "HYPERDRIVE"
+id = "REPLACE_WITH_HYPERDRIVE_ID"
+
+# Uploads (attachments, avatars, branding). Replaces the Docker uploads volume.
+[[r2_buckets]]
+binding = "UPLOADS"
+bucket_name = "resolvd-uploads"
+
+# Background jobs. One trigger; services/schedulers.js picks which jobs
+# are due each minute.
+[triggers]
+crons = ["* * * * *"]
+
+[observability]
+enabled = true
+
+# Non-secret settings (same names as .env). Secrets go in with
+# `wrangler secret put` — see the docs for the list.
+[vars]
+FRONTEND_URL = "https://resolvd.example.com"
+COOKIE_SECURE = "true"
+# Uploads are buffered (and encrypted) in memory, and an isolate gets
+# 128 MB, so cap them lower than Docker's 50 MB default.
+MAX_UPLOAD_MB = "25"

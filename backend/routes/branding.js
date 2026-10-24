@@ -1,24 +1,17 @@
 const express = require('express');
 const multer = require('multer');
 const path = require('path');
-const fs = require('fs');
 const { randomUUID } = require('crypto');
 const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { invalidateBranding } = require('../services/branding');
+const storage = require('../services/storage');
 
-const UPLOADS_DIR = process.env.UPLOADS_DIR || '/data/uploads';
-
-function makeImageUpload(prefix) {
-  const storage = multer.diskStorage({
-    destination: UPLOADS_DIR,
-    filename: (req, file, cb) => {
-      const ext = path.extname(file.originalname);
-      cb(null, `${prefix}-${randomUUID()}${ext}`);
-    },
-  });
-  return multer({
-    storage,
+// Single-image upload for `field`, persisted to blob storage as
+// `${prefix}-<uuid><ext>`; the stored name lands on req.file.filename.
+function makeImageUpload(prefix, field) {
+  const upload = multer({
+    storage: multer.memoryStorage(),
     limits: { fileSize: 5 * 1024 * 1024 },
     fileFilter: (req, file, cb) => {
       if (!file.mimetype.startsWith('image/')) {
@@ -26,11 +19,23 @@ function makeImageUpload(prefix) {
       }
       cb(null, true);
     },
-  });
+  }).single(field);
+  const persist = async (req, res, next) => {
+    if (!req.file) return next();
+    try {
+      const filename = `${prefix}-${randomUUID()}${path.extname(req.file.originalname)}`;
+      await storage.put(filename, req.file.buffer, { contentType: req.file.mimetype });
+      req.file.filename = filename;
+      next();
+    } catch (err) {
+      next(err);
+    }
+  };
+  return [upload, persist];
 }
 
-const logoUpload = makeImageUpload('logo');
-const faviconUpload = makeImageUpload('favicon');
+const logoUpload = makeImageUpload('logo', 'logo');
+const faviconUpload = makeImageUpload('favicon', 'favicon');
 
 const router = express.Router();
 
@@ -176,21 +181,19 @@ router.get('/logo', async (req, res) => {
     const result = await pool.query('SELECT logo_filename FROM branding WHERE id = 1');
     const row = result.rows[0];
     if (!row?.logo_filename) return res.status(404).end();
-    const filePath = path.join(UPLOADS_DIR, row.logo_filename);
-    if (!fs.existsSync(filePath)) return res.status(404).end();
-    res.sendFile(filePath);
+    if (!(await storage.send(res, row.logo_filename))) return res.status(404).end();
   } catch (err) {
     res.status(500).end();
   }
 });
 
 // POST /api/branding/logo — Admin only
-router.post('/logo', requireAuth, requireRole('Admin'), logoUpload.single('logo'), async (req, res) => {
+router.post('/logo', requireAuth, requireRole('Admin'), logoUpload, async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   try {
     const old = await pool.query('SELECT logo_filename FROM branding WHERE id = 1');
     if (old.rows[0]?.logo_filename) {
-      fs.unlink(path.join(UPLOADS_DIR, old.rows[0].logo_filename), () => {});
+      storage.remove(old.rows[0].logo_filename);
     }
     await pool.query(
       'UPDATE branding SET logo_filename = $1, updated_at = NOW() WHERE id = 1',
@@ -198,7 +201,7 @@ router.post('/logo', requireAuth, requireRole('Admin'), logoUpload.single('logo'
     );
     res.json({ logo_url: '/api/branding/logo' });
   } catch (err) {
-    fs.unlink(req.file.path, () => {});
+    storage.remove(req.file.filename);
     console.error(err);
     res.status(500).json({ error: 'Database error' });
   }
@@ -210,7 +213,7 @@ router.delete('/logo', requireAuth, requireRole('Admin'), async (req, res) => {
     const result = await pool.query('SELECT logo_filename FROM branding WHERE id = 1');
     const filename = result.rows[0]?.logo_filename;
     if (filename) {
-      fs.unlink(path.join(UPLOADS_DIR, filename), () => {});
+      storage.remove(filename);
     }
     await pool.query('UPDATE branding SET logo_filename = NULL, updated_at = NOW() WHERE id = 1');
     res.json({ ok: true });
@@ -227,12 +230,9 @@ router.get('/favicon', async (req, res) => {
   try {
     const result = await pool.query('SELECT favicon_filename FROM branding WHERE id = 1');
     const filename = result.rows[0]?.favicon_filename;
-    if (filename) {
-      const filePath = path.join(UPLOADS_DIR, filename);
-      if (fs.existsSync(filePath)) {
-        res.setHeader('Cache-Control', 'public, max-age=300');
-        return res.sendFile(filePath);
-      }
+    if (filename && (await storage.exists(filename))) {
+      res.setHeader('Cache-Control', 'public, max-age=300');
+      return storage.send(res, filename);
     }
     res.redirect(302, '/favicon.png');
   } catch (err) {
@@ -241,12 +241,12 @@ router.get('/favicon', async (req, res) => {
 });
 
 // POST /api/branding/favicon — Admin only
-router.post('/favicon', requireAuth, requireRole('Admin'), faviconUpload.single('favicon'), async (req, res) => {
+router.post('/favicon', requireAuth, requireRole('Admin'), faviconUpload, async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   try {
     const old = await pool.query('SELECT favicon_filename FROM branding WHERE id = 1');
     if (old.rows[0]?.favicon_filename) {
-      fs.unlink(path.join(UPLOADS_DIR, old.rows[0].favicon_filename), () => {});
+      storage.remove(old.rows[0].favicon_filename);
     }
     await pool.query(
       'UPDATE branding SET favicon_filename = $1, updated_at = NOW() WHERE id = 1',
@@ -255,7 +255,7 @@ router.post('/favicon', requireAuth, requireRole('Admin'), faviconUpload.single(
     invalidateBranding();
     res.json({ favicon_url: '/api/branding/favicon' });
   } catch (err) {
-    fs.unlink(req.file.path, () => {});
+    storage.remove(req.file.filename);
     console.error(err);
     res.status(500).json({ error: 'Database error' });
   }
@@ -267,7 +267,7 @@ router.delete('/favicon', requireAuth, requireRole('Admin'), async (req, res) =>
     const result = await pool.query('SELECT favicon_filename FROM branding WHERE id = 1');
     const filename = result.rows[0]?.favicon_filename;
     if (filename) {
-      fs.unlink(path.join(UPLOADS_DIR, filename), () => {});
+      storage.remove(filename);
     }
     await pool.query('UPDATE branding SET favicon_filename = NULL, updated_at = NOW() WHERE id = 1');
     invalidateBranding();

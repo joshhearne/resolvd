@@ -1,6 +1,8 @@
 const msal = require('@azure/msal-node');
 const nodemailer = require('nodemailer');
-const { google } = require('googleapis');
+// Just the Gmail client + google.auth classes; the full googleapis
+// package is ~240 MB and dominates Worker startup time.
+const google = require('@googleapis/gmail');
 const { getAuthSettings } = require('./authSettings');
 const { getBranding } = require('./branding');
 

@@ -1,11 +1,10 @@
 const express = require('express');
 const multer = require('multer');
-const fs = require('fs');
-const path = require('path');
 const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { buildSessionUser } = require('../auth/session');
-const { avatarPath, saveAvatarFromBytes, clearAvatar } = require('../services/avatar');
+const { avatarKey, saveAvatarFromBytes, clearAvatar } = require('../services/avatar');
+const storage = require('../services/storage');
 const {
   DEFAULT_NOTIFICATION_PREFS,
   DEFAULT_EMAIL_DIGEST,
@@ -406,10 +405,10 @@ router.get('/:id/avatar', requireAuth, async (req, res) => {
     const r = await pool.query('SELECT profile_picture_filename FROM users WHERE id = $1', [req.params.id]);
     const filename = r.rows[0]?.profile_picture_filename;
     if (!filename) return res.status(404).end();
-    const filePath = avatarPath(filename);
-    if (!fs.existsSync(filePath)) return res.status(404).end();
+    const key = avatarKey(filename);
+    if (!(await storage.exists(key))) return res.status(404).end();
     res.setHeader('Cache-Control', 'private, max-age=300');
-    res.sendFile(filePath);
+    await storage.send(res, key);
   } catch (err) {
     res.status(500).end();
   }

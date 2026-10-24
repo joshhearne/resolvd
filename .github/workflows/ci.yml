@@ -55,3 +55,33 @@ jobs:
       - name: Build
         working-directory: frontend
         run: npm run build
+
+  # Builds the Cloudflare Workers bundle and boots it in workerd (no
+  # upload, no account needed), so code that bundles but can't start on
+  # Workers fails here: native addons, __dirname, I/O or timers at import
+  # time.
+  worker:
+    name: Worker (bundle)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install
+        run: |
+          npm ci --prefix backend
+          npm ci --prefix frontend
+
+      - name: Build frontend + boot Worker
+        working-directory: backend
+        run: |
+          npm run worker:build
+          npx wrangler check startup
+

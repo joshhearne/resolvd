@@ -1,0 +1,57 @@
+name: Deploy (Cloudflare Workers)
+
+# Manual deploy of the Cloudflare Workers build. Docker deployments don't
+# use this. Setup is in docs/deploy-cloudflare.md.
+#
+# Repository secrets:
+#   CLOUDFLARE_API_TOKEN   token with Workers Scripts:Edit (+ R2/Hyperdrive read)
+#   CLOUDFLARE_ACCOUNT_ID  your account id
+#   DATABASE_URL           direct Postgres URL, used only to apply the schema
+#                          (the Worker itself connects through Hyperdrive)
+
+on:
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-worker
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-node@v6
+        with:
+          node-version: 24
+          cache: npm
+          cache-dependency-path: |
+            backend/package-lock.json
+            frontend/package-lock.json
+
+      - name: Install
+        run: |
+          npm ci --prefix backend
+          npm ci --prefix frontend
+
+      # Schema first, so the new code never runs against an old schema.
+      # initSchema is idempotent; Docker runs the same thing at boot.
+      - name: Apply schema
+        working-directory: backend
+        env:
+          DATABASE_URL: ${{ secrets.DATABASE_URL }}
+        run: npm run migrate
+
+      - name: Build + deploy
+        working-directory: backend
+        env:
+          CLOUDFLARE_API_TOKEN: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          CLOUDFLARE_ACCOUNT_ID: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+        run: |
+          npm run worker:build
+          npx wrangler deploy \
+            --var APP_VERSION:"${GITHUB_REF_NAME}" \
+            --var APP_COMMIT:"${GITHUB_SHA::7}" \
+            --var BUILT_AT:"$(date -u +%Y-%m-%dT%H:%M:%SZ)"
