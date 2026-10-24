@@ -26,7 +26,82 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-The stack binds to `127.0.0.1:8090`. A host proxy (nginx, Caddy) or `cloudflared` tunnel handles TLS and forwards there.
+The stack binds to `127.0.0.1:8090`. A host proxy (nginx, Caddy) or `cloudflared` tunnel handles TLS and forwards there. For a full server setup, see [Running on a VPS](#running-on-a-vps).
+
+---
+
+## Running on a VPS
+
+Any Linux VPS with **2 GB RAM or more** works (the frontend build needs the headroom). Commands assume Ubuntu/Debian.
+
+**1. Install Docker and point DNS at the server.**
+
+```bash
+curl -fsSL https://get.docker.com | sh
+```
+
+Create an A (and AAAA, if the server has IPv6) record for your hostname, e.g. `issues.example.com`. Skip this if you'll use a Cloudflare Tunnel, which creates its own DNS record.
+
+**2. Configure and start the stack.**
+
+```bash
+git clone https://github.com/joshhearne/resolvd.git
+cd resolvd
+cp .env.example .env
+```
+
+Set at least these in `.env` (full list under [Environment Variables](#environment-variables)):
+
+| Variable | Value |
+|---|---|
+| `POSTGRES_PASSWORD` | `openssl rand -hex 24` |
+| `SESSION_SECRET` | `openssl rand -hex 32` |
+| `FRONTEND_URL` | `https://issues.example.com` |
+| `COOKIE_SECURE` | `true` |
+| `RESOLVD_MASTER_KEY` | `openssl rand -base64 32`. **Store a copy off the server**; encrypted data and AI keys can't be recovered without it. |
+
+Leave the Entra / Google variables empty to start with local accounts only. Then build and start:
+
+```bash
+./scripts/build-with-version.sh   # docker compose build, stamped with the git version
+docker compose up -d
+```
+
+The stack listens on `127.0.0.1:8090` only, so nothing is public yet.
+
+**3. Put HTTPS in front.** Pick one; details in [Host reverse proxy](#host-reverse-proxy).
+
+- **Caddy**: simplest; gets and renews Let's Encrypt certificates itself. `sudo apt install caddy`, then set `/etc/caddy/Caddyfile` to:
+  ```caddy
+  issues.example.com {
+      reverse_proxy 127.0.0.1:8090 {
+          header_up -CF-Connecting-IP
+      }
+  }
+  ```
+  and `sudo systemctl reload caddy`.
+- **Cloudflare Tunnel**: no inbound ports at all. Install `cloudflared`, create a tunnel in the Cloudflare dashboard (Zero Trust → Networks → Tunnels), and route your hostname to `http://localhost:8090`.
+- **nginx**: if you already run it on the host. Use the snippet below, or `nginx/host-proxy.conf` with Cloudflare origin certificates.
+
+**4. Firewall.** With Caddy or nginx:
+
+```bash
+sudo ufw allow OpenSSH && sudo ufw allow 80,443/tcp && sudo ufw enable
+```
+
+With a Cloudflare Tunnel, only SSH needs to be open.
+
+**5. First login.** Open `https://issues.example.com`. With no users yet, the login page offers to create the first admin (see [First-time setup](#first-time-setup-bootstrap)).
+
+**Updating.** Schema changes apply automatically when the backend starts:
+
+```bash
+git pull
+./scripts/build-with-version.sh
+docker compose up -d
+```
+
+**Backups.** Schedule the commands in [Backup](#backup) (e.g. a nightly cron job) and copy the files off the server. Keep `RESOLVD_MASTER_KEY` with them, but stored separately.
 
 ---
 
@@ -44,7 +119,6 @@ The stack binds to `127.0.0.1:8090`. A host proxy (nginx, Caddy) or `cloudflared
 | `UPLOADS_DIR` | no | Attachment dir (default `/data/uploads`) |
 | `MAX_UPLOAD_MB` | no | Max attachment size (default `50`) |
 | `COMPOSE_PROJECT_NAME` | no | Override Compose project (preserve volumes after dir rename) |
-| `CLOUDFLARE_TUNNEL_TOKEN` | no | When set, the optional in-Compose `cloudflared` service runs the tunnel. Leave unset if you run `cloudflared` on the host instead (recommended — see [Host reverse proxy](#host-reverse-proxy)). |
 
 ### Microsoft Entra ID (login + email backend OAuth)
 
@@ -671,29 +745,38 @@ The backfill encrypts plaintext into `*_enc` shadow columns, NULLs the plaintext
 The Docker stack does not terminate TLS. The bundled `nginx` service is plain HTTP only — it does not mount any certs (the `nginx/certs/` path is gitignored, so a cert volume on a fresh clone would point at nothing). Terminate TLS upstream with one of:
 
 - **Cloudflare Tunnel (host-based, recommended)** — run `cloudflared` as a host service (systemd) pointing at `http://localhost:8090` (or `localhost:80` if a host nginx fans out by `Host` header for multiple apps). Keeps the tunnel out of the Compose lifecycle so `docker compose down` doesn't drop it, and lets one tunnel front several stacks.
-- **Cloudflare Tunnel (in-Compose)** — set `CLOUDFLARE_TUNNEL_TOKEN` in `.env`; the optional `cloudflared` service in `docker-compose.yml` runs the tunnel inside the stack. Simpler for single-app deployments.
-- **nginx / Caddy** — forward HTTPS to `127.0.0.1:8090`. Sample nginx config in `nginx/host-proxy.conf`.
+- **nginx / Caddy** — forward HTTPS to `127.0.0.1:8090`. Caddy config is in [Running on a VPS](#running-on-a-vps); for nginx with Cloudflare origin certificates, see `nginx/host-proxy.conf`. Without Cloudflare:
 
 ```nginx
 server {
     listen 443 ssl;
     server_name issues.example.com;
-    ssl_certificate     /path/to/cert.pem;
-    ssl_certificate_key /path/to/key.pem;
+    ssl_certificate     /etc/letsencrypt/live/issues.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/issues.example.com/privkey.pem;
+    client_max_body_size 55M;   # match or exceed MAX_UPLOAD_MB
     location / {
         proxy_pass http://127.0.0.1:8090;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto https;
-        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header CF-Connecting-IP "";
     }
 }
 ```
+
+**Client IPs.** Login security blocks by IP, so the backend needs each visitor's real address. The bundled nginx takes it from `CF-Connecting-IP` when Cloudflare is in front, otherwise from the first `X-Forwarded-For` entry. Whatever sits in front must therefore **set** those headers rather than pass a visitor's own values through:
+
+- Cloudflare (Tunnel or proxied DNS) sets `CF-Connecting-IP` itself.
+- Caddy overwrites `X-Forwarded-For` by default. Strip `CF-Connecting-IP` with `header_up -CF-Connecting-IP` unless Cloudflare is in front.
+- nginx: use `X-Forwarded-For $remote_addr` (not `$proxy_add_x_forwarded_for`, which keeps the visitor's value first) and clear `CF-Connecting-IP` as above.
+
+To check, sign in as an Admin and open `/api/security/login-attempts/summary`. If every attempt shows the same address, the proxy isn't forwarding it.
 
 ---
 
 ## Backup
 
-Postgres data lives in the `<project>_pg-data` volume. Encrypted ciphertext backs up exactly the same as plaintext — but **the master key is not in the dump**. Lose `RESOLVD_MASTER_KEY` and your backup is unrecoverable.
+Postgres data lives in the `<project>_pg-data` volume and uploads in `<project>_uploads-data`, where `<project>` is the Compose project name: the checkout's directory name (`resolvd` for a default clone) unless `COMPOSE_PROJECT_NAME` is set. `docker volume ls` shows the exact names. Encrypted ciphertext backs up exactly the same as plaintext — but **the master key is not in the dump**. Lose `RESOLVD_MASTER_KEY` and your backup is unrecoverable.
 
 ```bash
 docker compose exec postgres pg_dump -U resolvd resolvd > backup-$(date +%Y%m%d).sql
@@ -708,7 +791,7 @@ docker compose exec -T postgres psql -U resolvd resolvd < backup.sql
 Uploaded files (encrypted on disk under standard mode):
 
 ```bash
-docker run --rm -v issues_uploads-data:/src:ro -v "$(pwd)":/dst alpine \
+docker run --rm -v resolvd_uploads-data:/src:ro -v "$(pwd)":/dst alpine \
   tar czf /dst/uploads-$(date +%Y%m%d).tar.gz -C /src .
 ```
 
