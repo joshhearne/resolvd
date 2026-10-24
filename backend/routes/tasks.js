@@ -16,6 +16,7 @@
 const express = require('express');
 const { pool } = require('../db/pool');
 const { requireAuth } = require('../middleware/auth');
+const { numericId } = require('../middleware/params');
 const { buildWritePatch, decryptRows } = require('../services/fields');
 const sched = require('../services/ticketSchedules');
 
@@ -124,7 +125,7 @@ router.get('/', requireAuth, async (req, res) => {
   }
 });
 
-router.get('/:id(\\d+)', requireAuth, async (req, res) => {
+router.get('/:id', numericId, requireAuth, async (req, res) => {
   try {
     const userId = req.session.user.id;
     const id = Number(req.params.id);
@@ -196,7 +197,7 @@ router.post('/', requireAuth, async (req, res) => {
   }
 });
 
-router.patch('/:id(\\d+)', requireAuth, async (req, res) => {
+router.patch('/:id', numericId, requireAuth, async (req, res) => {
   try {
     const userId = req.session.user.id;
     const id = Number(req.params.id);
@@ -250,7 +251,7 @@ router.patch('/:id(\\d+)', requireAuth, async (req, res) => {
 // flips status to 'completed'. For recurring tasks it advances
 // next_due_at via cron-parser and bumps fires_count; status only
 // flips when an end_kind threshold is hit.
-router.post('/:id(\\d+)/complete', requireAuth, async (req, res) => {
+router.post('/:id/complete', numericId, requireAuth, async (req, res) => {
   try {
     const userId = req.session.user.id;
     const id = Number(req.params.id);
@@ -320,7 +321,7 @@ router.post('/:id(\\d+)/complete', requireAuth, async (req, res) => {
 // POST /:id/skip — advance recurring task without recording a
 // completion. Useful when the occurrence is irrelevant ("we're closed
 // that day, skip this week's cleanup").
-router.post('/:id(\\d+)/skip', requireAuth, async (req, res) => {
+router.post('/:id/skip', numericId, requireAuth, async (req, res) => {
   try {
     const userId = req.session.user.id;
     const id = Number(req.params.id);
@@ -356,7 +357,7 @@ router.post('/:id(\\d+)/skip', requireAuth, async (req, res) => {
 // Bump the due time. Works for both one-off (postpones the only
 // occurrence) and recurring (postpones this occurrence only — the
 // recurrence keeps its cadence after the next completion).
-router.post('/:id(\\d+)/reschedule', requireAuth, async (req, res) => {
+router.post('/:id/reschedule', numericId, requireAuth, async (req, res) => {
   try {
     const userId = req.session.user.id;
     const id = Number(req.params.id);
@@ -378,7 +379,7 @@ router.post('/:id(\\d+)/reschedule', requireAuth, async (req, res) => {
   }
 });
 
-router.delete('/:id(\\d+)', requireAuth, async (req, res) => {
+router.delete('/:id', numericId, requireAuth, async (req, res) => {
   try {
     const userId = req.session.user.id;
     const id = Number(req.params.id);

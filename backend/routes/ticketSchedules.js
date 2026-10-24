@@ -7,6 +7,7 @@
 const express = require('express');
 const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
+const { numericId } = require('../middleware/params');
 const { buildWritePatch, decryptRows } = require('../services/fields');
 const sched = require('../services/ticketSchedules');
 
@@ -38,7 +39,7 @@ router.get('/', requireAuth, requireRole(...HANDLERS), async (req, res) => {
   }
 });
 
-router.get('/:id(\\d+)', requireAuth, requireRole(...HANDLERS), async (req, res) => {
+router.get('/:id', numericId, requireAuth, requireRole(...HANDLERS), async (req, res) => {
   try {
     const r = await pool.query(
       `SELECT * FROM ticket_schedules WHERE id = $1`,
@@ -173,7 +174,7 @@ router.post('/', requireAuth, requireRole(...HANDLERS), async (req, res) => {
   }
 });
 
-router.patch('/:id(\\d+)', requireAuth, requireRole(...HANDLERS), async (req, res) => {
+router.patch('/:id', numericId, requireAuth, requireRole(...HANDLERS), async (req, res) => {
   try {
     const id = Number(req.params.id);
     const existing = await pool.query(`SELECT * FROM ticket_schedules WHERE id = $1`, [id]);
@@ -266,7 +267,7 @@ router.patch('/:id(\\d+)', requireAuth, requireRole(...HANDLERS), async (req, re
   }
 });
 
-router.delete('/:id(\\d+)', requireAuth, requireRole(...HANDLERS), async (req, res) => {
+router.delete('/:id', numericId, requireAuth, requireRole(...HANDLERS), async (req, res) => {
   try {
     await pool.query(`DELETE FROM ticket_schedules WHERE id = $1`, [Number(req.params.id)]);
     res.json({ ok: true });
@@ -278,7 +279,7 @@ router.delete('/:id(\\d+)', requireAuth, requireRole(...HANDLERS), async (req, r
 
 // POST /:id/fire-now — manual one-shot. Doesn't advance next_fire_at
 // or fires_count. Useful for testing a freshly authored template.
-router.post('/:id(\\d+)/fire-now', requireAuth, requireRole('Admin'), async (req, res) => {
+router.post('/:id/fire-now', numericId, requireAuth, requireRole('Admin'), async (req, res) => {
   try {
     const r = await pool.query(`SELECT * FROM ticket_schedules WHERE id = $1`, [Number(req.params.id)]);
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });

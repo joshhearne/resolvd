@@ -2,6 +2,7 @@ const express = require('express');
 const { pool, transaction } = require('../db/pool');
 const { nextInternalRef, computePriority } = require('../db/schema');
 const { requireAuth, requireRole } = require('../middleware/auth');
+const { numericId } = require('../middleware/params');
 const {
   fanoutStatusChange,
   fanoutPendingReview,
@@ -727,7 +728,7 @@ router.get('/:id', requireAuth, async (req, res) => {
 // submitter form). Handlers only. Body: [{def_id, value}] or
 // { custom_fields: [...] }; an empty value clears the field. Returns the
 // refreshed (revealed) custom_fields.
-router.patch('/:id(\\d+)/custom-fields', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+router.patch('/:id/custom-fields', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const ticketId = Number(req.params.id);
     const tk = await pool.query('SELECT id, form_id FROM tickets WHERE id = $1', [ticketId]);
@@ -766,7 +767,7 @@ router.patch('/:id(\\d+)/custom-fields', requireAuth, requireRole('Admin', 'Mana
 // (formula) custom fields against the current ticket context and persist the
 // results. Handlers only. Use after editing the human inputs a formula reads.
 // Returns the refreshed (revealed) custom_fields plus the per-field results.
-router.post('/:id(\\d+)/recompute-fields', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+router.post('/:id/recompute-fields', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const ticketId = Number(req.params.id);
     const tk = await pool.query('SELECT id, form_id FROM tickets WHERE id = $1', [ticketId]);
@@ -1895,7 +1896,7 @@ router.get('/:id/audit', requireAuth, async (req, res) => {
 // Internal handlers only (Admin/Manager/Tech): the raw body can carry
 // quoted third-party content that shouldn't reach submitters/vendors.
 // 404 when the ticket/comment has no inbound source row.
-router.get('/:id(\\d+)/source-email', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+router.get('/:id/source-email', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const ticketId = Number(req.params.id);
     const commentId = req.query.comment_id ? Number(req.query.comment_id) : null;
@@ -1955,7 +1956,7 @@ router.get('/:id(\\d+)/source-email', requireAuth, requireRole('Admin', 'Manager
 // The overrides let the print modal pre-fill from resolved values but
 // still accept a manual edit before fire. Server uses the override when
 // non-empty, otherwise the resolved value.
-router.post('/:id(\\d+)/print-consumable-label',
+router.post('/:id/print-consumable-label', numericId,
   requireAuth, requireRole('Admin', 'Manager', 'Tech'),
   async (req, res) => {
     try {
@@ -2216,7 +2217,7 @@ router.post('/:id(\\d+)/print-consumable-label',
 // GET /api/tickets/:id/print-label-resolve — preview the resolved label
 // fields without actually printing. Used by the modal to pre-fill the
 // override inputs.
-router.get('/:id(\\d+)/print-label-resolve',
+router.get('/:id/print-label-resolve', numericId,
   requireAuth, requireRole('Admin', 'Manager', 'Tech'),
   async (req, res) => {
     try {
