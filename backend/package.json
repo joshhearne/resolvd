@@ -10,7 +10,7 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@azure/msal-node": "^2.6.0",
+    "@azure/msal-node": "^7.0.1",
     "argon2": "^0.45.1",
     "connect-pg-simple": "^10.0.0",
     "cors": "^2.8.5",
