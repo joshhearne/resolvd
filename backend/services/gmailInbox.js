@@ -15,9 +15,7 @@
 //      before expiry (idempotent — Google extends the existing watch
 //      when called again from the same account).
 
-// Just the Gmail client + google.auth classes; the full googleapis
-// package is ~240 MB and dominates Worker startup time.
-const google = require('@googleapis/gmail');
+const { google } = require('googleapis');
 const { pool } = require('../db/pool');
 const eb = require('./emailBackends');
 

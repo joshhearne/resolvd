@@ -1,6 +1,8 @@
 const express = require('express');
 const multer = require('multer');
 const path = require('path');
+const fs = require('fs');
+const fsp = require('fs').promises;
 const { randomUUID } = require('crypto');
 const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
@@ -8,10 +10,15 @@ const { buildWritePatch, decryptRow, decryptRows, getMode } = require('../servic
 const { encrypt, decrypt } = require('../services/crypto');
 const { logSupportRead } = require('../middleware/supportAccess');
 const { sendVendorEmail } = require('../services/vendorOutbound');
-const storage = require('../services/storage');
+
+const UPLOADS_DIR = process.env.UPLOADS_DIR || '/data/uploads';
+
+if (!fs.existsSync(UPLOADS_DIR)) {
+  fs.mkdirSync(UPLOADS_DIR, { recursive: true });
+}
 
 // Use memory storage so the file body can be encrypted in-process before
-// hitting storage. The 50MB default cap (env-configurable) keeps RAM bounded.
+// hitting disk. The 50MB default cap (env-configurable) keeps RAM bounded.
 const upload = multer({
   storage: multer.memoryStorage(),
   limits: { fileSize: Number(process.env.MAX_UPLOAD_MB || 50) * 1024 * 1024 },
@@ -64,7 +71,7 @@ router.post('/tickets/:ticketId/attachments', requireAuth, requireRole('Admin', 
       return res.status(400).json({ error: 'No files uploaded' });
     }
 
-    const writtenKeys = [];
+    const writtenPaths = [];
     try {
       const ticket = await pool.query('SELECT id FROM tickets WHERE id = $1', [req.params.ticketId]);
       if (!ticket.rows[0]) {
@@ -84,6 +91,7 @@ router.post('/tickets/:ticketId/attachments', requireAuth, requireRole('Admin', 
       for (const file of req.files) {
         const ext = path.extname(file.originalname);
         const filename = `${randomUUID()}${ext}`;
+        const filePath = path.join(UPLOADS_DIR, filename);
 
         // Encrypt the file body when standard mode is on. Plaintext in
         // memory is freed when the buffer goes out of scope.
@@ -91,8 +99,8 @@ router.post('/tickets/:ticketId/attachments', requireAuth, requireRole('Admin', 
         const onDisk = encryptedAtRest
           ? await encrypt(file.buffer, fileCtx(filename))
           : file.buffer;
-        await storage.put(filename, onDisk);
-        writtenKeys.push(filename);
+        await fsp.writeFile(filePath, onDisk);
+        writtenPaths.push(filePath);
 
         const patch = await buildWritePatch(pool, 'attachments', {
           original_name: file.originalname,
@@ -149,16 +157,16 @@ router.post('/tickets/:ticketId/attachments', requireAuth, requireRole('Admin', 
       res.status(201).json(inserted);
     } catch (err) {
       console.error(err);
-      writtenKeys.forEach(key => storage.remove(key));
+      writtenPaths.forEach(p => fs.unlink(p, () => {}));
       res.status(500).json({ error: 'Database error' });
     }
   }
 );
 
-// Decrypted file body, or null when the stored object is missing.
 async function readAttachmentBody(attachment) {
-  const raw = await storage.get(attachment.filename);
-  if (!raw || !attachment.encrypted_at_rest) return raw;
+  const filePath = path.join(UPLOADS_DIR, attachment.filename);
+  const raw = await fsp.readFile(filePath);
+  if (!attachment.encrypted_at_rest) return raw;
   return decrypt(raw, fileCtx(attachment.filename), { raw: true });
 }
 
@@ -169,8 +177,9 @@ router.get('/attachments/:id/view', requireAuth, async (req, res) => {
     const attachment = result.rows[0];
     if (!attachment) return res.status(404).end();
     await decryptRow('attachments', attachment);
+    const filePath = path.join(UPLOADS_DIR, attachment.filename);
+    if (!fs.existsSync(filePath)) return res.status(404).end();
     const body = await readAttachmentBody(attachment);
-    if (!body) return res.status(404).end();
     res.setHeader('Content-Type', attachment.mimetype || 'application/octet-stream');
     res.setHeader('Content-Disposition', `inline; filename="${attachment.original_name || attachment.filename}"`);
     res.send(body);
@@ -188,9 +197,10 @@ router.get('/attachments/:id', requireAuth, async (req, res) => {
     if (!attachment) return res.status(404).json({ error: 'Not found' });
     await decryptRow('attachments', attachment);
 
-    const body = await readAttachmentBody(attachment);
-    if (!body) return res.status(404).json({ error: 'File not found on disk' });
+    const filePath = path.join(UPLOADS_DIR, attachment.filename);
+    if (!fs.existsSync(filePath)) return res.status(404).json({ error: 'File not found on disk' });
 
+    const body = await readAttachmentBody(attachment);
     const downloadName = attachment.original_name || attachment.filename;
     res.setHeader('Content-Type', attachment.mimetype || 'application/octet-stream');
     res.setHeader('Content-Disposition', `attachment; filename="${downloadName}"`);
@@ -214,7 +224,7 @@ router.delete('/attachments/:id', requireAuth, async (req, res) => {
     if (!isAdmin && !isOwner) return res.status(403).json({ error: 'Forbidden' });
 
     await pool.query('DELETE FROM attachments WHERE id = $1', [req.params.id]);
-    storage.remove(attachment.filename);
+    fs.unlink(path.join(UPLOADS_DIR, attachment.filename), () => {});
 
     res.json({ ok: true });
   } catch (err) {

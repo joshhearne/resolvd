@@ -11,10 +11,6 @@ backend/node_modules/
 # Build output
 frontend/dist/
 
-# Cloudflare Workers (wrangler build cache + local dev secrets)
-.wrangler/
-.dev.vars
-
 # Data / uploads / certs
 data/
 nginx/certbot/

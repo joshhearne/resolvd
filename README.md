@@ -13,7 +13,6 @@ Internal issue and project tracking — keep every ticket in reach until it's cl
 - **Email**: OAuth-connected Microsoft 365 / Gmail mailboxes (per-account), or legacy SMTP/Graph-app/service-account fallbacks.
 - **Encryption**: AES-256-GCM envelope encryption at rest (off / standard / vault). HMAC blind index keeps title search working under encryption.
 - **Proxy**: nginx (Docker) + host reverse proxy or Cloudflare Tunnel.
-- **Deploy**: Docker Compose, or Cloudflare Workers ([guide](docs/deploy-cloudflare.md)).
 
 ---
 
@@ -28,8 +27,6 @@ docker compose logs -f
 ```
 
 The stack binds to `127.0.0.1:8090`. A host proxy (nginx, Caddy) or `cloudflared` tunnel handles TLS and forwards there.
-
-Prefer serverless? The same app also deploys as a single Cloudflare Worker (static frontend + backend, Postgres via Hyperdrive, uploads in R2). See [Deploying on Cloudflare Workers](docs/deploy-cloudflare.md).
 
 ---
 

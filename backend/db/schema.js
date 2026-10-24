@@ -2360,30 +2360,6 @@ async function initSchema() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_login_attempts_email_time ON login_attempts(email_attempted, attempted_at DESC) WHERE email_attempted IS NOT NULL`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_login_attempts_failures ON login_attempts(ip, attempted_at DESC) WHERE success = FALSE`);
 
-    // express-session store (connect-pg-simple). The store can create
-    // this lazily, but the Workers cron prunes it, so it has to exist up
-    // front. Same DDL as connect-pg-simple's table.sql.
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS "session" (
-        "sid" varchar NOT NULL COLLATE "default" PRIMARY KEY,
-        "sess" json NOT NULL,
-        "expire" timestamp(6) NOT NULL
-      )
-    `);
-    await client.query(`CREATE INDEX IF NOT EXISTS "IDX_session_expire" ON "session" ("expire")`);
-
-    // express-rate-limit counters for runtimes without a long-lived
-    // process (Cloudflare Workers), where an in-memory store would reset
-    // per isolate. Docker keeps the in-memory store. See
-    // services/rateLimitStore.js.
-    await client.query(`
-      CREATE TABLE IF NOT EXISTS rate_limit_hits (
-        key TEXT PRIMARY KEY,
-        hits INTEGER NOT NULL,
-        reset_at TIMESTAMPTZ NOT NULL
-      )
-    `);
-
     // ── AI Settings — dedicated singleton table ──────────────────────────
     // Centralizes BYO-AI / org-managed-AI configuration that previously
     // lived under branding.ai_*. Three admin-facing layers:

@@ -1,6 +1,12 @@
+const fs = require('fs');
+const path = require('path');
 const { randomUUID } = require('crypto');
 const { pool } = require('../db/pool');
-const storage = require('./storage');
+
+const UPLOADS_DIR = process.env.UPLOADS_DIR || '/data/uploads';
+const AVATAR_DIR = path.join(UPLOADS_DIR, 'avatars');
+
+if (!fs.existsSync(AVATAR_DIR)) fs.mkdirSync(AVATAR_DIR, { recursive: true });
 
 const MIME_EXT = {
   'image/jpeg': '.jpg',
@@ -9,19 +15,18 @@ const MIME_EXT = {
   'image/webp': '.webp',
 };
 
-// Storage key for an avatar filename (stored bare in users.profile_picture_filename).
-function avatarKey(filename) {
-  return `avatars/${filename}`;
+function avatarPath(filename) {
+  return path.join(AVATAR_DIR, filename);
 }
 
 async function saveAvatarBytes(userId, buffer, mimetype) {
   const ext = MIME_EXT[mimetype] || '.jpg';
   const filename = `avatar-${userId}-${randomUUID()}${ext}`;
-  await storage.put(avatarKey(filename), buffer, { contentType: mimetype });
+  fs.writeFileSync(avatarPath(filename), buffer);
 
   const old = await pool.query('SELECT profile_picture_filename FROM users WHERE id = $1', [userId]);
   if (old.rows[0]?.profile_picture_filename) {
-    storage.remove(avatarKey(old.rows[0].profile_picture_filename));
+    fs.unlink(avatarPath(old.rows[0].profile_picture_filename), () => {});
   }
   await pool.query('UPDATE users SET profile_picture_filename = $1 WHERE id = $2', [filename, userId]);
   return filename;
@@ -30,7 +35,7 @@ async function saveAvatarBytes(userId, buffer, mimetype) {
 async function clearAvatar(userId) {
   const r = await pool.query('SELECT profile_picture_filename FROM users WHERE id = $1', [userId]);
   if (r.rows[0]?.profile_picture_filename) {
-    storage.remove(avatarKey(r.rows[0].profile_picture_filename));
+    fs.unlink(avatarPath(r.rows[0].profile_picture_filename), () => {});
   }
   await pool.query('UPDATE users SET profile_picture_filename = NULL WHERE id = $1', [userId]);
 }
@@ -56,7 +61,8 @@ async function saveAvatarFromBytes(userId, bytes, mimetype) {
 }
 
 module.exports = {
-  avatarKey,
+  AVATAR_DIR,
+  avatarPath,
   saveAvatarBytes,
   clearAvatar,
   fetchAndSaveAvatarFromUrl,

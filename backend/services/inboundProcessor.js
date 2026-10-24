@@ -19,9 +19,9 @@
 // for ticket descriptions.
 
 const path = require('path');
+const fsp = require('fs').promises;
 const { randomUUID } = require('crypto');
 const { pool } = require('../db/pool');
-const storage = require('./storage');
 const { nextInternalRef, computePriority } = require('../db/schema');
 const { buildWritePatch, decryptRow, getMode } = require('./fields');
 const { encrypt } = require('./crypto');
@@ -47,6 +47,7 @@ const dedupOmit = require('./dedupOmit');
 const sla = require('./sla');
 const assignmentPolicies = require('./assignmentPolicies');
 
+const UPLOADS_DIR = process.env.UPLOADS_DIR || '/data/uploads';
 const APP_URL = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
 const AUTHORIZED_SUBMIT_ROLES = new Set(['Admin', 'Manager', 'Submitter']);
 
@@ -507,7 +508,7 @@ async function appendCommentToTicket({ ticketId, submitter, body, queueRowId }) 
   return ins.rows[0].id;
 }
 
-// Persist a single inbound attachment to storage + DB. When commentId is
+// Persist a single inbound attachment to disk + DB. When commentId is
 // supplied, the row is linked to that comment so the UI can render the
 // file inline under the parent comment (mirrors user-uploaded files
 // posted via the comment composer). Pass null for ticket-level files
@@ -515,12 +516,13 @@ async function appendCommentToTicket({ ticketId, submitter, body, queueRowId }) 
 async function persistAttachment({ ticketId, userId, commentId = null, filename, mimetype, contentBuffer }) {
   const ext = filename.includes('.') ? path.extname(filename) : '';
   const onDiskName = `${randomUUID()}${ext}`;
+  const filePath = path.join(UPLOADS_DIR, onDiskName);
   const mode = await getMode(pool);
   const encryptedAtRest = mode === 'standard';
   const onDisk = encryptedAtRest
     ? await encrypt(contentBuffer, `attachments.file:${onDiskName}`)
     : contentBuffer;
-  await storage.put(onDiskName, onDisk);
+  await fsp.writeFile(filePath, onDisk);
   const patch = await buildWritePatch(pool, 'attachments', { original_name: filename });
   const cols = ['ticket_id', 'user_id', 'comment_id', 'filename', 'mimetype', 'size', 'encrypted_at_rest', ...patch.cols];
   const values = [ticketId, userId, commentId, onDiskName, mimetype || 'application/octet-stream',

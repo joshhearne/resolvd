@@ -91,17 +91,6 @@ async function authenticate({ email, password }) {
        last_login = NOW(), last_login_provider = 'local' WHERE id = $1`,
     [user.id]
   );
-  // Upgrade hashes written with other params (e.g. by the other runtime:
-  // Docker uses native argon2's defaults, Workers a lighter pure-JS set)
-  // so later logins verify at this runtime's own cost.
-  try {
-    if (argon2.needsRehash(user.password_hash)) {
-      await pool.query('UPDATE users SET password_hash = $1 WHERE id = $2',
-        [await hashPassword(password), user.id]);
-    }
-  } catch (err) {
-    console.warn('password rehash skipped:', err.message);
-  }
   return user;
 }
 
