@@ -36,10 +36,18 @@ services:
     volumes:
       - uploads-data:/data/uploads
     networks:
-      - internal
+      internal:
+        # nginx proxies to this alias, not the service name. Docker gives
+        # every service its name as an alias on each network it joins, so
+        # "backend" also resolves on the shared alert-intake network, where
+        # any other Resolvd stack on this host (a dev or sandbox clone)
+        # answers to it too and nginx would round-robin between backends.
+        # An alias set only on internal stays unique to this stack.
+        aliases:
+          - resolvd-api
       # Polls Uptime Kuma's /metrics (http://uptime-kuma:3001) for live
       # monitored-item status. Postgres stays on internal only.
-      - alert-intake
+      alert-intake: {}
     depends_on:
       postgres:
         condition: service_healthy
