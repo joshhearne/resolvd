@@ -68,15 +68,15 @@ export default function AdminBranding() {
         credentials: "include",
         body: fd,
       });
-      if (!res.ok) throw new Error("Upload failed");
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Logo upload failed");
       setBranding((prev) => ({
         ...prev,
         logo_url: data.logo_url + "?t=" + Date.now(),
       }));
       toast.success("Logo uploaded");
-    } catch {
-      toast.error("Logo upload failed");
+    } catch (err) {
+      toast.error(err.message);
     } finally {
       setUploading(false);
     }
@@ -108,15 +108,15 @@ export default function AdminBranding() {
         credentials: "include",
         body: fd,
       });
-      if (!res.ok) throw new Error("Upload failed");
-      const data = await res.json();
+      const data = await res.json().catch(() => ({}));
+      if (!res.ok) throw new Error(data.error || "Favicon upload failed");
       setBranding((prev) => ({
         ...prev,
         favicon_url: data.favicon_url + "?t=" + Date.now(),
       }));
       toast.success("Favicon uploaded");
-    } catch {
-      toast.error("Favicon upload failed");
+    } catch (err) {
+      toast.error(err.message);
     } finally {
       setUploadingFavicon(false);
     }

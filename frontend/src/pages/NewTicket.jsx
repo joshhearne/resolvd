@@ -323,10 +323,13 @@ export default function NewTicket() {
             credentials: "include",
             body: fd,
           });
-          if (!res.ok) throw new Error("attachment upload failed");
+          if (!res.ok) {
+            const e = await res.json().catch(() => ({}));
+            throw new Error(e.error || "attachment upload failed");
+          }
         } catch (err) {
           toast.error(
-            "Ticket created, but some attachments failed to upload. Add them from the ticket page.",
+            `Ticket created, but attachments failed to upload (${err.message}). Add them from the ticket page.`,
           );
         }
       }

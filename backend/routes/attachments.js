@@ -6,6 +6,7 @@ const fsp = require('fs').promises;
 const { randomUUID } = require('crypto');
 const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
+const { handleUploadErrors } = require('../middleware/upload');
 const { buildWritePatch, decryptRow, decryptRows, getMode } = require('../services/fields');
 const { encrypt, decrypt } = require('../services/crypto');
 const { logSupportRead } = require('../middleware/supportAccess');
@@ -19,9 +20,10 @@ if (!fs.existsSync(UPLOADS_DIR)) {
 
 // Use memory storage so the file body can be encrypted in-process before
 // hitting disk. The 50MB default cap (env-configurable) keeps RAM bounded.
+const MAX_UPLOAD_BYTES = Number(process.env.MAX_UPLOAD_MB || 50) * 1024 * 1024;
 const upload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: Number(process.env.MAX_UPLOAD_MB || 50) * 1024 * 1024 },
+  limits: { fileSize: MAX_UPLOAD_BYTES },
 });
 
 function fileCtx(filename) {
@@ -66,7 +68,7 @@ router.get('/tickets/:ticketId/attachments', requireAuth, async (req, res) => {
 
 // POST /api/tickets/:ticketId/attachments
 router.post('/tickets/:ticketId/attachments', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter'),
-  upload.array('files', 20), async (req, res) => {
+  handleUploadErrors(upload.array('files', 20), { maxBytes: MAX_UPLOAD_BYTES }), async (req, res) => {
     if (!req.files || req.files.length === 0) {
       return res.status(400).json({ error: 'No files uploaded' });
     }
