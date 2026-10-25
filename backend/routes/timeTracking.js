@@ -1,0 +1,156 @@
+// Technician time tracking.
+//
+//   GET    /api/time-tracking/settings            — handlers (policy the UI needs)
+//   PATCH  /api/time-tracking/settings            — Admin
+//   GET    /api/time-tracking/timers/me           — caller's running/paused timers
+//
+//   GET    /api/tickets/:id/time                  — entries + totals + caller's timer
+//   POST   /api/tickets/:id/timer/start           — { auto?, trigger? } (auto honours settings)
+//   POST   /api/tickets/:id/timer/pause
+//   POST   /api/tickets/:id/timer/discard
+//   POST   /api/tickets/:id/timer/leave           — tech left the ticket; applies discard rule
+//   POST   /api/tickets/:id/time                  — { minutes, note, visibility?, from_timer? }
+//   PATCH  /api/tickets/:id/time/:entryId         — { minutes?, note?, billable? }
+//   DELETE /api/tickets/:id/time/:entryId
+//
+// Ticket-scoped routes use the same handler gate as internal notes.
+
+const express = require('express');
+const { pool } = require('../db/pool');
+const { requireAuth, requireRole } = require('../middleware/auth');
+const { isProjectHandler } = require('../services/ticketHelpers');
+const tt = require('../services/timeTracking');
+const { canChooseVisibility } = require('../services/timeTrackingRules');
+
+const settingsRouter = express.Router();
+const ticketRouter = express.Router();
+
+function fail(res, err, label) {
+  if (err.httpStatus) return res.status(err.httpStatus).json({ error: err.message });
+  console.error(`time-tracking ${label}:`, err);
+  return res.status(500).json({ error: 'Database error' });
+}
+
+async function requireTicketHandler(req, res, next) {
+  try {
+    const user = req.session.user;
+    const ticketId = Number(req.params.id);
+    if (!Number.isInteger(ticketId) || ticketId <= 0) {
+      return res.status(400).json({ error: 'Invalid ticket id' });
+    }
+    const t = await pool.query('SELECT id, project_id FROM tickets WHERE id = $1', [ticketId]);
+    if (!t.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
+    const ok = await isProjectHandler(pool, { userId: user.id, role: user.role, projectId: t.rows[0].project_id });
+    if (!ok) return res.status(403).json({ error: 'Forbidden' });
+    req.ticketId = ticketId;
+    next();
+  } catch (err) { fail(res, err, 'access'); }
+}
+
+function presentSettings(s, role) {
+  return {
+    enabled: s.enabled,
+    auto_start_on_take: s.auto_start_on_take,
+    auto_start_on_open: s.auto_start_on_open,
+    discard_untouched: s.discard_untouched,
+    warn_after_minutes: s.warn_after_minutes,
+    default_visibility: s.default_visibility,
+    visibility_choice: s.visibility_choice,
+    min_note_chars: s.min_note_chars,
+    can_choose_visibility: canChooseVisibility(s, role),
+    updated_at: s.updated_at,
+  };
+}
+
+// Settings are readable by anyone who can be a handler somewhere. Global
+// Submitters with an agent flag on a project still need them, so only
+// require auth here; nothing in the payload is sensitive.
+settingsRouter.get('/settings', requireAuth, async (req, res) => {
+  try { res.json(presentSettings(await tt.getSettings(), req.session.user.role)); }
+  catch (err) { fail(res, err, 'settings get'); }
+});
+
+settingsRouter.patch('/settings', requireAuth, requireRole('Admin'), async (req, res) => {
+  try { res.json(presentSettings(await tt.patchSettings(req.body), req.session.user.role)); }
+  catch (err) { fail(res, err, 'settings patch'); }
+});
+
+settingsRouter.get('/timers/me', requireAuth, async (req, res) => {
+  try { res.json(await tt.listUserTimers(req.session.user.id)); }
+  catch (err) { fail(res, err, 'timers me'); }
+});
+
+ticketRouter.get('/:id/time', requireAuth, requireTicketHandler, async (req, res) => {
+  try {
+    const [list, timer] = await Promise.all([
+      tt.listEntries(req.ticketId),
+      tt.getTimer(req.session.user.id, req.ticketId),
+    ]);
+    res.json({ ...list, timer });
+  } catch (err) { fail(res, err, 'list'); }
+});
+
+ticketRouter.post('/:id/timer/start', requireAuth, requireTicketHandler, async (req, res) => {
+  try {
+    const auto = req.body?.auto === true;
+    res.json(await tt.startTimer({
+      userId: req.session.user.id,
+      ticketId: req.ticketId,
+      auto,
+      trigger: auto ? String(req.body?.trigger || 'open') : 'manual',
+    }));
+  } catch (err) { fail(res, err, 'start'); }
+});
+
+ticketRouter.post('/:id/timer/pause', requireAuth, requireTicketHandler, async (req, res) => {
+  try { res.json({ timer: await tt.pauseTimer({ userId: req.session.user.id, ticketId: req.ticketId }) }); }
+  catch (err) { fail(res, err, 'pause'); }
+});
+
+ticketRouter.post('/:id/timer/discard', requireAuth, requireTicketHandler, async (req, res) => {
+  try { res.json({ discarded: await tt.discardTimer({ userId: req.session.user.id, ticketId: req.ticketId }) }); }
+  catch (err) { fail(res, err, 'discard'); }
+});
+
+ticketRouter.post('/:id/timer/leave', requireAuth, requireTicketHandler, async (req, res) => {
+  try { res.json(await tt.leaveTicket({ userId: req.session.user.id, ticketId: req.ticketId })); }
+  catch (err) { fail(res, err, 'leave'); }
+});
+
+ticketRouter.post('/:id/time', requireAuth, requireTicketHandler, async (req, res) => {
+  try {
+    const b = req.body || {};
+    const entry = await tt.logWork({
+      user: req.session.user,
+      ticketId: req.ticketId,
+      minutes: b.minutes,
+      note: b.note,
+      visibility: b.visibility,
+      fromTimer: b.from_timer === true,
+    });
+    res.status(201).json(entry);
+  } catch (err) { fail(res, err, 'log'); }
+});
+
+ticketRouter.patch('/:id/time/:entryId', requireAuth, requireTicketHandler, async (req, res) => {
+  try {
+    res.json(await tt.updateEntry({
+      user: req.session.user,
+      ticketId: req.ticketId,
+      entryId: Number(req.params.entryId),
+      body: req.body || {},
+    }));
+  } catch (err) { fail(res, err, 'update'); }
+});
+
+ticketRouter.delete('/:id/time/:entryId', requireAuth, requireTicketHandler, async (req, res) => {
+  try {
+    res.json(await tt.deleteEntry({
+      user: req.session.user,
+      ticketId: req.ticketId,
+      entryId: Number(req.params.entryId),
+    }));
+  } catch (err) { fail(res, err, 'delete'); }
+});
+
+module.exports = { settingsRouter, ticketRouter };

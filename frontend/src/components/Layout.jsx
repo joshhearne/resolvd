@@ -6,6 +6,7 @@ import { useTheme } from "../context/ThemeContext";
 import { brandingLogoFilter } from "../utils/helpers";
 import Avatar from "./Avatar";
 import NotificationTray from "./NotificationTray";
+import ActiveTimerPill from "./ActiveTimerPill";
 import NewMenu from "./NewMenu";
 
 // Icon set — inline SVGs in the lucide-react visual style (stroke=2,
@@ -583,6 +584,7 @@ export default function Layout() {
             </div>
           </div>
           <div className="flex items-center gap-1">
+            {user && user.role !== "Viewer" && <ActiveTimerPill />}
             {user && <NotificationTray />}
             <ThemeToggle />
             <UserMenu user={user} logout={logout} />

@@ -13,6 +13,7 @@ import {
 } from "../utils/helpers";
 import HybridTime from "../components/HybridTime";
 import SlaTimer from "../components/SlaTimer";
+import TimeTracker from "../components/TimeTracker";
 import AiUsageBadge from "../components/AiUsageBadge";
 import CustomFieldsCard from "../components/CustomFieldsCard";
 import MentionTextarea from "../components/MentionTextarea";
@@ -641,6 +642,14 @@ export default function TicketDetail() {
       })
       .catch(() => setLoading(false));
   }, [id, loadTicket]);
+
+  // A work log lands as a private note or a public comment (plus an
+  // audit row), so refresh all three.
+  function reloadAfterTimeLog() {
+    loadTicket().catch(() => {});
+    api.get(`/api/tickets/${id}/notes`).then((n) => setNotes(Array.isArray(n) ? n : [])).catch(() => {});
+    api.get(`/api/tickets/${id}/audit`).then(setAuditLog).catch(() => {});
+  }
 
   async function addNote() {
     const body = noteDraft.trim();
@@ -1515,6 +1524,14 @@ export default function TicketDetail() {
           <div className="mt-1.5">
             <SlaTimer ticket={ticket} />
           </div>
+          {canHandleNotes && (
+            <TimeTracker
+              ticketId={ticket.id}
+              ticket={ticket}
+              user={user}
+              onLogged={reloadAfterTimeLog}
+            />
+          )}
         </div>
         <div className="flex items-center gap-2 flex-shrink-0">
           <button
