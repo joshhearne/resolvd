@@ -9,6 +9,7 @@ import Layout from "./components/Layout";
 import Dashboard from "./pages/Dashboard";
 import TicketList from "./pages/TicketList";
 import Tasks from "./pages/Tasks";
+import Time from "./pages/Time";
 import NewTicket from "./pages/NewTicket";
 import TicketDetail from "./pages/TicketDetail";
 import Admin from "./pages/Admin";
@@ -137,6 +138,7 @@ function AppRoutes() {
         <Route path="dashboard" element={<Dashboard />} />
         <Route path="tickets" element={<TicketList />} />
         <Route path="tasks" element={<Tasks />} />
+        <Route path="time" element={<Time />} />
         <Route
           path="tickets/new"
           element={

@@ -17,6 +17,8 @@
 //   PATCH  /api/billing/companies/:companyId/contracts/:id — Admin/Manager
 //   DELETE /api/billing/companies/:companyId/contracts/:id — Admin/Manager
 //
+//   GET    /api/billing/approvals?from=&to=&status=pending|approved&user_id=&company_id= — Admin/Manager
+//   POST   /api/billing/approvals                          — Admin/Manager { entry_ids: [], approve }
 //   GET    /api/billing/report/utilisation?from=&to=       — Admin/Manager
 
 const express = require('express');
@@ -59,6 +61,14 @@ router.patch('/companies/:companyId/contracts/:id',
   wrap('contracts update', (req) => billing.updateContract(id(req.params.companyId), id(req.params.id), req.body)));
 router.delete('/companies/:companyId/contracts/:id',
   wrap('contracts delete', (req) => billing.deleteContract(id(req.params.companyId), id(req.params.id))));
+
+router.get('/approvals', wrap('approvals list', (req) => billing.approvalQueue({
+  from: req.query.from, to: req.query.to, status: req.query.status,
+  userId: req.query.user_id || null, companyId: req.query.company_id || null,
+})));
+router.post('/approvals', wrap('approvals set', (req) => billing.bulkApproval({
+  user: req.session.user, entryIds: req.body?.entry_ids, approve: req.body?.approve !== false,
+})));
 
 router.get('/report/utilisation',
   wrap('utilisation', (req) => billing.utilisation({ from: req.query.from, to: req.query.to })));

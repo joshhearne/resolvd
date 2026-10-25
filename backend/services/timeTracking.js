@@ -423,6 +423,8 @@ async function logWork({ user, ticketId, minutes, startedAt, endedAt, note, visi
       console.error('time entry public fanout:', err.message);
     }
   }
+  // A prepaid block may have just crossed its alert line.
+  require('./billing').checkBlockAlertsForTicket(ticketId);
   return getEntry(entryId);
 }
 
@@ -728,7 +730,35 @@ async function exportCsv({ from, to, approvedOnly = false }) {
   return `\uFEFF${lines.join('\r\n')}\r\n`;
 }
 
+// One tech's entries that ended in [from, to), newest first, with ticket
+// ref/title. Grouping by day/week is left to the client (its timezone).
+async function timesheet({ userId, from, to }) {
+  const start = new Date(from);
+  const end = new Date(to);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) {
+    throw httpError(400, 'Give a valid from / to range');
+  }
+  if (end - start > 92 * 86400000) throw httpError(400, 'Range is limited to 92 days');
+  const r = await pool.query(
+    `SELECT e.id, e.ticket_id, e.started_at, e.ended_at, e.duration_minutes, e.visibility,
+            e.billable, e.approved_at, e.invoiced_at, e.note, e.note_enc,
+            wt.name AS work_type_name, t.internal_ref, t.title, t.title_enc
+       FROM time_entries e
+       JOIN tickets t ON t.id = e.ticket_id
+  LEFT JOIN time_work_types wt ON wt.id = e.work_type_id
+      WHERE e.user_id = $1 AND e.ended_at >= $2 AND e.ended_at < $3
+      ORDER BY e.started_at DESC`,
+    [userId, start, end]
+  );
+  await decryptRows('time_entries', r.rows);
+  await decryptRows('tickets', r.rows);
+  for (const row of r.rows) { delete row.note_enc; delete row.title_enc; }
+  const u = await pool.query('SELECT id, display_name, email FROM users WHERE id = $1', [userId]);
+  return { user: u.rows[0] || null, entries: r.rows };
+}
+
 module.exports = {
+  timesheet,
   getSettings,
   patchSettings,
   startTimer,

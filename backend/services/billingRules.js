@@ -191,6 +191,19 @@ function toDay(v) {
   return String(v).slice(0, 10);
 }
 
+// How full a prepaid block is: null (fine), 'threshold' (at or past the
+// alert percentage) or 'exhausted' (used up). A 0 percent threshold
+// turns the early warning off; 'exhausted' still reports.
+function blockAlertLevel(usedMinutes, blockMinutes, percent) {
+  const total = Number(blockMinutes) || 0;
+  if (total <= 0) return null;
+  const used = Number(usedMinutes) || 0;
+  if (used >= total) return 'exhausted';
+  const pct = Number(percent) || 0;
+  if (pct > 0 && used >= (total * pct) / 100) return 'threshold';
+  return null;
+}
+
 // Validation helpers for the admin CRUD.
 function bad(msg) { throw Object.assign(new Error(msg), { httpStatus: 400 }); }
 
@@ -216,6 +229,7 @@ module.exports = {
   priceUnits,
   totals,
   contractOn,
+  blockAlertLevel,
   toDay,
   money,
   multiplier,

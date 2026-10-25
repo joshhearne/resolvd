@@ -26,6 +26,7 @@ const DEFAULT_SETTINGS = Object.freeze({
   billing_ticket_minimum_scope: 'ticket',
   billing_require_approval: false,
   billing_currency: 'USD',
+  billing_block_alert_percent: 80,
   edit_lock_days: 0,
 });
 
@@ -235,6 +236,11 @@ function cleanSettingsPatch(body) {
   if (body.billing_require_approval !== undefined) {
     if (typeof body.billing_require_approval !== 'boolean') bad('billing_require_approval must be true or false');
     out.billing_require_approval = body.billing_require_approval;
+  }
+  if (body.billing_block_alert_percent !== undefined) {
+    const n = Number(body.billing_block_alert_percent);
+    if (!Number.isInteger(n) || n < 0 || n > 100) bad('billing_block_alert_percent must be 0–100');
+    out.billing_block_alert_percent = n;
   }
   if (body.billing_currency !== undefined) {
     const c = String(body.billing_currency || '').trim().toUpperCase();

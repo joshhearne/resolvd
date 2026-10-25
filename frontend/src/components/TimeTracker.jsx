@@ -92,7 +92,7 @@ const HOURS_LABEL = { after_hours: "after-hours", weekend: "weekend" };
 
 // One entry's price: billable minutes, rate (with any after-hours /
 // weekend multiplier), coverage and amount.
-function PriceLine({ line, currency, logged }) {
+export function PriceLine({ line, currency, logged }) {
   if (!line) return null;
   const parts = [];
   if (line.billable_minutes !== logged) parts.push(`${fmtMinutes(line.billable_minutes)} billable`);
@@ -148,8 +148,10 @@ function BillingSummary({ billing, entries, onCustomer, onApproveAll }) {
         <p className="text-fg-dim">This ticket's project isn't linked to a customer (Admin → Companies → customer → Projects).</p>
       )}
       {usage && (
-        <p className="text-fg-muted">
+        <p className={usage.level === "exhausted" ? "text-red-600 dark:text-red-400" : usage.level === "threshold" ? "text-amber-700 dark:text-amber-300" : "text-fg-muted"}>
           Block {usage.period === "term" ? "for the term" : `for ${usage.period}`}: {fmtMinutes(usage.used_minutes)} of {fmtMinutes(usage.block_minutes)} used
+          {usage.level === "exhausted" && " — used up, further time bills as overage"}
+          {usage.level === "threshold" && " — nearly used up"}
         </p>
       )}
       {requireApproval && pending > 0 && (

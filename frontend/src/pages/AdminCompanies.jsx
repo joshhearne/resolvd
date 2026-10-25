@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
 import { useBranding } from "../context/BrandingContext";
@@ -46,7 +47,11 @@ export default function AdminCompanies() {
   const [companies, setCompanies] = useState([]);
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [selectedId, setSelectedId] = useState(null);
+  // ?company=<id>&tab=<tab> deep-links a company (e.g. from a prepaid
+  // block alert notification).
+  const [params] = useSearchParams();
+  const [selectedId, setSelectedId] = useState(() => Number(params.get("company")) || null);
+  const deepTab = params.get("tab");
   const [showCreate, setShowCreate] = useState(false);
 
   async function loadList() {
@@ -192,6 +197,7 @@ export default function AdminCompanies() {
             </div>
           ) : (
             <CompanyDetail
+              initialTab={selected.id === Number(params.get("company")) ? deepTab : null}
               company={selected}
               projects={projects}
               onBack={() => setSelectedId(null)}
@@ -369,7 +375,7 @@ function MspModeCard() {
   );
 }
 
-function CompanyDetail({ company, projects, onBack, onReload, onDeleted }) {
+function CompanyDetail({ company, projects, onBack, onReload, onDeleted, initialTab }) {
   const { user } = useAuth();
   const [name, setName] = useState(company.name);
   const [domain, setDomain] = useState(company.domain || "");
@@ -378,7 +384,8 @@ function CompanyDetail({ company, projects, onBack, onReload, onDeleted }) {
     Array.isArray(company.auto_add_domains) ? company.auto_add_domains.join(", ") : ""
   );
   const [savingCore, setSavingCore] = useState(false);
-  const [tab, setTab] = useState(company.kind === "internal" ? "members" : "contacts");
+  const defaultTab = company.kind === "internal" ? "members" : "contacts";
+  const [tab, setTab] = useState(initialTab || defaultTab);
 
   useEffect(() => {
     setName(company.name);
@@ -387,7 +394,7 @@ function CompanyDetail({ company, projects, onBack, onReload, onDeleted }) {
     setAutoDomains(
       Array.isArray(company.auto_add_domains) ? company.auto_add_domains.join(", ") : ""
     );
-    setTab(company.kind === "internal" ? "members" : "contacts");
+    setTab(initialTab || defaultTab);
   }, [company.id]);
 
   async function saveCore() {

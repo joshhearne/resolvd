@@ -160,6 +160,22 @@ function BillingCard({ v, set, enabled }) {
           />
           <span className="text-xs text-fg-muted">3-letter code (USD, GBP, AUD…). Used on rates and exports.</span>
         </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs font-semibold text-fg-muted uppercase">Prepaid block alert</span>
+          <span className="flex items-center gap-2 text-sm">
+            Warn at
+            <input
+              type="number" min="0" max="100"
+              value={v.billing_block_alert_percent ?? 80}
+              onChange={(e) => set({ billing_block_alert_percent: Number(e.target.value) })}
+              className="input w-20 py-1"
+            />
+            % used
+          </span>
+          <span className="text-xs text-fg-muted">
+            Admins and Managers get one notification per block period when a customer's block reaches this, and another when it's used up. 0 = only when used up.
+          </span>
+        </label>
         <div className="flex flex-col gap-1">
           <span className="text-xs font-semibold text-fg-muted uppercase">Approval</span>
           <Toggle

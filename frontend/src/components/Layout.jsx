@@ -138,6 +138,13 @@ const Icon = {
       <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
     </svg>
   ),
+  Clock: (p) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <circle cx="12" cy="12" r="10" />
+      <polyline points="12 6 12 12 16 14" />
+    </svg>
+  ),
   Sun: (p) => (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
       strokeLinecap="round" strokeLinejoin="round" {...p}>
@@ -341,6 +348,12 @@ function Sidebar({ collapsed, transientOpen, onSetCollapsed, onSetTransient, use
     { to: "/dashboard", label: "Dashboard", icon: Icon.LayoutDashboard, show: true },
     { to: "/tickets", label: "Tickets", icon: Icon.Ticket, show: true },
     { to: "/tasks", label: "Tasks", icon: Icon.CheckSquare, show: true },
+    {
+      to: "/time",
+      label: "Time",
+      icon: Icon.Clock,
+      show: ["Admin", "Manager", "Tech"].includes(user?.role),
+    },
     {
       to: "/projects",
       label: "Projects",

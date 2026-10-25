@@ -3,6 +3,7 @@
 //   GET    /api/time-tracking/settings            — handlers (policy the UI needs)
 //   PATCH  /api/time-tracking/settings            — Admin
 //   GET    /api/time-tracking/timers/me           — caller's running/paused timers
+//   GET    /api/time-tracking/timesheet?from=&to=&user_id= — own entries (Admin/Manager: any tech)
 //   GET    /api/time-tracking/work-types          — active types (?all=1 for Admin: incl. retired)
 //   POST   /api/time-tracking/work-types          — Admin { name, billable?, active?, sort_order? }
 //   PATCH  /api/time-tracking/work-types/:id      — Admin
@@ -84,6 +85,7 @@ function presentSettings(s, role) {
     billing_ticket_minimum_scope: s.billing_ticket_minimum_scope,
     billing_require_approval: s.billing_require_approval,
     billing_currency: s.billing_currency,
+    billing_block_alert_percent: s.billing_block_alert_percent,
     edit_lock_days: s.edit_lock_days,
     can_choose_visibility: canChooseVisibility(s, role),
     updated_at: s.updated_at,
@@ -106,6 +108,22 @@ settingsRouter.patch('/settings', requireAuth, requireRole('Admin'), async (req,
 settingsRouter.get('/timers/me', requireAuth, async (req, res) => {
   try { res.json(await tt.listUserTimers(req.session.user.id)); }
   catch (err) { fail(res, err, 'timers me'); }
+});
+
+// GET /api/time-tracking/timesheet?from=&to=&user_id=
+// A tech's own entries ending in [from, to). Admin/Manager may pass
+// user_id to see anyone's. Entries carry billable / approval status but
+// never amounts.
+settingsRouter.get('/timesheet', requireAuth, async (req, res) => {
+  try {
+    const me = req.session.user;
+    let userId = me.id;
+    if (req.query.user_id && Number(req.query.user_id) !== me.id) {
+      if (!PRIV.has(me.role)) return res.status(403).json({ error: 'Only Admin or Manager can view other timesheets' });
+      userId = Number(req.query.user_id);
+    }
+    res.json(await tt.timesheet({ userId, from: req.query.from, to: req.query.to }));
+  } catch (err) { fail(res, err, 'timesheet'); }
 });
 
 settingsRouter.get('/work-types', requireAuth, async (req, res) => {

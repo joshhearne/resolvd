@@ -138,3 +138,20 @@ describe('contractOn', () => {
     expect(contractOn(cs, '2025-12-31T15:00:00Z', 'UTC')).toBe(null);
   });
 });
+
+describe('blockAlertLevel', () => {
+  const { blockAlertLevel } = br;
+  it('reports threshold and exhausted', () => {
+    expect(blockAlertLevel(470, 600, 80)).toBe(null);
+    expect(blockAlertLevel(480, 600, 80)).toBe('threshold');
+    expect(blockAlertLevel(600, 600, 80)).toBe('exhausted');
+    expect(blockAlertLevel(650, 600, 80)).toBe('exhausted');
+  });
+  it('0% turns the early warning off but still reports used up', () => {
+    expect(blockAlertLevel(590, 600, 0)).toBe(null);
+    expect(blockAlertLevel(600, 600, 0)).toBe('exhausted');
+  });
+  it('no block, no alert', () => {
+    expect(blockAlertLevel(10, 0, 80)).toBe(null);
+  });
+});
