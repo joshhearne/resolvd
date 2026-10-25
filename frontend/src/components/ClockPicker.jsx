@@ -120,9 +120,10 @@ export default function ClockPicker({ hours, minutes, snap = "five", onConfirm, 
               </button>
             </div>
           )}
-          <div className="flex flex-col rounded overflow-hidden">
-            <button type="button" className={`${merBtn(!pm)} rounded-t`} onClick={() => setPm(false)}>AM</button>
-            <button type="button" className={`${merBtn(pm)} rounded-b -mt-px`} onClick={() => setPm(true)}>PM</button>
+          {/* Either half toggles: one tap flips AM ↔ PM wherever it lands. */}
+          <div className="flex flex-col rounded overflow-hidden" role="group" aria-label="AM or PM">
+            <button type="button" aria-pressed={!pm} className={`${merBtn(!pm)} rounded-t`} onClick={() => setPm((v) => !v)}>AM</button>
+            <button type="button" aria-pressed={pm} className={`${merBtn(pm)} rounded-b -mt-px`} onClick={() => setPm((v) => !v)}>PM</button>
           </div>
         </div>
 
