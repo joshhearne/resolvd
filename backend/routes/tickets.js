@@ -18,7 +18,7 @@ const { getMode, buildWritePatch, decryptRow, decryptRows } = require('../servic
 const blindIndex = require('../services/blindIndex');
 const { logSupportRead } = require('../middleware/supportAccess');
 const { sendVendorEmail } = require('../services/vendorOutbound');
-const { auditLog, systemComment } = require('../services/ticketHelpers');
+const { auditLog, systemComment, isProjectHandler } = require('../services/ticketHelpers');
 const ticketCustomFields = require('../services/ticketCustomFields');
 
 const router = express.Router();
@@ -1006,6 +1006,11 @@ router.patch('/:id', requireAuth, async (req, res) => {
           oldStatus: old,
           newStatus: body.internal_status,
         });
+        // Hold / resolved / terminal pauses every running time-tracking
+        // timer on the ticket. Nothing resumes them automatically.
+        await require('../services/timeTracking').pauseForStatus(client, {
+          ticketId: ticket.id, statusName: nextStatus, tag, isTerminal,
+        });
         // Follow-up timer lives on pending_review states. Defensive
         // clear on any move out of pending_review (the in-flight guard
         // above already blocks transitions while followup_at is set).
@@ -1155,6 +1160,20 @@ router.patch('/:id', requireAuth, async (req, res) => {
       await decryptRow('tickets', row, { aliases: TICKET_JOIN_ALIASES });
       return row;
     });
+
+    // Taking a ticket (assigning it to yourself) can auto-start your
+    // timer. Awaited so the client's refetch sees it; failure never
+    // blocks the update.
+    if (
+      body.assigned_to !== undefined &&
+      isAdmin &&
+      updated.assigned_to === user.id &&
+      ticket.assigned_to !== user.id
+    ) {
+      await require('../services/timeTracking')
+        .startTimer({ userId: user.id, ticketId: ticket.id, auto: true, trigger: 'take' })
+        .catch((err) => console.error('time tracking auto-start on take:', err.message));
+    }
 
     res.json(updated);
 
@@ -1333,6 +1352,9 @@ router.post('/bulk', requireAuth, requireRole('Admin'), async (req, res) => {
             const tagRow = await client.query(`SELECT semantic_tag, is_terminal FROM statuses WHERE kind='internal' AND name=$1`, [newStatus]);
             const tag = tagRow.rows[0]?.semantic_tag || null;
             const isTerminal = !!tagRow.rows[0]?.is_terminal;
+            await require('../services/timeTracking').pauseForStatus(client, {
+              ticketId: ticket.id, statusName: newStatus, tag, isTerminal,
+            });
             // Mirror single-ticket PATCH: terminal statuses (Closed) also
             // stop the resolve clock. Without this, SLA tickWarnings /
             // tickBreaches keep firing on bulk-closed tickets.
@@ -1867,6 +1889,7 @@ router.delete('/:id/contacts/:contactId', requireAuth, requireRole('Admin', 'Man
 );
 
 // GET /api/tickets/:id/audit
+const TIME_AUDIT_ACTIONS = new Set(['time_logged', 'time_entry_deleted']);
 router.get('/:id/audit', requireAuth, async (req, res) => {
   try {
     const result = await pool.query(`
@@ -1877,7 +1900,13 @@ router.get('/:id/audit', requireAuth, async (req, res) => {
       ORDER BY a.created_at ASC
     `, [req.params.id]);
     await decryptRows('audit_log', result.rows);
-    res.json(result.rows);
+    // Time-tracking rows reveal private work logs — handlers only.
+    const user = req.session.user;
+    const proj = await pool.query('SELECT project_id FROM tickets WHERE id = $1', [req.params.id]);
+    const handler = await isProjectHandler(pool, {
+      userId: user.id, role: user.role, projectId: proj.rows[0]?.project_id,
+    });
+    res.json(handler ? result.rows : result.rows.filter((r) => !TIME_AUDIT_ACTIONS.has(r.action)));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Database error' });

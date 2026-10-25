@@ -3313,6 +3313,121 @@ Thanks,
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_assist_briefs_ticket ON ticket_assist_briefs(ticket_id, created_at DESC)`);
 
+    // Technician time tracking. Org-wide policy lives in a singleton
+    // settings row; per-user running/paused timers in ticket_timers;
+    // logged work in time_entries.
+    //
+    // Visibility and billing are deliberately separate axes. A work note
+    // is private (handler-only, stored as a ticket_notes row) unless the
+    // admin lets it be public (a regular thread comment). `billable` is
+    // its own flag, default FALSE, and is the ONLY thing a future
+    // Xero / QuickBooks export should key off — never visibility. A
+    // public note is not billable work and vice versa.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS time_tracking_settings (
+        id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        auto_start_on_take BOOLEAN NOT NULL DEFAULT TRUE,
+        auto_start_on_open BOOLEAN NOT NULL DEFAULT FALSE,
+        discard_untouched TEXT NOT NULL DEFAULT 'auto_started'
+          CHECK (discard_untouched IN ('off', 'auto_started', 'all')),
+        warn_after_minutes INTEGER NOT NULL DEFAULT 30,
+        default_visibility TEXT NOT NULL DEFAULT 'private'
+          CHECK (default_visibility IN ('private', 'public')),
+        visibility_choice TEXT NOT NULL DEFAULT 'admins'
+          CHECK (visibility_choice IN ('admins', 'handlers')),
+        min_note_chars INTEGER NOT NULL DEFAULT 10,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`INSERT INTO time_tracking_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING`);
+    // Billable-hours rules (Admin → Time tracking → Billable hours). Applied
+    // on read to entries flagged billable; logged minutes never change.
+    await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS billable_by_default BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS billing_round_increment INTEGER NOT NULL DEFAULT 1`);
+    await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS billing_round_mode TEXT NOT NULL DEFAULT 'up'`);
+    await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS billing_session_minimum INTEGER NOT NULL DEFAULT 0`);
+    await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS billing_ticket_minimum INTEGER NOT NULL DEFAULT 0`);
+    // Integrity: overlapping sessions (allow / warn → confirm / block) and
+    // the timesheet lock (techs can't edit entries older than N days).
+    await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS overlap_policy TEXT NOT NULL DEFAULT 'warn'`);
+    await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS edit_lock_days INTEGER NOT NULL DEFAULT 0`);
+    // Billing rule changes: 'uninvoiced' re-prices everything not yet
+    // invoiced (default); 'at_log' keeps each entry at the rules stored
+    // with it when it was logged (time_entries.billing_rules).
+    await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS billing_reprice TEXT NOT NULL DEFAULT 'uninvoiced'`);
+
+    // Admin-managed work types (Remote, Onsite, Travel, Internal…). The
+    // type's `billable` seeds a new entry's billable flag, so internal /
+    // admin time never lands billable by accident.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS time_work_types (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        billable BOOLEAN NOT NULL DEFAULT FALSE,
+        active BOOLEAN NOT NULL DEFAULT TRUE,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    // One row per (user, ticket). running_since NULL = paused. Elapsed =
+    // accumulated_seconds + (NOW() - running_since). status_at_start lets
+    // the discard-untouched rule tell whether the tech moved the ticket.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ticket_timers (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+        started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        running_since TIMESTAMPTZ,
+        accumulated_seconds INTEGER NOT NULL DEFAULT 0,
+        auto_started BOOLEAN NOT NULL DEFAULT FALSE,
+        start_trigger TEXT NOT NULL DEFAULT 'manual',
+        status_at_start TEXT,
+        warned_at TIMESTAMPTZ,
+        UNIQUE (user_id, ticket_id)
+      )
+    `);
+    // Why a paused timer stopped: NULL = the tech paused it, 'switched' =
+    // they started another timer, 'status:<name>' = the ticket moved into
+    // a hold / resolved / terminal status. Cleared on resume.
+    await client.query(`ALTER TABLE ticket_timers ADD COLUMN IF NOT EXISTS pause_reason TEXT`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_timers_running ON ticket_timers(running_since) WHERE running_since IS NOT NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_timers_ticket ON ticket_timers(ticket_id)`);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS time_entries (
+        id SERIAL PRIMARY KEY,
+        ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        started_at TIMESTAMPTZ,
+        ended_at TIMESTAMPTZ,
+        duration_minutes INTEGER NOT NULL CHECK (duration_minutes > 0),
+        note TEXT,
+        note_enc BYTEA,
+        visibility TEXT NOT NULL DEFAULT 'private' CHECK (visibility IN ('private', 'public')),
+        billable BOOLEAN NOT NULL DEFAULT FALSE,
+        source TEXT NOT NULL DEFAULT 'timer' CHECK (source IN ('timer', 'manual')),
+        ticket_note_id INTEGER REFERENCES ticket_notes(id) ON DELETE SET NULL,
+        comment_id INTEGER REFERENCES comments(id) ON DELETE SET NULL,
+        -- Reserved for a future accounting export: stamped when the entry
+        -- lands on an invoice so it is never exported twice.
+        invoiced_at TIMESTAMPTZ,
+        invoice_ref TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        edited_at TIMESTAMPTZ
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_time_entries_ticket ON time_entries(ticket_id, created_at)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_time_entries_user ON time_entries(user_id, created_at)`);
+    await client.query(`ALTER TABLE time_entries ADD COLUMN IF NOT EXISTS work_type_id INTEGER REFERENCES time_work_types(id) ON DELETE SET NULL`);
+    // Billing rules in force when the entry was logged; used when
+    // billing_reprice = 'at_log'. NULL on entries logged before this column.
+    await client.query(`ALTER TABLE time_entries ADD COLUMN IF NOT EXISTS billing_rules JSONB`);
+    // Overlap checks scan a tech's entries by time range.
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_time_entries_user_span ON time_entries(user_id, started_at, ended_at)`);
+
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');

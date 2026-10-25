@@ -134,6 +134,10 @@ const PREF_DEFAULTS = Object.freeze({
   signature: '',
   append_signature: false,
   append_signature_scope: 'vendor_only',
+  // Clock-dial time picker (time entries): 'five' snaps a tap to the
+  // nearest 5 minutes, holding the dial gives single minutes; 'exact'
+  // always takes the exact minute tapped.
+  clock_minute_snap: 'five',
   // Locale overrides — empty string means "inherit org branding".
   date_style_override: '',
   time_style_override: '',
@@ -218,6 +222,11 @@ router.patch('/me/prefs', requireAuth, async (req, res) => {
       // belong in the org-wide vendor outbound template, not per-user).
       if (patch.signature.length > 2000) {
         return res.status(400).json({ error: 'signature must be 2000 chars or fewer' });
+      }
+    }
+    if (patch.clock_minute_snap !== undefined) {
+      if (!['five', 'exact'].includes(patch.clock_minute_snap)) {
+        return res.status(400).json({ error: "clock_minute_snap must be 'five' or 'exact'" });
       }
     }
     if (patch.append_signature_scope !== undefined) {

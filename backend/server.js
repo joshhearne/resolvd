@@ -140,6 +140,7 @@ app.use('/api/auth-settings', authSettingsRoutes);
 app.use('/api/tickets', ticketRoutes);
 app.use('/api/tickets', commentRoutes);
 app.use('/api/tickets', ticketNoteRoutes);
+app.use('/api/tickets', require('./routes/timeTracking').ticketRouter);
 // commentRoutes also mounts /comments/:id/mute|unmute at /api/comments/...
 app.use('/api', commentRoutes);
 app.use('/api/users', userRoutes);
@@ -185,6 +186,7 @@ app.use('/api/trove-kb', require('./routes/troveKb'));
 app.use('/api/trove-kb-settings', require('./routes/troveKbSettings'));
 app.use('/api/ticket-schedules', require('./routes/ticketSchedules'));
 app.use('/api/tasks', require('./routes/tasks'));
+app.use('/api/time-tracking', require('./routes/timeTracking').settingsRouter);
 
 // Health check
 app.get('/health', (req, res) => res.json({ ok: true }));
@@ -216,6 +218,9 @@ initSchema()
     // next_fire_at has lapsed, log the run, advance the iterator.
     require('./services/ticketSchedules').startScheduler();
     require('./services/troveKbSnapshotScheduler').startScheduler();
+    // Time tracking: every 5 min, warn techs whose timer has run past
+    // the configured threshold with no work logged.
+    require('./services/timeTracking').startScheduler();
     app.listen(PORT, () => {
       console.log(`Resolvd backend running on port ${PORT}`);
     });
