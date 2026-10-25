@@ -73,6 +73,7 @@ function presentSettings(s, role) {
     billing_session_minimum: s.billing_session_minimum,
     billing_ticket_minimum: s.billing_ticket_minimum,
     overlap_policy: s.overlap_policy,
+    billing_reprice: s.billing_reprice,
     edit_lock_days: s.edit_lock_days,
     can_choose_visibility: canChooseVisibility(s, role),
     updated_at: s.updated_at,

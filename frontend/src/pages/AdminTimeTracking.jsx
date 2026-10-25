@@ -71,7 +71,7 @@ function BillingCard({ v, set, enabled }) {
         Rules for turning logged time into billable time. They apply only to
         entries marked billable, and never change what the tech logged —
         the logged minutes stay as worked, and billable minutes are shown
-        alongside. Changing a rule re-prices everything not yet invoiced.
+        alongside.
       </p>
 
       <Toggle
@@ -135,6 +135,26 @@ function BillingCard({ v, set, enabled }) {
             A ticket with any billable time bills at least this much; anything above it counts as-is.
           </span>
         </label>
+      </div>
+
+      <div className="mt-4">
+        <p className="text-xs font-semibold text-fg-muted uppercase mb-1">When these rules change</p>
+        <Radio
+          name="reprice" value="uninvoiced" current={v.billing_reprice || "uninvoiced"}
+          onChange={(billing_reprice) => set({ billing_reprice })}
+          label="Re-price all time not yet invoiced"
+          help="Every uninvoiced entry is billed by the current rules."
+        />
+        <Radio
+          name="reprice" value="at_log" current={v.billing_reprice || "uninvoiced"}
+          onChange={(billing_reprice) => set({ billing_reprice })}
+          label="Keep each entry at the rules in force when it was logged"
+          help="New rules apply to time logged from now on. A ticket's minimum comes from the rules when its first billable time was logged. Entries logged before this option existed use the current rules."
+        />
+        <p className="text-xs text-fg-muted mt-1">
+          There's no invoicing yet. When it's added, invoiced time will be
+          frozen at what it was billed, whichever option is chosen here.
+        </p>
       </div>
 
       <div className="mt-4 border border-border rounded p-3 bg-surface-2/40">

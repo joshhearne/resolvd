@@ -3352,6 +3352,10 @@ Thanks,
     // the timesheet lock (techs can't edit entries older than N days).
     await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS overlap_policy TEXT NOT NULL DEFAULT 'warn'`);
     await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS edit_lock_days INTEGER NOT NULL DEFAULT 0`);
+    // Billing rule changes: 'uninvoiced' re-prices everything not yet
+    // invoiced (default); 'at_log' keeps each entry at the rules stored
+    // with it when it was logged (time_entries.billing_rules).
+    await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS billing_reprice TEXT NOT NULL DEFAULT 'uninvoiced'`);
 
     // Admin-managed work types (Remote, Onsite, Travel, Internal…). The
     // type's `billable` seeds a new entry's billable flag, so internal /
@@ -3418,6 +3422,9 @@ Thanks,
     await client.query(`CREATE INDEX IF NOT EXISTS idx_time_entries_ticket ON time_entries(ticket_id, created_at)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_time_entries_user ON time_entries(user_id, created_at)`);
     await client.query(`ALTER TABLE time_entries ADD COLUMN IF NOT EXISTS work_type_id INTEGER REFERENCES time_work_types(id) ON DELETE SET NULL`);
+    // Billing rules in force when the entry was logged; used when
+    // billing_reprice = 'at_log'. NULL on entries logged before this column.
+    await client.query(`ALTER TABLE time_entries ADD COLUMN IF NOT EXISTS billing_rules JSONB`);
     // Overlap checks scan a tech's entries by time range.
     await client.query(`CREATE INDEX IF NOT EXISTS idx_time_entries_user_span ON time_entries(user_id, started_at, ended_at)`);
 

@@ -22,10 +22,13 @@ const DEFAULT_SETTINGS = Object.freeze({
   billing_session_minimum: 0,
   billing_ticket_minimum: 0,
   overlap_policy: 'warn',
+  billing_reprice: 'uninvoiced',
   edit_lock_days: 0,
 });
 
 const OVERLAP_POLICIES = ['allow', 'warn', 'block'];
+const REPRICE_MODES = ['uninvoiced', 'at_log'];
+const BILLING_RULE_KEYS = ['billing_round_increment', 'billing_round_mode', 'billing_session_minimum', 'billing_ticket_minimum'];
 
 const ROUND_INCREMENTS = [1, 5, 6, 10, 15, 30];
 const ROUND_MODES = ['up', 'nearest', 'down'];
@@ -221,6 +224,10 @@ function cleanSettingsPatch(body) {
     if (!OVERLAP_POLICIES.includes(body.overlap_policy)) bad('overlap_policy is invalid');
     out.overlap_policy = body.overlap_policy;
   }
+  if (body.billing_reprice !== undefined) {
+    if (!REPRICE_MODES.includes(body.billing_reprice)) bad('billing_reprice is invalid');
+    out.billing_reprice = body.billing_reprice;
+  }
   if (body.edit_lock_days !== undefined) {
     const n = Number(body.edit_lock_days);
     if (!Number.isInteger(n) || n < 0 || n > 365) bad('edit_lock_days must be 0–365');
@@ -294,19 +301,34 @@ function billableSessionMinutes(minutes, settings) {
 // entries: [{ id, duration_minutes, billable }]. Returns per-entry
 // billable minutes (0 for non-billable), the session sum, the ticket
 // minimum top-up, and the ticket total.
+// The billing rules in force right now, stored on each entry as it's
+// logged (time_entries.billing_rules).
+function billingRulesSnapshot(settings) {
+  const s = { ...DEFAULT_SETTINGS, ...settings };
+  return Object.fromEntries(BILLING_RULE_KEYS.map((k) => [k, s[k]]));
+}
+
+// billing_reprice decides which rules price an entry:
+//   'uninvoiced' (default) — current rules for everything not invoiced;
+//   'at_log' — each entry's own snapshot (current rules if it has none).
+// In 'at_log' the ticket minimum comes from the first billable entry's
+// snapshot, i.e. the rules when billable work on the ticket began.
+// Entries are expected in logged order.
 function computeBillable(entries, settings) {
   const s = { ...DEFAULT_SETTINGS, ...settings };
+  const atLog = s.billing_reprice === 'at_log';
+  const rulesFor = (e) => (atLog && e.billing_rules ? { ...s, ...e.billing_rules } : s);
   const perEntry = {};
   let sessions = 0;
-  let any = false;
+  let first = null;
   for (const e of entries) {
     if (!e.billable) { perEntry[e.id] = 0; continue; }
-    any = true;
-    const m = billableSessionMinutes(e.duration_minutes, s);
+    if (!first) first = e;
+    const m = billableSessionMinutes(e.duration_minutes, rulesFor(e));
     perEntry[e.id] = m;
     sessions += m;
   }
-  const floor = any ? Number(s.billing_ticket_minimum) || 0 : 0;
+  const floor = first ? Number(rulesFor(first).billing_ticket_minimum) || 0 : 0;
   const topUp = Math.max(0, floor - sessions);
   return { perEntry, sessions, topUp, total: sessions + topUp };
 }
@@ -329,6 +351,7 @@ module.exports = {
   csvCell,
   billableSessionMinutes,
   computeBillable,
+  billingRulesSnapshot,
   validateEntry,
   cleanSettingsPatch,
 };

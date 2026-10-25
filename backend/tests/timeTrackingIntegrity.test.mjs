@@ -43,3 +43,27 @@ describe('csvCell', () => {
     expect(csvCell(null)).toBe('');
   });
 });
+
+describe('billing_reprice', () => {
+  const { computeBillable, billingRulesSnapshot } = rules;
+  const old = billingRulesSnapshot({ billing_round_increment: 15, billing_ticket_minimum: 30 });
+  const entries = [
+    { id: 1, duration_minutes: 7, billable: true, billing_rules: old },
+    { id: 2, duration_minutes: 7, billable: true, billing_rules: null },
+  ];
+  const now = { billing_round_increment: 5, billing_ticket_minimum: 0 };
+  it('snapshots only the billing rule keys', () => {
+    expect(Object.keys(old).sort()).toEqual(['billing_round_increment', 'billing_round_mode', 'billing_session_minimum', 'billing_ticket_minimum']);
+  });
+  it('uninvoiced (default) prices everything with current rules', () => {
+    const r = computeBillable(entries, now);
+    expect(r.perEntry).toEqual({ 1: 10, 2: 10 });
+    expect(r.total).toBe(20);
+  });
+  it('at_log keeps each entry at its own rules; legacy entries use current', () => {
+    const r = computeBillable(entries, { ...now, billing_reprice: 'at_log' });
+    expect(r.perEntry).toEqual({ 1: 15, 2: 10 });
+    expect(r.topUp).toBe(5); // ticket minimum 30 from the first billable entry's rules
+    expect(r.total).toBe(30);
+  });
+});

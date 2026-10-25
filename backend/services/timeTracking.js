@@ -384,6 +384,7 @@ async function logWork({ user, ticketId, minutes, startedAt, endedAt, note, visi
       // The work type's default wins; otherwise the org default.
       billable: workType ? workType.billable : !!settings.billable_by_default,
       work_type_id: workType ? workType.id : null,
+      billing_rules: JSON.stringify(rules.billingRulesSnapshot(settings)),
       source,
       ticket_note_id: noteId,
       comment_id: commentId,
@@ -642,7 +643,7 @@ async function exportCsv({ from, to }) {
   LEFT JOIN users u ON u.id = e.user_id
   LEFT JOIN time_work_types wt ON wt.id = e.work_type_id
       WHERE e.ended_at >= $1 AND e.ended_at < $2
-      ORDER BY t.internal_ref, e.started_at`,
+      ORDER BY t.internal_ref, e.created_at`,
     [start, end]
   );
   await decryptRows('time_entries', r.rows);
