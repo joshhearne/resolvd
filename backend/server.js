@@ -187,6 +187,7 @@ app.use('/api/trove-kb-settings', require('./routes/troveKbSettings'));
 app.use('/api/ticket-schedules', require('./routes/ticketSchedules'));
 app.use('/api/tasks', require('./routes/tasks'));
 app.use('/api/time-tracking', require('./routes/timeTracking').settingsRouter);
+app.use('/api/billing', require('./routes/billing'));
 
 // Health check
 app.get('/health', (req, res) => res.json({ ok: true }));

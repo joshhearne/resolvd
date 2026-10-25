@@ -3425,6 +3425,82 @@ Thanks,
     // Billing rules in force when the entry was logged; used when
     // billing_reprice = 'at_log'. NULL on entries logged before this column.
     await client.query(`ALTER TABLE time_entries ADD COLUMN IF NOT EXISTS billing_rules JSONB`);
+
+    // --- MSP billing (only surfaced when customer companies / MSP mode
+    // is on). Rate cards price billable minutes; contracts tie a customer
+    // to a bill type + rate card; bill types carry the external code an
+    // accounting integration passes through. No products / line items.
+    await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS billing_ticket_minimum_scope TEXT NOT NULL DEFAULT 'ticket'`);
+    await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS billing_require_approval BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS billing_currency TEXT NOT NULL DEFAULT 'USD'`);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS rate_cards (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        hourly_rate NUMERIC(10,2) NOT NULL DEFAULT 0,
+        after_hours_multiplier NUMERIC(4,2) NOT NULL DEFAULT 1,
+        weekend_multiplier NUMERIC(4,2) NOT NULL DEFAULT 1,
+        is_default BOOLEAN NOT NULL DEFAULT FALSE,
+        active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_rate_cards_one_default ON rate_cards(is_default) WHERE is_default`);
+    // Overrides on a card: by work type, by tech, or both. Most specific wins.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS rate_card_rates (
+        id SERIAL PRIMARY KEY,
+        rate_card_id INTEGER NOT NULL REFERENCES rate_cards(id) ON DELETE CASCADE,
+        work_type_id INTEGER REFERENCES time_work_types(id) ON DELETE CASCADE,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        hourly_rate NUMERIC(10,2) NOT NULL,
+        CHECK (work_type_id IS NOT NULL OR user_id IS NOT NULL)
+      )
+    `);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_rate_card_rates_key
+      ON rate_card_rates(rate_card_id, work_type_id, user_id) NULLS NOT DISTINCT`);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS billing_types (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        behavior TEXT NOT NULL CHECK (behavior IN ('hourly', 'prepaid_block', 'covered', 'non_billable')),
+        external_code TEXT,
+        description TEXT,
+        active BOOLEAN NOT NULL DEFAULT TRUE,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS contracts (
+        id SERIAL PRIMARY KEY,
+        company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        billing_type_id INTEGER NOT NULL REFERENCES billing_types(id),
+        rate_card_id INTEGER REFERENCES rate_cards(id) ON DELETE SET NULL,
+        name TEXT NOT NULL,
+        starts_on DATE NOT NULL DEFAULT CURRENT_DATE,
+        ends_on DATE,
+        block_hours NUMERIC(8,2),
+        block_period TEXT NOT NULL DEFAULT 'term' CHECK (block_period IN ('term', 'monthly')),
+        external_ref TEXT,
+        notes TEXT,
+        active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_contracts_company ON contracts(company_id)`);
+
+    // Which customer a ticket bills to. NULL → the customer its project is
+    // linked to (when exactly one is).
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS billing_company_id INTEGER REFERENCES companies(id) ON DELETE SET NULL`);
+
+    // Approval of billable time before it's exported / invoiced.
+    await client.query(`ALTER TABLE time_entries ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ`);
+    await client.query(`ALTER TABLE time_entries ADD COLUMN IF NOT EXISTS approved_by INTEGER REFERENCES users(id) ON DELETE SET NULL`);
     // Overlap checks scan a tech's entries by time range.
     await client.query(`CREATE INDEX IF NOT EXISTS idx_time_entries_user_span ON time_entries(user_id, started_at, ended_at)`);
 

@@ -2,6 +2,9 @@ import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
 import { previewBillable } from "../utils/billing";
+import { useBranding } from "../context/BrandingContext";
+import SaveBar from "../components/SaveBar";
+import { RateCardsCard, BillingTypesCard, UtilisationCard, MspOffNote } from "../components/BillingAdmin";
 
 // Org-wide technician time tracking policy. Techs log time with a
 // required note; the note lands as a private (handler-only) ticket note
@@ -134,7 +137,38 @@ function BillingCard({ v, set, enabled }) {
           <span className="text-xs text-fg-muted">
             A ticket with any billable time bills at least this much; anything above it counts as-is.
           </span>
+          <span className="flex flex-wrap gap-3 text-sm mt-1">
+            {[["ticket", "Once per ticket"], ["day", "Once per day of work"]].map(([val, label]) => (
+              <label key={val} className="inline-flex items-center gap-1">
+                <input
+                  type="radio" name="min-scope"
+                  checked={(v.billing_ticket_minimum_scope || "ticket") === val}
+                  onChange={() => set({ billing_ticket_minimum_scope: val })}
+                />
+                {label}
+              </label>
+            ))}
+          </span>
         </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs font-semibold text-fg-muted uppercase">Currency</span>
+          <input
+            value={v.billing_currency || "USD"}
+            onChange={(e) => set({ billing_currency: e.target.value.toUpperCase().slice(0, 3) })}
+            className="input w-24 py-1 uppercase"
+            aria-label="Currency code"
+          />
+          <span className="text-xs text-fg-muted">3-letter code (USD, GBP, AUD…). Used on rates and exports.</span>
+        </label>
+        <div className="flex flex-col gap-1">
+          <span className="text-xs font-semibold text-fg-muted uppercase">Approval</span>
+          <Toggle
+            checked={v.billing_require_approval}
+            onChange={(billing_require_approval) => set({ billing_require_approval })}
+            label="Billable time needs Admin/Manager approval"
+            help="Approved time locks for techs. The export can be limited to approved time."
+          />
+        </div>
       </div>
 
       <div className="mt-4">
@@ -196,7 +230,7 @@ function BillingCard({ v, set, enabled }) {
 
 // Work types save immediately (they're rows, not part of the settings
 // draft). A type already used on entries is retired rather than deleted.
-function WorkTypesCard() {
+function WorkTypesCard({ msp }) {
   const [types, setTypes] = useState(null);
   const [name, setName] = useState("");
   const [billable, setBillable] = useState(true);
@@ -232,10 +266,8 @@ function WorkTypesCard() {
       <h3 className="text-sm font-semibold text-fg mb-1">Work types</h3>
       <p className="text-xs text-fg-muted mb-3">
         Optional labels techs pick when logging (Remote, Onsite, Travel,
-        Internal…). A type's billable setting decides whether new entries of
-        that type start billable, so internal or admin time never lands on a
-        bill by accident. With no types defined, the picker is hidden and
-        the org default above applies.
+        Internal…). With no types defined, the picker is hidden.
+        {msp && " A type's billable setting decides whether new entries of that type start billable, so internal or admin time never lands on a bill by accident. Rate cards can price each type differently."}
       </p>
       {types === null ? (
         <p className="text-sm text-fg-muted">Loading…</p>
@@ -250,10 +282,12 @@ function WorkTypesCard() {
                 className="input py-1 w-48"
                 aria-label="Work type name"
               />
-              <label className="inline-flex items-center gap-1">
-                <input type="checkbox" checked={t.billable} onChange={() => patch(t, { billable: !t.billable })} />
-                billable
-              </label>
+              {msp && (
+                <label className="inline-flex items-center gap-1">
+                  <input type="checkbox" checked={t.billable} onChange={() => patch(t, { billable: !t.billable })} />
+                  billable
+                </label>
+              )}
               <label className="inline-flex items-center gap-1">
                 <input type="checkbox" checked={t.active} onChange={() => patch(t, { active: !t.active })} />
                 active
@@ -265,10 +299,12 @@ function WorkTypesCard() {
       )}
       <form onSubmit={add} className="flex flex-wrap items-center gap-3 text-sm">
         <input value={name} onChange={(e) => setName(e.target.value)} placeholder="New type, e.g. Onsite" className="input py-1 w-48" />
-        <label className="inline-flex items-center gap-1">
-          <input type="checkbox" checked={billable} onChange={(e) => setBillable(e.target.checked)} />
-          billable
-        </label>
+        {msp && (
+          <label className="inline-flex items-center gap-1">
+            <input type="checkbox" checked={billable} onChange={(e) => setBillable(e.target.checked)} />
+            billable
+          </label>
+        )}
         <button type="submit" className="btn btn-sm btn-secondary" disabled={!name.trim()}>Add</button>
       </form>
     </div>
@@ -315,8 +351,9 @@ function ymd(d) {
 // CSV of entries for a date range — logged and billable minutes (current
 // rules), ticket-minimum top-ups as their own rows. Handy for building
 // invoices by hand until an accounting integration exists.
-function ExportCard() {
+function ExportCard({ msp, requireApproval }) {
   const now = new Date();
+  const [approvedOnly, setApprovedOnly] = useState(!!requireApproval);
   const [from, setFrom] = useState(ymd(new Date(now.getFullYear(), now.getMonth() - 1, 1)));
   const [to, setTo] = useState(ymd(new Date(now.getFullYear(), now.getMonth(), 0)));
 
@@ -327,6 +364,7 @@ function ExportCard() {
     const end = new Date(ty, tm - 1, td + 1); // whole "to" day, local time
     if (!(end > start)) { toast.error("End date must be on or after the start date"); return; }
     const qs = new URLSearchParams({ from: start.toISOString(), to: end.toISOString() });
+    if (msp && approvedOnly) qs.set("approved_only", "1");
     const a = document.createElement("a");
     a.href = `/api/time-tracking/export?${qs}`;
     a.download = `time-entries-${from}-to-${to}.csv`;
@@ -343,11 +381,18 @@ function ExportCard() {
         logged and billable minutes (using the rules above), visibility and
         note. Ticket-minimum top-ups appear as their own rows. Defaults to last
         month.
+        {msp && " In MSP mode each row also carries the customer, contract and its reference, bill type and its code, rate, coverage and amount — ready to pass through to your accounting system."}
       </p>
       <div className="flex flex-wrap items-center gap-2 text-sm">
         <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="input py-1 w-40" aria-label="From" />
         <span className="text-fg-muted">to</span>
         <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="input py-1 w-40" aria-label="To" />
+        {msp && (
+          <label className="inline-flex items-center gap-1 text-xs">
+            <input type="checkbox" checked={approvedOnly} onChange={(e) => setApprovedOnly(e.target.checked)} />
+            approved time only
+          </label>
+        )}
         <button onClick={download} className="btn btn-sm btn-secondary">Download CSV</button>
       </div>
     </div>
@@ -355,6 +400,10 @@ function ExportCard() {
 }
 
 export default function AdminTimeTracking() {
+  const { branding } = useBranding();
+  // Billing (billable hours, rates, bill types) is an MSP concern: hidden
+  // unless customer companies / MSP mode is on.
+  const msp = branding?.enable_customer_companies === true;
   const [s, setS] = useState(null);
   const [draft, setDraft] = useState({});
   const [saving, setSaving] = useState(false);
@@ -471,24 +520,39 @@ export default function AdminTimeTracking() {
         <Radio name="choice" value="admins" current={v.visibility_choice} onChange={(visibility_choice) => set({ visibility_choice })} label="Admins and Managers only" help="Techs always get the default above." />
         <Radio name="choice" value="handlers" current={v.visibility_choice} onChange={(visibility_choice) => set({ visibility_choice })} label="Any handler" help="Techs pick private or public per entry." />
 
-        <p className="text-xs text-fg-muted mt-3 border-t border-border pt-2">
-          Visibility and billing are separate. A public note is not billable,
-          and a private one isn't excluded from billing. Billable is set per
-          entry — see Billable hours below.
-        </p>
+        {msp && (
+          <p className="text-xs text-fg-muted mt-3 border-t border-border pt-2">
+            Visibility and billing are separate. A public note is not billable,
+            and a private one isn't excluded from billing. Billable is set per
+            entry — see Billable hours below.
+          </p>
+        )}
       </div>
 
-      <BillingCard v={v} set={set} enabled={v.enabled} />
+      {msp && <BillingCard v={v} set={set} enabled={v.enabled} />}
       <IntegrityCard v={v} set={set} enabled={v.enabled} />
 
-      <div className="flex justify-end">
-        <button disabled={!dirty || saving} onClick={save} className="btn btn-primary">
-          {saving ? "Saving…" : "Save changes"}
-        </button>
-      </div>
+      <WorkTypesCard msp={msp} />
+      {msp ? (
+        <>
+          <RateCardsCard currency={s.billing_currency} />
+          <BillingTypesCard />
+          <UtilisationCard />
+        </>
+      ) : (
+        <MspOffNote />
+      )}
+      <ExportCard msp={msp} requireApproval={s.billing_require_approval} />
 
-      <WorkTypesCard />
-      <ExportCard />
+      {/* Saves the settings cards; the list cards (work types, rate
+          cards, bill types) save as they're edited. */}
+      <SaveBar
+        dirty={dirty}
+        saving={saving}
+        onSave={save}
+        onDiscard={() => setDraft({})}
+        savedHint="lists save as you edit them"
+      />
     </div>
   );
 }

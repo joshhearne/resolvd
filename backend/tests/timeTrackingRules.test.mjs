@@ -206,7 +206,7 @@ describe('billable hours', () => {
   it('tops a ticket up to its minimum, rest as-is', () => {
     const s = { billing_ticket_minimum: 15 };
     const small = computeBillable([{ id: 1, duration_minutes: 6, billable: true }], s);
-    expect(small).toEqual({ perEntry: { 1: 6 }, sessions: 6, topUp: 9, total: 15 });
+    expect(small).toEqual({ perEntry: { 1: 6 }, sessions: 6, topUp: 9, topUps: [{ key: 'ticket', minutes: 9, anchorId: 1 }], total: 15 });
     const big = computeBillable([
       { id: 1, duration_minutes: 12, billable: true },
       { id: 2, duration_minutes: 20, billable: true },

@@ -5,6 +5,7 @@ import HybridTime from "./HybridTime";
 import ConfirmDialog from "./ConfirmDialog";
 import TimeEntryForm from "./TimeEntryForm";
 import { formatShortDate, formatTime } from "../utils/timeEntry";
+import { formatMoney, behaviorLabel } from "./BillingAdmin";
 
 // Technician time tracking on a ticket. Handler-only: the parent renders
 // it once the notes gate has confirmed access.
@@ -79,6 +80,92 @@ function pauseLabel(reason) {
   return "paused";
 }
 
+const COVERAGE_LABEL = {
+  hourly: "",
+  covered: "covered by contract",
+  block: "from prepaid block",
+  block_overage: "part block, part overage",
+  overage: "block used up — overage",
+  non_billable: "non-billable contract",
+};
+const HOURS_LABEL = { after_hours: "after-hours", weekend: "weekend" };
+
+// One entry's price: billable minutes, rate (with any after-hours /
+// weekend multiplier), coverage and amount.
+function PriceLine({ line, currency, logged }) {
+  if (!line) return null;
+  const parts = [];
+  if (line.billable_minutes !== logged) parts.push(`${fmtMinutes(line.billable_minutes)} billable`);
+  if (line.rate_cents) {
+    parts.push(`${formatMoney(line.rate_cents, currency)}/h${line.multiplier !== 1 ? ` (${HOURS_LABEL[line.hours_class] || ""} ×${line.multiplier})` : ""}`);
+  }
+  if (COVERAGE_LABEL[line.coverage]) parts.push(COVERAGE_LABEL[line.coverage]);
+  return (
+    <div className="mt-0.5 text-xs text-fg-muted flex flex-wrap gap-x-2">
+      <span>{parts.join(" · ")}</span>
+      <span className="ml-auto font-medium text-fg tabular-nums">{formatMoney(line.amount_cents, currency)}</span>
+    </div>
+  );
+}
+
+// Customer / contract header for the time log (Admin/Manager, MSP mode).
+function BillingSummary({ billing, entries, onCustomer, onApproveAll }) {
+  const { customer, candidates, contract, topups, currency, require_approval: requireApproval } = billing;
+  const pending = entries.filter((e) => e.billable && !e.approved_at && !e.invoiced_at).length;
+  const usage = contract?.block_usage;
+  return (
+    <div className="px-3 py-2 border-b border-border text-xs space-y-1 bg-surface-2/40">
+      <div className="flex flex-wrap items-center gap-2">
+        <span className="text-fg-muted">Bills to</span>
+        {candidates.length > 1 || (customer?.source === "ticket") ? (
+          <select
+            value={customer?.id || ""}
+            onChange={(e) => onCustomer(e.target.value ? Number(e.target.value) : null)}
+            className="input py-0.5 w-auto text-xs"
+            aria-label="Customer"
+          >
+            <option value="">{candidates.length > 1 ? "Choose a customer…" : "Project's customer"}</option>
+            {candidates.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+            {customer && !candidates.some((c) => c.id === customer.id) && <option value={customer.id}>{customer.name}</option>}
+          </select>
+        ) : (
+          <b className="text-fg">{customer?.name || "No customer"}</b>
+        )}
+        {contract ? (
+          <span className="text-fg-muted">
+            · {contract.name} ({behaviorLabel(contract.behavior)}{contract.rate_card ? `, ${contract.rate_card}` : ""})
+          </span>
+        ) : (
+          <span className="text-fg-muted">· no contract — hourly at the default rate card</span>
+        )}
+        {pending > 0 && (
+          <button onClick={onApproveAll} className="ml-auto text-brand hover:underline">
+            Approve {pending} billable {pending === 1 ? "entry" : "entries"}
+          </button>
+        )}
+      </div>
+      {!customer && candidates.length === 0 && (
+        <p className="text-fg-dim">This ticket's project isn't linked to a customer (Admin → Companies → customer → Projects).</p>
+      )}
+      {usage && (
+        <p className="text-fg-muted">
+          Block {usage.period === "term" ? "for the term" : `for ${usage.period}`}: {fmtMinutes(usage.used_minutes)} of {fmtMinutes(usage.block_minutes)} used
+        </p>
+      )}
+      {requireApproval && pending > 0 && (
+        <p className="text-amber-700 dark:text-amber-300">Billable time needs approval before it's exported.</p>
+      )}
+      {topups.map((t, i) => (
+        <div key={i} className="flex flex-wrap gap-x-2 text-fg-muted">
+          <span>Ticket minimum top-up{t.key && t.key !== "ticket" ? ` (${t.key})` : ""}: {fmtMinutes(t.billable_minutes)}</span>
+          {COVERAGE_LABEL[t.coverage] && <span>· {COVERAGE_LABEL[t.coverage]}</span>}
+          <span className="ml-auto font-medium text-fg tabular-nums">{formatMoney(t.amount_cents, currency)}</span>
+        </div>
+      ))}
+    </div>
+  );
+}
+
 function VisibilityPill({ visibility }) {
   return visibility === "public" ? (
     <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-200">
@@ -97,6 +184,8 @@ export default function TimeTracker({ ticketId, ticket, user, onLogged }) {
   const [fetchedAt, setFetchedAt] = useState(Date.now());
   const [entries, setEntries] = useState([]);
   const [totals, setTotals] = useState(null);
+  // Rates / contract / amounts — present only for Admin/Manager in MSP mode.
+  const [billing, setBilling] = useState(null);
   const [, setTick] = useState(0);
   const [panel, setPanel] = useState(null); // null | 'log' | 'entries'
   const [busy, setBusy] = useState(false);
@@ -122,6 +211,7 @@ export default function TimeTracker({ ticketId, ticket, user, onLogged }) {
     applyTimer(data.timer);
     setEntries(data.entries || []);
     setTotals(data.totals || null);
+    setBilling(data.billing || null);
     return data;
   }, [ticketId, applyTimer]);
 
@@ -302,6 +392,24 @@ export default function TimeTracker({ ticketId, ticket, user, onLogged }) {
     }
   }
 
+  async function setApproval(entryIds, approve) {
+    try {
+      await api.post(`/api/tickets/${ticketId}/time/approval`, { approve, entry_ids: entryIds });
+      await load();
+    } catch (err) {
+      toast.error(err.message || "Could not update approval");
+    }
+  }
+
+  async function setCustomer(companyId) {
+    try {
+      const b = await api.put(`/api/tickets/${ticketId}/billing-customer`, { company_id: companyId || null });
+      setBilling(b);
+    } catch (err) {
+      toast.error(err.message || "Could not change the customer");
+    }
+  }
+
   async function deleteEntry(entry) {
     if (!window.confirm("Delete this time entry?")) return;
     try {
@@ -389,13 +497,23 @@ export default function TimeTracker({ ticketId, ticket, user, onLogged }) {
             <span><b className="text-fg">{fmtMinutes(totals?.minutes)}</b> total</span>
             <span>{fmtMinutes(totals?.private_minutes)} private</span>
             <span>{fmtMinutes(totals?.public_minutes)} public</span>
-            {isPriv && (
-              <span title="After the billing rules in Admin → Time tracking → Billable hours">
-                <b className="text-fg">{fmtMinutes(totals?.billable_minutes)}</b> billable
-                {totals?.billable_topup_minutes > 0 && ` (incl. +${fmtMinutes(totals.billable_topup_minutes)} ticket minimum)`}
+            {billing && (
+              <span title="After the billing rules, rate card and contract">
+                <b className="text-fg">{fmtMinutes(billing.totals.billable_minutes)}</b> billable
+                {billing.totals.topup_minutes > 0 && ` (incl. +${fmtMinutes(billing.totals.topup_minutes)} ticket minimum)`}
+                {billing.totals.covered_minutes > 0 && ` · ${fmtMinutes(billing.totals.covered_minutes)} covered`}
+                {" · "}<b className="text-fg">{formatMoney(billing.totals.amount_cents, billing.currency)}</b>
               </span>
             )}
           </div>
+          {billing && (
+            <BillingSummary
+              billing={billing}
+              entries={entries}
+              onCustomer={setCustomer}
+              onApproveAll={() => setApproval(undefined, true)}
+            />
+          )}
           <ul className="divide-y divide-border">
             {entries.map((e) => {
               const mine = e.user_id === user?.id;
@@ -416,17 +534,27 @@ export default function TimeTracker({ ticketId, ticket, user, onLogged }) {
                     <VisibilityPill visibility={e.visibility} />
                     {e.work_type_name && <span className="px-1.5 py-0.5 rounded bg-surface-2">{e.work_type_name}</span>}
                     {e.edited_at && <span>(edited)</span>}
-                    {e.locked && !e.invoiced_at && <span title="Older than the timesheet lock — an Admin or Manager can change it">🔒</span>}
-                    {isPriv && (
-                      <label className="inline-flex items-center gap-1 ml-auto" title="Billable is separate from visibility. Only billable entries should ever reach an invoice.">
-                        <input type="checkbox" checked={!!e.billable} onChange={() => toggleBillable(e)} disabled={!!e.invoiced_at} />
-                        billable
-                        {e.billable && e.billable_minutes !== e.duration_minutes && (
-                          <span className="text-fg-dim">→ {fmtMinutes(e.billable_minutes)}</span>
+                    {e.locked && !e.invoiced_at && (
+                      <span title={e.approved_at ? "Approved — an Admin or Manager can change it" : "Older than the timesheet lock — an Admin or Manager can change it"}>🔒</span>
+                    )}
+                    {billing && e.approved_at && (
+                      <span className="text-[10px] uppercase px-1.5 py-0.5 rounded bg-emerald-500/15 text-emerald-700 dark:text-emerald-300">Approved</span>
+                    )}
+                    {billing && (
+                      <span className="inline-flex items-center gap-2 ml-auto">
+                        <label className="inline-flex items-center gap-1" title="Billable is separate from visibility. Only billable entries should ever reach an invoice.">
+                          <input type="checkbox" checked={!!e.billable} onChange={() => toggleBillable(e)} disabled={!!e.invoiced_at} />
+                          billable
+                        </label>
+                        {e.billable && !e.invoiced_at && (
+                          <button onClick={() => setApproval([e.id], !e.approved_at)} className="text-brand hover:underline">
+                            {e.approved_at ? "unapprove" : "approve"}
+                          </button>
                         )}
-                      </label>
+                      </span>
                     )}
                   </div>
+                  {billing && e.billable && <PriceLine line={billing.lines[e.id]} currency={billing.currency} logged={e.duration_minutes} />}
                   {editingId === e.id ? (
                     <TimeEntryForm
                       initial={{
