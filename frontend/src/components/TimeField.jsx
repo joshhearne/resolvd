@@ -1,5 +1,6 @@
 import { useState } from "react";
 import ClockPicker from "./ClockPicker";
+import { useAuth } from "../context/AuthContext";
 import { formatTime, isPm, parseTimeOfDay, withTimeOfDay } from "../utils/timeEntry";
 
 // Time-of-day field for time entries. Type "830", "8:30", "8:30p"…;
@@ -14,6 +15,9 @@ export default function TimeField({ value, onChange, label, highlight = false })
   const [focused, setFocused] = useState(false);
   const [bad, setBad] = useState(false);
   const [dial, setDial] = useState(false);
+  // Account Preferences → "Clock picker minutes". Null outside the auth
+  // provider (e.g. isolated renders) → default snapping.
+  const snap = useAuth()?.user?.preferences?.clock_minute_snap === "exact" ? "exact" : "five";
 
   function commit(raw) {
     const t = parseTimeOfDay(raw, isPm(value));
@@ -89,6 +93,7 @@ export default function TimeField({ value, onChange, label, highlight = false })
         <ClockPicker
           hours={d.getHours()}
           minutes={d.getMinutes()}
+          snap={snap}
           onCancel={() => setDial(false)}
           onConfirm={(h, m) => {
             setDial(false);

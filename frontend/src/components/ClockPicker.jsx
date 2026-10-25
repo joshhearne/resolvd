@@ -1,46 +1,84 @@
-import { useRef, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 
 // Clock-face time picker, modelled on Android's Material dialog: tap or
-// drag around the dial for the hour, then the minutes (any minute, not
-// just the 5-minute labels), flip AM/PM, or tap the keyboard icon to
-// type it. Built in-app so every phone and desktop gets the same picker;
+// drag around the dial for the hour, then the minutes, flip AM/PM, or
+// tap the keyboard icon to type it.
+//
+// Minutes: with snap="five" (the default, a per-user preference) a tap
+// lands on the nearest 5 — tap 3 then near the 15 for 3:15. Holding a
+// finger on the dial (~⅓ s) switches to single minutes for that press;
+// tick marks appear and the phone buzzes once. snap="exact" always takes
+// the exact minute under the finger. Built in-app so every phone and desktop gets the same picker;
 // the native <input type="time"> only shows a dial on Android — iOS
 // gives scroll wheels.
 
 const SIZE = 256;
 const C = SIZE / 2;
 const R_LABEL = 100;
+const HOLD_MS = 350;
 
 function polar(index, steps, r = R_LABEL) {
   const a = (index / steps) * 2 * Math.PI - Math.PI / 2;
   return { x: C + r * Math.cos(a), y: C + r * Math.sin(a) };
 }
 
-export default function ClockPicker({ hours, minutes, onConfirm, onCancel }) {
+export default function ClockPicker({ hours, minutes, snap = "five", onConfirm, onCancel }) {
   const [h12, setH12] = useState(hours % 12 || 12);
   const [m, setM] = useState(minutes);
   const [pm, setPm] = useState(hours >= 12);
   const [mode, setMode] = useState("hour");
   const [typing, setTyping] = useState(false);
+  const [fine, setFine] = useState(false);
   const dragging = useRef(false);
+  const fineRef = useRef(false);
+  const holdTimer = useRef(null);
+  const lastPoint = useRef(null);
   const svgRef = useRef(null);
 
-  function pick(e) {
+  useEffect(() => () => clearTimeout(holdTimer.current), []);
+
+  function pick({ clientX, clientY }) {
     const rect = svgRef.current.getBoundingClientRect();
-    const x = ((e.clientX - rect.left) / rect.width) * SIZE - C;
-    const y = ((e.clientY - rect.top) / rect.height) * SIZE - C;
+    const x = ((clientX - rect.left) / rect.width) * SIZE - C;
+    const y = ((clientY - rect.top) / rect.height) * SIZE - C;
     const deg = (Math.atan2(y, x) * 180) / Math.PI + 90;
     const norm = (deg + 360) % 360;
     if (mode === "hour") setH12(Math.round(norm / 30) % 12 || 12);
-    else setM(Math.round(norm / 6) % 60);
+    else if (snap === "exact" || fineRef.current) setM(Math.round(norm / 6) % 60);
+    else setM((Math.round(norm / 30) * 5) % 60);
   }
 
-  const onDown = (e) => { dragging.current = true; e.currentTarget.setPointerCapture?.(e.pointerId); pick(e); };
-  const onMove = (e) => { if (dragging.current) pick(e); };
+  function endHold() {
+    clearTimeout(holdTimer.current);
+    holdTimer.current = null;
+    fineRef.current = false;
+    setFine(false);
+  }
+
+  const onDown = (e) => {
+    dragging.current = true;
+    e.currentTarget.setPointerCapture?.(e.pointerId);
+    lastPoint.current = { clientX: e.clientX, clientY: e.clientY };
+    pick(lastPoint.current);
+    if (mode === "minute" && snap !== "exact") {
+      holdTimer.current = setTimeout(() => {
+        fineRef.current = true;
+        setFine(true);
+        navigator.vibrate?.(10);
+        if (lastPoint.current) pick(lastPoint.current);
+      }, HOLD_MS);
+    }
+  };
+  const onMove = (e) => {
+    if (!dragging.current) return;
+    lastPoint.current = { clientX: e.clientX, clientY: e.clientY };
+    pick(lastPoint.current);
+  };
   const onUp = () => {
     if (!dragging.current) return;
     dragging.current = false;
+    endHold();
     if (mode === "hour") setMode("minute");
   };
 
@@ -99,6 +137,12 @@ export default function ClockPicker({ hours, minutes, onConfirm, onCancel }) {
             onPointerCancel={onUp}
           >
             <circle cx={C} cy={C} r={C - 4} className="fill-surface-2" />
+            {mode === "minute" && (fine || snap === "exact") &&
+              Array.from({ length: 60 }, (_, i) => {
+                const a = polar(i, 60, C - 10);
+                const b = polar(i, 60, C - (i % 5 ? 14 : 18));
+                return <line key={i} x1={a.x} y1={a.y} x2={b.x} y2={b.y} className="stroke-current text-fg-dim" strokeWidth="1" />;
+              })}
             <line x1={C} y1={C} x2={hand.x} y2={hand.y} className="stroke-brand" strokeWidth="2" />
             <circle cx={C} cy={C} r="4" className="fill-brand" />
             <circle cx={hand.x} cy={hand.y} r="18" className="fill-brand" opacity="0.9" />
@@ -129,6 +173,20 @@ export default function ClockPicker({ hours, minutes, onConfirm, onCancel }) {
               <circle cx={hand.x} cy={hand.y} r="3" className="fill-white" pointerEvents="none" />
             )}
           </svg>
+        )}
+
+        {!typing && (
+          // Always rendered (fixed height) so the dialog never shifts
+          // under the finger when the mode or hint changes.
+          <p className="text-center text-[11px] text-fg-dim mt-1 h-4">
+            {mode === "hour"
+              ? "Tap the hour"
+              : snap === "exact"
+                ? "Tap the exact minute"
+                : fine
+                  ? "Single minutes — slide to adjust"
+                  : "Taps snap to 5 min · hold for single minutes"}
+          </p>
         )}
 
         <div className="flex items-center justify-between mt-3">

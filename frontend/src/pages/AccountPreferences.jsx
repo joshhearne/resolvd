@@ -902,6 +902,27 @@ export default function AccountPreferences() {
               <option value="internal_ref_asc">Reference (A→Z)</option>
             </select>
           </label>
+          <label className="flex items-start justify-between gap-4 py-3 border-t border-border">
+            <div className="flex-1">
+              <div className="text-sm font-medium text-fg">
+                Clock picker minutes
+              </div>
+              <div className="text-xs text-fg-muted mt-0.5">
+                The tap-to-pick clock used for time entries. Snap lands taps
+                on the nearest 5 minutes (hold your finger on the dial for
+                single minutes); Exact always takes the minute you tap.
+              </div>
+            </div>
+            <select
+              value={prefs.clock_minute_snap === "exact" ? "exact" : "five"}
+              onChange={(e) => set("clock_minute_snap", e.target.value)}
+              disabled={busy}
+              className="border border-border-strong rounded-md px-2 py-1 text-sm"
+            >
+              <option value="five">Snap to 5 (hold for 1)</option>
+              <option value="exact">Exact minute</option>
+            </select>
+          </label>
         </div>
       </div>
 
