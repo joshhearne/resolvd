@@ -23,11 +23,15 @@ const DEFAULT_SETTINGS = Object.freeze({
   billing_ticket_minimum: 0,
   overlap_policy: 'warn',
   billing_reprice: 'uninvoiced',
+  billing_ticket_minimum_scope: 'ticket',
+  billing_require_approval: false,
+  billing_currency: 'USD',
   edit_lock_days: 0,
 });
 
 const OVERLAP_POLICIES = ['allow', 'warn', 'block'];
 const REPRICE_MODES = ['uninvoiced', 'at_log'];
+const MINIMUM_SCOPES = ['ticket', 'day'];
 const BILLING_RULE_KEYS = ['billing_round_increment', 'billing_round_mode', 'billing_session_minimum', 'billing_ticket_minimum'];
 
 const ROUND_INCREMENTS = [1, 5, 6, 10, 15, 30];
@@ -224,6 +228,19 @@ function cleanSettingsPatch(body) {
     if (!OVERLAP_POLICIES.includes(body.overlap_policy)) bad('overlap_policy is invalid');
     out.overlap_policy = body.overlap_policy;
   }
+  if (body.billing_ticket_minimum_scope !== undefined) {
+    if (!MINIMUM_SCOPES.includes(body.billing_ticket_minimum_scope)) bad('billing_ticket_minimum_scope is invalid');
+    out.billing_ticket_minimum_scope = body.billing_ticket_minimum_scope;
+  }
+  if (body.billing_require_approval !== undefined) {
+    if (typeof body.billing_require_approval !== 'boolean') bad('billing_require_approval must be true or false');
+    out.billing_require_approval = body.billing_require_approval;
+  }
+  if (body.billing_currency !== undefined) {
+    const c = String(body.billing_currency || '').trim().toUpperCase();
+    if (!/^[A-Z]{3}$/.test(c)) bad('billing_currency must be a 3-letter code, e.g. USD');
+    out.billing_currency = c;
+  }
   if (body.billing_reprice !== undefined) {
     if (!REPRICE_MODES.includes(body.billing_reprice)) bad('billing_reprice is invalid');
     out.billing_reprice = body.billing_reprice;
@@ -314,23 +331,46 @@ function billingRulesSnapshot(settings) {
 // In 'at_log' the ticket minimum comes from the first billable entry's
 // snapshot, i.e. the rules when billable work on the ticket began.
 // Entries are expected in logged order.
-function computeBillable(entries, settings) {
+// YYYY-MM-DD of `date` in `tz` (falls back to UTC on a bad zone).
+function localDay(date, tz) {
+  const d = new Date(date);
+  try {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: tz || 'UTC', year: 'numeric', month: '2-digit', day: '2-digit' }).format(d);
+  } catch {
+    return d.toISOString().slice(0, 10);
+  }
+}
+
+// The ticket minimum applies once per ticket (default) or once per day
+// of work on it (billing_ticket_minimum_scope = 'day', days in `tz`) —
+// for tickets that run across several visits. `topUps` lists each
+// group's top-up and the entry it anchors to (the group's first
+// billable entry), so pricing can rate it like that entry.
+function computeBillable(entries, settings, { tz } = {}) {
   const s = { ...DEFAULT_SETTINGS, ...settings };
   const atLog = s.billing_reprice === 'at_log';
   const rulesFor = (e) => (atLog && e.billing_rules ? { ...s, ...e.billing_rules } : s);
+  const byDay = s.billing_ticket_minimum_scope === 'day';
   const perEntry = {};
+  const groups = new Map();
   let sessions = 0;
-  let first = null;
   for (const e of entries) {
     if (!e.billable) { perEntry[e.id] = 0; continue; }
-    if (!first) first = e;
     const m = billableSessionMinutes(e.duration_minutes, rulesFor(e));
     perEntry[e.id] = m;
     sessions += m;
+    const key = byDay ? localDay(e.started_at || e.created_at, tz) : 'ticket';
+    if (!groups.has(key)) groups.set(key, { key, first: e, minutes: 0 });
+    groups.get(key).minutes += m;
   }
-  const floor = first ? Number(rulesFor(first).billing_ticket_minimum) || 0 : 0;
-  const topUp = Math.max(0, floor - sessions);
-  return { perEntry, sessions, topUp, total: sessions + topUp };
+  const topUps = [];
+  for (const g of groups.values()) {
+    const floor = Number(rulesFor(g.first).billing_ticket_minimum) || 0;
+    const minutes = Math.max(0, floor - g.minutes);
+    if (minutes > 0) topUps.push({ key: g.key, minutes, anchorId: g.first.id });
+  }
+  const topUp = topUps.reduce((a, t) => a + t.minutes, 0);
+  return { perEntry, sessions, topUp, topUps, total: sessions + topUp };
 }
 
 module.exports = {
@@ -351,6 +391,7 @@ module.exports = {
   csvCell,
   billableSessionMinutes,
   computeBillable,
+  localDay,
   billingRulesSnapshot,
   validateEntry,
   cleanSettingsPatch,

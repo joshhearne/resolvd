@@ -455,7 +455,8 @@ async function listEntries(ticketId, viewer = null) {
   );
   await decryptRows('time_entries', r.rows);
   const settings = await getSettings();
-  const bill = rules.computeBillable(r.rows, settings);
+  const tz = (await require('./branding').getBranding().catch(() => null))?.timezone || 'UTC';
+  const bill = rules.computeBillable(r.rows, settings, { tz });
   const totals = {
     minutes: 0, private_minutes: 0, public_minutes: 0,
     // Raw logged minutes on billable entries, then what the billing rules
@@ -469,7 +470,9 @@ async function listEntries(ticketId, viewer = null) {
   for (const row of r.rows) {
     delete row.note_enc;
     row.billable_minutes = bill.perEntry[row.id];
+    const priv = viewer && ['Admin', 'Manager'].includes(viewer.role);
     row.locked = !!row.invoiced_at ||
+      (!!row.approved_at && !priv) ||
       (viewer ? rules.isEditLocked({ entry: row, settings, role: viewer.role }) : false);
     totals.minutes += row.duration_minutes;
     totals[`${row.visibility}_minutes`] += row.duration_minutes;
@@ -497,6 +500,9 @@ async function updateEntry({ user, ticketId, entryId, body }) {
   const settings = await getSettings();
   if (rules.isEditLocked({ entry: existing, settings, role: user.role })) {
     throw httpError(403, `Entries older than ${settings.edit_lock_days} days are locked — ask an Admin or Manager`);
+  }
+  if (existing.approved_at && !isPriv) {
+    throw httpError(403, 'Approved time is locked — ask an Admin or Manager');
   }
   if (body.billable !== undefined && !isPriv) {
     throw httpError(403, 'Only Admin or Manager can mark time billable');
@@ -576,6 +582,9 @@ async function deleteEntry({ user, ticketId, entryId }) {
   if (rules.isEditLocked({ entry: existing, settings, role: user.role })) {
     throw httpError(403, `Entries older than ${settings.edit_lock_days} days are locked — ask an Admin or Manager`);
   }
+  if (existing.approved_at && !['Admin', 'Manager'].includes(user.role)) {
+    throw httpError(403, 'Approved time is locked — ask an Admin or Manager');
+  }
   await pool.query('DELETE FROM time_entries WHERE id = $1', [entryId]);
   if (existing.ticket_note_id) {
     await pool.query('DELETE FROM ticket_notes WHERE id = $1', [existing.ticket_note_id]);
@@ -627,7 +636,7 @@ function startScheduler() {
 // current rules, computed per ticket over the entries in the range (so a
 // ticket minimum applies once per ticket per export). Ticket-minimum
 // top-ups get their own row so they can become their own invoice line.
-async function exportCsv({ from, to }) {
+async function exportCsv({ from, to, approvedOnly = false }) {
   const start = new Date(from);
   const end = new Date(to);
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) {
@@ -643,36 +652,76 @@ async function exportCsv({ from, to }) {
   LEFT JOIN users u ON u.id = e.user_id
   LEFT JOIN time_work_types wt ON wt.id = e.work_type_id
       WHERE e.ended_at >= $1 AND e.ended_at < $2
+        ${approvedOnly ? 'AND e.approved_at IS NOT NULL' : ''}
       ORDER BY t.internal_ref, e.created_at`,
     [start, end]
   );
   await decryptRows('time_entries', r.rows);
   await decryptRows('tickets', r.rows);
   const settings = await getSettings();
+  const branding = await require('./branding').getBranding().catch(() => null);
+  const tz = branding?.timezone || 'UTC';
+  const msp = branding?.enable_customer_companies === true;
   const byTicket = new Map();
   for (const row of r.rows) {
     if (!byTicket.has(row.ticket_id)) byTicket.set(row.ticket_id, []);
     byTicket.get(row.ticket_id).push(row);
   }
+  const inRange = new Set(r.rows.map((e) => e.id));
   const c = rules.csvCell;
+  const money = (cents) => (cents == null ? '' : (cents / 100).toFixed(2));
+
+  // MSP mode: price through rate cards + contracts (whole tickets, so
+  // ticket minimums and prepaid blocks resolve as on the ticket) and add
+  // the columns an accounting import needs. Otherwise minutes only.
+  let priced = null;
+  let customerNames = {};
+  if (msp && byTicket.size) {
+    priced = await require('./billing').priceTickets([...byTicket.keys()], { tz });
+    const ids = [...new Set(Object.values(priced.customers).filter(Boolean))];
+    if (ids.length) {
+      const cr = await pool.query('SELECT id, name, name_enc FROM companies WHERE id = ANY($1::int[])', [ids]);
+      await decryptRows('companies', cr.rows);
+      customerNames = Object.fromEntries(cr.rows.map((x) => [x.id, x.name]));
+    }
+  }
+
   const head = ['Ticket', 'Title', 'Project', 'Technician', 'Work type', 'Start', 'End',
-    'Logged minutes', 'Billable', 'Billable minutes', 'Visibility', 'Invoiced', 'Note'];
+    'Logged minutes', 'Billable', 'Billable minutes', 'Visibility', 'Approved', 'Invoiced', 'Note'];
+  if (priced) {
+    head.push('Customer', 'Contract', 'Contract ref', 'Bill type', 'Bill type code', 'Rate card',
+      'Hours', 'Coverage', 'Covered minutes', 'Rate', 'Amount', 'Currency');
+  }
   const lines = [head.map(c).join(',')];
-  for (const rows of byTicket.values()) {
-    const bill = rules.computeBillable(rows, settings);
+  const pricedCols = (ticketId, line) => (priced ? [
+    c(customerNames[priced.customers[ticketId]] || ''), c(line?.contract_name), c(line?.contract_ref),
+    c(line?.billing_type), c(line?.billing_type_code), c(line?.rate_card),
+    c(line?.hours_class), c(line?.coverage), line?.covered_minutes ?? '',
+    money(line?.rate_cents), money(line?.amount_cents), c(settings.billing_currency),
+  ] : []);
+  for (const [ticketId, rows] of byTicket) {
+    const bill = rules.computeBillable(rows, settings, { tz });
     for (const e of rows) {
+      const line = priced?.byEntry[e.id];
       lines.push([
         c(e.internal_ref), c(e.title), c(e.project_name), c(e.user_name || e.user_email),
         c(e.work_type_name), c(new Date(e.started_at).toISOString()), c(new Date(e.ended_at).toISOString()),
-        e.duration_minutes, c(e.billable ? 'yes' : 'no'), bill.perEntry[e.id],
-        c(e.visibility), c(e.invoiced_at ? new Date(e.invoiced_at).toISOString() : ''), c(e.note),
+        e.duration_minutes, c(e.billable ? 'yes' : 'no'), line ? line.billable_minutes : bill.perEntry[e.id],
+        c(e.visibility), c(e.approved_at ? new Date(e.approved_at).toISOString() : ''),
+        c(e.invoiced_at ? new Date(e.invoiced_at).toISOString() : ''), c(e.note),
+        ...pricedCols(ticketId, line || (e.billable ? null : { coverage: 'non_billable' })),
       ].join(','));
     }
-    if (bill.topUp > 0) {
-      const t = rows[0];
+    const topUps = priced
+      ? (priced.topUps[ticketId] || []).filter((t) => inRange.has(t.anchor_entry_id))
+      : bill.topUps;
+    for (const t of topUps) {
+      const first = rows[0];
       lines.push([
-        c(t.internal_ref), c(t.title), c(t.project_name), '', c('Ticket minimum'), '', '',
-        0, c('yes'), bill.topUp, '', '', c(`Top-up to the ${settings.billing_ticket_minimum}-minute ticket minimum`),
+        c(first.internal_ref), c(first.title), c(first.project_name), '', c('Ticket minimum'), '', '',
+        0, c('yes'), priced ? t.billable_minutes : t.minutes, '', '', '',
+        c(`Top-up to the ${settings.billing_ticket_minimum}-minute ticket minimum${t.key && t.key !== 'ticket' ? ` (${t.key})` : ''}`),
+        ...pricedCols(ticketId, priced ? t : null),
       ].join(','));
     }
   }

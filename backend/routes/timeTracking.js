@@ -8,8 +8,12 @@
 //   PATCH  /api/time-tracking/work-types/:id      — Admin
 //   DELETE /api/time-tracking/work-types/:id      — Admin (retires it if entries use it)
 //   GET    /api/time-tracking/export?from=&to=    — Admin/Manager, CSV of entries ending in [from, to)
+//                                                    (&approved_only=1; MSP mode adds pricing columns)
 //
 //   GET    /api/tickets/:id/time                  — entries + totals + caller's timer
+//                                                    (+ `billing` for Admin/Manager in MSP mode)
+//   PUT    /api/tickets/:id/billing-customer      — Admin/Manager { company_id|null }
+//   POST   /api/tickets/:id/time/approval         — Admin/Manager { approve, entry_ids? }
 //   POST   /api/tickets/:id/timer/start           — { auto?, trigger? } (auto honours settings)
 //   POST   /api/tickets/:id/timer/pause
 //   POST   /api/tickets/:id/timer/discard
@@ -31,6 +35,9 @@ const { requireAuth, requireRole } = require('../middleware/auth');
 const { isProjectHandler } = require('../services/ticketHelpers');
 const tt = require('../services/timeTracking');
 const { canChooseVisibility } = require('../services/timeTrackingRules');
+const billingSvc = require('../services/billing');
+
+const PRIV = new Set(['Admin', 'Manager']);
 
 const settingsRouter = express.Router();
 const ticketRouter = express.Router();
@@ -74,6 +81,9 @@ function presentSettings(s, role) {
     billing_ticket_minimum: s.billing_ticket_minimum,
     overlap_policy: s.overlap_policy,
     billing_reprice: s.billing_reprice,
+    billing_ticket_minimum_scope: s.billing_ticket_minimum_scope,
+    billing_require_approval: s.billing_require_approval,
+    billing_currency: s.billing_currency,
     edit_lock_days: s.edit_lock_days,
     can_choose_visibility: canChooseVisibility(s, role),
     updated_at: s.updated_at,
@@ -122,7 +132,11 @@ settingsRouter.delete('/work-types/:wtId', requireAuth, requireRole('Admin'), as
 
 settingsRouter.get('/export', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
-    const csv = await tt.exportCsv({ from: req.query.from, to: req.query.to });
+    const csv = await tt.exportCsv({
+      from: req.query.from,
+      to: req.query.to,
+      approvedOnly: req.query.approved_only === '1',
+    });
     const day = (v) => String(v || '').slice(0, 10).replace(/[^0-9-]/g, '');
     res.setHeader('Content-Type', 'text/csv; charset=utf-8');
     res.setHeader('Content-Disposition', `attachment; filename="time-entries-${day(req.query.from)}-to-${day(req.query.to)}.csv"`);
@@ -136,8 +150,36 @@ ticketRouter.get('/:id/time', requireAuth, requireTicketHandler, async (req, res
       tt.listEntries(req.ticketId, req.session.user),
       tt.getTimer(req.session.user.id, req.ticketId),
     ]);
-    res.json({ ...list, timer });
+    // Rates, contract and amounts: Admin/Manager only, MSP mode only.
+    let billing = null;
+    if (PRIV.has(req.session.user.role) && await billingSvc.isMspMode()) {
+      billing = await billingSvc.ticketBilling(req.ticketId);
+    }
+    res.json({ ...list, timer, billing });
   } catch (err) { fail(res, err, 'list'); }
+});
+
+// PUT /api/tickets/:id/billing-customer { company_id|null } — which
+// customer the ticket bills to (overrides the project's customer).
+ticketRouter.put('/:id/billing-customer', requireAuth, requireRole('Admin', 'Manager'), requireTicketHandler, async (req, res) => {
+  try {
+    const id = req.body?.company_id;
+    await billingSvc.setTicketCustomer(req.ticketId, id == null || id === '' ? null : Number(id));
+    res.json(await billingSvc.ticketBilling(req.ticketId));
+  } catch (err) { fail(res, err, 'billing customer'); }
+});
+
+// POST /api/tickets/:id/time/approval { approve: bool, entry_ids?: [] }
+// — approve (or un-approve) billable time; no ids = the whole ticket.
+ticketRouter.post('/:id/time/approval', requireAuth, requireRole('Admin', 'Manager'), requireTicketHandler, async (req, res) => {
+  try {
+    res.json(await billingSvc.setApproval({
+      user: req.session.user,
+      ticketId: req.ticketId,
+      entryIds: req.body?.entry_ids,
+      approve: req.body?.approve !== false,
+    }));
+  } catch (err) { fail(res, err, 'approval'); }
 });
 
 ticketRouter.post('/:id/timer/start', requireAuth, requireTicketHandler, async (req, res) => {

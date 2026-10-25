@@ -4,6 +4,7 @@ import { api } from "../utils/api";
 import { useBranding } from "../context/BrandingContext";
 import { useAuth } from "../context/AuthContext";
 import CompanyNotificationPrefs from "../components/CompanyNotificationPrefs";
+import CompanyContracts from "../components/CompanyContracts";
 
 const KIND_LABEL = {
   vendor: "Vendor",
@@ -326,6 +327,48 @@ function CreateForm({ enabledKinds, projects, onCancel, onCreated }) {
 // ─────────────────────────────────────────────────────────────────────
 // Detail pane
 // ─────────────────────────────────────────────────────────────────────
+// MSP mode lives in Branding, but the internal company is where an
+// admin sets up "us" — so the switch is offered here too. It enables
+// customer companies (contracts, billing) and the billing settings under
+// Admin → Time tracking.
+function MspModeCard() {
+  const { branding, setBranding } = useBranding();
+  const on = branding?.enable_customer_companies === true;
+  const [busy, setBusy] = useState(false);
+
+  async function toggle() {
+    if (on && !window.confirm("Turn off MSP mode? Customer companies and billing settings will be hidden (nothing is deleted).")) return;
+    setBusy(true);
+    try {
+      const next = await api.patch("/api/branding", { enable_customer_companies: !on });
+      setBranding((b) => ({ ...b, ...next }));
+      toast.success(!on ? "MSP mode on" : "MSP mode off");
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className={`rounded-lg border p-3 flex flex-wrap items-center gap-3 ${on ? "border-purple-500/40 bg-purple-500/5" : "border-border bg-surface-2/40"}`}>
+      <div className="flex-1 min-w-[14rem]">
+        <div className="text-sm font-medium text-fg">
+          MSP mode {on ? <span className="text-purple-700 dark:text-purple-300">— on</span> : <span className="text-fg-muted">— off</span>}
+        </div>
+        <div className="text-xs text-fg-muted mt-0.5">
+          Serve outside customers: customer companies with contracts, rate
+          cards, billable hours and billing exports. Leave off for an
+          internal-only helpdesk.
+        </div>
+      </div>
+      <button onClick={toggle} disabled={busy} className={`btn btn-sm ${on ? "btn-secondary" : "btn-primary"}`}>
+        {busy ? "Saving…" : on ? "Turn off" : "Turn on MSP mode"}
+      </button>
+    </div>
+  );
+}
+
 function CompanyDetail({ company, projects, onBack, onReload, onDeleted }) {
   const { user } = useAuth();
   const [name, setName] = useState(company.name);
@@ -403,6 +446,7 @@ function CompanyDetail({ company, projects, onBack, onReload, onDeleted }) {
         { id: "contacts", label: "Contacts" },
         { id: "locations", label: "Locations" },
         { id: "projects", label: "Projects" },
+        { id: "billing", label: "Billing" },
       ];
     }
     return [
@@ -434,6 +478,8 @@ function CompanyDetail({ company, projects, onBack, onReload, onDeleted }) {
           </button>
         )}
       </div>
+
+      {company.kind === "internal" && isAdmin && <MspModeCard />}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3 border-t border-border">
         <label className="text-xs text-fg-muted flex flex-col gap-1">
@@ -508,6 +554,7 @@ function CompanyDetail({ company, projects, onBack, onReload, onDeleted }) {
         {tab === "members" && <MembersTab company={company} onChange={onReload} />}
         {tab === "projects" && <ProjectsTab company={company} projects={projects} />}
         {tab === "notifications" && <CompanyNotificationPrefs company={company} />}
+        {tab === "billing" && <CompanyContracts company={company} />}
       </div>
     </div>
   );
