@@ -16,7 +16,15 @@ const DEFAULT_SETTINGS = Object.freeze({
   default_visibility: 'private',
   visibility_choice: 'admins',
   min_note_chars: 10,
+  billable_by_default: false,
+  billing_round_increment: 1,
+  billing_round_mode: 'up',
+  billing_session_minimum: 0,
+  billing_ticket_minimum: 0,
 });
+
+const ROUND_INCREMENTS = [1, 5, 6, 10, 15, 30];
+const ROUND_MODES = ['up', 'nearest', 'down'];
 
 // Seconds on the clock right now. Paused timers (running_since NULL)
 // report only what they banked.
@@ -192,7 +200,73 @@ function cleanSettingsPatch(body) {
     if (!Number.isInteger(n) || n < 1 || n > 500) bad('min_note_chars must be 1–500');
     out.min_note_chars = n;
   }
+  if (body.billable_by_default !== undefined) {
+    if (typeof body.billable_by_default !== 'boolean') bad('billable_by_default must be true or false');
+    out.billable_by_default = body.billable_by_default;
+  }
+  if (body.billing_round_increment !== undefined) {
+    const n = Number(body.billing_round_increment);
+    if (!ROUND_INCREMENTS.includes(n)) bad(`billing_round_increment must be one of ${ROUND_INCREMENTS.join(', ')}`);
+    out.billing_round_increment = n;
+  }
+  if (body.billing_round_mode !== undefined) {
+    if (!ROUND_MODES.includes(body.billing_round_mode)) bad('billing_round_mode is invalid');
+    out.billing_round_mode = body.billing_round_mode;
+  }
+  for (const key of ['billing_session_minimum', 'billing_ticket_minimum']) {
+    if (body[key] !== undefined) {
+      const n = Number(body[key]);
+      if (!Number.isInteger(n) || n < 0 || n > 8 * 60) bad(`${key} must be 0–480`);
+      out[key] = n;
+    }
+  }
   return out;
+}
+
+// --- Billable hours ----------------------------------------------------
+// Billing rules never touch what was logged: duration_minutes stays the
+// time actually worked. Billable minutes are derived, for entries
+// flagged billable only:
+//   1. each session rounds to the increment (up / nearest / down),
+//   2. then is raised to the per-session minimum,
+//   3. the ticket's billable total is raised to the per-ticket minimum
+//      (the difference is reported as a separate top-up so invoices can
+//      show it as its own line).
+// Computed on read, so a rule change re-prices everything not yet
+// invoiced; an invoicing export must snapshot the result.
+
+function roundSession(minutes, increment, mode) {
+  const inc = Number(increment) || 1;
+  if (inc <= 1) return minutes;
+  const q = minutes / inc;
+  const n = mode === 'down' ? Math.floor(q) : mode === 'nearest' ? Math.round(q) : Math.ceil(q);
+  return n * inc;
+}
+
+function billableSessionMinutes(minutes, settings) {
+  const s = { ...DEFAULT_SETTINGS, ...settings };
+  const rounded = roundSession(Math.max(0, Number(minutes) || 0), s.billing_round_increment, s.billing_round_mode);
+  return Math.max(rounded, Number(s.billing_session_minimum) || 0);
+}
+
+// entries: [{ id, duration_minutes, billable }]. Returns per-entry
+// billable minutes (0 for non-billable), the session sum, the ticket
+// minimum top-up, and the ticket total.
+function computeBillable(entries, settings) {
+  const s = { ...DEFAULT_SETTINGS, ...settings };
+  const perEntry = {};
+  let sessions = 0;
+  let any = false;
+  for (const e of entries) {
+    if (!e.billable) { perEntry[e.id] = 0; continue; }
+    any = true;
+    const m = billableSessionMinutes(e.duration_minutes, s);
+    perEntry[e.id] = m;
+    sessions += m;
+  }
+  const floor = any ? Number(s.billing_ticket_minimum) || 0 : 0;
+  const topUp = Math.max(0, floor - sessions);
+  return { perEntry, sessions, topUp, total: sessions + topUp };
 }
 
 module.exports = {
@@ -207,6 +281,9 @@ module.exports = {
   canChooseVisibility,
   resolveVisibility,
   formatDuration,
+  roundSession,
+  billableSessionMinutes,
+  computeBillable,
   validateEntry,
   cleanSettingsPatch,
 };

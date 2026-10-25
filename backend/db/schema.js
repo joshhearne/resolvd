@@ -3341,6 +3341,13 @@ Thanks,
       )
     `);
     await client.query(`INSERT INTO time_tracking_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING`);
+    // Billable-hours rules (Admin → Time tracking → Billable hours). Applied
+    // on read to entries flagged billable; logged minutes never change.
+    await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS billable_by_default BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS billing_round_increment INTEGER NOT NULL DEFAULT 1`);
+    await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS billing_round_mode TEXT NOT NULL DEFAULT 'up'`);
+    await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS billing_session_minimum INTEGER NOT NULL DEFAULT 0`);
+    await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS billing_ticket_minimum INTEGER NOT NULL DEFAULT 0`);
 
     // One row per (user, ticket). running_since NULL = paused. Elapsed =
     // accumulated_seconds + (NOW() - running_since). status_at_start lets

@@ -1,6 +1,7 @@
 import { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
+import { previewBillable } from "../utils/billing";
 
 // Org-wide technician time tracking policy. Techs log time with a
 // required note; the note lands as a private (handler-only) ticket note
@@ -28,6 +29,148 @@ function Radio({ name, value, current, onChange, label, help }) {
         {help && <span className="block text-xs text-fg-muted">{help}</span>}
       </span>
     </label>
+  );
+}
+
+function fmt(m) {
+  const t = Math.max(0, Math.round(Number(m) || 0));
+  const h = Math.floor(t / 60);
+  const r = t % 60;
+  if (!h) return `${r}m`;
+  return r ? `${h}h ${r}m` : `${h}h`;
+}
+
+const INCREMENTS = [
+  { value: 1, label: "No rounding" },
+  { value: 5, label: "5 minutes" },
+  { value: 6, label: "6 minutes (0.1 h)" },
+  { value: 10, label: "10 minutes" },
+  { value: 15, label: "15 minutes (0.25 h)" },
+  { value: 30, label: "30 minutes" },
+];
+
+// Billable-hours rules. They never change what a tech logged: billable
+// minutes are worked out from the logged minutes of entries flagged
+// billable, so rules can change without rewriting history (anything
+// already invoiced keeps the figure it was invoiced at).
+function BillingCard({ v, set, enabled }) {
+  const [sample, setSample] = useState("7, 22, 41");
+  const sessions = sample
+    .split(/[\s,]+/)
+    .map((x) => Number(x))
+    .filter((n) => Number.isFinite(n) && n > 0)
+    .slice(0, 12);
+  const p = previewBillable(sessions, v);
+  const logged = sessions.reduce((a, b) => a + b, 0);
+  const rounding = Number(v.billing_round_increment) > 1;
+
+  return (
+    <div className={`bg-surface border border-border rounded-lg p-4 ${enabled ? "" : "opacity-60"}`}>
+      <h3 className="text-sm font-semibold text-fg mb-1">Billable hours</h3>
+      <p className="text-xs text-fg-muted mb-3">
+        Rules for turning logged time into billable time. They apply only to
+        entries marked billable, and never change what the tech logged —
+        the logged minutes stay as worked, and billable minutes are shown
+        alongside. Changing a rule re-prices everything not yet invoiced.
+      </p>
+
+      <Toggle
+        checked={v.billable_by_default}
+        onChange={(billable_by_default) => set({ billable_by_default })}
+        label="New entries are billable by default"
+        help="Off: Admins/Managers tick billable per entry. On: entries start billable and can be unticked."
+      />
+
+      <div className="mt-3 grid gap-3 sm:grid-cols-2">
+        <label className="flex flex-col gap-1">
+          <span className="text-xs font-semibold text-fg-muted uppercase">Round each session to</span>
+          <select
+            value={v.billing_round_increment}
+            onChange={(e) => set({ billing_round_increment: Number(e.target.value) })}
+            className="input py-1"
+          >
+            {INCREMENTS.map((i) => <option key={i.value} value={i.value}>{i.label}</option>)}
+          </select>
+        </label>
+        <div className={`flex flex-col gap-1 ${rounding ? "" : "opacity-50"}`}>
+          <span className="text-xs font-semibold text-fg-muted uppercase">Rounding</span>
+          <div className="flex flex-wrap gap-3 text-sm">
+            {[["up", "Up"], ["nearest", "Nearest"], ["down", "Down"]].map(([val, label]) => (
+              <label key={val} className="inline-flex items-center gap-1">
+                <input
+                  type="radio" name="round-mode" disabled={!rounding}
+                  checked={v.billing_round_mode === val}
+                  onChange={() => set({ billing_round_mode: val })}
+                />
+                {label}
+              </label>
+            ))}
+          </div>
+        </div>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs font-semibold text-fg-muted uppercase">Minimum per session</span>
+          <span className="flex items-center gap-2 text-sm">
+            <input
+              type="number" min="0" max="480"
+              value={v.billing_session_minimum}
+              onChange={(e) => set({ billing_session_minimum: Number(e.target.value) })}
+              className="input w-20 py-1"
+            />
+            minutes <span className="text-xs text-fg-dim">(0 = none)</span>
+          </span>
+          <span className="text-xs text-fg-muted">Each billable log entry counts as at least this much.</span>
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs font-semibold text-fg-muted uppercase">Minimum per ticket</span>
+          <span className="flex items-center gap-2 text-sm">
+            <input
+              type="number" min="0" max="480"
+              value={v.billing_ticket_minimum}
+              onChange={(e) => set({ billing_ticket_minimum: Number(e.target.value) })}
+              className="input w-20 py-1"
+            />
+            minutes <span className="text-xs text-fg-dim">(0 = none)</span>
+          </span>
+          <span className="text-xs text-fg-muted">
+            A ticket with any billable time bills at least this much; anything above it counts as-is.
+          </span>
+        </label>
+      </div>
+
+      <div className="mt-4 border border-border rounded p-3 bg-surface-2/40">
+        <label className="flex flex-wrap items-center gap-2 text-xs text-fg-muted">
+          Preview — billable sessions on one ticket (minutes):
+          <input value={sample} onChange={(e) => setSample(e.target.value)} className="input py-1 w-48 text-sm" />
+        </label>
+        {sessions.length ? (
+          <table className="mt-2 text-sm">
+            <tbody>
+              {sessions.map((m, i) => (
+                <tr key={i}>
+                  <td className="pr-3 text-fg-muted">Session {i + 1}</td>
+                  <td className="pr-3 tabular-nums">{fmt(m)} logged</td>
+                  <td className="tabular-nums">→ <b>{fmt(p.per[i])}</b> billable</td>
+                </tr>
+              ))}
+              {p.topUp > 0 && (
+                <tr>
+                  <td className="pr-3 text-fg-muted">Ticket minimum</td>
+                  <td />
+                  <td className="tabular-nums">+ {fmt(p.topUp)}</td>
+                </tr>
+              )}
+              <tr className="border-t border-border">
+                <td className="pr-3 pt-1 font-medium">Total</td>
+                <td className="pr-3 pt-1 tabular-nums">{fmt(logged)} logged</td>
+                <td className="pt-1 tabular-nums"><b>{fmt(p.total)}</b> billable ({(p.total / 60).toFixed(2)} h)</td>
+              </tr>
+            </tbody>
+          </table>
+        ) : (
+          <p className="mt-2 text-xs text-fg-dim">Enter some minutes, e.g. 7, 22, 41.</p>
+        )}
+      </div>
+    </div>
   );
 }
 
@@ -150,11 +293,12 @@ export default function AdminTimeTracking() {
 
         <p className="text-xs text-fg-muted mt-3 border-t border-border pt-2">
           Visibility and billing are separate. A public note is not billable,
-          and a private one isn't excluded from billing. Admins and Managers
-          mark individual entries billable from the ticket's time log; any
-          future invoicing export reads only that flag.
+          and a private one isn't excluded from billing. Billable is set per
+          entry — see Billable hours below.
         </p>
       </div>
+
+      <BillingCard v={v} set={set} enabled={v.enabled} />
 
       <div className="flex justify-end">
         <button disabled={!dirty || saving} onClick={save} className="btn btn-primary">

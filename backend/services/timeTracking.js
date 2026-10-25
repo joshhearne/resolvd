@@ -4,9 +4,12 @@
 //
 // Work notes default to private: they land as a ticket_notes row
 // (handler-only, never sent outbound). Public entries post a regular
-// thread comment instead. Neither path sets `billable` — that flag is
-// the sole input a future accounting export (Xero / QuickBooks) should
-// read, so making a note public never puts it on an invoice.
+// thread comment instead. Visibility never sets `billable` — that flag
+// (default from the admin's billable_by_default, off unless turned on)
+// is the sole input a future accounting export (Xero / QuickBooks)
+// should read, so making a note public never puts it on an invoice.
+// Billable minutes come from the admin's billing rules applied to the
+// logged minutes (see computeBillable); logged minutes never change.
 
 const { pool } = require('../db/pool');
 const { buildWritePatch, decryptRow, decryptRows } = require('./fields');
@@ -273,6 +276,7 @@ async function logWork({ user, ticketId, minutes, startedAt, endedAt, note, visi
       ended_at: times.endedAt,
       duration_minutes: clean.minutes,
       visibility: vis,
+      billable: !!settings.billable_by_default,
       source,
       ticket_note_id: noteId,
       comment_id: commentId,
@@ -338,12 +342,23 @@ async function listEntries(ticketId) {
     [ticketId]
   );
   await decryptRows('time_entries', r.rows);
-  const totals = { minutes: 0, private_minutes: 0, public_minutes: 0, billable_minutes: 0 };
+  const bill = rules.computeBillable(r.rows, await getSettings());
+  const totals = {
+    minutes: 0, private_minutes: 0, public_minutes: 0,
+    // Raw logged minutes on billable entries, then what the billing rules
+    // make of them: per-session rounding/minimums, plus any ticket-
+    // minimum top-up, summing to billable_minutes.
+    billable_logged_minutes: 0,
+    billable_session_minutes: bill.sessions,
+    billable_topup_minutes: bill.topUp,
+    billable_minutes: bill.total,
+  };
   for (const row of r.rows) {
     delete row.note_enc;
+    row.billable_minutes = bill.perEntry[row.id];
     totals.minutes += row.duration_minutes;
     totals[`${row.visibility}_minutes`] += row.duration_minutes;
-    if (row.billable) totals.billable_minutes += row.duration_minutes;
+    if (row.billable) totals.billable_logged_minutes += row.duration_minutes;
   }
   return { entries: r.rows, totals };
 }

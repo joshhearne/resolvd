@@ -5,6 +5,7 @@ const {
   DEFAULT_SETTINGS, elapsedSeconds, suggestedMinutes, autoStartDecision,
   shouldDiscardOnLeave, needsWarning, canChooseVisibility, resolveVisibility,
   formatDuration, validateEntry, cleanSettingsPatch, pausesTimers, resolveEntryTimes,
+  roundSession, billableSessionMinutes, computeBillable,
 } = rules;
 
 const NOW = new Date('2026-10-25T12:00:00Z');
@@ -183,5 +184,51 @@ describe('resolveEntryTimes', () => {
     expect(resolveEntryTimes({ startedAt: '2026-10-25T15:50:00Z', minutes: 60, now }).error).toMatch(/future/);
     expect(resolveEntryTimes({ startedAt: 'nope', minutes: 5, now }).error).toMatch(/invalid/);
     expect(resolveEntryTimes({ startedAt: '2026-10-25T13:30:00Z', now }).error).toBeTruthy();
+  });
+});
+
+describe('billable hours', () => {
+  it('rounds a session up, to nearest, or down', () => {
+    expect(roundSession(7, 5, 'up')).toBe(10);
+    expect(roundSession(7, 5, 'nearest')).toBe(5);
+    expect(roundSession(8, 5, 'nearest')).toBe(10);
+    expect(roundSession(7, 5, 'down')).toBe(5);
+    expect(roundSession(22, 15, 'up')).toBe(30);
+    expect(roundSession(20, 10, 'up')).toBe(20);
+    expect(roundSession(7, 1, 'up')).toBe(7);
+  });
+  it('applies the per-session minimum after rounding', () => {
+    const s = { billing_round_increment: 5, billing_round_mode: 'up', billing_session_minimum: 15 };
+    expect(billableSessionMinutes(3, s)).toBe(15);
+    expect(billableSessionMinutes(17, s)).toBe(20);
+    expect(billableSessionMinutes(2, { billing_round_increment: 5, billing_round_mode: 'down' })).toBe(0);
+  });
+  it('tops a ticket up to its minimum, rest as-is', () => {
+    const s = { billing_ticket_minimum: 15 };
+    const small = computeBillable([{ id: 1, duration_minutes: 6, billable: true }], s);
+    expect(small).toEqual({ perEntry: { 1: 6 }, sessions: 6, topUp: 9, total: 15 });
+    const big = computeBillable([
+      { id: 1, duration_minutes: 12, billable: true },
+      { id: 2, duration_minutes: 20, billable: true },
+    ], s);
+    expect(big.total).toBe(32);
+    expect(big.topUp).toBe(0);
+  });
+  it('ignores non-billable entries, and a ticket with none gets no minimum', () => {
+    const s = { billing_ticket_minimum: 15, billing_round_increment: 15 };
+    const r = computeBillable([
+      { id: 1, duration_minutes: 40, billable: false },
+      { id: 2, duration_minutes: 5, billable: true },
+    ], s);
+    expect(r.perEntry).toEqual({ 1: 0, 2: 15 });
+    expect(r.total).toBe(15);
+    expect(computeBillable([{ id: 1, duration_minutes: 40, billable: false }], s).total).toBe(0);
+  });
+  it('validates the admin patch', () => {
+    expect(cleanSettingsPatch({ billing_round_increment: 15, billing_round_mode: 'nearest', billing_ticket_minimum: 15 }))
+      .toEqual({ billing_round_increment: 15, billing_round_mode: 'nearest', billing_ticket_minimum: 15 });
+    expect(() => cleanSettingsPatch({ billing_round_increment: 7 })).toThrow();
+    expect(() => cleanSettingsPatch({ billing_round_mode: 'sideways' })).toThrow();
+    expect(() => cleanSettingsPatch({ billing_session_minimum: -1 })).toThrow();
   });
 });

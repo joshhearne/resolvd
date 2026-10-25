@@ -357,7 +357,12 @@ export default function TimeTracker({ ticketId, ticket, user, onLogged }) {
             <span><b className="text-fg">{fmtMinutes(totals?.minutes)}</b> total</span>
             <span>{fmtMinutes(totals?.private_minutes)} private</span>
             <span>{fmtMinutes(totals?.public_minutes)} public</span>
-            {isPriv && <span>{fmtMinutes(totals?.billable_minutes)} billable</span>}
+            {isPriv && (
+              <span title="After the billing rules in Admin → Time tracking → Billable hours">
+                <b className="text-fg">{fmtMinutes(totals?.billable_minutes)}</b> billable
+                {totals?.billable_topup_minutes > 0 && ` (incl. +${fmtMinutes(totals.billable_topup_minutes)} ticket minimum)`}
+              </span>
+            )}
           </div>
           <ul className="divide-y divide-border">
             {entries.map((e) => {
@@ -382,6 +387,9 @@ export default function TimeTracker({ ticketId, ticket, user, onLogged }) {
                       <label className="inline-flex items-center gap-1 ml-auto" title="Billable is separate from visibility. Only billable entries should ever reach an invoice.">
                         <input type="checkbox" checked={!!e.billable} onChange={() => toggleBillable(e)} disabled={!!e.invoiced_at} />
                         billable
+                        {e.billable && e.billable_minutes !== e.duration_minutes && (
+                          <span className="text-fg-dim">→ {fmtMinutes(e.billable_minutes)}</span>
+                        )}
                       </label>
                     )}
                   </div>

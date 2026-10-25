@@ -57,6 +57,11 @@ function presentSettings(s, role) {
     default_visibility: s.default_visibility,
     visibility_choice: s.visibility_choice,
     min_note_chars: s.min_note_chars,
+    billable_by_default: s.billable_by_default,
+    billing_round_increment: s.billing_round_increment,
+    billing_round_mode: s.billing_round_mode,
+    billing_session_minimum: s.billing_session_minimum,
+    billing_ticket_minimum: s.billing_ticket_minimum,
     can_choose_visibility: canChooseVisibility(s, role),
     updated_at: s.updated_at,
   };
