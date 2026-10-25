@@ -3360,6 +3360,10 @@ Thanks,
         UNIQUE (user_id, ticket_id)
       )
     `);
+    // Why a paused timer stopped: NULL = the tech paused it, 'switched' =
+    // they started another timer, 'status:<name>' = the ticket moved into
+    // a hold / resolved / terminal status. Cleared on resume.
+    await client.query(`ALTER TABLE ticket_timers ADD COLUMN IF NOT EXISTS pause_reason TEXT`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_timers_running ON ticket_timers(running_since) WHERE running_since IS NOT NULL`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_timers_ticket ON ticket_timers(ticket_id)`);
 

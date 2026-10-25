@@ -71,6 +71,58 @@ function needsWarning({ settings, timer, now = new Date() }) {
   return elapsedSeconds(timer, now) >= mins * 60;
 }
 
+// Statuses that pause every running timer on the ticket: the SLA's
+// hold tags (waiting on the requester / a vendor, internal hold), plus
+// resolved and terminal states. Nothing ever auto-resumes — a reply on
+// a held ticket doesn't put the clock back on; the tech does.
+const TIMER_PAUSE_TAGS = new Set(['awaiting_input', 'on_hold', 'resolved_pending_close']);
+
+function pausesTimers({ tag, isTerminal }) {
+  return !!isTerminal || TIMER_PAUSE_TAGS.has(tag);
+}
+
+// Start, end and duration are a triangle: any two fix the third.
+// Accepts any two or all three (all three must agree to within a
+// minute); with only minutes, the entry ends now. Returns
+// { startedAt, endedAt, minutes } or { error }.
+const FUTURE_SLACK_MS = 5 * 60 * 1000;
+function resolveEntryTimes({ startedAt, endedAt, minutes, now = new Date() }) {
+  const toDate = (v) => {
+    if (v == null || v === '') return null;
+    const d = new Date(v);
+    return Number.isNaN(d.getTime()) ? undefined : d;
+  };
+  let start = toDate(startedAt);
+  let end = toDate(endedAt);
+  if (start === undefined) return { error: 'Start time is invalid' };
+  if (end === undefined) return { error: 'End time is invalid' };
+  let mins = minutes == null || minutes === '' ? null : Number(minutes);
+  if (mins != null && (!Number.isInteger(mins) || mins <= 0)) {
+    return { error: 'Minutes must be a whole number above zero' };
+  }
+
+  if (start && end) {
+    const span = Math.round((end - start) / 60000);
+    if (mins != null && Math.abs((end - start) / 1000 - mins * 60) > 60) {
+      return { error: 'Start, end and duration do not agree' };
+    }
+    mins = mins ?? span;
+  } else if (start && mins != null) {
+    end = new Date(start.getTime() + mins * 60000);
+  } else if (end && mins != null) {
+    start = new Date(end.getTime() - mins * 60000);
+  } else if (mins != null) {
+    end = now;
+    start = new Date(now.getTime() - mins * 60000);
+  } else {
+    return { error: 'Give two of start, end and duration' };
+  }
+
+  if (end <= start || mins <= 0) return { error: 'End must be after start' };
+  if (end.getTime() > now.getTime() + FUTURE_SLACK_MS) return { error: 'End time is in the future' };
+  return { startedAt: start, endedAt: end, minutes: mins };
+}
+
 function canChooseVisibility(settings, role) {
   if (PRIV_ROLES.has(role)) return true;
   return settings?.visibility_choice === 'handlers';
@@ -150,6 +202,8 @@ module.exports = {
   autoStartDecision,
   shouldDiscardOnLeave,
   needsWarning,
+  pausesTimers,
+  resolveEntryTimes,
   canChooseVisibility,
   resolveVisibility,
   formatDuration,

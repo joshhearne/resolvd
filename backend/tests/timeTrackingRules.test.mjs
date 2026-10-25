@@ -4,7 +4,7 @@ import rules from '../services/timeTrackingRules.js';
 const {
   DEFAULT_SETTINGS, elapsedSeconds, suggestedMinutes, autoStartDecision,
   shouldDiscardOnLeave, needsWarning, canChooseVisibility, resolveVisibility,
-  formatDuration, validateEntry, cleanSettingsPatch,
+  formatDuration, validateEntry, cleanSettingsPatch, pausesTimers, resolveEntryTimes,
 } = rules;
 
 const NOW = new Date('2026-10-25T12:00:00Z');
@@ -137,5 +137,51 @@ describe('formatDuration', () => {
     expect(formatDuration(5)).toBe('5m');
     expect(formatDuration(60)).toBe('1h');
     expect(formatDuration(95)).toBe('1h 35m');
+  });
+});
+
+describe('pausesTimers', () => {
+  it('pauses on hold, awaiting input, resolved and terminal statuses', () => {
+    expect(pausesTimers({ tag: 'on_hold' })).toBe(true);
+    expect(pausesTimers({ tag: 'awaiting_input' })).toBe(true);
+    expect(pausesTimers({ tag: 'resolved_pending_close' })).toBe(true);
+    expect(pausesTimers({ tag: null, isTerminal: true })).toBe(true);
+  });
+  it('leaves working statuses alone', () => {
+    expect(pausesTimers({ tag: 'in_progress' })).toBe(false);
+    expect(pausesTimers({ tag: 'reopened' })).toBe(false);
+    expect(pausesTimers({ tag: null, isTerminal: false })).toBe(false);
+  });
+});
+
+describe('resolveEntryTimes', () => {
+  const now = new Date('2026-10-25T16:00:00Z');
+  const iso = (d) => d.toISOString();
+  it('start + duration solves the end', () => {
+    const r = resolveEntryTimes({ startedAt: '2026-10-25T13:30:00Z', minutes: 30, now });
+    expect(iso(r.endedAt)).toBe('2026-10-25T14:00:00.000Z');
+  });
+  it('end + duration solves the start', () => {
+    const r = resolveEntryTimes({ endedAt: '2026-10-25T14:00:00Z', minutes: 30, now });
+    expect(iso(r.startedAt)).toBe('2026-10-25T13:30:00.000Z');
+  });
+  it('start + end solves the duration', () => {
+    const r = resolveEntryTimes({ startedAt: '2026-10-25T13:45:00Z', endedAt: '2026-10-25T14:15:00Z', now });
+    expect(r.minutes).toBe(30);
+  });
+  it('duration alone ends now', () => {
+    const r = resolveEntryTimes({ minutes: 15, now });
+    expect(iso(r.endedAt)).toBe(iso(now));
+    expect(iso(r.startedAt)).toBe('2026-10-25T15:45:00.000Z');
+  });
+  it('accepts all three when they agree, rejects when they do not', () => {
+    expect(resolveEntryTimes({ startedAt: '2026-10-25T13:30:00Z', endedAt: '2026-10-25T14:00:20Z', minutes: 30, now }).minutes).toBe(30);
+    expect(resolveEntryTimes({ startedAt: '2026-10-25T13:30:00Z', endedAt: '2026-10-25T14:15:00Z', minutes: 30, now }).error).toMatch(/agree/);
+  });
+  it('rejects backwards, future and bad input', () => {
+    expect(resolveEntryTimes({ startedAt: '2026-10-25T14:00:00Z', endedAt: '2026-10-25T13:00:00Z', now }).error).toBeTruthy();
+    expect(resolveEntryTimes({ startedAt: '2026-10-25T15:50:00Z', minutes: 60, now }).error).toMatch(/future/);
+    expect(resolveEntryTimes({ startedAt: 'nope', minutes: 5, now }).error).toMatch(/invalid/);
+    expect(resolveEntryTimes({ startedAt: '2026-10-25T13:30:00Z', now }).error).toBeTruthy();
   });
 });

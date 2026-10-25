@@ -3,12 +3,15 @@ import toast from "react-hot-toast";
 import { api } from "../utils/api";
 import HybridTime from "./HybridTime";
 import ConfirmDialog from "./ConfirmDialog";
+import TimeEntryForm from "./TimeEntryForm";
+import { formatShortDate, formatTime } from "../utils/timeEntry";
 
 // Technician time tracking on a ticket. Handler-only: the parent renders
 // it once the notes gate has confirmed access.
 //
 // Timer bar: live clock, start / pause / resume, log work, discard.
-// Log panel: duration + a required note describing the work. Notes are
+// Log panel (TimeEntryForm): start / duration / stop, any two of which
+// fix the third, plus a required note describing the work. Notes are
 // private (handler-only) by default; whether a tech can make one public
 // is the admin's call (Admin → Time tracking). Public is NOT billable —
 // billable is a separate Admin/Manager flag on the entry.
@@ -17,6 +20,11 @@ import ConfirmDialog from "./ConfirmDialog";
 // auto-started timer (status unchanged, nothing logged) when the admin
 // has that rule on. Otherwise the clock keeps running — techs often step
 // away from the page to do the work — and the header pill shows it.
+//
+// Putting the ticket on hold (or resolving it) pauses the timer server-
+// side. Nothing resumes it automatically: a requester replying to a held
+// ticket doesn't restart the clock; the tech resumes when they pick the
+// ticket back up.
 
 export const TIMERS_CHANGED = "resolvd:timers-changed";
 
@@ -64,6 +72,13 @@ function leaveTicket(ticketId) {
   }).then((r) => (r.ok ? r.json() : null));
 }
 
+function pauseLabel(reason) {
+  if (!reason) return "paused";
+  if (reason === "switched") return "paused — you started another timer";
+  if (reason.startsWith("status:")) return `paused — ticket moved to ${reason.slice(7)}`;
+  return "paused";
+}
+
 function VisibilityPill({ visibility }) {
   return visibility === "public" ? (
     <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-sky-100 text-sky-800 dark:bg-sky-900/40 dark:text-sky-200">
@@ -72,30 +87,6 @@ function VisibilityPill({ visibility }) {
   ) : (
     <span className="text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded bg-surface-2 text-fg-muted">
       Private
-    </span>
-  );
-}
-
-function DurationInputs({ minutes, onChange }) {
-  const h = Math.floor((Number(minutes) || 0) / 60);
-  const m = (Number(minutes) || 0) % 60;
-  const set = (nh, nm) => onChange(Math.max(0, (Number(nh) || 0) * 60 + (Number(nm) || 0)));
-  return (
-    <span className="inline-flex items-center gap-1">
-      <input
-        type="number" min="0" max="24" value={h}
-        onChange={(e) => set(e.target.value, m)}
-        className="input w-16 py-1"
-        aria-label="Hours"
-      />
-      <span className="text-xs text-fg-muted">h</span>
-      <input
-        type="number" min="0" max="59" value={m}
-        onChange={(e) => set(h, e.target.value)}
-        className="input w-16 py-1"
-        aria-label="Minutes"
-      />
-      <span className="text-xs text-fg-muted">m</span>
     </span>
   );
 }
@@ -110,8 +101,8 @@ export default function TimeTracker({ ticketId, ticket, user, onLogged }) {
   const [panel, setPanel] = useState(null); // null | 'log' | 'entries'
   const [busy, setBusy] = useState(false);
   const [confirmDiscard, setConfirmDiscard] = useState(false);
-  const [draft, setDraft] = useState({ minutes: 0, note: "", visibility: "private" });
-  const [editing, setEditing] = useState(null); // { id, minutes, note }
+  const [logInitial, setLogInitial] = useState(null);
+  const [editingId, setEditingId] = useState(null);
   const timerRef = useRef(null);
   const autoTried = useRef(false);
 
@@ -213,35 +204,34 @@ export default function TimeTracker({ ticketId, ticket, user, onLogged }) {
     }
   }
 
+  // Opens with stop = now and the timer's time as the duration, so the
+  // start is "now minus what was worked" (pauses excluded). With no
+  // timer it starts as a 15-minute entry ending now.
   function openLog() {
-    setDraft({
-      minutes: suggestedMinutes(seconds) || 15,
+    const end = new Date();
+    const minutes = suggestedMinutes(seconds) || 15;
+    setLogInitial({
+      start: new Date(end.getTime() - minutes * 60000),
+      end,
+      minutes,
       note: "",
       visibility: settings.default_visibility || "private",
     });
     setPanel("log");
   }
 
-  async function submitLog(e) {
-    e.preventDefault();
-    const note = draft.note.trim();
-    if (note.length < settings.min_note_chars) {
-      toast.error(`Describe the work done (at least ${settings.min_note_chars} characters)`);
-      return;
-    }
-    if (!draft.minutes) {
-      toast.error("Enter the time spent");
-      return;
-    }
+  async function submitLog(form) {
     setBusy(true);
     try {
       await api.post(`/api/tickets/${ticketId}/time`, {
-        minutes: draft.minutes,
-        note,
-        visibility: settings.can_choose_visibility ? draft.visibility : undefined,
+        started_at: form.started_at,
+        ended_at: form.ended_at,
+        minutes: form.minutes,
+        note: form.note,
+        visibility: settings.can_choose_visibility ? form.visibility : undefined,
         from_timer: !!timer,
       });
-      toast.success(`Logged ${fmtMinutes(draft.minutes)}`);
+      toast.success(`Logged ${fmtMinutes(form.minutes)}`);
       setPanel(null);
       await load();
       announceTimersChanged();
@@ -253,17 +243,22 @@ export default function TimeTracker({ ticketId, ticket, user, onLogged }) {
     }
   }
 
-  async function saveEdit() {
+  async function saveEdit(entryId, form) {
+    setBusy(true);
     try {
-      await api.patch(`/api/tickets/${ticketId}/time/${editing.id}`, {
-        minutes: editing.minutes,
-        note: editing.note,
+      await api.patch(`/api/tickets/${ticketId}/time/${entryId}`, {
+        started_at: form.started_at,
+        ended_at: form.ended_at,
+        minutes: form.minutes,
+        note: form.note,
       });
-      setEditing(null);
+      setEditingId(null);
       await load();
       onLogged?.();
     } catch (err) {
       toast.error(err.message || "Could not save");
+    } finally {
+      setBusy(false);
     }
   }
 
@@ -300,7 +295,7 @@ export default function TimeTracker({ ticketId, ticket, user, onLogged }) {
         <span className="font-mono tabular-nums text-sm text-fg" aria-label="Elapsed time">
           ⏱ {fmtClock(seconds)}
         </span>
-        {timer && !timer.running && <span className="text-fg-muted">paused</span>}
+        {timer && !timer.running && <span className="text-fg-muted">{pauseLabel(timer.pause_reason)}</span>}
         {timer?.auto_started && <span className="text-fg-muted">auto-started</span>}
 
         {!timer && (
@@ -344,51 +339,16 @@ export default function TimeTracker({ ticketId, ticket, user, onLogged }) {
         </p>
       )}
 
-      {panel === "log" && (
-        <form onSubmit={submitLog} className="mt-2 border border-border rounded-md p-3 bg-surface space-y-2 max-w-xl">
-          <div className="flex flex-wrap items-center gap-3">
-            <label className="text-xs text-fg-muted">Time spent</label>
-            <DurationInputs minutes={draft.minutes} onChange={(minutes) => setDraft((d) => ({ ...d, minutes }))} />
-          </div>
-          <textarea
-            value={draft.note}
-            onChange={(e) => setDraft((d) => ({ ...d, note: e.target.value }))}
-            rows={3}
-            placeholder="What did you do? (required)"
-            className="input w-full text-sm"
-            autoFocus
-          />
-          <div className="flex flex-wrap items-center justify-between gap-2">
-            {settings.can_choose_visibility ? (
-              <div className="flex items-center gap-3 text-xs">
-                <label className="inline-flex items-center gap-1">
-                  <input
-                    type="radio" name="tt-vis" checked={draft.visibility === "private"}
-                    onChange={() => setDraft((d) => ({ ...d, visibility: "private" }))}
-                  />
-                  Private note (handlers only)
-                </label>
-                <label className="inline-flex items-center gap-1">
-                  <input
-                    type="radio" name="tt-vis" checked={draft.visibility === "public"}
-                    onChange={() => setDraft((d) => ({ ...d, visibility: "public" }))}
-                  />
-                  Public comment
-                </label>
-              </div>
-            ) : (
-              <span className="text-xs text-fg-muted">
-                Saved as a {settings.default_visibility === "public" ? "public comment" : "private note (handlers only)"}
-              </span>
-            )}
-            <div className="flex gap-2">
-              <button type="button" onClick={() => setPanel(null)} className="btn btn-sm btn-secondary">Cancel</button>
-              <button type="submit" disabled={busy} className="btn btn-sm btn-primary">
-                Log {draft.minutes ? fmtMinutes(draft.minutes) : "time"}
-              </button>
-            </div>
-          </div>
-        </form>
+      {panel === "log" && logInitial && (
+        <TimeEntryForm
+          key={logInitial.end.getTime()}
+          initial={logInitial}
+          settings={settings}
+          busy={busy}
+          submitLabel="Log"
+          onSubmit={submitLog}
+          onCancel={() => setPanel(null)}
+        />
       )}
 
       {panel === "entries" && (
@@ -409,7 +369,13 @@ export default function TimeTracker({ ticketId, ticket, user, onLogged }) {
                   <div className="flex flex-wrap items-center gap-2 text-xs text-fg-muted">
                     <span className="font-medium text-fg">{fmtMinutes(e.duration_minutes)}</span>
                     <span>{e.user_name || e.user_email || "Unknown"}</span>
-                    <HybridTime value={e.created_at} />
+                    {e.started_at && e.ended_at ? (
+                      <span title={`Logged ${new Date(e.created_at).toLocaleString()}`}>
+                        {formatShortDate(e.started_at)}, {formatTime(e.started_at)} – {formatTime(e.ended_at)}
+                      </span>
+                    ) : (
+                      <HybridTime value={e.created_at} />
+                    )}
                     <VisibilityPill visibility={e.visibility} />
                     {e.edited_at && <span>(edited)</span>}
                     {isPriv && (
@@ -419,27 +385,31 @@ export default function TimeTracker({ ticketId, ticket, user, onLogged }) {
                       </label>
                     )}
                   </div>
-                  {editing?.id === e.id ? (
-                    <div className="mt-1 space-y-2">
-                      <DurationInputs minutes={editing.minutes} onChange={(minutes) => setEditing((d) => ({ ...d, minutes }))} />
-                      <textarea
-                        value={editing.note}
-                        onChange={(ev) => setEditing((d) => ({ ...d, note: ev.target.value }))}
-                        rows={2}
-                        className="input w-full text-sm"
-                      />
-                      <div className="flex gap-2">
-                        <button onClick={saveEdit} className="btn btn-sm btn-primary">Save</button>
-                        <button onClick={() => setEditing(null)} className="btn btn-sm btn-secondary">Cancel</button>
-                      </div>
-                    </div>
+                  {editingId === e.id ? (
+                    <TimeEntryForm
+                      initial={{
+                        end: new Date(e.ended_at || e.created_at),
+                        start: e.started_at
+                          ? new Date(e.started_at)
+                          : new Date(new Date(e.ended_at || e.created_at).getTime() - e.duration_minutes * 60000),
+                        minutes: e.duration_minutes,
+                        note: e.note || "",
+                        visibility: e.visibility,
+                      }}
+                      settings={settings}
+                      showVisibility={false}
+                      busy={busy}
+                      submitLabel="Save"
+                      onSubmit={(form) => saveEdit(e.id, form)}
+                      onCancel={() => setEditingId(null)}
+                    />
                   ) : (
                     <>
                       <p className="mt-0.5 whitespace-pre-wrap text-fg">{e.note}</p>
                       {(canEdit || canDelete) && (
                         <div className="mt-0.5 flex gap-3 text-xs">
                           {canEdit && (
-                            <button onClick={() => setEditing({ id: e.id, minutes: e.duration_minutes, note: e.note || "" })} className="text-brand hover:underline">
+                            <button onClick={() => setEditingId(e.id)} className="text-brand hover:underline">
                               edit
                             </button>
                           )}

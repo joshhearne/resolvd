@@ -9,8 +9,8 @@
 //   POST   /api/tickets/:id/timer/pause
 //   POST   /api/tickets/:id/timer/discard
 //   POST   /api/tickets/:id/timer/leave           — tech left the ticket; applies discard rule
-//   POST   /api/tickets/:id/time                  — { minutes, note, visibility?, from_timer? }
-//   PATCH  /api/tickets/:id/time/:entryId         — { minutes?, note?, billable? }
+//   POST   /api/tickets/:id/time                  — { note, any two of started_at / ended_at / minutes, visibility?, from_timer? }
+//   PATCH  /api/tickets/:id/time/:entryId         — { started_at?, ended_at?, minutes?, note?, billable? }
 //   DELETE /api/tickets/:id/time/:entryId
 //
 // Ticket-scoped routes use the same handler gate as internal notes.
@@ -124,6 +124,8 @@ ticketRouter.post('/:id/time', requireAuth, requireTicketHandler, async (req, re
       user: req.session.user,
       ticketId: req.ticketId,
       minutes: b.minutes,
+      startedAt: b.started_at,
+      endedAt: b.ended_at,
       note: b.note,
       visibility: b.visibility,
       fromTimer: b.from_timer === true,

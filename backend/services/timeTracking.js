@@ -53,6 +53,7 @@ function presentTimer(row, now = new Date()) {
     auto_started: row.auto_started,
     start_trigger: row.start_trigger,
     status_at_start: row.status_at_start,
+    pause_reason: row.pause_reason || null,
     warned_at: row.warned_at,
     ...(row.internal_ref !== undefined ? { internal_ref: row.internal_ref, title: row.title } : {}),
   };
@@ -85,7 +86,8 @@ async function pauseOthers(db, userId, exceptTicketId) {
     `UPDATE ticket_timers
         SET accumulated_seconds = accumulated_seconds
               + GREATEST(0, EXTRACT(EPOCH FROM (NOW() - running_since)))::int,
-            running_since = NULL
+            running_since = NULL,
+            pause_reason = 'switched'
       WHERE user_id = $1 AND ticket_id <> $2 AND running_since IS NOT NULL`,
     [userId, exceptTicketId]
   );
@@ -119,7 +121,8 @@ async function startTimer({ userId, ticketId, auto = false, trigger = 'manual' }
   let row;
   if (existing) {
     const r = await pool.query(
-      `UPDATE ticket_timers SET running_since = COALESCE(running_since, NOW())
+      `UPDATE ticket_timers
+          SET running_since = COALESCE(running_since, NOW()), pause_reason = NULL
         WHERE id = $1 RETURNING *`,
       [existing.id]
     );
@@ -130,7 +133,8 @@ async function startTimer({ userId, ticketId, auto = false, trigger = 'manual' }
          (user_id, ticket_id, running_since, auto_started, start_trigger, status_at_start)
        VALUES ($1, $2, NOW(), $3, $4, $5)
        ON CONFLICT (user_id, ticket_id)
-         DO UPDATE SET running_since = COALESCE(ticket_timers.running_since, NOW())
+         DO UPDATE SET running_since = COALESCE(ticket_timers.running_since, NOW()),
+                       pause_reason = NULL
        RETURNING *`,
       [userId, ticketId, !!auto, auto ? trigger : 'manual', ticket.internal_status]
     );
@@ -144,7 +148,8 @@ async function pauseTimer({ userId, ticketId }) {
     `UPDATE ticket_timers
         SET accumulated_seconds = accumulated_seconds
               + GREATEST(0, EXTRACT(EPOCH FROM (NOW() - running_since)))::int,
-            running_since = NULL
+            running_since = NULL,
+            pause_reason = NULL
       WHERE user_id = $1 AND ticket_id = $2 AND running_since IS NOT NULL
       RETURNING *`,
     [userId, ticketId]
@@ -158,6 +163,23 @@ async function discardTimer({ userId, ticketId }) {
     [userId, ticketId]
   );
   return r.rowCount > 0;
+}
+
+// A ticket moved into a hold / resolved / terminal status: pause every
+// running timer on it, stamping the status as the reason. Runs inside
+// the caller's status-change transaction. Never resumes anything.
+async function pauseForStatus(client, { ticketId, statusName, tag, isTerminal }) {
+  if (!rules.pausesTimers({ tag, isTerminal })) return 0;
+  const r = await client.query(
+    `UPDATE ticket_timers
+        SET accumulated_seconds = accumulated_seconds
+              + GREATEST(0, EXTRACT(EPOCH FROM (NOW() - running_since)))::int,
+            running_since = NULL,
+            pause_reason = $2
+      WHERE ticket_id = $1 AND running_since IS NOT NULL`,
+    [ticketId, `status:${statusName}`]
+  );
+  return r.rowCount;
 }
 
 // Called when the tech navigates away from (or closes) a ticket. Applies
@@ -205,13 +227,16 @@ async function insertRow(client, table, base, enc) {
   return r.rows[0];
 }
 
-// Log work. `fromTimer` consumes the tech's timer on this ticket (its
-// start time is kept as the entry's started_at); otherwise it's a manual
-// entry ending now.
-async function logWork({ user, ticketId, minutes, note, visibility, fromTimer }) {
+// Log work. Any two of startedAt / endedAt / minutes fix the third
+// (minutes alone ends the entry now). `fromTimer` consumes the tech's
+// timer on this ticket. The stored start is always end − duration, so a
+// timer that was paused along the way logs the time actually worked.
+async function logWork({ user, ticketId, minutes, startedAt, endedAt, note, visibility, fromTimer }) {
   const settings = await getSettings();
   if (!settings.enabled) throw httpError(409, 'Time tracking is turned off');
-  const clean = rules.validateEntry({ minutes, note }, settings);
+  const times = rules.resolveEntryTimes({ startedAt, endedAt, minutes });
+  if (times.error) throw httpError(400, times.error);
+  const clean = rules.validateEntry({ minutes: times.minutes, note }, settings);
   if (clean.error) throw httpError(400, clean.error);
   const vis = rules.resolveVisibility({ settings, role: user.role, requested: visibility });
 
@@ -220,18 +245,13 @@ async function logWork({ user, ticketId, minutes, note, visibility, fromTimer })
   let commentId = null;
   try {
     await client.query('BEGIN');
-    let startedAt = null;
     let source = 'manual';
     if (fromTimer) {
       const t = await client.query(
-        'DELETE FROM ticket_timers WHERE user_id = $1 AND ticket_id = $2 RETURNING started_at',
+        'DELETE FROM ticket_timers WHERE user_id = $1 AND ticket_id = $2',
         [user.id, ticketId]
       );
-      if (t.rows[0]) { startedAt = t.rows[0].started_at; source = 'timer'; }
-    }
-    if (!startedAt) {
-      const r = await client.query(`SELECT NOW() - ($1 || ' minutes')::interval AS s`, [clean.minutes]);
-      startedAt = r.rows[0].s;
+      if (t.rowCount) source = 'timer';
     }
 
     let noteId = null;
@@ -249,8 +269,8 @@ async function logWork({ user, ticketId, minutes, note, visibility, fromTimer })
     const entry = await insertRow(client, 'time_entries', {
       ticket_id: ticketId,
       user_id: user.id,
-      started_at: startedAt,
-      ended_at: new Date(),
+      started_at: times.startedAt,
+      ended_at: times.endedAt,
       duration_minutes: clean.minutes,
       visibility: vis,
       source,
@@ -328,7 +348,7 @@ async function listEntries(ticketId) {
   return { entries: r.rows, totals };
 }
 
-// Edit minutes / note (author or Admin/Manager) and billable (Admin/
+// Edit times / note (author or Admin/Manager) and billable (Admin/
 // Manager only). Visibility is fixed once logged — a public comment may
 // already have reached people, so flipping it would be misleading.
 // The linked private note is kept in step; a linked public comment is
@@ -349,16 +369,36 @@ async function updateEntry({ user, ticketId, entryId, body }) {
   }
 
   const settings = await getSettings();
-  const next = {
-    minutes: body.minutes !== undefined ? body.minutes : existing.duration_minutes,
-    note: body.note !== undefined ? body.note : existing.note,
+  // Same triangle as logging. Two or more given → solve from those. One
+  // given → keep the existing start (for a new duration) or the existing
+  // duration (for a new start or end).
+  const given = {
+    startedAt: body.started_at,
+    endedAt: body.ended_at,
+    minutes: body.minutes,
   };
-  const clean = rules.validateEntry(next, settings);
+  const count = Object.values(given).filter((v) => v !== undefined).length;
+  let input = given;
+  if (count === 0) {
+    input = { startedAt: existing.started_at, minutes: existing.duration_minutes };
+  } else if (count === 1) {
+    input = given.minutes !== undefined
+      ? { startedAt: existing.started_at, minutes: given.minutes }
+      : { ...given, minutes: existing.duration_minutes };
+  }
+  // Legacy rows may lack a start; anchor on created_at then.
+  if (input.startedAt === null) input = { endedAt: existing.ended_at || existing.created_at, minutes: input.minutes };
+  const times = rules.resolveEntryTimes(input);
+  if (times.error) throw httpError(400, times.error);
+  const clean = rules.validateEntry({
+    minutes: times.minutes,
+    note: body.note !== undefined ? body.note : existing.note,
+  }, settings);
   if (clean.error) throw httpError(400, clean.error);
 
   const patch = await buildWritePatch(pool, 'time_entries', { note: clean.note });
-  const cols = ['duration_minutes', ...patch.cols];
-  const values = [clean.minutes, ...patch.values];
+  const cols = ['duration_minutes', 'started_at', 'ended_at', ...patch.cols];
+  const values = [clean.minutes, times.startedAt, times.endedAt, ...patch.values];
   if (body.billable !== undefined) { cols.push('billable'); values.push(!!body.billable); }
   const sets = cols.map((c, i) => `${c} = $${i + 1}`);
   sets.push('edited_at = NOW()');
@@ -436,6 +476,7 @@ module.exports = {
   patchSettings,
   startTimer,
   pauseTimer,
+  pauseForStatus,
   discardTimer,
   leaveTicket,
   listUserTimers,

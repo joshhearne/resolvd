@@ -1006,6 +1006,11 @@ router.patch('/:id', requireAuth, async (req, res) => {
           oldStatus: old,
           newStatus: body.internal_status,
         });
+        // Hold / resolved / terminal pauses every running time-tracking
+        // timer on the ticket. Nothing resumes them automatically.
+        await require('../services/timeTracking').pauseForStatus(client, {
+          ticketId: ticket.id, statusName: nextStatus, tag, isTerminal,
+        });
         // Follow-up timer lives on pending_review states. Defensive
         // clear on any move out of pending_review (the in-flight guard
         // above already blocks transitions while followup_at is set).
@@ -1347,6 +1352,9 @@ router.post('/bulk', requireAuth, requireRole('Admin'), async (req, res) => {
             const tagRow = await client.query(`SELECT semantic_tag, is_terminal FROM statuses WHERE kind='internal' AND name=$1`, [newStatus]);
             const tag = tagRow.rows[0]?.semantic_tag || null;
             const isTerminal = !!tagRow.rows[0]?.is_terminal;
+            await require('../services/timeTracking').pauseForStatus(client, {
+              ticketId: ticket.id, statusName: newStatus, tag, isTerminal,
+            });
             // Mirror single-ticket PATCH: terminal statuses (Closed) also
             // stop the resolve clock. Without this, SLA tickWarnings /
             // tickBreaches keep firing on bulk-closed tickets.
