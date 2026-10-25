@@ -900,7 +900,7 @@ export default function TicketDetail() {
         body: formData,
       });
       if (!res.ok) {
-        const e = await res.json();
+        const e = await res.json().catch(() => ({}));
         throw new Error(e.error || "Upload failed");
       }
       const inserted = await res.json();
@@ -1017,7 +1017,10 @@ export default function TicketDetail() {
           credentials: "include",
           body: fd,
         });
-        if (!res.ok) throw new Error("Attachment upload failed");
+        if (!res.ok) {
+          const e = await res.json().catch(() => ({}));
+          throw new Error(e.error || "Attachment upload failed");
+        }
         const newAtts = await res.json();
         setAttachments((prev) => [...prev, ...newAtts]);
       }

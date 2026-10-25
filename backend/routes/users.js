@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
+const { handleUploadErrors, fileRejected } = require('../middleware/upload');
 const { buildSessionUser } = require('../auth/session');
 const { avatarPath, saveAvatarFromBytes, clearAvatar } = require('../services/avatar');
 const {
@@ -15,11 +16,12 @@ const {
 
 const router = express.Router();
 
+const MAX_AVATAR_BYTES = 5 * 1024 * 1024;
 const avatarUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 },
+  limits: { fileSize: MAX_AVATAR_BYTES },
   fileFilter: (req, file, cb) => {
-    if (!file.mimetype.startsWith('image/')) return cb(new Error('Avatar must be an image'));
+    if (!file.mimetype.startsWith('image/')) return cb(fileRejected('Avatar must be an image'));
     cb(null, true);
   },
 });
@@ -425,7 +427,7 @@ router.get('/:id/avatar', requireAuth, async (req, res) => {
 });
 
 // POST /api/users/me/avatar — upload own avatar (image bytes, e.g. cropped PNG)
-router.post('/me/avatar', requireAuth, avatarUpload.single('avatar'), async (req, res) => {
+router.post('/me/avatar', requireAuth, handleUploadErrors(avatarUpload.single('avatar'), { maxBytes: MAX_AVATAR_BYTES }), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   try {
     const userId = req.session.user.id;
