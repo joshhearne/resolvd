@@ -398,7 +398,90 @@ async function blockUsage(contract, tz) {
   const currentKey = contract.block_period === 'monthly'
     ? require('./timeTrackingRules').localDay(new Date(), tz).slice(0, 7)
     : 'term';
-  return { block_minutes: total, used_minutes: used[currentKey] || 0, period: currentKey, by_period: used };
+  const settings = await tt.getSettings();
+  const usedNow = used[currentKey] || 0;
+  return {
+    block_minutes: total,
+    used_minutes: usedNow,
+    period: currentKey,
+    by_period: used,
+    alert_percent: settings.billing_block_alert_percent,
+    level: br.blockAlertLevel(usedNow, total, settings.billing_block_alert_percent),
+  };
+}
+
+// Notify Admins/Managers when a prepaid block in force today crosses the
+// alert threshold or is used up — once per contract, block period and
+// level. `companyIds` narrows the sweep (e.g. to the customer whose time
+// was just logged); omit to check every customer. MSP mode only.
+async function checkBlockAlerts({ companyIds } = {}) {
+  if (!await isMspMode()) return { sent: 0 };
+  const tz = await orgTz();
+  const params = [];
+  let where = `bt.behavior = 'prepaid_block' AND c.active`;
+  if (companyIds) {
+    if (!companyIds.length) return { sent: 0 };
+    params.push(companyIds);
+    where += ' AND c.company_id = ANY($1::int[])';
+  }
+  const r = await pool.query(
+    `SELECT DISTINCT c.company_id FROM contracts c JOIN billing_types bt ON bt.id = c.billing_type_id WHERE ${where}`,
+    params
+  );
+  const { notifyManagersAndAdmins } = require('./notifications');
+  let sent = 0;
+  for (const { company_id: companyId } of r.rows) {
+    const contract = br.contractOn(await loadContracts([companyId]), new Date(), tz);
+    if (!contract || contract.behavior !== 'prepaid_block') continue;
+    const usage = await blockUsage(contract, tz);
+    if (!usage.level) continue;
+    const levels = usage.level === 'exhausted' ? ['threshold', 'exhausted'] : ['threshold'];
+    const co = await pool.query('SELECT name, name_enc FROM companies WHERE id = $1', [companyId]);
+    await decryptRows('companies', co.rows);
+    const name = co.rows[0]?.name || 'Customer';
+    for (const level of levels) {
+      const ins = await pool.query(
+        `INSERT INTO contract_block_alerts (contract_id, period, level, used_minutes)
+         VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING RETURNING contract_id`,
+        [contract.id, usage.period, level, usage.used_minutes]
+      );
+      if (!ins.rowCount) continue;
+      // Crossing both at once (one big entry): send only the stronger one.
+      if (level === 'threshold' && levels.length === 2) continue;
+      const hours = (m) => `${Math.round((m / 60) * 100) / 100} h`;
+      const when = usage.period === 'term' ? 'for the contract term' : `for ${usage.period}`;
+      await notifyManagersAndAdmins(pool, {
+        type: 'contract_block_alert',
+        title: level === 'exhausted'
+          ? `${name}: prepaid block used up ${when}`
+          : `${name}: prepaid block ${Math.round((usage.used_minutes / usage.block_minutes) * 100)}% used ${when}`,
+        body: `${hours(usage.used_minutes)} of ${hours(usage.block_minutes)} used on "${contract.name}".${level === 'exhausted' ? ' Further time bills as overage.' : ''}`,
+        data: { company_id: companyId, contract_id: contract.id },
+      });
+      sent += 1;
+    }
+  }
+  return { sent };
+}
+
+const ALERT_TICK_MS = 30 * 60 * 1000;
+let _alertInterval = null;
+function startScheduler() {
+  if (_alertInterval) return;
+  const run = () => checkBlockAlerts().catch((e) => console.error('block alerts:', e.message));
+  _alertInterval = setInterval(run, ALERT_TICK_MS);
+  setTimeout(run, 60 * 1000);
+}
+
+// After time is logged on a ticket, check its customer's block now rather
+// than waiting for the next sweep. Fire-and-forget.
+function checkBlockAlertsForTicket(ticketId) {
+  ticketCustomers([ticketId])
+    .then((m) => {
+      const id = m.get(ticketId)?.customer_id;
+      return id ? checkBlockAlerts({ companyIds: [id] }) : null;
+    })
+    .catch((e) => console.error('block alerts (ticket):', e.message));
 }
 
 async function customerTicketIdsSince(companyId, sinceDay) {
@@ -561,6 +644,133 @@ async function setApproval({ user, ticketId, entryIds, approve }) {
   return { updated: r.rowCount };
 }
 
+// --- Approval queue ---------------------------------------------------------
+
+// Billable entries awaiting approval (status 'pending') or already
+// approved but not invoiced ('approved'), across all tickets, ending in
+// [from, to); optional tech / customer filters. Each row carries its
+// priced line so the approver sees what they're signing off.
+// Ticket "done" = a terminal status or Resolved (pending close). COALESCE
+// so an untagged (or unknown) status reads FALSE, not NULL, under NOT.
+const DONE_SQL = `COALESCE(s.is_terminal OR s.semantic_tag = 'resolved_pending_close', FALSE)`;
+
+// Billable, uninvoiced time waiting for (or holding) approval.
+//   group = 'entry'  — entries ending in [from, to).
+//   group = 'ticket' — tickets with such an entry in [from, to), with ALL
+//                      their matching entries (whatever the date) so a
+//                      ticket is reviewed and approved as a whole.
+//   ticketState = 'done' (terminal / resolved) | 'open' | anything else = all.
+async function approvalQueue({ from, to, status = 'pending', userId, companyId, ticketState, group = 'entry' }) {
+  const start = new Date(from);
+  const end = new Date(to);
+  if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) bad('Give a valid from / to range');
+  if (end - start > 366 * 86400000) bad('Range is limited to one year');
+  const params = [];
+  const where = ['e.billable', 'e.invoiced_at IS NULL'];
+  where.push(status === 'approved' ? 'e.approved_at IS NOT NULL' : 'e.approved_at IS NULL');
+  if (userId) { params.push(Number(userId)); where.push(`e.user_id = $${params.length}`); }
+  if (companyId) { params.push(Number(companyId)); where.push(`x.customer_id = $${params.length}`); }
+  if (ticketState === 'done') where.push(DONE_SQL);
+  else if (ticketState === 'open') where.push(`NOT ${DONE_SQL}`);
+  params.push(start, end);
+  const inRange = `e.ended_at >= $${params.length - 1} AND e.ended_at < $${params.length}`;
+  const scope = group === 'ticket'
+    ? `e.ticket_id IN (
+         SELECT e.ticket_id FROM time_entries e
+           JOIN tickets t ON t.id = e.ticket_id
+           JOIN (${CUSTOMER_SQL}) x ON x.ticket_id = e.ticket_id
+      LEFT JOIN statuses s ON s.kind = 'internal' AND s.name = t.internal_status
+          WHERE ${where.join(' AND ')} AND ${inRange})`
+    : inRange;
+  const r = await pool.query(
+    `SELECT e.id, e.ticket_id, e.user_id, e.started_at, e.ended_at, e.duration_minutes, e.note, e.note_enc,
+            e.approved_at, wt.name AS work_type_name, u.display_name AS user_name, u.email AS user_email,
+            t.internal_ref, t.title, t.title_enc, t.internal_status, ${DONE_SQL} AS ticket_done,
+            x.customer_id
+       FROM time_entries e
+       JOIN tickets t ON t.id = e.ticket_id
+       JOIN (${CUSTOMER_SQL}) x ON x.ticket_id = e.ticket_id
+  LEFT JOIN statuses s ON s.kind = 'internal' AND s.name = t.internal_status
+  LEFT JOIN users u ON u.id = e.user_id
+  LEFT JOIN time_work_types wt ON wt.id = e.work_type_id
+      WHERE ${where.join(' AND ')} AND ${scope}
+      ORDER BY ${group === 'ticket' ? 'e.ticket_id, ' : ''}e.started_at
+      LIMIT 500`,
+    params
+  );
+  await decryptRows('time_entries', r.rows);
+  await decryptRows('tickets', r.rows);
+  const priced = r.rows.length ? await priceTickets([...new Set(r.rows.map((e) => e.ticket_id))]) : { byEntry: {}, topUps: {} };
+  const custIds = [...new Set(r.rows.map((e) => e.customer_id).filter(Boolean))];
+  let names = {};
+  if (custIds.length) {
+    const cr = await pool.query('SELECT id, name, name_enc FROM companies WHERE id = ANY($1::int[])', [custIds]);
+    await decryptRows('companies', cr.rows);
+    names = Object.fromEntries(cr.rows.map((c) => [c.id, c.name]));
+  }
+  const settings = await tt.getSettings();
+  const entries = r.rows.map((e) => {
+    delete e.note_enc;
+    delete e.title_enc;
+    return { ...e, customer_name: names[e.customer_id] || null, line: priced.byEntry[e.id] || null };
+  });
+  const out = { currency: settings.billing_currency, truncated: r.rows.length === 500, entries };
+  if (group === 'ticket') {
+    const tickets = new Map();
+    for (const e of entries) {
+      if (!tickets.has(e.ticket_id)) {
+        tickets.set(e.ticket_id, {
+          ticket_id: e.ticket_id, internal_ref: e.internal_ref, title: e.title,
+          internal_status: e.internal_status, ticket_done: e.ticket_done,
+          customer_id: e.customer_id, customer_name: e.customer_name,
+          entries: 0, minutes: 0, billable_minutes: 0, amount_cents: 0, techs: [],
+          topup_minutes: 0, topup_cents: 0,
+        });
+      }
+      const t = tickets.get(e.ticket_id);
+      t.entries += 1;
+      t.minutes += e.duration_minutes;
+      t.billable_minutes += e.line?.billable_minutes ?? e.duration_minutes;
+      t.amount_cents += e.line?.amount_cents || 0;
+      const who = e.user_name || e.user_email || 'Unknown';
+      if (!t.techs.includes(who)) t.techs.push(who);
+    }
+    // Ticket-minimum top-ups ride with the ticket (anchored to an entry in
+    // this set).
+    const ids = new Set(entries.map((e) => e.id));
+    for (const t of tickets.values()) {
+      for (const u of priced.topUps[t.ticket_id] || []) {
+        if (!ids.has(u.anchor_entry_id)) continue;
+        t.topup_minutes += u.billable_minutes;
+        t.topup_cents += u.amount_cents;
+      }
+      t.billable_minutes += t.topup_minutes;
+      t.amount_cents += t.topup_cents;
+    }
+    out.tickets = [...tickets.values()];
+  }
+  return out;
+}
+
+// Approve / un-approve any set of entries (across tickets).
+async function bulkApproval({ user, entryIds, approve }) {
+  const ids = (entryIds || []).map(Number).filter(Number.isInteger);
+  if (!ids.length) bad('Pick at least one entry');
+  if (ids.length > 500) bad('At most 500 entries at a time');
+  const r = approve
+    ? await pool.query(
+      `UPDATE time_entries SET approved_at = NOW(), approved_by = $2
+        WHERE id = ANY($1::int[]) AND billable AND approved_at IS NULL AND invoiced_at IS NULL RETURNING id`,
+      [ids, user.id]
+    )
+    : await pool.query(
+      `UPDATE time_entries SET approved_at = NULL, approved_by = NULL
+        WHERE id = ANY($1::int[]) AND approved_at IS NOT NULL AND invoiced_at IS NULL RETURNING id`,
+      [ids]
+    );
+  return { updated: r.rowCount };
+}
+
 // --- Utilisation report -------------------------------------------------------------
 
 // Per tech over [from, to): logged, billable-flagged, non-billable,
@@ -627,5 +837,10 @@ module.exports = {
   setTicketCustomer,
   priceTickets,
   setApproval,
+  approvalQueue,
+  bulkApproval,
   utilisation,
+  checkBlockAlerts,
+  checkBlockAlertsForTicket,
+  startScheduler,
 };

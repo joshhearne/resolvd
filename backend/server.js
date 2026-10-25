@@ -222,6 +222,9 @@ initSchema()
     // Time tracking: every 5 min, warn techs whose timer has run past
     // the configured threshold with no work logged.
     require('./services/timeTracking').startScheduler();
+    // Prepaid block alerts (MSP mode): every 30 min, warn Admins/Managers
+    // when a customer's block crosses its alert line or is used up.
+    require('./services/billing').startScheduler();
     app.listen(PORT, () => {
       console.log(`Resolvd backend running on port ${PORT}`);
     });

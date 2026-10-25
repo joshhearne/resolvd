@@ -376,9 +376,12 @@ router.get('/:id/tickets', numericId, requireAuth, requireRole('Admin', 'Manager
       `SELECT t.id, t.internal_ref, t.title, t.title_enc,
               t.internal_status, t.effective_priority, t.project_id,
               p.name AS project_name, p.prefix AS project_prefix,
-              t.created_at, t.updated_at, t.resolved_at
+              t.created_at, t.updated_at, t.resolved_at,
+              COALESCE(te.minutes, 0)::int AS time_minutes
          FROM tickets t
          LEFT JOIN projects p ON p.id = t.project_id
+         LEFT JOIN (SELECT ticket_id, SUM(duration_minutes) AS minutes FROM time_entries GROUP BY ticket_id) te
+                ON te.ticket_id = t.id
         WHERE t.asset_id = $1 ${projectFilter}
         ORDER BY
           CASE WHEN t.resolved_at IS NULL THEN 0 ELSE 1 END,
@@ -392,6 +395,81 @@ router.get('/:id/tickets', numericId, requireAuth, requireRole('Admin', 'Manager
     res.json(r.rows);
   } catch (err) {
     console.error('asset tickets list error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// GET /api/assets/:id/time — time logged on tickets linked to this asset:
+// totals (all time / last 30 / last 90 days), per tech, per month (last
+// 12). Same project scoping as /tickets for non-privileged users. In MSP
+// mode Admin/Manager also get the billed amount (rates + contracts).
+router.get('/:id/time', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const user = req.session.user;
+    const isPriv = user.role === 'Admin' || user.role === 'Manager';
+    const params = [id];
+    let projectFilter = '';
+    if (!isPriv) {
+      params.push(user.id);
+      projectFilter = `AND EXISTS (
+        SELECT 1 FROM project_members pm WHERE pm.project_id = t.project_id AND pm.user_id = $2
+      )`;
+    }
+    const r = await pool.query(
+      `SELECT e.id, e.ticket_id, e.user_id, e.duration_minutes, e.billable, e.ended_at,
+              u.display_name AS user_name, u.email AS user_email
+         FROM time_entries e
+         JOIN tickets t ON t.id = e.ticket_id
+    LEFT JOIN users u ON u.id = e.user_id
+        WHERE t.asset_id = $1 ${projectFilter}`,
+      params
+    );
+    const now = Date.now();
+    const blank = () => ({ minutes: 0, billable_minutes: 0, entries: 0 });
+    const totals = { all: blank(), d30: blank(), d90: blank() };
+    const techs = new Map();
+    const months = new Map();
+    const add = (bucket, e) => {
+      bucket.minutes += e.duration_minutes;
+      bucket.entries += 1;
+      if (e.billable) bucket.billable_minutes += e.duration_minutes;
+    };
+    for (const e of r.rows) {
+      const age = now - new Date(e.ended_at).getTime();
+      add(totals.all, e);
+      if (age <= 30 * 86400000) add(totals.d30, e);
+      if (age <= 90 * 86400000) add(totals.d90, e);
+      const key = e.user_id || 0;
+      if (!techs.has(key)) techs.set(key, { user_id: e.user_id, name: e.user_name || e.user_email || 'Unknown', ...blank() });
+      add(techs.get(key), e);
+      if (age <= 366 * 86400000) {
+        const m = new Date(e.ended_at).toISOString().slice(0, 7);
+        if (!months.has(m)) months.set(m, { month: m, ...blank() });
+        add(months.get(m), e);
+      }
+    }
+    const out = {
+      tickets: new Set(r.rows.map((e) => e.ticket_id)).size,
+      totals,
+      by_tech: [...techs.values()].sort((a, b) => b.minutes - a.minutes),
+      by_month: [...months.values()].sort((a, b) => (a.month < b.month ? -1 : 1)),
+      billing: null,
+    };
+    const billing = require('../services/billing');
+    if (isPriv && r.rows.length && await billing.isMspMode()) {
+      const ids = [...new Set(r.rows.map((e) => e.ticket_id))];
+      const priced = await billing.priceTickets(ids);
+      const settings = await require('../services/timeTracking').getSettings();
+      out.billing = {
+        currency: settings.billing_currency,
+        amount_cents: ids.reduce((sum, tid) => sum + (priced.byTicket[tid]?.amount_cents || 0), 0),
+        billable_minutes: ids.reduce((sum, tid) => sum + (priced.byTicket[tid]?.billable_minutes || 0), 0),
+      };
+    }
+    res.json(out);
+  } catch (err) {
+    console.error('asset time error:', err);
     res.status(500).json({ error: 'Database error' });
   }
 });

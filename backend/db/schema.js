@@ -3433,6 +3433,8 @@ Thanks,
     await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS billing_ticket_minimum_scope TEXT NOT NULL DEFAULT 'ticket'`);
     await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS billing_require_approval BOOLEAN NOT NULL DEFAULT FALSE`);
     await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS billing_currency TEXT NOT NULL DEFAULT 'USD'`);
+    // Prepaid block alerts: warn at this % used (0 = only when used up).
+    await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS billing_block_alert_percent INTEGER NOT NULL DEFAULT 80`);
 
     await client.query(`
       CREATE TABLE IF NOT EXISTS rate_cards (
@@ -3493,6 +3495,18 @@ Thanks,
       )
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_contracts_company ON contracts(company_id)`);
+    // One row per alert sent, so each contract warns once per block period
+    // per level ('threshold', 'exhausted').
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS contract_block_alerts (
+        contract_id INTEGER NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
+        period TEXT NOT NULL,
+        level TEXT NOT NULL CHECK (level IN ('threshold', 'exhausted')),
+        used_minutes INTEGER NOT NULL,
+        sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (contract_id, period, level)
+      )
+    `);
 
     // Which customer a ticket bills to. NULL → the customer its project is
     // linked to (when exactly one is).

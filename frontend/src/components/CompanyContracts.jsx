@@ -195,12 +195,16 @@ export default function CompanyContracts({ company }) {
                       Block {c.block_period === "monthly" ? `this month (${c.block_usage.period})` : "for the term"}
                     </span>
                     <span className="tabular-nums">
+                      {c.block_usage.level === "exhausted" && <b className="text-red-600 dark:text-red-400 mr-1">Used up ·</b>}
+                      {c.block_usage.level === "threshold" && <b className="text-amber-600 dark:text-amber-400 mr-1">Nearly used ·</b>}
                       {fmtHours(c.block_usage.used_minutes)} of {fmtHours(c.block_usage.block_minutes)} used
                     </span>
                   </div>
                   <div className="h-1.5 rounded bg-surface-2 mt-1 overflow-hidden">
                     <div
-                      className={`h-full ${c.block_usage.used_minutes >= c.block_usage.block_minutes ? "bg-amber-500" : "bg-brand"}`}
+                      className={`h-full ${
+                        c.block_usage.level === "exhausted" ? "bg-red-500" : c.block_usage.level === "threshold" ? "bg-amber-500" : "bg-brand"
+                      }`}
                       style={{ width: `${Math.min(100, (c.block_usage.used_minutes / Math.max(1, c.block_usage.block_minutes)) * 100)}%` }}
                     />
                   </div>

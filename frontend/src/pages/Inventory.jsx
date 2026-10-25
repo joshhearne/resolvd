@@ -323,6 +323,7 @@ function AssetDetailPage({ id, types, onBack }) {
         </div>
         <div className="lg:col-span-2 space-y-4">
           <CheckoutPanel assetId={detail.id} />
+          <TimePanel assetId={detail.id} />
           <TicketsPanel tickets={tickets} />
           <VulnerabilitiesPanel vulns={vulns} />
           <RawPayloadPanel raw={detail.raw_data} />
@@ -491,6 +492,85 @@ function CheckoutPanel({ assetId }) {
   );
 }
 
+function fmtMinutes(m) {
+  const t = Math.max(0, Math.round(Number(m) || 0));
+  const h = Math.floor(t / 60);
+  const r = t % 60;
+  if (!h) return `${r}m`;
+  return r ? `${h}h ${r}m` : `${h}h`;
+}
+
+// Time logged on tickets linked to this asset — how much hands-on work
+// the device has needed, recently and overall, and by whom.
+function TimePanel({ assetId }) {
+  const [data, setData] = useState(null);
+  useEffect(() => {
+    setData(null);
+    api.get(`/api/assets/${assetId}/time`).then(setData).catch(() => setData({ error: true }));
+  }, [assetId]);
+  if (!data || data.error || !data.totals.all.entries) {
+    return null;
+  }
+  const { totals, by_tech: byTech, by_month: byMonth, billing } = data;
+  const max = Math.max(1, ...byMonth.map((m) => m.minutes));
+  const Stat = ({ label, t }) => (
+    <div className="rounded border border-border p-2">
+      <div className="text-[11px] text-fg-muted">{label}</div>
+      <div className="text-base font-semibold tabular-nums">{fmtMinutes(t.minutes)}</div>
+      <div className="text-[11px] text-fg-dim tabular-nums">{fmtMinutes(t.billable_minutes)} billable · {t.entries} entries</div>
+    </div>
+  );
+  return (
+    <div className="bg-surface border border-border rounded-lg p-4 space-y-3">
+      <div className="flex items-center justify-between">
+        <h2 className="text-sm font-semibold text-fg">Time on this asset</h2>
+        <span className="text-xs text-fg-muted">{data.tickets} ticket{data.tickets === 1 ? "" : "s"}</span>
+      </div>
+      <div className="grid grid-cols-3 gap-2">
+        <Stat label="Last 30 days" t={totals.d30} />
+        <Stat label="Last 90 days" t={totals.d90} />
+        <Stat label="All time" t={totals.all} />
+      </div>
+      {billing && (
+        <p className="text-xs text-fg-muted">
+          Billed to date:{" "}
+          <b className="text-fg">
+            {new Intl.NumberFormat(undefined, { style: "currency", currency: billing.currency || "USD" }).format(billing.amount_cents / 100)}
+          </b>{" "}
+          for {fmtMinutes(billing.billable_minutes)} billable (after rates and contracts)
+        </p>
+      )}
+      {byMonth.length > 1 && (
+        <div>
+          <div className="text-[11px] text-fg-muted mb-1">By month (last 12)</div>
+          <div className="flex items-end gap-1 h-16">
+            {byMonth.map((m) => (
+              <div key={m.month} className="flex-1 flex flex-col items-center justify-end h-full" title={`${m.month}: ${fmtMinutes(m.minutes)}`}>
+                <div className="w-full rounded-t bg-brand/70" style={{ height: `${Math.max(4, (m.minutes / max) * 100)}%` }} />
+              </div>
+            ))}
+          </div>
+          <div className="flex justify-between text-[10px] text-fg-dim mt-0.5">
+            <span>{byMonth[0].month}</span>
+            <span>{byMonth[byMonth.length - 1].month}</span>
+          </div>
+        </div>
+      )}
+      <table className="w-full text-xs">
+        <tbody>
+          {byTech.map((t) => (
+            <tr key={t.user_id || 0} className="border-t border-border">
+              <td className="py-1">{t.name}</td>
+              <td className="py-1 text-right tabular-nums">{fmtMinutes(t.minutes)}</td>
+              <td className="py-1 text-right tabular-nums text-fg-dim">{t.entries} entries</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+    </div>
+  );
+}
+
 function TicketsPanel({ tickets }) {
   return (
     <div className="bg-surface border border-border rounded-lg p-4 space-y-2">
@@ -509,6 +589,7 @@ function TicketsPanel({ tickets }) {
                 <th className="px-3 py-1.5 text-left font-medium">Title</th>
                 <th className="px-3 py-1.5 text-left font-medium">Project</th>
                 <th className="px-3 py-1.5 text-left font-medium">Status</th>
+                <th className="px-3 py-1.5 text-right font-medium">Time</th>
                 <th className="px-3 py-1.5 text-left font-medium">Updated</th>
               </tr>
             </thead>
@@ -524,6 +605,7 @@ function TicketsPanel({ tickets }) {
                     {t.project_name && <span className="ml-1 text-fg-dim">{t.project_name}</span>}
                   </td>
                   <td className="px-3 py-1.5 text-fg-muted">{t.internal_status}</td>
+                  <td className="px-3 py-1.5 text-right tabular-nums text-fg-muted">{t.time_minutes ? fmtMinutes(t.time_minutes) : "—"}</td>
                   <td className="px-3 py-1.5 text-fg-muted whitespace-nowrap">
                     <HybridTime value={t.updated_at} />
                   </td>
