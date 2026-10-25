@@ -17,7 +17,8 @@
 //   PATCH  /api/billing/companies/:companyId/contracts/:id — Admin/Manager
 //   DELETE /api/billing/companies/:companyId/contracts/:id — Admin/Manager
 //
-//   GET    /api/billing/approvals?from=&to=&status=pending|approved&user_id=&company_id= — Admin/Manager
+//   GET    /api/billing/approvals?from=&to=&status=pending|approved&user_id=&company_id=
+//                                 &ticket_state=done|open|all&group=entry|ticket — Admin/Manager
 //   POST   /api/billing/approvals                          — Admin/Manager { entry_ids: [], approve }
 //   GET    /api/billing/report/utilisation?from=&to=       — Admin/Manager
 
@@ -65,6 +66,7 @@ router.delete('/companies/:companyId/contracts/:id',
 router.get('/approvals', wrap('approvals list', (req) => billing.approvalQueue({
   from: req.query.from, to: req.query.to, status: req.query.status,
   userId: req.query.user_id || null, companyId: req.query.company_id || null,
+  ticketState: req.query.ticket_state, group: req.query.group === 'ticket' ? 'ticket' : 'entry',
 })));
 router.post('/approvals', wrap('approvals set', (req) => billing.bulkApproval({
   user: req.session.user, entryIds: req.body?.entry_ids, approve: req.body?.approve !== false,

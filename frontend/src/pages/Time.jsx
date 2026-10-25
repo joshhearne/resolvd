@@ -235,18 +235,32 @@ function Stat({ label, value, className = "" }) {
 
 // --- Approvals --------------------------------------------------------------
 
+const VIEW_KEY = "time.approvals.view";
+
+function readView() {
+  try { return localStorage.getItem(VIEW_KEY) === "entry" ? "entry" : "ticket"; } catch { return "ticket"; }
+}
+
 function Approvals() {
   const techs = useTechs(true);
   const [companies, setCompanies] = useState([]);
+  const [view, setViewState] = useState(readView);
   const [from, setFrom] = useState(() => toDateInput(addDays(new Date(), -30)));
   const [to, setTo] = useState(() => toDateInput(new Date()));
   const [status, setStatus] = useState("pending");
+  const [ticketState, setTicketState] = useState("done");
   const [userId, setUserId] = useState("");
   const [companyId, setCompanyId] = useState("");
   const [data, setData] = useState(null);
   const [selected, setSelected] = useState(() => new Set());
+  const [open, setOpen] = useState(() => new Set());
   const [busy, setBusy] = useState(false);
   const [nonce, setNonce] = useState(0);
+
+  function setView(v) {
+    setViewState(v);
+    try { localStorage.setItem(VIEW_KEY, v); } catch { /* per-viewer convenience only */ }
+  }
 
   useEffect(() => {
     api.get("/api/companies?kind=customer").then(setCompanies).catch(() => {});
@@ -260,6 +274,8 @@ function Approvals() {
       from: fromDateInput(from).toISOString(),
       to: addDays(fromDateInput(to), 1).toISOString(),
       status,
+      ticket_state: ticketState,
+      group: view,
     });
     if (userId) qs.set("user_id", userId);
     if (companyId) qs.set("company_id", companyId);
@@ -267,33 +283,56 @@ function Approvals() {
       .then((d) => { if (live) setData(d); })
       .catch((e) => { if (live) { toast.error(e.message); setData({ entries: [] }); } });
     return () => { live = false; };
-  }, [from, to, status, userId, companyId, nonce]);
+  }, [from, to, status, ticketState, userId, companyId, view, nonce]);
 
   const entries = data?.entries || [];
+  const tickets = view === "ticket" ? data?.tickets || [] : null;
   const currency = data?.currency || "USD";
+  const byTicket = useMemo(() => {
+    const m = new Map();
+    for (const e of entries) {
+      if (!m.has(e.ticket_id)) m.set(e.ticket_id, []);
+      m.get(e.ticket_id).push(e);
+    }
+    return m;
+  }, [entries]);
   const allOn = entries.length > 0 && entries.every((e) => selected.has(e.id));
   const picked = entries.filter((e) => selected.has(e.id));
-  const sum = (list) => list.reduce((a, e) => ({
-    minutes: a.minutes + e.duration_minutes,
-    cents: a.cents + (e.line?.amount_cents || 0),
-  }), { minutes: 0, cents: 0 });
-  const totals = sum(entries);
-  const pickedTotals = sum(picked);
+  const ticketFullyPicked = (t) => (byTicket.get(t.ticket_id) || []).every((e) => selected.has(e.id));
 
-  function toggle(id) {
+  // Totals: entry amounts, plus a ticket's minimum top-up when the whole
+  // ticket is in play (ticket view).
+  const sum = (list, topups) => ({
+    minutes: list.reduce((a, e) => a + e.duration_minutes, 0),
+    cents: list.reduce((a, e) => a + (e.line?.amount_cents || 0), 0)
+      + (topups || []).reduce((a, t) => a + t.topup_cents, 0),
+  });
+  const totals = sum(entries, tickets);
+  const pickedTotals = sum(picked, tickets?.filter((t) => ticketFullyPicked(t)));
+
+  function toggle(ids) {
     setSelected((prev) => {
+      const next = new Set(prev);
+      const on = ids.every((id) => next.has(id));
+      for (const id of ids) { if (on) next.delete(id); else next.add(id); }
+      return next;
+    });
+  }
+
+  function toggleOpen(id) {
+    setOpen((prev) => {
       const next = new Set(prev);
       if (next.has(id)) next.delete(id); else next.add(id);
       return next;
     });
   }
 
-  async function apply() {
-    if (!picked.length) return;
+  async function approveIds(ids) {
+    if (!ids.length) return;
     setBusy(true);
     try {
       const approve = status === "pending";
-      const r = await api.post("/api/billing/approvals", { entry_ids: picked.map((e) => e.id), approve });
+      const r = await api.post("/api/billing/approvals", { entry_ids: ids, approve });
       toast.success(`${approve ? "Approved" : "Un-approved"} ${r.updated} ${r.updated === 1 ? "entry" : "entries"}`);
       setNonce((n) => n + 1);
     } catch (e) {
@@ -303,8 +342,25 @@ function Approvals() {
     }
   }
 
+  const verb = status === "pending" ? "Approve" : "Un-approve";
+  const noun = (n, one, many) => `${n} ${n === 1 ? one : many}`;
+  // Ticket view counts tickets only while every pick is a whole ticket.
+  const touched = tickets ? tickets.filter((t) => (byTicket.get(t.ticket_id) || []).some((e) => selected.has(e.id))) : [];
+  const pickedLabel = tickets && touched.every(ticketFullyPicked)
+    ? noun(touched.length, "ticket", "tickets")
+    : noun(picked.length, "entry", "entries");
+
   return (
     <div className="space-y-4">
+      <div className="flex items-center gap-1 text-sm">
+        {[["ticket", "By ticket"], ["entry", "By entry"]].map(([k, label]) => (
+          <button key={k} type="button" onClick={() => setView(k)} aria-pressed={view === k}
+            className={`px-3 py-1 rounded-full border ${view === k ? "border-brand bg-brand/10 text-fg" : "border-border text-fg-muted hover:text-fg"}`}>
+            {label}
+          </button>
+        ))}
+      </div>
+
       <div className="flex items-end gap-2 flex-wrap text-xs text-fg-muted">
         <label className="flex flex-col gap-1">From
           <input type="date" value={from} max={to} onChange={(e) => e.target.value && setFrom(e.target.value)} className={inputCls} />
@@ -312,10 +368,17 @@ function Approvals() {
         <label className="flex flex-col gap-1">To
           <input type="date" value={to} min={from} onChange={(e) => e.target.value && setTo(e.target.value)} className={inputCls} />
         </label>
-        <label className="flex flex-col gap-1">Status
+        <label className="flex flex-col gap-1">Approval
           <select value={status} onChange={(e) => setStatus(e.target.value)} className={inputCls}>
             <option value="pending">Waiting for approval</option>
             <option value="approved">Approved, not invoiced</option>
+          </select>
+        </label>
+        <label className="flex flex-col gap-1">Ticket
+          <select value={ticketState} onChange={(e) => setTicketState(e.target.value)} className={inputCls}>
+            <option value="done">Resolved / closed</option>
+            <option value="open">Still open</option>
+            <option value="all">Any status</option>
           </select>
         </label>
         <label className="flex flex-col gap-1">Tech
@@ -336,7 +399,8 @@ function Approvals() {
         <p className="text-sm text-fg-muted">Loading…</p>
       ) : entries.length === 0 ? (
         <p className="text-sm text-fg-muted">
-          {status === "pending" ? "Nothing waiting for approval in this range." : "No approved, uninvoiced time in this range."}
+          {status === "pending" ? "Nothing waiting for approval" : "No approved, uninvoiced time"}
+          {ticketState === "done" ? " on resolved or closed tickets" : ticketState === "open" ? " on open tickets" : ""} in this range.
         </p>
       ) : (
         <>
@@ -347,44 +411,112 @@ function Approvals() {
               Select all
             </label>
             <span className="text-fg-muted">
-              {entries.length} {entries.length === 1 ? "entry" : "entries"} · {fmtMinutes(totals.minutes)} · {formatMoney(totals.cents, currency)}
+              {tickets ? `${noun(tickets.length, "ticket", "tickets")} · ` : ""}
+              {noun(entries.length, "entry", "entries")} · {fmtMinutes(totals.minutes)} · {formatMoney(totals.cents, currency)}
               {data.truncated && " (first 500 — narrow the range)"}
             </span>
-            <button type="button" disabled={!picked.length || busy} onClick={apply}
+            <button type="button" disabled={!picked.length || busy} onClick={() => approveIds(picked.map((e) => e.id))}
               className={`btn btn-sm ml-auto ${status === "pending" ? "btn-primary" : ""}`}>
-              {status === "pending" ? "Approve" : "Un-approve"}
-              {picked.length > 0 && ` ${picked.length} · ${formatMoney(pickedTotals.cents, currency)}`}
+              {verb}
+              {picked.length > 0 && ` ${pickedLabel} · ${formatMoney(pickedTotals.cents, currency)}`}
             </button>
           </div>
 
-          <ul className="bg-surface border border-border rounded-lg divide-y divide-border">
-            {entries.map((e) => (
-              <li key={e.id} className="px-3 py-2 text-sm flex gap-3 items-start">
-                <input type="checkbox" className="mt-1" checked={selected.has(e.id)} onChange={() => toggle(e.id)}
-                  aria-label={`Select entry ${e.id}`} />
-                <div className="min-w-0 flex-1">
-                  <div className="flex items-baseline gap-2 flex-wrap">
-                    <Link to={`/tickets/${e.ticket_id}`} className="text-brand hover:underline truncate max-w-full">
-                      {ticketLabel(e)}
-                    </Link>
-                  </div>
-                  <div className="text-xs text-fg-muted mt-0.5">
-                    {e.customer_name || "No customer"} · {e.user_name || e.user_email || "Unknown"} · {dayLabel(new Date(e.started_at))}{" "}
-                    {formatTime(new Date(e.started_at))}–{formatTime(new Date(e.ended_at))}
-                  </div>
-                  {e.note && <p className="text-xs text-fg mt-1 whitespace-pre-wrap break-words">{e.note}</p>}
-                  <div className="flex gap-1 mt-1 flex-wrap">
-                    {e.work_type_name && <Pill>{e.work_type_name}</Pill>}
-                    {e.line?.contract_name && <Pill title={e.line.billing_type || undefined}>{e.line.contract_name}</Pill>}
-                  </div>
-                  <PriceLine line={e.line} currency={currency} logged={e.duration_minutes} />
-                </div>
-                <div className="shrink-0 tabular-nums text-fg">{fmtMinutes(e.duration_minutes)}</div>
-              </li>
-            ))}
-          </ul>
+          {tickets ? (
+            <ul className="space-y-2">
+              {tickets.map((t) => {
+                const list = byTicket.get(t.ticket_id) || [];
+                const ids = list.map((e) => e.id);
+                const on = list.length > 0 && list.every((e) => selected.has(e.id));
+                const some = !on && list.some((e) => selected.has(e.id));
+                const expanded = open.has(t.ticket_id);
+                return (
+                  <li key={t.ticket_id} className="bg-surface border border-border rounded-lg">
+                    <div className="px-3 py-2 text-sm flex gap-3 items-start">
+                      <input type="checkbox" className="mt-1" checked={on}
+                        ref={(el) => { if (el) el.indeterminate = some; }}
+                        onChange={() => toggle(ids)} aria-label={`Select ticket ${t.internal_ref || t.ticket_id}`} />
+                      <div className="min-w-0 flex-1">
+                        <div className="flex items-baseline gap-2 flex-wrap">
+                          <Link to={`/tickets/${t.ticket_id}`} className="text-brand hover:underline truncate max-w-full">
+                            {ticketLabel(t)}
+                          </Link>
+                          <Pill tone={t.ticket_done ? "green" : "amber"}>{t.internal_status}</Pill>
+                        </div>
+                        <div className="text-xs text-fg-muted mt-0.5">
+                          {t.customer_name || "No customer"} · {t.techs.join(", ")}
+                        </div>
+                        <div className="text-xs text-fg-muted mt-0.5">
+                          {noun(t.entries, "entry", "entries")} · {fmtMinutes(t.minutes)} logged · {fmtMinutes(t.billable_minutes)} billable
+                          {t.topup_minutes > 0 && ` (incl. ${fmtMinutes(t.topup_minutes)} ticket minimum)`}
+                        </div>
+                        <div className="flex flex-wrap gap-x-3 gap-y-1 mt-1 text-xs whitespace-nowrap">
+                          <button type="button" className="text-brand hover:underline" onClick={() => toggleOpen(t.ticket_id)}
+                            aria-expanded={expanded}>
+                            {expanded ? "Hide entries" : "Show entries"}
+                          </button>
+                          <Link to={`/tickets/${t.ticket_id}`} className="text-brand hover:underline">Review / edit on ticket</Link>
+                          <button type="button" disabled={busy} className="text-brand hover:underline disabled:opacity-50"
+                            onClick={() => approveIds(ids)}>
+                            {verb} ticket
+                          </button>
+                        </div>
+                      </div>
+                      <div className="shrink-0 text-right tabular-nums">
+                        <div className="text-fg font-medium">{formatMoney(t.amount_cents, currency)}</div>
+                        <div className="text-xs text-fg-muted">{fmtMinutes(t.minutes)}</div>
+                      </div>
+                    </div>
+                    {expanded && (
+                      <ul className="border-t border-border divide-y divide-border">
+                        {list.map((e) => (
+                          <EntryRow key={e.id} e={e} currency={currency} selected={selected.has(e.id)}
+                            onToggle={() => toggle([e.id])} nested />
+                        ))}
+                      </ul>
+                    )}
+                  </li>
+                );
+              })}
+            </ul>
+          ) : (
+            <ul className="bg-surface border border-border rounded-lg divide-y divide-border">
+              {entries.map((e) => (
+                <EntryRow key={e.id} e={e} currency={currency} selected={selected.has(e.id)} onToggle={() => toggle([e.id])} />
+              ))}
+            </ul>
+          )}
         </>
       )}
     </div>
+  );
+}
+
+function EntryRow({ e, currency, selected, onToggle, nested = false }) {
+  return (
+    <li className={`px-3 py-2 text-sm flex gap-3 items-start ${nested ? "pl-8 bg-surface-2/40" : ""}`}>
+      <input type="checkbox" className="mt-1" checked={selected} onChange={onToggle} aria-label={`Select entry ${e.id}`} />
+      <div className="min-w-0 flex-1">
+        {!nested && (
+          <div className="flex items-baseline gap-2 flex-wrap">
+            <Link to={`/tickets/${e.ticket_id}`} className="text-brand hover:underline truncate max-w-full">
+              {ticketLabel(e)}
+            </Link>
+          </div>
+        )}
+        <div className="text-xs text-fg-muted mt-0.5">
+          {!nested && <>{e.customer_name || "No customer"} · </>}
+          {e.user_name || e.user_email || "Unknown"} · {dayLabel(new Date(e.started_at))}{" "}
+          {formatTime(new Date(e.started_at))}–{formatTime(new Date(e.ended_at))}
+        </div>
+        {e.note && <p className="text-xs text-fg mt-1 whitespace-pre-wrap break-words">{e.note}</p>}
+        <div className="flex gap-1 mt-1 flex-wrap">
+          {e.work_type_name && <Pill>{e.work_type_name}</Pill>}
+          {e.line?.contract_name && <Pill title={e.line.billing_type || undefined}>{e.line.contract_name}</Pill>}
+        </div>
+        <PriceLine line={e.line} currency={currency} logged={e.duration_minutes} />
+      </div>
+      <div className="shrink-0 tabular-nums text-fg">{fmtMinutes(e.duration_minutes)}</div>
+    </li>
   );
 }

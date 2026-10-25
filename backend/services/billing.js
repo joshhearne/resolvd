@@ -650,33 +650,57 @@ async function setApproval({ user, ticketId, entryIds, approve }) {
 // approved but not invoiced ('approved'), across all tickets, ending in
 // [from, to); optional tech / customer filters. Each row carries its
 // priced line so the approver sees what they're signing off.
-async function approvalQueue({ from, to, status = 'pending', userId, companyId }) {
+// Ticket "done" = a terminal status or Resolved (pending close). COALESCE
+// so an untagged (or unknown) status reads FALSE, not NULL, under NOT.
+const DONE_SQL = `COALESCE(s.is_terminal OR s.semantic_tag = 'resolved_pending_close', FALSE)`;
+
+// Billable, uninvoiced time waiting for (or holding) approval.
+//   group = 'entry'  — entries ending in [from, to).
+//   group = 'ticket' — tickets with such an entry in [from, to), with ALL
+//                      their matching entries (whatever the date) so a
+//                      ticket is reviewed and approved as a whole.
+//   ticketState = 'done' (terminal / resolved) | 'open' | anything else = all.
+async function approvalQueue({ from, to, status = 'pending', userId, companyId, ticketState, group = 'entry' }) {
   const start = new Date(from);
   const end = new Date(to);
   if (Number.isNaN(start.getTime()) || Number.isNaN(end.getTime()) || end <= start) bad('Give a valid from / to range');
   if (end - start > 366 * 86400000) bad('Range is limited to one year');
-  const params = [start, end];
-  const where = ['e.billable', 'e.invoiced_at IS NULL', 'e.ended_at >= $1', 'e.ended_at < $2'];
+  const params = [];
+  const where = ['e.billable', 'e.invoiced_at IS NULL'];
   where.push(status === 'approved' ? 'e.approved_at IS NOT NULL' : 'e.approved_at IS NULL');
   if (userId) { params.push(Number(userId)); where.push(`e.user_id = $${params.length}`); }
   if (companyId) { params.push(Number(companyId)); where.push(`x.customer_id = $${params.length}`); }
+  if (ticketState === 'done') where.push(DONE_SQL);
+  else if (ticketState === 'open') where.push(`NOT ${DONE_SQL}`);
+  params.push(start, end);
+  const inRange = `e.ended_at >= $${params.length - 1} AND e.ended_at < $${params.length}`;
+  const scope = group === 'ticket'
+    ? `e.ticket_id IN (
+         SELECT e.ticket_id FROM time_entries e
+           JOIN tickets t ON t.id = e.ticket_id
+           JOIN (${CUSTOMER_SQL}) x ON x.ticket_id = e.ticket_id
+      LEFT JOIN statuses s ON s.kind = 'internal' AND s.name = t.internal_status
+          WHERE ${where.join(' AND ')} AND ${inRange})`
+    : inRange;
   const r = await pool.query(
     `SELECT e.id, e.ticket_id, e.user_id, e.started_at, e.ended_at, e.duration_minutes, e.note, e.note_enc,
             e.approved_at, wt.name AS work_type_name, u.display_name AS user_name, u.email AS user_email,
-            t.internal_ref, t.title, t.title_enc, x.customer_id
+            t.internal_ref, t.title, t.title_enc, t.internal_status, ${DONE_SQL} AS ticket_done,
+            x.customer_id
        FROM time_entries e
        JOIN tickets t ON t.id = e.ticket_id
        JOIN (${CUSTOMER_SQL}) x ON x.ticket_id = e.ticket_id
+  LEFT JOIN statuses s ON s.kind = 'internal' AND s.name = t.internal_status
   LEFT JOIN users u ON u.id = e.user_id
   LEFT JOIN time_work_types wt ON wt.id = e.work_type_id
-      WHERE ${where.join(' AND ')}
-      ORDER BY e.started_at
+      WHERE ${where.join(' AND ')} AND ${scope}
+      ORDER BY ${group === 'ticket' ? 'e.ticket_id, ' : ''}e.started_at
       LIMIT 500`,
     params
   );
   await decryptRows('time_entries', r.rows);
   await decryptRows('tickets', r.rows);
-  const priced = r.rows.length ? await priceTickets([...new Set(r.rows.map((e) => e.ticket_id))]) : { byEntry: {} };
+  const priced = r.rows.length ? await priceTickets([...new Set(r.rows.map((e) => e.ticket_id))]) : { byEntry: {}, topUps: {} };
   const custIds = [...new Set(r.rows.map((e) => e.customer_id).filter(Boolean))];
   let names = {};
   if (custIds.length) {
@@ -685,15 +709,47 @@ async function approvalQueue({ from, to, status = 'pending', userId, companyId }
     names = Object.fromEntries(cr.rows.map((c) => [c.id, c.name]));
   }
   const settings = await tt.getSettings();
-  return {
-    currency: settings.billing_currency,
-    truncated: r.rows.length === 500,
-    entries: r.rows.map((e) => {
-      delete e.note_enc;
-      delete e.title_enc;
-      return { ...e, customer_name: names[e.customer_id] || null, line: priced.byEntry[e.id] || null };
-    }),
-  };
+  const entries = r.rows.map((e) => {
+    delete e.note_enc;
+    delete e.title_enc;
+    return { ...e, customer_name: names[e.customer_id] || null, line: priced.byEntry[e.id] || null };
+  });
+  const out = { currency: settings.billing_currency, truncated: r.rows.length === 500, entries };
+  if (group === 'ticket') {
+    const tickets = new Map();
+    for (const e of entries) {
+      if (!tickets.has(e.ticket_id)) {
+        tickets.set(e.ticket_id, {
+          ticket_id: e.ticket_id, internal_ref: e.internal_ref, title: e.title,
+          internal_status: e.internal_status, ticket_done: e.ticket_done,
+          customer_id: e.customer_id, customer_name: e.customer_name,
+          entries: 0, minutes: 0, billable_minutes: 0, amount_cents: 0, techs: [],
+          topup_minutes: 0, topup_cents: 0,
+        });
+      }
+      const t = tickets.get(e.ticket_id);
+      t.entries += 1;
+      t.minutes += e.duration_minutes;
+      t.billable_minutes += e.line?.billable_minutes ?? e.duration_minutes;
+      t.amount_cents += e.line?.amount_cents || 0;
+      const who = e.user_name || e.user_email || 'Unknown';
+      if (!t.techs.includes(who)) t.techs.push(who);
+    }
+    // Ticket-minimum top-ups ride with the ticket (anchored to an entry in
+    // this set).
+    const ids = new Set(entries.map((e) => e.id));
+    for (const t of tickets.values()) {
+      for (const u of priced.topUps[t.ticket_id] || []) {
+        if (!ids.has(u.anchor_entry_id)) continue;
+        t.topup_minutes += u.billable_minutes;
+        t.topup_cents += u.amount_cents;
+      }
+      t.billable_minutes += t.topup_minutes;
+      t.amount_cents += t.topup_cents;
+    }
+    out.tickets = [...tickets.values()];
+  }
+  return out;
 }
 
 // Approve / un-approve any set of entries (across tickets).
@@ -709,7 +765,7 @@ async function bulkApproval({ user, entryIds, approve }) {
     )
     : await pool.query(
       `UPDATE time_entries SET approved_at = NULL, approved_by = NULL
-        WHERE id = ANY($1::int[]) AND invoiced_at IS NULL RETURNING id`,
+        WHERE id = ANY($1::int[]) AND approved_at IS NOT NULL AND invoiced_at IS NULL RETURNING id`,
       [ids]
     );
   return { updated: r.rowCount };
