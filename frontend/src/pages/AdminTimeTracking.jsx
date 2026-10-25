@@ -531,12 +531,6 @@ export default function AdminTimeTracking() {
       {msp && <BillingCard v={v} set={set} enabled={v.enabled} />}
       <IntegrityCard v={v} set={set} enabled={v.enabled} />
 
-      <div className="flex justify-end">
-        <button disabled={!dirty || saving} onClick={save} className="btn btn-primary">
-          {saving ? "Saving…" : "Save changes"}
-        </button>
-      </div>
-
       <WorkTypesCard msp={msp} />
       {msp ? (
         <>
@@ -548,6 +542,31 @@ export default function AdminTimeTracking() {
         <MspOffNote />
       )}
       <ExportCard msp={msp} requireApproval={s.billing_require_approval} />
+
+      {/* Pinned to the bottom of the screen so it's always in reach,
+          wherever the admin is on this long page. It saves the settings
+          cards; the list cards (work types, rate cards, bill types) save
+          as they're edited. */}
+      <div
+        className={`sticky bottom-0 z-10 -mx-4 px-4 sm:mx-0 sm:rounded-t-lg sm:border-x py-3 border-t flex items-center gap-2 sm:gap-3 backdrop-blur ${
+          dirty ? "bg-surface/95 border-brand/40" : "bg-bg/90 border-border"
+        }`}
+        style={{ paddingBottom: "max(0.75rem, env(safe-area-inset-bottom))" }}
+      >
+        <span className={`flex-1 min-w-0 text-xs leading-tight ${dirty ? "text-amber-600 dark:text-amber-400 font-medium" : "text-fg-muted"}`}>
+          {dirty ? "Unsaved changes" : (
+            <>All saved<span className="hidden sm:inline"> — lists save as you edit them</span></>
+          )}
+        </span>
+        {dirty && (
+          <button onClick={() => setDraft({})} disabled={saving} className="btn btn-sm btn-secondary shrink-0">
+            Discard
+          </button>
+        )}
+        <button disabled={!dirty || saving} onClick={save} className="btn btn-sm btn-primary shrink-0">
+          {saving ? "Saving…" : "Save changes"}
+        </button>
+      </div>
     </div>
   );
 }
