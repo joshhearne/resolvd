@@ -103,6 +103,9 @@ export default function TimeTracker({ ticketId, ticket, user, onLogged }) {
   const [confirmDiscard, setConfirmDiscard] = useState(false);
   const [logInitial, setLogInitial] = useState(null);
   const [editingId, setEditingId] = useState(null);
+  const [workTypes, setWorkTypes] = useState([]);
+  // { overlaps, retry } while asking the tech to confirm an overlap.
+  const [overlapAsk, setOverlapAsk] = useState(null);
   const timerRef = useRef(null);
   const autoTried = useRef(false);
 
@@ -131,6 +134,7 @@ export default function TimeTracker({ ticketId, ticket, user, onLogged }) {
         const s = await api.get("/api/time-tracking/settings");
         if (cancelled) return;
         setSettings(s);
+        api.get("/api/time-tracking/work-types").then((w) => !cancelled && setWorkTypes(w || [])).catch(() => {});
         if (!s.enabled) return;
         const data = await load();
         if (cancelled || data.timer || autoTried.current) return;
@@ -220,46 +224,73 @@ export default function TimeTracker({ ticketId, ticket, user, onLogged }) {
     setPanel("log");
   }
 
-  async function submitLog(form) {
+  // Runs a save; if the server reports an overlap with the tech's other
+  // logged time, either explains the block or asks to confirm and retries
+  // with confirm_overlap. Returns true once saved.
+  async function saveWithOverlapCheck(send, failMsg) {
     setBusy(true);
     try {
-      await api.post(`/api/tickets/${ticketId}/time`, {
-        started_at: form.started_at,
-        ended_at: form.ended_at,
-        minutes: form.minutes,
-        note: form.note,
-        visibility: settings.can_choose_visibility ? form.visibility : undefined,
-        from_timer: !!timer,
-      });
-      toast.success(`Logged ${fmtMinutes(form.minutes)}`);
-      setPanel(null);
-      await load();
-      announceTimersChanged();
-      onLogged?.();
+      await send(false);
+      return true;
     } catch (err) {
-      toast.error(err.message || "Could not log time");
+      const code = err.body?.code;
+      const list = (err.body?.overlaps || [])
+        .map((o) => `${o.internal_ref} ${formatTime(o.started_at)}–${formatTime(o.ended_at)}`)
+        .join(", ");
+      if (code === "overlap_confirm") {
+        return new Promise((resolve) => {
+          setOverlapAsk({
+            list,
+            retry: async () => {
+              setOverlapAsk(null);
+              setBusy(true);
+              try { await send(true); resolve(true); }
+              catch (e) { toast.error(e.message || failMsg); resolve(false); }
+              finally { setBusy(false); }
+            },
+            cancel: () => { setOverlapAsk(null); resolve(false); },
+          });
+        });
+      }
+      toast.error(code === "overlap_blocked" ? `${err.message}: ${list}` : err.message || failMsg);
+      return false;
     } finally {
       setBusy(false);
     }
   }
 
+  async function submitLog(form) {
+    const ok = await saveWithOverlapCheck((confirm) => api.post(`/api/tickets/${ticketId}/time`, {
+      started_at: form.started_at,
+      ended_at: form.ended_at,
+      minutes: form.minutes,
+      note: form.note,
+      visibility: settings.can_choose_visibility ? form.visibility : undefined,
+      work_type_id: form.work_type_id,
+      from_timer: !!timer,
+      confirm_overlap: confirm,
+    }), "Could not log time");
+    if (!ok) return;
+    toast.success(`Logged ${fmtMinutes(form.minutes)}`);
+    setPanel(null);
+    await load();
+    announceTimersChanged();
+    onLogged?.();
+  }
+
   async function saveEdit(entryId, form) {
-    setBusy(true);
-    try {
-      await api.patch(`/api/tickets/${ticketId}/time/${entryId}`, {
-        started_at: form.started_at,
-        ended_at: form.ended_at,
-        minutes: form.minutes,
-        note: form.note,
-      });
-      setEditingId(null);
-      await load();
-      onLogged?.();
-    } catch (err) {
-      toast.error(err.message || "Could not save");
-    } finally {
-      setBusy(false);
-    }
+    const ok = await saveWithOverlapCheck((confirm) => api.patch(`/api/tickets/${ticketId}/time/${entryId}`, {
+      started_at: form.started_at,
+      ended_at: form.ended_at,
+      minutes: form.minutes,
+      note: form.note,
+      work_type_id: form.work_type_id,
+      confirm_overlap: confirm,
+    }), "Could not save");
+    if (!ok) return;
+    setEditingId(null);
+    await load();
+    onLogged?.();
   }
 
   async function toggleBillable(entry) {
@@ -344,6 +375,7 @@ export default function TimeTracker({ ticketId, ticket, user, onLogged }) {
           key={logInitial.end.getTime()}
           initial={logInitial}
           settings={settings}
+          workTypes={workTypes}
           busy={busy}
           submitLabel="Log"
           onSubmit={submitLog}
@@ -367,8 +399,8 @@ export default function TimeTracker({ ticketId, ticket, user, onLogged }) {
           <ul className="divide-y divide-border">
             {entries.map((e) => {
               const mine = e.user_id === user?.id;
-              const canEdit = (mine || isPriv) && !e.invoiced_at;
-              const canDelete = (mine || user?.role === "Admin") && !e.invoiced_at;
+              const canEdit = (mine || isPriv) && !e.locked;
+              const canDelete = (mine || user?.role === "Admin") && !e.locked;
               return (
                 <li key={e.id} className="px-3 py-2 text-sm">
                   <div className="flex flex-wrap items-center gap-2 text-xs text-fg-muted">
@@ -382,7 +414,9 @@ export default function TimeTracker({ ticketId, ticket, user, onLogged }) {
                       <HybridTime value={e.created_at} />
                     )}
                     <VisibilityPill visibility={e.visibility} />
+                    {e.work_type_name && <span className="px-1.5 py-0.5 rounded bg-surface-2">{e.work_type_name}</span>}
                     {e.edited_at && <span>(edited)</span>}
+                    {e.locked && !e.invoiced_at && <span title="Older than the timesheet lock — an Admin or Manager can change it">🔒</span>}
                     {isPriv && (
                       <label className="inline-flex items-center gap-1 ml-auto" title="Billable is separate from visibility. Only billable entries should ever reach an invoice.">
                         <input type="checkbox" checked={!!e.billable} onChange={() => toggleBillable(e)} disabled={!!e.invoiced_at} />
@@ -403,8 +437,11 @@ export default function TimeTracker({ ticketId, ticket, user, onLogged }) {
                         minutes: e.duration_minutes,
                         note: e.note || "",
                         visibility: e.visibility,
+                        work_type_id: e.work_type_id,
+                        work_type_name: e.work_type_name,
                       }}
                       settings={settings}
+                      workTypes={workTypes}
                       showVisibility={false}
                       busy={busy}
                       submitLabel="Save"
@@ -435,6 +472,14 @@ export default function TimeTracker({ ticketId, ticket, user, onLogged }) {
         </div>
       )}
 
+      <ConfirmDialog
+        open={!!overlapAsk}
+        title="Overlapping time"
+        message={`This overlaps time you already logged (${overlapAsk?.list || ""}). Save it anyway?`}
+        confirmLabel="Save anyway"
+        onCancel={() => overlapAsk?.cancel()}
+        onConfirm={() => overlapAsk?.retry()}
+      />
       <ConfirmDialog
         open={confirmDiscard}
         title="Discard timer?"

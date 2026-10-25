@@ -38,12 +38,13 @@ function fmtMinutes(minutes) {
 const FUTURE_SLACK_MS = 5 * 60 * 1000;
 
 export default function TimeEntryForm({
-  initial,           // { start: Date, end: Date, minutes, note, visibility }
+  initial,           // { start: Date, end: Date, minutes, note, visibility, work_type_id }
+  workTypes = [],    // active work types; the picker hides when there are none
   settings,          // time-tracking settings (min_note_chars, can_choose_visibility, default_visibility)
   showVisibility = true,
   submitLabel = "Log",
   busy = false,
-  onSubmit,          // ({ started_at, ended_at, minutes, note, visibility }) => Promise
+  onSubmit,          // ({ started_at, ended_at, minutes, note, visibility, work_type_id }) => Promise
   onCancel,
 }) {
   const fresh = () => ({
@@ -51,9 +52,10 @@ export default function TimeEntryForm({
     order: [...TRIANGLE_KEYS],
     note: initial.note || "",
     visibility: initial.visibility || settings.default_visibility || "private",
+    workTypeId: initial.work_type_id ?? null,
   });
   const [state, setState] = useState(fresh);
-  const { values, order, note, visibility } = state;
+  const { values, order, note, visibility, workTypeId } = state;
 
   const edit = (key, value) =>
     setState((s) => ({ ...s, ...editTriangle(s.values, s.order, key, value) }));
@@ -82,6 +84,7 @@ export default function TimeEntryForm({
       minutes: values.minutes,
       note: note.trim(),
       visibility,
+      work_type_id: workTypeId,
     });
   }
 
@@ -122,6 +125,24 @@ export default function TimeEntryForm({
           {autoTag("end")}
         </span>
       </div>
+      {(workTypes.length > 0 || initial.work_type_id) && (
+        <label className="flex flex-wrap items-center gap-3 text-sm">
+          <span className="text-xs text-fg-muted">Type</span>
+          <select
+            value={workTypeId ?? ""}
+            onChange={(e) => setState((s) => ({ ...s, workTypeId: e.target.value ? Number(e.target.value) : null }))}
+            className="input py-1 w-auto"
+          >
+            <option value="">—</option>
+            {initial.work_type_id && !workTypes.some((t) => t.id === initial.work_type_id) && (
+              <option value={initial.work_type_id}>{initial.work_type_name || "Retired type"} (retired)</option>
+            )}
+            {workTypes.map((t) => (
+              <option key={t.id} value={t.id}>{t.name}{t.billable ? "" : " (non-billable)"}</option>
+            ))}
+          </select>
+        </label>
+      )}
       <p className="text-[11px] text-fg-dim -mt-1">
         Set any two of start, duration and stop; the one marked <i>auto</i> follows.
         Type times like <code>830a</code> or <code>2:15p</code>, press <kbd>a</kbd>/<kbd>p</kbd> to flip AM/PM.

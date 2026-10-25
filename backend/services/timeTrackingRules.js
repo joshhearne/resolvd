@@ -21,7 +21,11 @@ const DEFAULT_SETTINGS = Object.freeze({
   billing_round_mode: 'up',
   billing_session_minimum: 0,
   billing_ticket_minimum: 0,
+  overlap_policy: 'warn',
+  edit_lock_days: 0,
 });
+
+const OVERLAP_POLICIES = ['allow', 'warn', 'block'];
 
 const ROUND_INCREMENTS = [1, 5, 6, 10, 15, 30];
 const ROUND_MODES = ['up', 'nearest', 'down'];
@@ -213,6 +217,15 @@ function cleanSettingsPatch(body) {
     if (!ROUND_MODES.includes(body.billing_round_mode)) bad('billing_round_mode is invalid');
     out.billing_round_mode = body.billing_round_mode;
   }
+  if (body.overlap_policy !== undefined) {
+    if (!OVERLAP_POLICIES.includes(body.overlap_policy)) bad('overlap_policy is invalid');
+    out.overlap_policy = body.overlap_policy;
+  }
+  if (body.edit_lock_days !== undefined) {
+    const n = Number(body.edit_lock_days);
+    if (!Number.isInteger(n) || n < 0 || n > 365) bad('edit_lock_days must be 0–365');
+    out.edit_lock_days = n;
+  }
   for (const key of ['billing_session_minimum', 'billing_ticket_minimum']) {
     if (body[key] !== undefined) {
       const n = Number(body[key]);
@@ -221,6 +234,35 @@ function cleanSettingsPatch(body) {
     }
   }
   return out;
+}
+
+// Timesheet lock: once an entry ended more than edit_lock_days ago, only
+// Admin/Manager may change or delete it. 0 = never locks.
+function isEditLocked({ entry, settings, role, now = new Date() }) {
+  if (['Admin', 'Manager'].includes(role)) return false;
+  const days = Number(settings?.edit_lock_days) || 0;
+  if (days <= 0) return false;
+  const end = new Date(entry.ended_at || entry.created_at);
+  return now.getTime() - end.getTime() > days * 86400000;
+}
+
+// Overlap check outcome for a new/edited entry. `overlaps` are the
+// tech's other entries whose [start, end) intersects this one.
+function overlapDecision({ settings, overlaps, confirmed }) {
+  const policy = settings?.overlap_policy || 'warn';
+  if (!overlaps.length || policy === 'allow') return { ok: true };
+  if (policy === 'block') return { ok: false, code: 'overlap_blocked' };
+  return confirmed ? { ok: true } : { ok: false, code: 'overlap_confirm' };
+}
+
+// Spreadsheet-safe CSV cell: quoted, quotes doubled, and a leading
+// = + - @ (or tab/CR) neutralised so a note can't run as a formula when
+// the export is opened in Excel / Sheets.
+function csvCell(v) {
+  if (v == null) return '';
+  let t = String(v);
+  if (/^[=+\-@\t\r]/.test(t)) t = `'${t}`;
+  return `"${t.replace(/"/g, '""')}"`;
 }
 
 // --- Billable hours ----------------------------------------------------
@@ -282,6 +324,9 @@ module.exports = {
   resolveVisibility,
   formatDuration,
   roundSession,
+  isEditLocked,
+  overlapDecision,
+  csvCell,
   billableSessionMinutes,
   computeBillable,
   validateEntry,

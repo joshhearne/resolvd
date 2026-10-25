@@ -174,6 +174,166 @@ function BillingCard({ v, set, enabled }) {
   );
 }
 
+// Work types save immediately (they're rows, not part of the settings
+// draft). A type already used on entries is retired rather than deleted.
+function WorkTypesCard() {
+  const [types, setTypes] = useState(null);
+  const [name, setName] = useState("");
+  const [billable, setBillable] = useState(true);
+
+  const load = () =>
+    api.get("/api/time-tracking/work-types?all=1").then(setTypes).catch((e) => toast.error(e.message));
+  useEffect(() => { load(); }, []);
+
+  async function add(e) {
+    e.preventDefault();
+    if (!name.trim()) return;
+    try {
+      await api.post("/api/time-tracking/work-types", { name: name.trim(), billable, sort_order: (types?.length || 0) * 10 });
+      setName("");
+      load();
+    } catch (err) { toast.error(err.message); }
+  }
+  async function patch(t, body) {
+    try { await api.patch(`/api/time-tracking/work-types/${t.id}`, body); load(); }
+    catch (err) { toast.error(err.message); }
+  }
+  async function remove(t) {
+    if (!window.confirm(`Remove "${t.name}"?`)) return;
+    try {
+      const r = await api.delete(`/api/time-tracking/work-types/${t.id}`);
+      if (r.retired) toast("In use on logged time, so it was retired instead of deleted.");
+      load();
+    } catch (err) { toast.error(err.message); }
+  }
+
+  return (
+    <div className="bg-surface border border-border rounded-lg p-4">
+      <h3 className="text-sm font-semibold text-fg mb-1">Work types</h3>
+      <p className="text-xs text-fg-muted mb-3">
+        Optional labels techs pick when logging (Remote, Onsite, Travel,
+        Internal…). A type's billable setting decides whether new entries of
+        that type start billable, so internal or admin time never lands on a
+        bill by accident. With no types defined, the picker is hidden and
+        the org default above applies.
+      </p>
+      {types === null ? (
+        <p className="text-sm text-fg-muted">Loading…</p>
+      ) : (
+        <ul className="divide-y divide-border border border-border rounded mb-3">
+          {types.length === 0 && <li className="px-3 py-2 text-sm text-fg-dim">No work types yet.</li>}
+          {types.map((t) => (
+            <li key={t.id} className={`px-3 py-2 flex flex-wrap items-center gap-3 text-sm ${t.active ? "" : "opacity-60"}`}>
+              <input
+                defaultValue={t.name}
+                onBlur={(e) => { const n = e.target.value.trim(); if (n && n !== t.name) patch(t, { name: n }); }}
+                className="input py-1 w-48"
+                aria-label="Work type name"
+              />
+              <label className="inline-flex items-center gap-1">
+                <input type="checkbox" checked={t.billable} onChange={() => patch(t, { billable: !t.billable })} />
+                billable
+              </label>
+              <label className="inline-flex items-center gap-1">
+                <input type="checkbox" checked={t.active} onChange={() => patch(t, { active: !t.active })} />
+                active
+              </label>
+              <button onClick={() => remove(t)} className="ml-auto text-xs text-fg-muted hover:text-red-600">remove</button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <form onSubmit={add} className="flex flex-wrap items-center gap-3 text-sm">
+        <input value={name} onChange={(e) => setName(e.target.value)} placeholder="New type, e.g. Onsite" className="input py-1 w-48" />
+        <label className="inline-flex items-center gap-1">
+          <input type="checkbox" checked={billable} onChange={(e) => setBillable(e.target.checked)} />
+          billable
+        </label>
+        <button type="submit" className="btn btn-sm btn-secondary" disabled={!name.trim()}>Add</button>
+      </form>
+    </div>
+  );
+}
+
+function IntegrityCard({ v, set, enabled }) {
+  return (
+    <div className={`bg-surface border border-border rounded-lg p-4 ${enabled ? "" : "opacity-60"}`}>
+      <h3 className="text-sm font-semibold text-fg mb-2">Timesheet integrity</h3>
+      <p className="text-xs font-semibold text-fg-muted uppercase mb-1">Overlapping time</p>
+      <p className="text-xs text-fg-muted mb-1">
+        When a tech logs a session that overlaps time they already logged (on
+        any ticket) — the usual way time gets billed twice.
+      </p>
+      <Radio name="overlap" value="warn" current={v.overlap_policy} onChange={(overlap_policy) => set({ overlap_policy })} label="Warn and ask to confirm" />
+      <Radio name="overlap" value="block" current={v.overlap_policy} onChange={(overlap_policy) => set({ overlap_policy })} label="Block it" />
+      <Radio name="overlap" value="allow" current={v.overlap_policy} onChange={(overlap_policy) => set({ overlap_policy })} label="Allow" />
+
+      <p className="text-xs font-semibold text-fg-muted uppercase mt-3 mb-1">Timesheet lock</p>
+      <label className="flex flex-wrap items-center gap-2 text-sm text-fg">
+        Techs can't edit or delete entries older than
+        <input
+          type="number" min="0" max="365"
+          value={v.edit_lock_days}
+          onChange={(e) => set({ edit_lock_days: Number(e.target.value) })}
+          className="input w-20 py-1"
+        />
+        days
+      </label>
+      <p className="text-xs text-fg-muted mt-1">
+        Keeps reviewed or invoiced periods stable. Admins and Managers can
+        still correct them. 0 turns the lock off.
+      </p>
+    </div>
+  );
+}
+
+function ymd(d) {
+  const p = (n) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())}`;
+}
+
+// CSV of entries for a date range — logged and billable minutes (current
+// rules), ticket-minimum top-ups as their own rows. Handy for building
+// invoices by hand until an accounting integration exists.
+function ExportCard() {
+  const now = new Date();
+  const [from, setFrom] = useState(ymd(new Date(now.getFullYear(), now.getMonth() - 1, 1)));
+  const [to, setTo] = useState(ymd(new Date(now.getFullYear(), now.getMonth(), 0)));
+
+  function download() {
+    const [fy, fm, fd] = from.split("-").map(Number);
+    const [ty, tm, td] = to.split("-").map(Number);
+    const start = new Date(fy, fm - 1, fd);
+    const end = new Date(ty, tm - 1, td + 1); // whole "to" day, local time
+    if (!(end > start)) { toast.error("End date must be on or after the start date"); return; }
+    const qs = new URLSearchParams({ from: start.toISOString(), to: end.toISOString() });
+    const a = document.createElement("a");
+    a.href = `/api/time-tracking/export?${qs}`;
+    a.download = `time-entries-${from}-to-${to}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  }
+
+  return (
+    <div className="bg-surface border border-border rounded-lg p-4">
+      <h3 className="text-sm font-semibold text-fg mb-1">Export time</h3>
+      <p className="text-xs text-fg-muted mb-3">
+        CSV of every entry that ended in the range: ticket, tech, type, times,
+        logged and billable minutes (using the rules above), visibility and
+        note. Ticket-minimum top-ups appear as their own rows. Defaults to last
+        month.
+      </p>
+      <div className="flex flex-wrap items-center gap-2 text-sm">
+        <input type="date" value={from} onChange={(e) => setFrom(e.target.value)} className="input py-1 w-40" aria-label="From" />
+        <span className="text-fg-muted">to</span>
+        <input type="date" value={to} onChange={(e) => setTo(e.target.value)} className="input py-1 w-40" aria-label="To" />
+        <button onClick={download} className="btn btn-sm btn-secondary">Download CSV</button>
+      </div>
+    </div>
+  );
+}
+
 export default function AdminTimeTracking() {
   const [s, setS] = useState(null);
   const [draft, setDraft] = useState({});
@@ -299,12 +459,16 @@ export default function AdminTimeTracking() {
       </div>
 
       <BillingCard v={v} set={set} enabled={v.enabled} />
+      <IntegrityCard v={v} set={set} enabled={v.enabled} />
 
       <div className="flex justify-end">
         <button disabled={!dirty || saving} onClick={save} className="btn btn-primary">
           {saving ? "Saving…" : "Save changes"}
         </button>
       </div>
+
+      <WorkTypesCard />
+      <ExportCard />
     </div>
   );
 }

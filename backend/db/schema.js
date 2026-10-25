@@ -3348,6 +3348,24 @@ Thanks,
     await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS billing_round_mode TEXT NOT NULL DEFAULT 'up'`);
     await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS billing_session_minimum INTEGER NOT NULL DEFAULT 0`);
     await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS billing_ticket_minimum INTEGER NOT NULL DEFAULT 0`);
+    // Integrity: overlapping sessions (allow / warn → confirm / block) and
+    // the timesheet lock (techs can't edit entries older than N days).
+    await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS overlap_policy TEXT NOT NULL DEFAULT 'warn'`);
+    await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS edit_lock_days INTEGER NOT NULL DEFAULT 0`);
+
+    // Admin-managed work types (Remote, Onsite, Travel, Internal…). The
+    // type's `billable` seeds a new entry's billable flag, so internal /
+    // admin time never lands billable by accident.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS time_work_types (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        billable BOOLEAN NOT NULL DEFAULT FALSE,
+        active BOOLEAN NOT NULL DEFAULT TRUE,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
 
     // One row per (user, ticket). running_since NULL = paused. Elapsed =
     // accumulated_seconds + (NOW() - running_since). status_at_start lets
@@ -3399,6 +3417,9 @@ Thanks,
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_time_entries_ticket ON time_entries(ticket_id, created_at)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_time_entries_user ON time_entries(user_id, created_at)`);
+    await client.query(`ALTER TABLE time_entries ADD COLUMN IF NOT EXISTS work_type_id INTEGER REFERENCES time_work_types(id) ON DELETE SET NULL`);
+    // Overlap checks scan a tech's entries by time range.
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_time_entries_user_span ON time_entries(user_id, started_at, ended_at)`);
 
     await client.query('COMMIT');
   } catch (err) {
