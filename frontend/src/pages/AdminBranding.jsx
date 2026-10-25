@@ -1,6 +1,7 @@
-import React, { useState, useRef } from "react";
+import React, { useState, useRef, useEffect } from "react";
 import toast from "react-hot-toast";
 import { useBranding } from "../context/BrandingContext";
+import SaveBar, { useSavedBaseline } from "../components/SaveBar";
 
 export default function AdminBranding() {
   const { branding, setBranding } = useBranding();
@@ -26,13 +27,16 @@ export default function AdminBranding() {
     ai_disclosure_audience: branding.ai_disclosure_audience || 'self_and_admin',
   });
   const [saving, setSaving] = useState(false);
+  const { dirty, markSaved, savedValue } = useSavedBaseline(form);
+  // Baseline = the form as first shown.
+  useEffect(() => { markSaved(form); }, []); // eslint-disable-line react-hooks/exhaustive-deps
   const [uploading, setUploading] = useState(false);
   const [uploadingFavicon, setUploadingFavicon] = useState(false);
   const fileRef = useRef();
   const faviconRef = useRef();
 
   async function saveSettings(e) {
-    e.preventDefault();
+    e?.preventDefault();
     setSaving(true);
     try {
       const res = await fetch("/api/branding", {
@@ -44,6 +48,7 @@ export default function AdminBranding() {
       if (!res.ok) throw new Error("Save failed");
       const data = await res.json();
       setBranding((prev) => ({ ...prev, ...data }));
+      markSaved(form);
       toast.success("Branding saved");
     } catch {
       toast.error("Failed to save branding");
@@ -685,12 +690,15 @@ export default function AdminBranding() {
           </div>
         </div>
 
-        <div className="pt-2">
-          <button type="submit" disabled={saving} className="btn-primary btn">
-            {saving ? "Saving…" : "Save changes"}
-          </button>
-        </div>
       </form>
+
+      <SaveBar
+        dirty={dirty}
+        saving={saving}
+        onSave={() => saveSettings()}
+        onDiscard={() => setForm(savedValue)}
+        savedHint="logo and favicon save on upload"
+      />
     </div>
   );
 }

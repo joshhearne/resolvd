@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
+import SaveBar, { useSavedBaseline } from "../components/SaveBar";
 
 const ROLES = ["Admin", "Submitter", "Viewer"];
 
@@ -10,12 +11,15 @@ export default function AdminAuth() {
   const [saving, setSaving] = useState(false);
   const [smtpPassword, setSmtpPassword] = useState("");
   const [testEmailTo, setTestEmailTo] = useState("");
+  const { dirty: formDirty, markSaved, savedValue } = useSavedBaseline(s);
+  const dirty = formDirty || !!smtpPassword;
 
   useEffect(() => {
     api
       .get("/api/auth-settings")
       .then((data) => {
         setS(data);
+        markSaved(data);
         setLoading(false);
       })
       .catch((err) => {
@@ -50,6 +54,7 @@ export default function AdminAuth() {
       else delete patch.smtp_password;
       const updated = await api.patch("/api/auth-settings", patch);
       setS(updated);
+      markSaved(updated);
       setSmtpPassword("");
       toast.success("Settings saved");
     } catch (err) {
@@ -306,15 +311,14 @@ export default function AdminAuth() {
         </div>
       </Section>
 
-      <div className="flex gap-2">
-        <button
-          onClick={save}
-          disabled={saving}
-          className="bg-brand hover:bg-brand-bright disabled:opacity-60 text-brand-fg text-sm font-medium px-4 py-2 rounded"
-        >
-          {saving ? "Saving…" : "Save settings"}
-        </button>
-      </div>
+      <SaveBar
+        dirty={dirty}
+        saving={saving}
+        onSave={save}
+        onDiscard={() => { setS(savedValue); setSmtpPassword(""); }}
+        saveLabel="Save settings"
+        savedHint="test and send-now buttons act immediately"
+      />
     </div>
   );
 }

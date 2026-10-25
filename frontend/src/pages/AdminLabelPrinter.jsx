@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
+import SaveBar, { useSavedBaseline } from "../components/SaveBar";
 
 export default function AdminLabelPrinter() {
   const [cfg, setCfg] = useState(null);
@@ -8,13 +9,14 @@ export default function AdminLabelPrinter() {
   const [saving, setSaving] = useState(false);
   const [testing, setTesting] = useState(false);
   const [draft, setDraft] = useState({});
+  const { dirty, markSaved, savedValue } = useSavedBaseline(draft);
 
   async function load() {
     setLoading(true);
     try {
       const c = await api.get("/api/label-printer");
       setCfg(c);
-      setDraft({
+      const d = {
         enabled: c?.enabled ?? false,
         host: c?.host || "",
         port: c?.port ?? 9100,
@@ -23,7 +25,9 @@ export default function AdminLabelPrinter() {
         media_h_dots: c?.media_h_dots ?? 152,
         top_offset_dots: c?.top_offset_dots ?? 15,
         property_line: c?.property_line || "",
-      });
+      };
+      setDraft(d);
+      markSaved(d);
     } catch (e) {
       toast.error(e.message || "Failed to load");
     } finally {
@@ -37,6 +41,7 @@ export default function AdminLabelPrinter() {
     try {
       const c = await api.patch("/api/label-printer", draft);
       setCfg(c);
+      markSaved(draft);
       toast.success("Saved");
     } catch (e) {
       toast.error(e.message || "Save failed");
@@ -121,9 +126,6 @@ export default function AdminLabelPrinter() {
         </p>
 
         <div className="flex gap-2 pt-2">
-          <button onClick={save} disabled={saving} className="btn btn-primary btn-sm disabled:opacity-50">
-            {saving ? "Saving…" : "Save"}
-          </button>
           <button
             onClick={printTest}
             disabled={testing || !cfg?.enabled || !cfg?.host}
@@ -137,6 +139,14 @@ export default function AdminLabelPrinter() {
           <p className="text-[11px] text-fg-dim">Last saved {new Date(cfg.updated_at).toLocaleString()}.</p>
         )}
       </div>
+
+      <SaveBar
+        dirty={dirty}
+        saving={saving}
+        onSave={save}
+        onDiscard={() => setDraft(savedValue)}
+        savedHint="the test label prints the saved settings"
+      />
     </div>
   );
 }
