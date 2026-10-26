@@ -67,18 +67,25 @@ async function visibleProjects(user) {
   return r.rows;
 }
 
-// Enabled business-hours policies that have at least one holiday.
+// Enabled business-hours policies that have at least one holiday. The
+// feed carries holidays only — never the opening hours — so it's titled
+// by scope ("Holidays", "Holidays · NYC office"), not by the policy name,
+// which usually spells out the hours.
 async function holidayCalendars() {
   const r = await pool.query(`
-    SELECT b.id, b.name, b.tz, l.name AS location_name, p.name AS project_name
+    SELECT b.id, l.name AS location_name, p.name AS project_name
       FROM business_hours_policies b
       LEFT JOIN locations l ON l.id = b.location_id
       LEFT JOIN projects p ON p.id = b.project_id
      WHERE b.enabled = TRUE
        AND EXISTS (SELECT 1 FROM business_hours_holidays h WHERE h.business_hours_id = b.id)
-     ORDER BY (b.project_id IS NULL AND b.location_id IS NULL) DESC, b.name
+     ORDER BY (b.project_id IS NULL AND b.location_id IS NULL) DESC,
+              l.name NULLS FIRST, p.name NULLS FIRST
   `);
-  return r.rows;
+  return r.rows.map((c) => {
+    const scope = c.location_name || c.project_name;
+    return { id: c.id, title: scope ? `Holidays · ${scope}` : 'Holidays' };
+  });
 }
 
 function feedLinks(token, user, projects, holidayCals = []) {
@@ -323,8 +330,8 @@ router.get('/feed/:token/holidays/:id.ics', async (req, res) => {
     const cal = (await holidayCalendars()).find((c) => c.id === Number(req.params.id));
     if (!cal) return notFound(res);
     sendIcs(res, 'holidays.ics', buildCalendar({
-      name: `Holidays · ${cal.name}`,
-      description: `Company holidays (${cal.location_name || cal.project_name || 'organisation'})`,
+      name: cal.title,
+      description: 'Company holidays',
       events: await holidayEvents(cal.id),
     }));
   } catch (err) {

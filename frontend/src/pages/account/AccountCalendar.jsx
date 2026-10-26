@@ -109,8 +109,7 @@ export default function AccountCalendar() {
               <h3 className="text-sm font-semibold text-fg">Holiday calendars</h3>
               <div className="card px-4 divide-y divide-border">
                 {feed.links.holidays.map((h) => (
-                  <FeedRow key={h.id} label={h.name} url={h.url}
-                    hint={h.location_name ? `Location: ${h.location_name}` : h.project_name ? `Project: ${h.project_name}` : "Organisation"} />
+                  <FeedRow key={h.id} label={h.title} url={h.url} hint="All-day holidays only" />
                 ))}
               </div>
             </div>
