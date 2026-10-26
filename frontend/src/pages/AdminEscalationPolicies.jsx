@@ -27,9 +27,11 @@ const ACTION_KINDS = [
   { value: "notify_submitter", label: "Notify submitter" },
   { value: "notify_user", label: "Notify user" },
   { value: "notify_role", label: "Notify role" },
+  { value: "notify_oncall", label: "Notify on-call" },
   { value: "reassign_agent", label: "Reassign via assignment policy" },
   { value: "reassign_user", label: "Reassign to user" },
   { value: "reassign_role", label: "Reassign to role" },
+  { value: "reassign_oncall", label: "Reassign to on-call" },
   { value: "bump_priority", label: "Bump priority (surface ticket)" },
 ];
 
@@ -72,6 +74,23 @@ function needsRole(kind) {
 function needsBump(kind) {
   return kind === "bump_priority";
 }
+function usesRotation(kind) {
+  return kind === "notify_oncall" || kind === "reassign_oncall";
+}
+// Coerce select-string ids to numbers and drop fields the kind doesn't
+// use — the API validates ids as integers.
+function normalizeActions(actions) {
+  return actions.map((a) => ({
+    kind: a.kind,
+    ...(needsUser(a.kind) && a.target_user_id ? { target_user_id: Number(a.target_user_id) } : {}),
+    ...(needsRole(a.kind) && a.target_role ? { target_role: a.target_role } : {}),
+    ...(usesRotation(a.kind) && a.rotation_id ? { rotation_id: Number(a.rotation_id) } : {}),
+    ...(needsBump(a.kind) ? {
+      levels: Number(a.levels),
+      ...(a.floor ? { floor: Number(a.floor) } : {}),
+    } : {}),
+  }));
+}
 function defaultAction() {
   return { kind: "notify_assignee" };
 }
@@ -82,6 +101,8 @@ function actionSummary(a) {
   if (a.kind === "notify_user") return `Notify user #${a.target_user_id ?? "?"}`;
   if (a.kind === "notify_role") return `Notify ${a.target_role ?? "?"}`;
   if (a.kind === "reassign_agent") return "Reassign → via assignment policy";
+  if (a.kind === "notify_oncall") return a.rotation_id ? `Notify on-call (rotation #${a.rotation_id})` : "Notify on-call";
+  if (a.kind === "reassign_oncall") return a.rotation_id ? `Reassign → on-call (rotation #${a.rotation_id})` : "Reassign → on-call";
   if (a.kind === "reassign_user") return `Reassign → user #${a.target_user_id ?? "?"}`;
   if (a.kind === "reassign_role") return `Reassign → first ${a.target_role ?? "?"}`;
   if (a.kind === "bump_priority") {
@@ -97,6 +118,7 @@ export default function AdminEscalationPolicies() {
   const [projects, setProjects] = useState([]);
   const [globalAgents, setGlobalAgents] = useState([]);
   const [agentsByProject, setAgentsByProject] = useState({});
+  const [rotations, setRotations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [edits, setEdits] = useState({});
   const [newRow, setNewRow] = useState({
@@ -122,12 +144,14 @@ export default function AdminEscalationPolicies() {
   async function load() {
     setLoading(true);
     try {
-      const [list, pjs, agents] = await Promise.all([
+      const [list, pjs, agents, rots] = await Promise.all([
         api.get("/api/escalation-policies"),
         api.get("/api/projects"),
         api.get("/api/agents"),
+        api.get("/api/oncall").catch(() => []),
       ]);
       setSteps(list);
+      setRotations(rots);
       setProjects(pjs);
       setGlobalAgents(agents);
       const ids = Array.from(new Set(list.filter((s) => s.project_id).map((s) => s.project_id)));
@@ -176,6 +200,7 @@ export default function AdminEscalationPolicies() {
     const e = edits[s.id];
     if (!e) return;
     const body = { ...e };
+    if (body.actions) body.actions = normalizeActions(body.actions);
     if (body.delay_minutes !== undefined) body.delay_minutes = Number(body.delay_minutes);
     if (body.step_order !== undefined) body.step_order = Number(body.step_order);
     // Validate every action target before sending.
@@ -235,15 +260,7 @@ export default function AdminEscalationPolicies() {
         trigger: newRow.trigger,
         step_order: Number(newRow.step_order) || 1,
         delay_minutes: Number(newRow.delay_minutes) || 0,
-        actions: newRow.actions.map((a) => ({
-          kind: a.kind,
-          ...(a.target_user_id ? { target_user_id: Number(a.target_user_id) } : {}),
-          ...(a.target_role ? { target_role: a.target_role } : {}),
-          ...(needsBump(a.kind) ? {
-            levels: Number(a.levels),
-            ...(a.floor ? { floor: Number(a.floor) } : {}),
-          } : {}),
-        })),
+        actions: normalizeActions(newRow.actions),
         enabled: true,
       };
       await api.post("/api/escalation-policies", body);
@@ -286,6 +303,7 @@ export default function AdminEscalationPolicies() {
                   target_role: needsRole(k) ? a.target_role : undefined,
                   levels: needsBump(k) ? (a.levels || 1) : undefined,
                   floor: needsBump(k) ? a.floor : undefined,
+                  rotation_id: usesRotation(k) ? a.rotation_id : undefined,
                 });
               }}
               className="border border-border-strong rounded px-2 py-1 text-sm"
@@ -310,6 +328,21 @@ export default function AdminEscalationPolicies() {
               >
                 <option value="">— pick role —</option>
                 {TARGETABLE_ROLES.map((r) => <option key={r} value={r}>{r}</option>)}
+              </select>
+            )}
+            {usesRotation(a.kind) && (
+              <select
+                value={a.rotation_id || ""}
+                onChange={(e) => setAction(i, { rotation_id: e.target.value || undefined })}
+                className="border border-border-strong rounded px-2 py-1 text-sm min-w-[10rem]"
+                title="Default: the ticket's project rotations, else org-wide"
+              >
+                <option value="">— ticket's project rotation —</option>
+                {rotations.map((r) => (
+                  <option key={r.id} value={r.id}>
+                    {r.name}{r.project_prefix ? ` (${r.project_prefix})` : ""}
+                  </option>
+                ))}
               </select>
             )}
             {needsBump(a.kind) && (

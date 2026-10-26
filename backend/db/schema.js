@@ -2219,6 +2219,41 @@ async function initSchema() {
     // shouldn't re-arm the chain at a different tier).
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS escalation_priority_snapshot INTEGER CHECK (escalation_priority_snapshot BETWEEN 1 AND 5)`);
 
+    // On-call rotations for notify_oncall / reassign_oncall escalation
+    // actions. A rotation cycles member_ids in order, shift_hours each,
+    // starting at handoff_at — who is on call is computed, not stored
+    // (services/oncall.js). project_id NULL = org-wide; a project's own
+    // rotations beat org-wide ones. Overrides put a user on call for a
+    // window (swaps, leave cover) and beat the rotation.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS oncall_rotations (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+        member_ids INTEGER[] NOT NULL DEFAULT '{}'::int[],
+        shift_hours INTEGER NOT NULL DEFAULT 168 CHECK (shift_hours BETWEEN 1 AND 8760),
+        handoff_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_oncall_rotations_project ON oncall_rotations(project_id) WHERE enabled = TRUE`);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS oncall_overrides (
+        id SERIAL PRIMARY KEY,
+        rotation_id INTEGER NOT NULL REFERENCES oncall_rotations(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        starts_at TIMESTAMPTZ NOT NULL,
+        ends_at TIMESTAMPTZ NOT NULL,
+        note TEXT,
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CHECK (ends_at > starts_at)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_oncall_overrides_rotation ON oncall_overrides(rotation_id, ends_at)`);
+
     // Sensible org-default targets per priority. Idempotent: only inserts
     // when the row doesn't already exist. Customers tune these in the
     // admin UI; these are starting values.
