@@ -218,6 +218,7 @@ export default function AdminSlaPolicies() {
   return (
     <div className="space-y-5">
       <BusinessHoursSection bhList={bhList} projects={projects} locations={locations} onChange={load} />
+      <SlaWebhooksSection projects={projects} />
 
       <div className="bg-surface border border-border rounded-lg p-4">
         <h2 className="text-base font-semibold text-fg mb-1">Org-default targets</h2>
@@ -650,6 +651,298 @@ function BusinessHoursSection({ bhList, projects, locations, onChange }) {
             })}
           </tbody>
         </table>
+      )}
+    </div>
+  );
+}
+
+const WEBHOOK_KINDS = [
+  { value: "slack", label: "Slack", target: "Incoming webhook URL", placeholder: "https://hooks.slack.com/services/…" },
+  { value: "teams", label: "Microsoft Teams", target: "Workflows webhook URL", placeholder: "https://…logic.azure.com/…" },
+  { value: "pagerduty", label: "PagerDuty", target: "Integration key (Events API v2)", placeholder: "32-character routing key" },
+  { value: "generic", label: "Generic JSON", target: "URL", placeholder: "https://example.com/hooks/resolvd" },
+];
+const WEBHOOK_EVENTS = [
+  { value: "breach_response", label: "Response breached" },
+  { value: "breach_resolve", label: "Resolve breached" },
+  { value: "warning_response", label: "Response at risk" },
+  { value: "warning_resolve", label: "Resolve at risk" },
+];
+const kindMeta = (k) => WEBHOOK_KINDS.find((x) => x.value === k) || WEBHOOK_KINDS[0];
+
+function emptyWebhook() {
+  return { name: "", kind: "slack", target: "", secret: "", project_id: "", events: ["breach_response", "breach_resolve"], max_priority: 5 };
+}
+
+function WebhookForm({ value, onChange, projects, isNew }) {
+  const set = (patch) => onChange({ ...value, ...patch });
+  const meta = kindMeta(value.kind);
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap gap-2">
+        <label className="flex flex-col gap-1">
+          <span className="text-xs text-fg-muted">Name</span>
+          <input value={value.name} onChange={(e) => set({ name: e.target.value })}
+            placeholder="e.g. #support-alerts" className="border border-border-strong rounded px-2 py-1 text-sm w-48" />
+        </label>
+        {isNew && (
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-fg-muted">Destination</span>
+            <select value={value.kind} onChange={(e) => set({ kind: e.target.value })}
+              className="border border-border-strong rounded px-2 py-1 text-sm">
+              {WEBHOOK_KINDS.map((k) => <option key={k.value} value={k.value}>{k.label}</option>)}
+            </select>
+          </label>
+        )}
+        <label className="flex flex-col gap-1 flex-1 min-w-[16rem]">
+          <span className="text-xs text-fg-muted">
+            {meta.target}{!isNew && " (leave blank to keep)"}
+          </span>
+          <input value={value.target} onChange={(e) => set({ target: e.target.value })}
+            placeholder={isNew ? meta.placeholder : value.target_hint || meta.placeholder}
+            autoComplete="off" className="border border-border-strong rounded px-2 py-1 text-sm font-mono" />
+        </label>
+        {value.kind === "generic" && (
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-fg-muted">
+              Signing secret (optional{!isNew && value.has_secret ? "; set — type to replace" : ""})
+            </span>
+            <input value={value.secret} onChange={(e) => set({ secret: e.target.value })}
+              autoComplete="off" type="password" className="border border-border-strong rounded px-2 py-1 text-sm font-mono w-48" />
+          </label>
+        )}
+      </div>
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="flex flex-col gap-1">
+          <span className="text-xs text-fg-muted">Project</span>
+          <select value={value.project_id ?? ""} onChange={(e) => set({ project_id: e.target.value })}
+            className="border border-border-strong rounded px-2 py-1 text-sm">
+            <option value="">All projects</option>
+            {projects.filter((p) => p.status === "active").map((p) => (
+              <option key={p.id} value={p.id}>{p.prefix} · {p.name}</option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs text-fg-muted">Priorities</span>
+          <select value={value.max_priority} onChange={(e) => set({ max_priority: Number(e.target.value) })}
+            className="border border-border-strong rounded px-2 py-1 text-sm">
+            {[1, 2, 3, 4, 5].map((p) => <option key={p} value={p}>{p === 1 ? "P1 only" : p === 5 ? "All (P1–P5)" : `P1–P${p}`}</option>)}
+          </select>
+        </label>
+        <div className="flex flex-wrap gap-2">
+          {WEBHOOK_EVENTS.map((ev) => (
+            <label key={ev.value} className="flex items-center gap-1 text-xs text-fg-muted">
+              <input type="checkbox" checked={value.events.includes(ev.value)}
+                onChange={(e) => set({
+                  events: e.target.checked
+                    ? [...value.events, ev.value]
+                    : value.events.filter((x) => x !== ev.value),
+                })} />
+              {ev.label}
+            </label>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function webhookBody(v, isNew) {
+  const body = {
+    name: v.name,
+    project_id: v.project_id ? Number(v.project_id) : null,
+    events: v.events,
+    max_priority: Number(v.max_priority),
+  };
+  if (isNew) body.kind = v.kind;
+  if (isNew || v.target.trim()) body.target = v.target.trim();
+  if (v.kind === "generic" && (isNew ? v.secret : v.secret !== "")) body.secret = v.secret;
+  return body;
+}
+
+function WebhookDeliveries({ hookId }) {
+  const [rows, setRows] = useState(null);
+  useEffect(() => {
+    api.get(`/api/sla/webhooks/${hookId}/deliveries`).then(setRows).catch(() => setRows([]));
+  }, [hookId]);
+  if (!rows) return <div className="text-xs text-fg-dim">Loading…</div>;
+  if (!rows.length) return <div className="text-xs text-fg-dim italic">Nothing sent yet.</div>;
+  return (
+    <ul className="text-xs divide-y divide-border border border-border rounded">
+      {rows.map((d) => (
+        <li key={d.id} className="flex flex-wrap gap-2 px-2 py-1">
+          <span className={d.ok ? "text-green-700 dark:text-green-400" : "text-red-600"}>{d.ok ? "sent" : "failed"}</span>
+          <span className="text-fg-muted">{new Date(d.created_at).toLocaleString()}</span>
+          <span>{WEBHOOK_EVENTS.find((e) => e.value === d.event)?.label || d.event}</span>
+          {d.ticket_ref && <span className="font-mono">{d.ticket_ref}</span>}
+          {d.resolved_at && <span className="text-fg-muted">· resolved in PagerDuty</span>}
+          {d.error && <span className="text-red-600 truncate max-w-full">{d.error}</span>}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function SlaWebhooksSection({ projects }) {
+  const [hooks, setHooks] = useState([]);
+  const [draft, setDraft] = useState(null);
+  const [editing, setEditing] = useState({});
+  const [logOpen, setLogOpen] = useState(null);
+  const [busy, setBusy] = useState(null);
+
+  async function load() {
+    try {
+      setHooks(await api.get("/api/sla/webhooks"));
+    } catch (err) {
+      toast.error(err.message || "Failed to load webhooks");
+    }
+  }
+  useEffect(() => { load(); }, []);
+
+  async function create() {
+    if (!draft.name.trim() || !draft.target.trim()) { toast.error("Name and destination required"); return; }
+    if (!draft.events.length) { toast.error("Pick at least one event"); return; }
+    try {
+      await api.post("/api/sla/webhooks", webhookBody(draft, true));
+      toast.success("Webhook added");
+      setDraft(null);
+      await load();
+    } catch (err) {
+      toast.error(err.message || "Failed");
+    }
+  }
+
+  async function save(h) {
+    const v = editing[h.id];
+    if (!v.events.length) { toast.error("Pick at least one event"); return; }
+    try {
+      await api.patch(`/api/sla/webhooks/${h.id}`, webhookBody(v, false));
+      toast.success("Saved");
+      setEditing((p) => { const n = { ...p }; delete n[h.id]; return n; });
+      await load();
+    } catch (err) {
+      toast.error(err.message || "Failed");
+    }
+  }
+
+  async function toggle(h) {
+    try {
+      await api.patch(`/api/sla/webhooks/${h.id}`, { enabled: !h.enabled });
+      await load();
+    } catch (err) {
+      toast.error(err.message || "Failed");
+    }
+  }
+
+  async function remove(h) {
+    if (!confirm(`Delete webhook "${h.name}"?`)) return;
+    try {
+      await api.delete(`/api/sla/webhooks/${h.id}`);
+      await load();
+    } catch (err) {
+      toast.error(err.message || "Failed");
+    }
+  }
+
+  async function test(h) {
+    setBusy(h.id);
+    try {
+      const r = await api.post(`/api/sla/webhooks/${h.id}/test`, {});
+      if (r.ok) toast.success("Test delivered");
+      else toast.error(`Test failed: ${r.error}`);
+      await load();
+    } catch (err) {
+      toast.error(err.message || "Failed");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="bg-surface border border-border rounded-lg p-4">
+      <div className="flex items-center justify-between mb-1">
+        <h2 className="text-base font-semibold text-fg">Breach notifications</h2>
+        {!draft && (
+          <button onClick={() => setDraft(emptyWebhook())}
+            className="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2">+ Add webhook</button>
+        )}
+      </div>
+      <p className="text-xs text-fg-muted mb-3">
+        Post to Slack, Microsoft Teams, PagerDuty or any JSON endpoint when a
+        ticket breaches (or is about to breach) its SLA, alongside the
+        in-app and email alerts. PagerDuty incidents resolve automatically
+        once the ticket is resolved. Generic webhooks are signed with
+        HMAC-SHA256 over <code>timestamp.body</code> in{" "}
+        <code>X-Resolvd-Signature</code> when a secret is set. URLs and keys
+        are stored encrypted and need the master key (Admin → Encryption).
+      </p>
+
+      {draft && (
+        <div className="border border-border rounded p-3 mb-3 space-y-2 bg-surface-2/40">
+          <WebhookForm value={draft} onChange={setDraft} projects={projects} isNew />
+          <div className="flex gap-2">
+            <button onClick={create} className="text-sm px-3 py-1.5 bg-brand text-white rounded">Save webhook</button>
+            <button onClick={() => setDraft(null)} className="text-sm px-3 py-1.5 border border-border rounded">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {hooks.length === 0 && !draft ? (
+        <div className="text-sm text-fg-muted">No webhooks yet.</div>
+      ) : (
+        <div className="divide-y divide-border">
+          {hooks.map((h) => (
+            <div key={h.id} className="py-3 space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-medium text-fg">{h.name}</span>
+                <span className="text-xs px-1.5 py-0.5 rounded bg-surface-2 text-fg-muted">{kindMeta(h.kind).label}</span>
+                <span className="text-xs font-mono text-fg-dim">{h.target_hint}</span>
+                <span className="text-xs text-fg-muted">
+                  · {h.project_id ? `${h.project_prefix}` : "all projects"}
+                  {" · "}{h.max_priority === 5 ? "all priorities" : `P1–P${h.max_priority}`}
+                  {" · "}{h.events.map((e) => WEBHOOK_EVENTS.find((x) => x.value === e)?.label || e).join(", ")}
+                </span>
+                {h.last_sent_at && (
+                  <span className={`text-xs ${h.last_ok ? "text-green-700 dark:text-green-400" : "text-red-600"}`}
+                    title={h.last_error || ""}>
+                    · last {h.last_ok ? "sent" : "failed"} {new Date(h.last_sent_at).toLocaleString()}
+                  </span>
+                )}
+                <div className="ml-auto flex items-center gap-2">
+                  <label className="flex items-center gap-1 text-xs text-fg-muted">
+                    <input type="checkbox" checked={h.enabled} onChange={() => toggle(h)} /> Enabled
+                  </label>
+                  <button onClick={() => test(h)} disabled={busy === h.id}
+                    className="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2 disabled:opacity-50">
+                    {busy === h.id ? "Sending…" : "Send test"}
+                  </button>
+                  <button onClick={() => setLogOpen((o) => (o === h.id ? null : h.id))}
+                    className="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2">Log</button>
+                  {!editing[h.id] && (
+                    <button onClick={() => setEditing((p) => ({
+                      ...p,
+                      [h.id]: { ...h, target: "", secret: "", project_id: h.project_id ?? "" },
+                    }))} className="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2">Edit</button>
+                  )}
+                  <button onClick={() => remove(h)} className="text-xs px-2 py-1 text-red-600 hover:underline">Delete</button>
+                </div>
+              </div>
+              {editing[h.id] && (
+                <div className="border border-border rounded p-3 space-y-2 bg-surface-2/40">
+                  <WebhookForm value={editing[h.id]} projects={projects}
+                    onChange={(v) => setEditing((p) => ({ ...p, [h.id]: v }))} />
+                  <div className="flex gap-2">
+                    <button onClick={() => save(h)} className="text-sm px-3 py-1.5 bg-brand text-white rounded">Save</button>
+                    <button onClick={() => setEditing((p) => { const n = { ...p }; delete n[h.id]; return n; })}
+                      className="text-sm px-3 py-1.5 border border-border rounded">Cancel</button>
+                  </div>
+                </div>
+              )}
+              {logOpen === h.id && <WebhookDeliveries hookId={h.id} />}
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );

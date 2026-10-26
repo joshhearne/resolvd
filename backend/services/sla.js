@@ -256,6 +256,9 @@ async function tickWarnings() {
           console.error('sla warning fanout (resolve) failed:', err.message));
       }
     }
+    const slaWebhooks = require('./slaWebhooks');
+    for (const row of respWarn.rows) await slaWebhooks.dispatch('warning_response', row.id);
+    for (const row of resWarn.rows) await slaWebhooks.dispatch('warning_resolve', row.id);
   }
   return { response_warned: responseWarned, resolve_warned: resolveWarned };
 }
@@ -313,6 +316,9 @@ async function tickBreaches() {
           console.error('sla breach fanout (resolve) failed:', err.message));
       }
     }
+    const slaWebhooks = require('./slaWebhooks');
+    for (const row of respDue.rows) await slaWebhooks.dispatch('breach_response', row.id);
+    for (const row of resDue.rows) await slaWebhooks.dispatch('breach_resolve', row.id);
   }
 
   await pool.query(
@@ -343,7 +349,12 @@ async function tickSla() {
     console.error('sla escalation tick error:', err.message);
     return null;
   });
-  return { warnings: warnSummary, breaches: breachSummary, escalations: escalationSummary };
+  // Close PagerDuty incidents for tickets resolved since they paged.
+  const webhookSummary = await require('./slaWebhooks').resolveSweep().catch(err => {
+    console.error('sla webhook resolve sweep error:', err.message);
+    return null;
+  });
+  return { warnings: warnSummary, breaches: breachSummary, escalations: escalationSummary, webhooks: webhookSummary };
 }
 
 let _interval = null;

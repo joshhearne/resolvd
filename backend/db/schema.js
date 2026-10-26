@@ -2077,6 +2077,51 @@ async function initSchema() {
 
     await client.query(`INSERT INTO system_jobs (name) VALUES ('sla_breach_check') ON CONFLICT DO NOTHING`);
 
+    // Outbound SLA webhooks (Slack / Teams / PagerDuty / generic) fired on
+    // warn + breach next to the in-app/email fanout — services/slaWebhooks.js.
+    // target_enc holds the URL or PagerDuty routing key, secret_enc the
+    // generic signing secret; both encrypted, never returned to clients
+    // (target_hint is the masked display). project_id NULL = every
+    // project; max_priority N fires for P1..PN.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS sla_webhooks (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('slack', 'teams', 'pagerduty', 'generic')),
+        target_enc BYTEA NOT NULL,
+        target_hint TEXT,
+        secret_enc BYTEA,
+        project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+        events TEXT[] NOT NULL DEFAULT ARRAY['breach_response', 'breach_resolve']::TEXT[],
+        max_priority INTEGER NOT NULL DEFAULT 5 CHECK (max_priority BETWEEN 1 AND 5),
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        last_sent_at TIMESTAMPTZ,
+        last_ok BOOLEAN,
+        last_error TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    // Delivery log. dedup_key + resolved_at track open PagerDuty
+    // incidents so the sweep can resolve them when the ticket resolves.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS sla_webhook_deliveries (
+        id SERIAL PRIMARY KEY,
+        webhook_id INTEGER NOT NULL REFERENCES sla_webhooks(id) ON DELETE CASCADE,
+        ticket_id INTEGER REFERENCES tickets(id) ON DELETE CASCADE,
+        event TEXT NOT NULL,
+        ok BOOLEAN NOT NULL,
+        http_status INTEGER,
+        error TEXT,
+        dedup_key TEXT,
+        resolved_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_sla_webhook_deliveries_hook ON sla_webhook_deliveries(webhook_id, created_at DESC)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_sla_webhook_deliveries_open
+      ON sla_webhook_deliveries(ticket_id) WHERE dedup_key IS NOT NULL AND resolved_at IS NULL AND ok = TRUE`);
+
     // Auto-assignment policies. Same (priority, project_id) scoping as
     // sla_policies — project-specific row beats org default. Strategy
     // controls how an agent is picked from agent_pool:

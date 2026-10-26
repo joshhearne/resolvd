@@ -188,6 +188,161 @@ router.delete('/business-hours/:id/holidays/:holidayId', requireAuth, requireRol
   }
 });
 
+// ─── Outbound webhooks (Slack / Teams / PagerDuty / generic) ─────────────
+
+const slaWebhooks = require('../services/slaWebhooks');
+
+const WEBHOOK_COLUMNS = `w.id, w.name, w.kind, w.target_hint, (w.secret_enc IS NOT NULL) AS has_secret,
+  w.project_id, p.name AS project_name, p.prefix AS project_prefix,
+  w.events, w.max_priority, w.enabled, w.last_sent_at, w.last_ok, w.last_error,
+  w.created_at, w.updated_at`;
+
+function validateWebhook(b, { create }) {
+  if (create || b.name !== undefined) {
+    if (!b.name || typeof b.name !== 'string' || !b.name.trim()) return 'name required';
+  }
+  if (create && !slaWebhooks.KINDS.includes(b.kind)) return `kind must be one of ${slaWebhooks.KINDS.join(', ')}`;
+  if (b.project_id != null && (!Number.isInteger(b.project_id) || b.project_id <= 0)) return 'project_id must be positive integer or null';
+  if (b.events !== undefined) {
+    if (!Array.isArray(b.events) || !b.events.length || b.events.some((e) => !slaWebhooks.EVENTS.includes(e))) {
+      return `events must be a non-empty subset of ${slaWebhooks.EVENTS.join(', ')}`;
+    }
+  }
+  if (b.max_priority !== undefined && (!Number.isInteger(b.max_priority) || b.max_priority < 1 || b.max_priority > 5)) {
+    return 'max_priority must be 1–5';
+  }
+  if (b.enabled !== undefined && typeof b.enabled !== 'boolean') return 'enabled must be boolean';
+  return null;
+}
+
+async function webhookRow(id) {
+  const r = await pool.query(
+    `SELECT ${WEBHOOK_COLUMNS} FROM sla_webhooks w LEFT JOIN projects p ON p.id = w.project_id WHERE w.id = $1`,
+    [id]
+  );
+  return r.rows[0] || null;
+}
+
+router.get('/webhooks', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT ${WEBHOOK_COLUMNS} FROM sla_webhooks w LEFT JOIN projects p ON p.id = w.project_id
+        ORDER BY w.project_id NULLS FIRST, w.name, w.id`
+    );
+    res.json(r.rows);
+  } catch (e) {
+    console.error('sla webhooks list:', e);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// POST — { name, kind, target, secret?, project_id?, events?, max_priority?, enabled? }
+router.post('/webhooks', requireAuth, requireRole('Admin'), async (req, res) => {
+  const b = req.body || {};
+  const err = validateWebhook(b, { create: true }) || slaWebhooks.validateTarget(b.kind, b.target);
+  if (err) return res.status(400).json({ error: err });
+  try {
+    const targetEnc = await slaWebhooks.sealTarget(b.target);
+    const secretEnc = b.kind === 'generic' && b.secret ? await slaWebhooks.sealSecret(b.secret) : null;
+    const r = await pool.query(
+      `INSERT INTO sla_webhooks (name, kind, target_enc, target_hint, secret_enc, project_id, events, max_priority, enabled)
+       VALUES ($1, $2, $3, $4, $5, $6, COALESCE($7::text[], ARRAY['breach_response','breach_resolve']::text[]),
+               COALESCE($8, 5), COALESCE($9, TRUE))
+       RETURNING id`,
+      [b.name.trim(), b.kind, targetEnc, slaWebhooks.maskTarget(b.kind, b.target.trim()), secretEnc,
+       b.project_id || null, b.events || null, b.max_priority ?? null, b.enabled ?? null]
+    );
+    res.status(201).json(await webhookRow(r.rows[0].id));
+  } catch (e) {
+    if (e.httpStatus) return res.status(e.httpStatus).json({ error: e.message });
+    console.error('sla webhook create:', e);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// PATCH — any of the POST fields except kind. target / secret replace the
+// stored value when present; secret: '' clears it.
+router.patch('/webhooks/:id', requireAuth, requireRole('Admin'), async (req, res) => {
+  const b = req.body || {};
+  const err = validateWebhook(b, { create: false });
+  if (err) return res.status(400).json({ error: err });
+  try {
+    const cur = await pool.query(`SELECT kind FROM sla_webhooks WHERE id = $1`, [Number(req.params.id)]);
+    if (!cur.rows[0]) return res.status(404).json({ error: 'not found' });
+    const kind = cur.rows[0].kind;
+    const sets = [];
+    const values = [];
+    const add = (sql, val) => { values.push(val); sets.push(sql.replace('?', `$${values.length}`)); };
+    if (b.name !== undefined) add('name = ?', b.name.trim());
+    if (b.project_id !== undefined) add('project_id = ?', b.project_id || null);
+    if (b.events !== undefined) add('events = ?::text[]', b.events);
+    if (b.max_priority !== undefined) add('max_priority = ?', b.max_priority);
+    if (b.enabled !== undefined) add('enabled = ?', b.enabled);
+    if (b.target !== undefined && String(b.target).trim()) {
+      const tErr = slaWebhooks.validateTarget(kind, b.target);
+      if (tErr) return res.status(400).json({ error: tErr });
+      add('target_enc = ?', await slaWebhooks.sealTarget(b.target));
+      add('target_hint = ?', slaWebhooks.maskTarget(kind, String(b.target).trim()));
+    }
+    if (b.secret !== undefined && kind === 'generic') {
+      add('secret_enc = ?', b.secret ? await slaWebhooks.sealSecret(b.secret) : null);
+    }
+    if (!sets.length) return res.status(400).json({ error: 'no updatable fields supplied' });
+    values.push(Number(req.params.id));
+    await pool.query(
+      `UPDATE sla_webhooks SET ${sets.join(', ')}, updated_at = NOW() WHERE id = $${values.length}`,
+      values
+    );
+    res.json(await webhookRow(Number(req.params.id)));
+  } catch (e) {
+    if (e.httpStatus) return res.status(e.httpStatus).json({ error: e.message });
+    console.error('sla webhook patch:', e);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+router.delete('/webhooks/:id', requireAuth, requireRole('Admin'), async (req, res) => {
+  try {
+    const r = await pool.query(`DELETE FROM sla_webhooks WHERE id = $1`, [Number(req.params.id)]);
+    if (!r.rowCount) return res.status(404).json({ error: 'not found' });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('sla webhook delete:', e);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// POST /api/sla/webhooks/:id/test — send a sample notification now.
+router.post('/webhooks/:id/test', requireAuth, requireRole('Admin'), async (req, res) => {
+  try {
+    const result = await slaWebhooks.sendTest(Number(req.params.id));
+    if (!result) return res.status(404).json({ error: 'not found' });
+    res.json(result);
+  } catch (e) {
+    console.error('sla webhook test:', e);
+    res.status(500).json({ error: e.message || 'Test failed' });
+  }
+});
+
+// GET /api/sla/webhooks/:id/deliveries — last 25 attempts.
+router.get('/webhooks/:id/deliveries', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT d.id, d.event, d.ok, d.http_status, d.error, d.created_at, d.resolved_at,
+              d.ticket_id, t.internal_ref AS ticket_ref
+         FROM sla_webhook_deliveries d
+         LEFT JOIN tickets t ON t.id = d.ticket_id
+        WHERE d.webhook_id = $1
+        ORDER BY d.created_at DESC LIMIT 25`,
+      [Number(req.params.id)]
+    );
+    res.json(r.rows);
+  } catch (e) {
+    console.error('sla webhook deliveries:', e);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
 // POST /api/sla/policies — create a project override (cannot create org
 // default rows here; the migration seeded those).
 router.post('/policies', requireAuth, requireRole('Admin'), async (req, res) => {
