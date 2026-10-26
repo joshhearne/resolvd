@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useMemo } from "react";
 import toast from "react-hot-toast";
+import NumberInput from "../components/NumberInput";
 
 const SEMANTIC_TAGS = [
   { value: "", label: "— none —" },
@@ -669,12 +670,11 @@ function StatusRow({
           value={draft.color}
           onChange={(e) => setDraft((d) => ({ ...d, color: e.target.value }))}
         />
-        <input
-          type="number"
+        <NumberInput
           className="col-span-1 border border-border-strong rounded-md px-2 py-1 text-sm"
           value={draft.sort_order}
-          onChange={(e) =>
-            setDraft((d) => ({ ...d, sort_order: Number(e.target.value) }))
+          onChange={(n) =>
+            setDraft((d) => ({ ...d, sort_order: n }))
           }
         />
         <select

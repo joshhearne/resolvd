@@ -5,6 +5,7 @@ import { previewBillable } from "../utils/billing";
 import { useBranding } from "../context/BrandingContext";
 import SaveBar from "../components/SaveBar";
 import { RateCardsCard, BillingTypesCard, UtilisationCard, MspOffNote } from "../components/BillingAdmin";
+import NumberInput from "../components/NumberInput";
 
 // Org-wide technician time tracking policy. Techs log time with a
 // required note; the note lands as a private (handler-only) ticket note
@@ -113,10 +114,10 @@ function BillingCard({ v, set, enabled }) {
         <label className="flex flex-col gap-1">
           <span className="text-xs font-semibold text-fg-muted uppercase">Minimum per session</span>
           <span className="flex items-center gap-2 text-sm">
-            <input
-              type="number" min="0" max="480"
+            <NumberInput
+              min="0" max="480"
               value={v.billing_session_minimum}
-              onChange={(e) => set({ billing_session_minimum: Number(e.target.value) })}
+              onChange={(n) => set({ billing_session_minimum: n })}
               className="input w-20 py-1"
             />
             minutes <span className="text-xs text-fg-dim">(0 = none)</span>
@@ -126,10 +127,10 @@ function BillingCard({ v, set, enabled }) {
         <label className="flex flex-col gap-1">
           <span className="text-xs font-semibold text-fg-muted uppercase">Minimum per ticket</span>
           <span className="flex items-center gap-2 text-sm">
-            <input
-              type="number" min="0" max="480"
+            <NumberInput
+              min="0" max="480"
               value={v.billing_ticket_minimum}
-              onChange={(e) => set({ billing_ticket_minimum: Number(e.target.value) })}
+              onChange={(n) => set({ billing_ticket_minimum: n })}
               className="input w-20 py-1"
             />
             minutes <span className="text-xs text-fg-dim">(0 = none)</span>
@@ -164,10 +165,10 @@ function BillingCard({ v, set, enabled }) {
           <span className="text-xs font-semibold text-fg-muted uppercase">Prepaid block alert</span>
           <span className="flex items-center gap-2 text-sm">
             Warn at
-            <input
-              type="number" min="0" max="100"
+            <NumberInput
+              min="0" max="100"
               value={v.billing_block_alert_percent ?? 80}
-              onChange={(e) => set({ billing_block_alert_percent: Number(e.target.value) })}
+              onChange={(n) => set({ billing_block_alert_percent: n })}
               className="input w-20 py-1"
             />
             % used
@@ -343,10 +344,10 @@ function IntegrityCard({ v, set, enabled }) {
       <p className="text-xs font-semibold text-fg-muted uppercase mt-3 mb-1">Timesheet lock</p>
       <label className="flex flex-wrap items-center gap-2 text-sm text-fg">
         Techs can't edit or delete entries older than
-        <input
-          type="number" min="0" max="365"
+        <NumberInput
+          min="0" max="365"
           value={v.edit_lock_days}
-          onChange={(e) => set({ edit_lock_days: Number(e.target.value) })}
+          onChange={(n) => set({ edit_lock_days: n })}
           className="input w-20 py-1"
         />
         days
@@ -501,10 +502,10 @@ export default function AdminTimeTracking() {
         <h3 className="text-sm font-semibold text-fg mb-2">Unlogged-time warning</h3>
         <label className="flex flex-wrap items-center gap-2 text-sm text-fg">
           Warn the tech when a timer has run
-          <input
-            type="number" min="0" max="1440"
+          <NumberInput
+            min="0" max="1440"
             value={v.warn_after_minutes}
-            onChange={(e) => set({ warn_after_minutes: Number(e.target.value) })}
+            onChange={(n) => set({ warn_after_minutes: n })}
             className="input w-20 py-1"
           />
           minutes with no work logged
@@ -519,10 +520,10 @@ export default function AdminTimeTracking() {
         <h3 className="text-sm font-semibold text-fg mb-2">Work notes</h3>
         <label className="flex flex-wrap items-center gap-2 text-sm text-fg mb-3">
           Notes must be at least
-          <input
-            type="number" min="1" max="500"
+          <NumberInput
+            min="1" max="500"
             value={v.min_note_chars}
-            onChange={(e) => set({ min_note_chars: Number(e.target.value) })}
+            onChange={(n) => set({ min_note_chars: n })}
             className="input w-20 py-1"
           />
           characters
