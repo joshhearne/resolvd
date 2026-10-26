@@ -3172,6 +3172,11 @@ Thanks,
     // for a fresh install.
     await client.query(`ALTER TABLE auto_resolve_settings ADD COLUMN IF NOT EXISTS reply_stale_days INTEGER NOT NULL DEFAULT 30`);
     await client.query(`ALTER TABLE auto_resolve_settings ADD COLUMN IF NOT EXISTS suppress_ooo_replies BOOLEAN NOT NULL DEFAULT TRUE`);
+    // External-escalation auto-advance: the first time a vendor ref is
+    // written onto a ticket still in the initial external status, move
+    // external forward (Unacknowledged → Acknowledged by default) and let
+    // 'mirror' status mappings carry the internal status along.
+    await client.query(`ALTER TABLE auto_resolve_settings ADD COLUMN IF NOT EXISTS external_ref_auto_advance BOOLEAN NOT NULL DEFAULT TRUE`);
 
     // ── Trove KB (external knowledge base) ──────────────────────────────────
     // Trove KB (trove-kb.gomotx.com) is the company documentation platform.
