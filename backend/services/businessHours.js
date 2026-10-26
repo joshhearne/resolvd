@@ -8,10 +8,10 @@
 // straddles a transition shifts naturally. Edge accuracy across DST
 // boundaries is within one hour of expected.
 //
-// Holidays: a policy may carry holidays[] ({ date: 'YYYY-MM-DD',
-// recurring }) from business_hours_holidays. A holiday is a closed day
-// in the policy's tz — the clock skips it like a weekend. recurring
-// matches the month/day every year.
+// Holidays: a policy may carry holidays[] (rows of business_hours_holidays
+// — a date, a yearly date, or an "nth weekday of month" rule; see
+// holidays.js). A holiday is a closed day in the policy's tz — the clock
+// skips it like a weekend.
 
 const { pool } = require('../db/pool');
 const { holidayMatcher } = require('./holidays');
@@ -21,7 +21,8 @@ const { holidayMatcher } = require('./holidays');
 async function withHolidays(db, row) {
   if (!row) return null;
   const r = await db.query(
-    `SELECT to_char(holiday_date, 'YYYY-MM-DD') AS date, recurring
+    `SELECT kind, to_char(holiday_date, 'YYYY-MM-DD') AS date, recurring,
+            month, weekday, nth, observed
        FROM business_hours_holidays
       WHERE business_hours_id = $1`,
     [row.id]
