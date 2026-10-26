@@ -17,7 +17,8 @@ const TTL_MS = 60 * 1000;
 async function loadSettings() {
   if (_cache && Date.now() - _cachedAt < TTL_MS) return _cache;
   const r = await pool.query(`
-    SELECT gratitude_phrases, reply_stale_days, suppress_ooo_replies
+    SELECT gratitude_phrases, reply_stale_days, suppress_ooo_replies,
+           external_ref_auto_advance
       FROM auto_resolve_settings WHERE id = 1
   `);
   const row = r.rows[0] || {};
@@ -25,6 +26,7 @@ async function loadSettings() {
     phrases: (row.gratitude_phrases || []).map(s => String(s).trim().toLowerCase()).filter(Boolean),
     replyStaleDays: Number.isFinite(row.reply_stale_days) ? row.reply_stale_days : 30,
     suppressOoo: row.suppress_ooo_replies !== false,
+    externalRefAutoAdvance: row.external_ref_auto_advance !== false,
   };
   _cachedAt = Date.now();
   return _cache;
@@ -37,6 +39,22 @@ async function getGratitudePhrases() {
 async function getReplyRoutingSettings() {
   const s = await loadSettings();
   return { stale_days: s.replyStaleDays, suppress_ooo: s.suppressOoo };
+}
+
+async function getWorkflowAutomationSettings() {
+  const s = await loadSettings();
+  return { external_ref_auto_advance: s.externalRefAutoAdvance };
+}
+
+async function setWorkflowAutomationSettings({ external_ref_auto_advance } = {}) {
+  if (external_ref_auto_advance != null) {
+    await pool.query(
+      `UPDATE auto_resolve_settings SET external_ref_auto_advance = $1, updated_at = NOW() WHERE id = 1`,
+      [!!external_ref_auto_advance]
+    );
+    invalidatePhraseCache();
+  }
+  return await getWorkflowAutomationSettings();
 }
 
 function invalidatePhraseCache() {
@@ -384,6 +402,8 @@ module.exports = {
   setGratitudePhrases,
   getReplyRoutingSettings,
   setReplyRoutingSettings,
+  getWorkflowAutomationSettings,
+  setWorkflowAutomationSettings,
   invalidatePhraseCache,
   isGratitudeOnly,
   detectOutOfOffice,

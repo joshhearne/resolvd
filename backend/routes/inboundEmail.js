@@ -382,7 +382,26 @@ router.get('/:id', requireAuth, requireRole('Admin', 'Manager'), async (req, res
       }
     }
 
-    res.json({ message: r.rows[0], suggested_contact: suggestedContact });
+    // Only unmatched rows need routing help. Best-effort: a failed lookup
+    // never blocks the preview.
+    let unblockCandidates = [];
+    if (r.rows[0].status === 'unmatched') {
+      try {
+        const { findUnblockCandidates } = require('../services/inboundHints');
+        unblockCandidates = await findUnblockCandidates({
+          message: r.rows[0],
+          contactId: suggestedContact?.id || null,
+        });
+      } catch (err) {
+        console.warn('inbound unblock hint failed:', err.message);
+      }
+    }
+
+    res.json({
+      message: r.rows[0],
+      suggested_contact: suggestedContact,
+      unblock_candidates: unblockCandidates,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Database error' });
@@ -463,14 +482,18 @@ router.post('/:id/match', requireAuth, requireRole('Admin', 'Manager'), async (r
 
     // If the manual reviewer is matching a reply onto a ticket sitting
     // in awaiting_input, transition it back to in_progress automatically.
+    let resumed = null;
     try {
       const { applyReplyToWaitingTicket } = require('../services/autoResolve');
-      await applyReplyToWaitingTicket({ ticketId: resolvedTicketId, actorUserId: req.session.user.id });
+      resumed = await applyReplyToWaitingTicket({ ticketId: resolvedTicketId, actorUserId: req.session.user.id });
     } catch (e) {
       console.error('awaiting_input auto-resume (manual match) failed:', e.message);
     }
 
-    res.status(201).json({ ok: true, comment_id: ins.rows[0].id, muted: muteByDefault });
+    res.status(201).json({
+      ok: true, comment_id: ins.rows[0].id, muted: muteByDefault,
+      resumed_to: resumed?.resumed ? resumed.toStatus : null,
+    });
 
     // Followers only get pinged for non-muted comments — the whole point
     // of muting at the ticket level is to silence the noise.
