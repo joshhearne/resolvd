@@ -12,6 +12,9 @@
 //     Warn = due_at - (response_minutes * (100 - threshold) / 100).
 //     When business hours apply, both due_at and warn_at are computed by
 //     addBusinessMinutes so the clock skips nights / weekends.
+//     The window is the ticket location's business hours when that
+//     location has its own, else the policy's pinned one (policyForSla);
+//     holidays on the window are skipped like weekends.
 //   - sla_paused_at flips on for paused statuses; resume shifts all four
 //     timestamps (due, warn × response, resolve) forward by elapsed pause
 //     wall-clock duration. Pauses always count as wall-clock — once
@@ -64,14 +67,34 @@ function warnAtFromDue(dueAt, targetMinutes, thresholdPercent) {
   return new Date(dueAt.getTime() - remainingMinutes * 60_000);
 }
 
+// Fill tickets.location_id from the submitter's company membership when
+// the create path didn't set one. Every create path (web, inbound, alert,
+// schedule) funnels through applyPolicyOnCreate, so it lives here —
+// per-location business hours need the site before the clock is set.
+// A submitter in several companies takes their earliest membership.
+async function stampLocation(client, ticketId) {
+  const r = await client.query(
+    `UPDATE tickets t
+        SET location_id = (
+              SELECT cm.location_id FROM company_members cm
+               WHERE cm.user_id = t.submitted_by AND cm.location_id IS NOT NULL
+               ORDER BY cm.added_at, cm.company_id LIMIT 1)
+      WHERE t.id = $1 AND t.location_id IS NULL
+      RETURNING location_id`,
+    [ticketId]
+  );
+  if (r.rows[0]) return r.rows[0].location_id;
+  const cur = await client.query(`SELECT location_id FROM tickets WHERE id = $1`, [ticketId]);
+  return cur.rows[0]?.location_id || null;
+}
+
 // Stamp due-at + warn-at on a fresh ticket. Should be called from the
 // same transaction as the INSERT.
 async function applyPolicyOnCreate(client, { ticketId, priority, projectId, createdAt }) {
+  const locationId = await stampLocation(client, ticketId);
   const policy = await policyForTicket(client, priority, projectId);
   if (!policy) return;
-  const bh = policy.business_hours_id
-    ? await businessHours.policyById(client, policy.business_hours_id)
-    : null;
+  const bh = await businessHours.policyForSla(client, policy, locationId);
   const base = createdAt ? new Date(createdAt) : new Date();
   const responseDue = businessHours.addBusinessMinutes(base, policy.response_target_minutes, bh);
   const resolveDue = businessHours.addBusinessMinutes(base, policy.resolve_target_minutes, bh);
@@ -233,6 +256,9 @@ async function tickWarnings() {
           console.error('sla warning fanout (resolve) failed:', err.message));
       }
     }
+    const slaWebhooks = require('./slaWebhooks');
+    for (const row of respWarn.rows) await slaWebhooks.dispatch('warning_response', row.id);
+    for (const row of resWarn.rows) await slaWebhooks.dispatch('warning_resolve', row.id);
   }
   return { response_warned: responseWarned, resolve_warned: resolveWarned };
 }
@@ -290,6 +316,9 @@ async function tickBreaches() {
           console.error('sla breach fanout (resolve) failed:', err.message));
       }
     }
+    const slaWebhooks = require('./slaWebhooks');
+    for (const row of respDue.rows) await slaWebhooks.dispatch('breach_response', row.id);
+    for (const row of resDue.rows) await slaWebhooks.dispatch('breach_resolve', row.id);
   }
 
   await pool.query(
@@ -320,7 +349,12 @@ async function tickSla() {
     console.error('sla escalation tick error:', err.message);
     return null;
   });
-  return { warnings: warnSummary, breaches: breachSummary, escalations: escalationSummary };
+  // Close PagerDuty incidents for tickets resolved since they paged.
+  const webhookSummary = await require('./slaWebhooks').resolveSweep().catch(err => {
+    console.error('sla webhook resolve sweep error:', err.message);
+    return null;
+  });
+  return { warnings: warnSummary, breaches: breachSummary, escalations: escalationSummary, webhooks: webhookSummary };
 }
 
 let _interval = null;

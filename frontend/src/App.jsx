@@ -37,6 +37,7 @@ import AdminTicketSchedules from "./pages/AdminTicketSchedules";
 import AdminAssignmentPolicies from "./pages/AdminAssignmentPolicies";
 import AdminDedupOmitRules from "./pages/AdminDedupOmitRules";
 import AdminEscalationPolicies from "./pages/AdminEscalationPolicies";
+import AdminOnCall from "./pages/AdminOnCall";
 import AdminCustomFields from "./pages/AdminCustomFields";
 import AdminForms from "./pages/AdminForms";
 import AdminTimeTracking from "./pages/AdminTimeTracking";
@@ -277,6 +278,7 @@ function AppRoutes() {
           <Route path="assignment" element={<AdminAssignmentPolicies />} />
           <Route path="dedup-omit-rules" element={<AdminDedupOmitRules />} />
           <Route path="escalations" element={<AdminEscalationPolicies />} />
+          <Route path="oncall" element={<AdminOnCall />} />
           <Route path="custom-fields" element={<AdminCustomFields />} />
           <Route path="forms" element={<AdminForms />} />
           <Route path="ticket-schedules" element={<AdminTicketSchedules />} />

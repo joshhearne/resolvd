@@ -726,13 +726,15 @@ router.get('/:id', requireAuth, async (req, res) => {
         sub.display_name as submitted_by_name, sub.email as submitted_by_email,
         asgn.display_name as assigned_to_name,
         bt.internal_ref as blocking_ticket_ref, bt.title as blocking_ticket_title, bt.title_enc as blocking_ticket_title_enc, bt.internal_status as blocking_ticket_status,
-        ast.hostname as asset_hostname, ast.serial as asset_serial
+        ast.hostname as asset_hostname, ast.serial as asset_serial,
+        loc.name as location_name
       FROM tickets t
       LEFT JOIN projects proj ON t.project_id = proj.id
       LEFT JOIN users sub ON t.submitted_by = sub.id
       LEFT JOIN users asgn ON t.assigned_to = asgn.id
       LEFT JOIN tickets bt ON t.blocked_by_ticket = bt.id
       LEFT JOIN assets ast ON t.asset_id = ast.id
+      LEFT JOIN locations loc ON t.location_id = loc.id
       WHERE t.id = $1
     `, [req.params.id]);
 
@@ -1097,6 +1099,22 @@ router.patch('/:id', requireAuth, async (req, res) => {
       }
 
       if (isAdmin && body.external_ticket_ref !== undefined) updates.external_ticket_ref = body.external_ticket_ref;
+      // Site the ticket is for. Drives per-location business hours for
+      // escalation delays from here on; due-at stamps already set stay.
+      if (isAdmin && body.location_id !== undefined) {
+        const next = body.location_id ? Number(body.location_id) : null;
+        if (next !== null && (!Number.isInteger(next) || next <= 0)) {
+          throw Object.assign(new Error('location_id must be a location id or null'), { httpStatus: 400 });
+        }
+        if (next !== (ticket.location_id ?? null)) {
+          updates.location_id = next;
+          await auditLog(client, {
+            ticketId: ticket.id, userId: user.id, action: 'location_change',
+            oldValue: ticket.location_id == null ? null : String(ticket.location_id),
+            newValue: next == null ? null : String(next),
+          });
+        }
+      }
       if (isAdmin && body.review_note !== undefined) updates.review_note = body.review_note;
       if (isAdmin && body.flagged_for_review !== undefined) updates.flagged_for_review = !!body.flagged_for_review;
       // Per-ticket "mute the vendor" toggle. Vendor replies still land
@@ -1205,13 +1223,15 @@ router.patch('/:id', requireAuth, async (req, res) => {
           asgn.display_name as assigned_to_name,
           bt.internal_ref as blocking_ticket_ref, bt.title as blocking_ticket_title,
           bt.title_enc as blocking_ticket_title_enc, bt.internal_status as blocking_ticket_status,
-          ast.hostname as asset_hostname, ast.serial as asset_serial
+          ast.hostname as asset_hostname, ast.serial as asset_serial,
+          loc.name as location_name
         FROM tickets t
         LEFT JOIN projects proj ON t.project_id = proj.id
         LEFT JOIN users sub ON t.submitted_by = sub.id
         LEFT JOIN users asgn ON t.assigned_to = asgn.id
         LEFT JOIN tickets bt ON t.blocked_by_ticket = bt.id
         LEFT JOIN assets ast ON t.asset_id = ast.id
+        LEFT JOIN locations loc ON t.location_id = loc.id
         WHERE t.id = $1
       `, [ticket.id]);
 
