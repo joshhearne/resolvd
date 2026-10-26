@@ -10,6 +10,7 @@ const express = require('express');
 const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { decryptRows } = require('../services/fields');
+const holidays = require('../services/holidays');
 
 const router = express.Router();
 
@@ -47,9 +48,10 @@ router.get('/business-hours', requireAuth, requireRole('Admin', 'Manager'), asyn
              l.name AS location_name,
              COALESCE((
                SELECT json_agg(json_build_object(
-                        'id', h.id, 'date', to_char(h.holiday_date, 'YYYY-MM-DD'),
-                        'name', h.name, 'recurring', h.recurring)
-                      ORDER BY h.holiday_date)
+                        'id', h.id, 'kind', h.kind, 'date', to_char(h.holiday_date, 'YYYY-MM-DD'),
+                        'name', h.name, 'recurring', h.recurring, 'month', h.month,
+                        'weekday', h.weekday, 'nth', h.nth, 'observed', h.observed)
+                      ORDER BY COALESCE(EXTRACT(MONTH FROM h.holiday_date)::int, h.month), h.id)
                  FROM business_hours_holidays h WHERE h.business_hours_id = b.id
              ), '[]'::json) AS holidays
         FROM business_hours_policies b
@@ -58,6 +60,15 @@ router.get('/business-hours', requireAuth, requireRole('Admin', 'Manager'), asyn
        ORDER BY (b.project_id IS NULL AND b.location_id IS NULL) DESC,
                 b.project_id NULLS LAST, b.location_id NULLS LAST, b.name
     `);
+    // Readable rule + the next date it's taken, judged in the policy's tz.
+    for (const b of r.rows) {
+      const today = localToday(b.tz);
+      b.holidays = b.holidays.map((h) => ({
+        ...h,
+        rule: holidays.describeRule(h),
+        next: holidays.nextOccurrence(h, today),
+      }));
+    }
     res.json(r.rows);
   } catch (err) {
     console.error('business-hours list:', err);
@@ -151,23 +162,55 @@ router.delete('/business-hours/:id', requireAuth, requireRole('Admin'), async (r
 
 // ─── Holidays (closed days on a business-hours policy) ───────────────────
 
-// POST /api/sla/business-hours/:id/holidays — { date: 'YYYY-MM-DD', name?, recurring? }
+function localToday(tz) {
+  try {
+    return new Intl.DateTimeFormat('en-CA', { timeZone: tz, year: 'numeric', month: '2-digit', day: '2-digit' })
+      .format(new Date());
+  } catch {
+    return new Date().toISOString().slice(0, 10);
+  }
+}
+
+// POST /api/sla/business-hours/:id/holidays
+//   { kind: 'date', date: 'YYYY-MM-DD', recurring?, name?, observed? }
+//   { kind: 'nth_weekday', month: 1-12, weekday: 0-6, nth: 1-5 | -1, name?, observed? }
 router.post('/business-hours/:id/holidays', requireAuth, requireRole('Admin'), async (req, res) => {
-  const { date, name, recurring } = req.body || {};
-  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || '')) || Number.isNaN(Date.parse(`${date}T00:00:00Z`))) {
+  const b = req.body || {};
+  const kind = b.kind || 'date';
+  if (!['date', 'nth_weekday'].includes(kind)) return res.status(400).json({ error: "kind must be 'date' or 'nth_weekday'" });
+  if (kind === 'date' && (!/^\d{4}-\d{2}-\d{2}$/.test(String(b.date || '')) || Number.isNaN(Date.parse(`${b.date}T00:00:00Z`)))) {
     return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
   }
-  if (recurring != null && typeof recurring !== 'boolean') return res.status(400).json({ error: 'recurring must be boolean' });
+  const rule = kind === 'date'
+    ? { kind, date: b.date, recurring: !!b.recurring }
+    : { kind, month: b.month, weekday: b.weekday, nth: b.nth };
+  if (!holidays.validRule(rule)) {
+    return res.status(400).json({ error: 'nth_weekday needs month 1–12, weekday 0–6 (Sun–Sat) and nth 1–5 or -1 (last)' });
+  }
+  for (const k of ['recurring', 'observed']) {
+    if (b[k] != null && typeof b[k] !== 'boolean') return res.status(400).json({ error: `${k} must be boolean` });
+  }
   try {
     const r = await pool.query(
-      `INSERT INTO business_hours_holidays (business_hours_id, holiday_date, name, recurring)
-       VALUES ($1, $2::date, $3, COALESCE($4, FALSE))
-       RETURNING id, to_char(holiday_date, 'YYYY-MM-DD') AS date, name, recurring`,
-      [Number(req.params.id), date, name ? String(name).trim().slice(0, 120) : null, recurring]
+      `INSERT INTO business_hours_holidays
+         (business_hours_id, kind, holiday_date, recurring, month, weekday, nth, observed, name)
+       VALUES ($1, $2, $3::date, $4, $5, $6, $7, $8, $9)
+       RETURNING id, kind, to_char(holiday_date, 'YYYY-MM-DD') AS date, recurring,
+                 month, weekday, nth, observed, name`,
+      [
+        Number(req.params.id), kind,
+        kind === 'date' ? b.date : null,
+        kind === 'date' ? !!b.recurring : false,
+        kind === 'nth_weekday' ? b.month : null,
+        kind === 'nth_weekday' ? b.weekday : null,
+        kind === 'nth_weekday' ? b.nth : null,
+        !!b.observed,
+        b.name ? String(b.name).trim().slice(0, 120) : null,
+      ]
     );
     res.status(201).json(r.rows[0]);
   } catch (e) {
-    if (e.code === '23505') return res.status(409).json({ error: 'that date is already a holiday on this schedule' });
+    if (e.code === '23505') return res.status(409).json({ error: 'that holiday is already on this schedule' });
     if (e.code === '23503') return res.status(404).json({ error: 'business hours not found' });
     console.error('holiday create:', e);
     res.status(500).json({ error: 'Database error' });

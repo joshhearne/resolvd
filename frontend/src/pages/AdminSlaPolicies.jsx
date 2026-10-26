@@ -345,16 +345,36 @@ function scopeLabel(b) {
   return null;
 }
 
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July",
+  "August", "September", "October", "November", "December"];
+const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const NTH_OPTIONS = [
+  { value: 1, label: "1st" }, { value: 2, label: "2nd" }, { value: 3, label: "3rd" },
+  { value: 4, label: "4th" }, { value: 5, label: "5th" }, { value: -1, label: "Last" },
+];
+
+function emptyHoliday() {
+  return { kind: "date", date: "", recurring: false, nth: 1, weekday: 1, month: 1, observed: false, name: "" };
+}
+
 function HolidaysEditor({ bh, onChange }) {
-  const [draft, setDraft] = useState({ date: "", name: "", recurring: false });
+  const [draft, setDraft] = useState(emptyHoliday);
   const [saving, setSaving] = useState(false);
+  const set = (patch) => setDraft((d) => ({ ...d, ...patch }));
 
   async function add() {
-    if (!draft.date) { toast.error("Pick a date"); return; }
+    if (draft.kind === "date" && !draft.date) { toast.error("Pick a date"); return; }
+    const body = draft.kind === "date"
+      ? { kind: "date", date: draft.date, recurring: draft.recurring }
+      : { kind: "nth_weekday", nth: Number(draft.nth), weekday: Number(draft.weekday), month: Number(draft.month) };
     setSaving(true);
     try {
-      await api.post(`/api/sla/business-hours/${bh.id}/holidays`, draft);
-      setDraft({ date: "", name: "", recurring: false });
+      await api.post(`/api/sla/business-hours/${bh.id}/holidays`, {
+        ...body,
+        observed: draft.observed,
+        name: draft.name || undefined,
+      });
+      setDraft(emptyHoliday());
       await onChange();
     } catch (err) {
       toast.error(err.message || "Failed");
@@ -373,39 +393,65 @@ function HolidaysEditor({ bh, onChange }) {
   }
 
   const holidays = bh.holidays || [];
+  const select = "border border-border-strong rounded px-2 py-1 text-sm";
   return (
     <div className="space-y-2">
       <p className="text-xs text-fg-muted">
         Closed all day in {bh.tz}. SLA clocks and escalation delays skip
-        these like a weekend. <b>Every year</b> repeats the month and day.
+        these like a weekend. Use a <b>date</b> (optionally every year) or a{" "}
+        <b>weekday rule</b> for holidays that move, like "the last Monday of
+        May". <b>Observed</b> takes a Saturday holiday on the Friday before
+        and a Sunday one on the Monday after. Staff can subscribe to this
+        list from <b>Account settings → Calendar</b>.
       </p>
       {holidays.length === 0 ? (
         <div className="text-xs text-fg-dim italic">No holidays yet.</div>
       ) : (
         <ul className="divide-y divide-border border border-border rounded">
           {holidays.map((h) => (
-            <li key={h.id} className="flex items-center gap-3 px-2 py-1 text-sm">
-              <span className="font-mono text-xs w-24">
-                {h.recurring ? h.date.slice(5) : h.date}
-              </span>
-              <span className="flex-1 min-w-0 truncate">{h.name || <span className="text-fg-dim">—</span>}</span>
-              {h.recurring && <span className="text-[11px] text-fg-muted">every year</span>}
+            <li key={h.id} className="flex flex-wrap items-center gap-3 px-2 py-1 text-sm">
+              <span className="flex-1 min-w-[10rem] truncate">{h.name || <span className="text-fg-dim">—</span>}</span>
+              <span className="text-xs text-fg-muted">{h.rule}{h.observed && " · observed"}</span>
+              <span className="text-xs text-fg-dim font-mono w-28">{h.next ? `next ${h.next}` : "past"}</span>
               <button onClick={() => remove(h.id)} className="text-xs text-red-600 hover:underline">Remove</button>
             </li>
           ))}
         </ul>
       )}
       <div className="flex flex-wrap items-center gap-2">
-        <input type="date" value={draft.date}
-          onChange={(e) => setDraft((d) => ({ ...d, date: e.target.value }))}
-          className="border border-border-strong rounded px-2 py-1 text-sm font-mono" />
-        <input value={draft.name} placeholder="Name (optional)"
-          onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
+        <input value={draft.name} placeholder="Name, e.g. Thanksgiving"
+          onChange={(e) => set({ name: e.target.value })}
           className="border border-border-strong rounded px-2 py-1 text-sm w-48" />
+        <select value={draft.kind} onChange={(e) => set({ kind: e.target.value })} className={select}>
+          <option value="date">On a date</option>
+          <option value="nth_weekday">Weekday rule</option>
+        </select>
+        {draft.kind === "date" ? (
+          <>
+            <input type="date" value={draft.date} onChange={(e) => set({ date: e.target.value })}
+              className={`${select} font-mono`} />
+            <label className="flex items-center gap-1 text-xs text-fg-muted">
+              <input type="checkbox" checked={draft.recurring} onChange={(e) => set({ recurring: e.target.checked })} />
+              Every year
+            </label>
+          </>
+        ) : (
+          <>
+            <select value={draft.nth} onChange={(e) => set({ nth: e.target.value })} className={select} aria-label="Which">
+              {NTH_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+            <select value={draft.weekday} onChange={(e) => set({ weekday: e.target.value })} className={select} aria-label="Weekday">
+              {WEEKDAY_NAMES.map((w, i) => <option key={w} value={i}>{w}</option>)}
+            </select>
+            <span className="text-xs text-fg-muted">of</span>
+            <select value={draft.month} onChange={(e) => set({ month: e.target.value })} className={select} aria-label="Month">
+              {MONTH_NAMES.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
+            </select>
+          </>
+        )}
         <label className="flex items-center gap-1 text-xs text-fg-muted">
-          <input type="checkbox" checked={draft.recurring}
-            onChange={(e) => setDraft((d) => ({ ...d, recurring: e.target.checked }))} />
-          Every year
+          <input type="checkbox" checked={draft.observed} onChange={(e) => set({ observed: e.target.checked })} />
+          Observed
         </label>
         <button onClick={add} disabled={saving}
           className="text-xs px-2 py-1 bg-brand text-white rounded disabled:opacity-50">

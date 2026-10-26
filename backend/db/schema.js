@@ -2043,6 +2043,31 @@ async function initSchema() {
         UNIQUE (business_hours_id, holiday_date)
       )
     `);
+    // Rule-based holidays: kind 'nth_weekday' = "the nth (1-5, or -1 =
+    // last) <weekday> of <month>" every year, e.g. the 4th Thursday of
+    // November. observed moves a Saturday holiday to Friday and a Sunday
+    // one to Monday. Rule rows leave holiday_date NULL. No holiday set is
+    // seeded — each organisation enters its own. See services/holidays.js.
+    await client.query(`ALTER TABLE business_hours_holidays ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'date'`);
+    await client.query(`ALTER TABLE business_hours_holidays ADD COLUMN IF NOT EXISTS month INTEGER`);
+    await client.query(`ALTER TABLE business_hours_holidays ADD COLUMN IF NOT EXISTS weekday INTEGER`);
+    await client.query(`ALTER TABLE business_hours_holidays ADD COLUMN IF NOT EXISTS nth INTEGER`);
+    await client.query(`ALTER TABLE business_hours_holidays ADD COLUMN IF NOT EXISTS observed BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`ALTER TABLE business_hours_holidays ALTER COLUMN holiday_date DROP NOT NULL`);
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'business_hours_holidays_shape') THEN
+          ALTER TABLE business_hours_holidays ADD CONSTRAINT business_hours_holidays_shape CHECK (
+            (kind = 'date' AND holiday_date IS NOT NULL)
+            OR (kind = 'nth_weekday' AND month BETWEEN 1 AND 12 AND weekday BETWEEN 0 AND 6
+                AND nth IN (1, 2, 3, 4, 5, -1))
+          );
+        END IF;
+      END $$
+    `);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_business_hours_holidays_rule
+      ON business_hours_holidays(business_hours_id, month, weekday, nth) WHERE kind = 'nth_weekday'`);
 
     // Per-location business hours. A location-scoped row (location_id
     // set, project_id NULL) replaces the SLA policy's pinned window for

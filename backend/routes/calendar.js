@@ -9,6 +9,8 @@
 //   GET /api/calendar/feed/:token/mine.ics          work assigned to me
 //   GET /api/calendar/feed/:token/all.ics           all scheduled work (Admin/Manager/Tech)
 //   GET /api/calendar/feed/:token/project/:prefix.ics   one project's work
+//   GET /api/calendar/feed/:token/holidays/:id.ics  a business-hours
+//       policy's holidays (any active user — the company holiday calendar)
 //
 // Events: maintenance windows (project + assigned techs) and upcoming
 // recurring-ticket runs (project + assignee).
@@ -24,6 +26,7 @@ const { encrypt, decrypt } = require('../services/crypto');
 const { decryptRows } = require('../services/fields');
 const sched = require('../services/ticketSchedules');
 const { buildCalendar } = require('../services/ics');
+const holidays = require('../services/holidays');
 
 const router = express.Router();
 
@@ -64,13 +67,63 @@ async function visibleProjects(user) {
   return r.rows;
 }
 
-function feedLinks(token, user, projects) {
+// Enabled business-hours policies that have at least one holiday. The
+// feed carries holidays only — never the opening hours — so it's titled
+// by scope ("Holidays", "Holidays · NYC office"), not by the policy name,
+// which usually spells out the hours.
+async function holidayCalendars() {
+  const r = await pool.query(`
+    SELECT b.id, l.name AS location_name, p.name AS project_name
+      FROM business_hours_policies b
+      LEFT JOIN locations l ON l.id = b.location_id
+      LEFT JOIN projects p ON p.id = b.project_id
+     WHERE b.enabled = TRUE
+       AND EXISTS (SELECT 1 FROM business_hours_holidays h WHERE h.business_hours_id = b.id)
+     ORDER BY (b.project_id IS NULL AND b.location_id IS NULL) DESC,
+              l.name NULLS FIRST, p.name NULLS FIRST
+  `);
+  return r.rows.map((c) => {
+    const scope = c.location_name || c.project_name;
+    return { id: c.id, title: scope ? `Holidays · ${scope}` : 'Holidays' };
+  });
+}
+
+function feedLinks(token, user, projects, holidayCals = []) {
   const base = `${siteBase()}/api/calendar/feed/${token}`;
   return {
     mine: `${base}/mine.ics`,
     all: STAFF.includes(user.role) ? `${base}/all.ics` : null,
     projects: projects.map((p) => ({ ...p, url: `${base}/project/${encodeURIComponent(p.prefix)}.ics` })),
+    holidays: holidayCals.map((c) => ({ ...c, url: `${base}/holidays/${c.id}.ics` })),
   };
+}
+
+// All-day events for a policy's holidays, last year through two years
+// ahead. UIDs are stable per rule + date so calendar apps update in place.
+async function holidayEvents(bhId) {
+  const r = await pool.query(
+    `SELECT id, kind, to_char(holiday_date, 'YYYY-MM-DD') AS date, recurring,
+            month, weekday, nth, observed, name, created_at
+       FROM business_hours_holidays WHERE business_hours_id = $1`,
+    [bhId]
+  );
+  const year = new Date().getUTCFullYear();
+  return holidays.occurrences(r.rows, year - 1, year + 2).map((o) => {
+    const [y, m, d] = o.date.split('-').map(Number);
+    const next = new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
+    const name = o.holiday.name || holidays.describeRule(o.holiday);
+    return {
+      uid: `holiday-${bhId}-${o.holiday.id}-${o.date}@${siteHost()}`,
+      start: o.date,
+      end: next,
+      allDay: true,
+      transparent: true,
+      summary: o.date !== o.actual ? `${name} (observed)` : name,
+      description: o.date !== o.actual ? `Falls on ${o.actual}; taken ${o.date}.` : undefined,
+      categories: ['Holiday'],
+      updated: o.holiday.created_at,
+    };
+  });
 }
 
 // ---------- events ----------
@@ -270,6 +323,23 @@ router.get('/feed/:token/project/:prefix.ics', async (req, res) => {
   }
 });
 
+router.get('/feed/:token/holidays/:id.ics', async (req, res) => {
+  try {
+    const u = await ownerFromToken(req.params.token);
+    if (!u) return notFound(res);
+    const cal = (await holidayCalendars()).find((c) => c.id === Number(req.params.id));
+    if (!cal) return notFound(res);
+    sendIcs(res, 'holidays.ics', buildCalendar({
+      name: cal.title,
+      description: 'Company holidays',
+      events: await holidayEvents(cal.id),
+    }));
+  } catch (err) {
+    console.error('calendar holidays:', err);
+    res.status(500).type('text/plain').send('Calendar error');
+  }
+});
+
 // ---------- owner management ----------
 
 router.get('/me', requireAuth, async (req, res) => {
@@ -285,7 +355,7 @@ router.get('/me', requireAuth, async (req, res) => {
       enabled: true,
       created_at: r.rows[0].created_at,
       last_used_at: r.rows[0].last_used_at,
-      links: feedLinks(token, user, await visibleProjects(user)),
+      links: feedLinks(token, user, await visibleProjects(user), await holidayCalendars()),
     });
   } catch (err) {
     console.error('calendar me:', err);
