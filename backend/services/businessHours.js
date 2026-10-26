@@ -7,8 +7,28 @@
 // DST: the tz-offset is recomputed per iteration, so a window that
 // straddles a transition shifts naturally. Edge accuracy across DST
 // boundaries is within one hour of expected.
+//
+// Holidays: a policy may carry holidays[] ({ date: 'YYYY-MM-DD',
+// recurring }) from business_hours_holidays. A holiday is a closed day
+// in the policy's tz — the clock skips it like a weekend. recurring
+// matches the month/day every year.
 
 const { pool } = require('../db/pool');
+const { holidayMatcher } = require('./holidays');
+
+// Attach holidays[] to a policy row (no-op for null). DATE is read as
+// text so node-pg doesn't shift it through the server's local tz.
+async function withHolidays(db, row) {
+  if (!row) return null;
+  const r = await db.query(
+    `SELECT to_char(holiday_date, 'YYYY-MM-DD') AS date, recurring
+       FROM business_hours_holidays
+      WHERE business_hours_id = $1`,
+    [row.id]
+  );
+  row.holidays = r.rows;
+  return row;
+}
 
 // Resolve the bh policy for a (project_id, fallback) pair. Returns the
 // project row when present + enabled; else the org default; else null.
@@ -20,13 +40,13 @@ async function policyFor(client, projectId) {
         WHERE project_id = $1 AND enabled = TRUE`,
       [projectId]
     );
-    if (r.rows[0]) return r.rows[0];
+    if (r.rows[0]) return withHolidays(db, r.rows[0]);
   }
   const def = await db.query(
     `SELECT * FROM business_hours_policies
-      WHERE project_id IS NULL AND enabled = TRUE`
+      WHERE project_id IS NULL AND location_id IS NULL AND enabled = TRUE`
   );
-  return def.rows[0] || null;
+  return withHolidays(db, def.rows[0] || null);
 }
 
 // Resolve the bh policy referenced directly by an sla_policy row.
@@ -34,11 +54,30 @@ async function policyFor(client, projectId) {
 // means "ignore business hours, run 24/7".
 async function policyById(client, id) {
   if (!id) return null;
-  const r = await (client || pool).query(
+  const db = client || pool;
+  const r = await db.query(
     `SELECT * FROM business_hours_policies WHERE id = $1 AND enabled = TRUE`,
     [id]
   );
-  return r.rows[0] || null;
+  return withHolidays(db, r.rows[0] || null);
+}
+
+// Business hours for a ticket's SLA clock. The SLA policy decides
+// WHETHER business hours apply (business_hours_id set) and supplies the
+// default window; a ticket at a location with its own enabled window
+// runs on that location's hours instead (location → SLA-pinned policy).
+// A 24/7 SLA policy stays 24/7 regardless of location.
+async function policyForSla(client, slaPolicy, locationId) {
+  if (!slaPolicy?.business_hours_id) return null;
+  if (locationId) {
+    const db = client || pool;
+    const r = await db.query(
+      `SELECT * FROM business_hours_policies WHERE location_id = $1 AND enabled = TRUE`,
+      [locationId]
+    );
+    if (r.rows[0]) return withHolidays(db, r.rows[0]);
+  }
+  return policyById(client, slaPolicy.business_hours_id);
 }
 
 const WEEKDAY_INDEX = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
@@ -79,6 +118,13 @@ function utcFromTzWall(tz, year, month, day, hour, minute) {
   return new Date(naive.getTime() + (naive.getTime() - naiveOfLocal));
 }
 
+// True when `date` falls on one of the policy's holidays in its tz.
+function isHoliday(date, bh) {
+  if (!bh?.holidays?.length) return false;
+  const p = partsInTz(date instanceof Date ? date : new Date(date), bh.tz);
+  return holidayMatcher(bh.holidays)(p.year, p.month, p.day);
+}
+
 function parseTime(str) {
   const [h, m] = String(str || '00:00').split(':').map(Number);
   return { hour: h || 0, minute: m || 0 };
@@ -102,13 +148,14 @@ function addBusinessMinutes(start, minutes, bh) {
     return new Date(startDate.getTime() + minutes * 60_000);
   }
 
+  const closed = holidayMatcher(bh.holidays);
   let cursor = startDate;
   let remaining = minutes;
   // Hard cap on iterations — enough for ~3 years of pure business-day
   // walk. If we hit this, something is wrong (config corruption).
   for (let i = 0; remaining > 0 && i < 2000; i++) {
     const p = partsInTz(cursor, bh.tz);
-    if (!allowedDays.has(p.weekday)) {
+    if (!allowedDays.has(p.weekday) || closed(p.year, p.month, p.day)) {
       cursor = utcFromTzWall(bh.tz, p.year, p.month, p.day + 1, 0, 0);
       continue;
     }
@@ -135,4 +182,4 @@ function addBusinessMinutes(start, minutes, bh) {
   return cursor;
 }
 
-module.exports = { addBusinessMinutes, policyFor, policyById };
+module.exports = { addBusinessMinutes, isHoliday, policyFor, policyById, policyForSla };

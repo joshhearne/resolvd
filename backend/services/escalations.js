@@ -342,7 +342,7 @@ async function tickEscalations() {
     )`;
     const candidates = await pool.query(
       `SELECT t.id, t.internal_ref, t.title, t.title_enc, t.project_id, t.assigned_to,
-              t.effective_priority, t.escalation_priority_snapshot,
+              t.effective_priority, t.escalation_priority_snapshot, t.location_id,
               ${chainPriExpr} AS chain_priority,
               t.escalation_steps_fired, t.${tsCol} AS triggered_at
          FROM tickets t
@@ -368,9 +368,8 @@ async function tickEscalations() {
       const slaPolicy = await sla.policyForTicket(
         null, ticket.chain_priority || 3, ticket.project_id
       ).catch(() => null);
-      const bh = slaPolicy?.business_hours_id
-        ? await businessHours.policyById(null, slaPolicy.business_hours_id).catch(() => null)
-        : null;
+      const bh = await businessHours.policyForSla(null, slaPolicy, ticket.location_id)
+        .catch(() => null);
 
       const steps = await pool.query(
         `SELECT s.* FROM escalation_chain_steps s

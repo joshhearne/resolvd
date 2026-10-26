@@ -43,10 +43,20 @@ router.get('/policies', requireAuth, requireRole('Admin', 'Manager'), async (req
 router.get('/business-hours', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
     const r = await pool.query(`
-      SELECT b.*, p.name AS project_name, p.prefix AS project_prefix
+      SELECT b.*, p.name AS project_name, p.prefix AS project_prefix,
+             l.name AS location_name,
+             COALESCE((
+               SELECT json_agg(json_build_object(
+                        'id', h.id, 'date', to_char(h.holiday_date, 'YYYY-MM-DD'),
+                        'name', h.name, 'recurring', h.recurring)
+                      ORDER BY h.holiday_date)
+                 FROM business_hours_holidays h WHERE h.business_hours_id = b.id
+             ), '[]'::json) AS holidays
         FROM business_hours_policies b
         LEFT JOIN projects p ON p.id = b.project_id
-       ORDER BY b.project_id NULLS FIRST, b.name
+        LEFT JOIN locations l ON l.id = b.location_id
+       ORDER BY (b.project_id IS NULL AND b.location_id IS NULL) DESC,
+                b.project_id NULLS LAST, b.location_id NULLS LAST, b.name
     `);
     res.json(r.rows);
   } catch (err) {
@@ -56,9 +66,11 @@ router.get('/business-hours', requireAuth, requireRole('Admin', 'Manager'), asyn
 });
 
 function validateBh(body) {
-  const { name, project_id, tz, days, start_time, end_time, enabled } = body || {};
+  const { name, project_id, location_id, tz, days, start_time, end_time, enabled } = body || {};
   if (!name || typeof name !== 'string') return 'name required';
   if (project_id != null && (!Number.isInteger(project_id) || project_id <= 0)) return 'project_id must be positive integer or null';
+  if (location_id != null && (!Number.isInteger(location_id) || location_id <= 0)) return 'location_id must be positive integer or null';
+  if (project_id != null && location_id != null) return 'scope to a project or a location, not both';
   if (!tz || typeof tz !== 'string') return 'tz required (IANA name)';
   if (!Array.isArray(days) || !days.length) return 'days must be a non-empty array (0=Sun..6=Sat)';
   if (days.some((d) => !Number.isInteger(d) || d < 0 || d > 6)) return 'days entries must be 0–6';
@@ -72,12 +84,12 @@ router.post('/business-hours', requireAuth, requireRole('Admin'), async (req, re
   const err = validateBh(req.body);
   if (err) return res.status(400).json({ error: err });
   try {
-    const { name, project_id, tz, days, start_time, end_time, enabled } = req.body;
+    const { name, project_id, location_id, tz, days, start_time, end_time, enabled } = req.body;
     const r = await pool.query(
-      `INSERT INTO business_hours_policies (name, project_id, tz, days, start_time, end_time, enabled)
-       VALUES ($1, $2, $3, $4::int[], $5, $6, COALESCE($7, TRUE))
+      `INSERT INTO business_hours_policies (name, project_id, location_id, tz, days, start_time, end_time, enabled)
+       VALUES ($1, $2, $3, $4, $5::int[], $6, $7, COALESCE($8, TRUE))
        RETURNING *`,
-      [name.trim(), project_id || null, tz, days, start_time, end_time, enabled]
+      [name.trim(), project_id || null, location_id || null, tz, days, start_time, end_time, enabled]
     );
     res.status(201).json(r.rows[0]);
   } catch (e) {
@@ -124,13 +136,54 @@ router.patch('/business-hours/:id', requireAuth, requireRole('Admin'), async (re
 
 router.delete('/business-hours/:id', requireAuth, requireRole('Admin'), async (req, res) => {
   try {
-    const r = await pool.query(`SELECT project_id FROM business_hours_policies WHERE id = $1`, [req.params.id]);
+    const r = await pool.query(`SELECT project_id, location_id FROM business_hours_policies WHERE id = $1`, [req.params.id]);
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
-    if (r.rows[0].project_id == null) return res.status(400).json({ error: 'cannot delete org default; disable it instead' });
+    if (r.rows[0].project_id == null && r.rows[0].location_id == null) {
+      return res.status(400).json({ error: 'cannot delete org default; disable it instead' });
+    }
     await pool.query(`DELETE FROM business_hours_policies WHERE id = $1`, [req.params.id]);
     res.json({ ok: true });
   } catch (e) {
     console.error('business-hours delete:', e);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// ─── Holidays (closed days on a business-hours policy) ───────────────────
+
+// POST /api/sla/business-hours/:id/holidays — { date: 'YYYY-MM-DD', name?, recurring? }
+router.post('/business-hours/:id/holidays', requireAuth, requireRole('Admin'), async (req, res) => {
+  const { date, name, recurring } = req.body || {};
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(String(date || '')) || Number.isNaN(Date.parse(`${date}T00:00:00Z`))) {
+    return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
+  }
+  if (recurring != null && typeof recurring !== 'boolean') return res.status(400).json({ error: 'recurring must be boolean' });
+  try {
+    const r = await pool.query(
+      `INSERT INTO business_hours_holidays (business_hours_id, holiday_date, name, recurring)
+       VALUES ($1, $2::date, $3, COALESCE($4, FALSE))
+       RETURNING id, to_char(holiday_date, 'YYYY-MM-DD') AS date, name, recurring`,
+      [Number(req.params.id), date, name ? String(name).trim().slice(0, 120) : null, recurring]
+    );
+    res.status(201).json(r.rows[0]);
+  } catch (e) {
+    if (e.code === '23505') return res.status(409).json({ error: 'that date is already a holiday on this schedule' });
+    if (e.code === '23503') return res.status(404).json({ error: 'business hours not found' });
+    console.error('holiday create:', e);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+router.delete('/business-hours/:id/holidays/:holidayId', requireAuth, requireRole('Admin'), async (req, res) => {
+  try {
+    const r = await pool.query(
+      `DELETE FROM business_hours_holidays WHERE id = $1 AND business_hours_id = $2`,
+      [Number(req.params.holidayId), Number(req.params.id)]
+    );
+    if (!r.rowCount) return res.status(404).json({ error: 'not found' });
+    res.json({ ok: true });
+  } catch (e) {
+    console.error('holiday delete:', e);
     res.status(500).json({ error: 'Database error' });
   }
 });

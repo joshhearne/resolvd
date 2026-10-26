@@ -2013,8 +2013,6 @@ async function initSchema() {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
-    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_business_hours_org_default
-      ON business_hours_policies((project_id IS NULL)) WHERE project_id IS NULL`);
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_business_hours_project
       ON business_hours_policies(project_id) WHERE project_id IS NOT NULL`);
     // SLA policy can pin a business-hours policy. NULL = clock runs
@@ -2028,6 +2026,38 @@ async function initSchema() {
       SELECT 'Org default — Mon–Fri 9–5 CT', NULL, 'America/Chicago', ARRAY[1,2,3,4,5], '09:00', '17:00', TRUE
       WHERE NOT EXISTS (SELECT 1 FROM business_hours_policies WHERE project_id IS NULL)
     `);
+
+    // Holiday / exception dates: closed days overlaid on a business-hours
+    // policy. The SLA clock and escalation delays skip them like a
+    // weekend; billing prices them at the weekend multiplier. recurring
+    // repeats the month/day every year (fixed-date holidays only —
+    // "4th Thursday" style dates are entered per year).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS business_hours_holidays (
+        id SERIAL PRIMARY KEY,
+        business_hours_id INTEGER NOT NULL REFERENCES business_hours_policies(id) ON DELETE CASCADE,
+        holiday_date DATE NOT NULL,
+        name TEXT,
+        recurring BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (business_hours_id, holiday_date)
+      )
+    `);
+
+    // Per-location business hours. A location-scoped row (location_id
+    // set, project_id NULL) replaces the SLA policy's pinned window for
+    // tickets at that location — see businessHours.policyForSla.
+    // One org default: project_id AND location_id both NULL. (The
+    // pre-location index keyed on project_id IS NULL alone.)
+    await client.query(`ALTER TABLE business_hours_policies ADD COLUMN IF NOT EXISTS location_id INTEGER REFERENCES locations(id) ON DELETE CASCADE`);
+    await client.query(`DROP INDEX IF EXISTS idx_business_hours_org_default`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_business_hours_org_default_v2
+      ON business_hours_policies((project_id IS NULL)) WHERE project_id IS NULL AND location_id IS NULL`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_business_hours_location
+      ON business_hours_policies(location_id) WHERE location_id IS NOT NULL`);
+    // Ticket's site. Stamped on create from the submitter's company
+    // membership (company_members.location_id); editable on the ticket.
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL`);
 
     // Backfill warn_at on existing tickets: warn_at = created_at +
     // ((due_at - created_at) * threshold / 100). Idempotent — only

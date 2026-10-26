@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
 
@@ -57,6 +57,7 @@ export default function AdminSlaPolicies() {
   const [policies, setPolicies] = useState([]);
   const [projects, setProjects] = useState([]);
   const [bhList, setBhList] = useState([]);
+  const [locations, setLocations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [savingId, setSavingId] = useState(null);
   const [edits, setEdits] = useState({});
@@ -65,14 +66,16 @@ export default function AdminSlaPolicies() {
   async function load() {
     setLoading(true);
     try {
-      const [pList, pjList, bh] = await Promise.all([
+      const [pList, pjList, bh, locs] = await Promise.all([
         api.get("/api/sla/policies"),
         api.get("/api/projects"),
         api.get("/api/sla/business-hours"),
+        api.get("/api/companies/locations").catch(() => []),
       ]);
       setPolicies(pList);
       setProjects(pjList);
       setBhList(bh);
+      setLocations(locs);
     } catch (e) {
       toast.error(e.message || "Failed to load");
     } finally {
@@ -214,7 +217,7 @@ export default function AdminSlaPolicies() {
 
   return (
     <div className="space-y-5">
-      <BusinessHoursSection bhList={bhList} projects={projects} onChange={load} />
+      <BusinessHoursSection bhList={bhList} projects={projects} locations={locations} onChange={load} />
 
       <div className="bg-surface border border-border rounded-lg p-4">
         <h2 className="text-base font-semibold text-fg mb-1">Org-default targets</h2>
@@ -328,12 +331,97 @@ export default function AdminSlaPolicies() {
   );
 }
 
-function BusinessHoursSection({ bhList, projects, onChange }) {
+// Scope select value: "" = org default, "p:<id>" = project, "l:<id>" = location.
+function scopeToBody(scope) {
+  if (scope.startsWith("p:")) return { project_id: Number(scope.slice(2)), location_id: null };
+  if (scope.startsWith("l:")) return { project_id: null, location_id: Number(scope.slice(2)) };
+  return { project_id: null, location_id: null };
+}
+
+function scopeLabel(b) {
+  if (b.location_id != null) return `Location · ${b.location_name || `#${b.location_id}`}`;
+  if (b.project_id != null) return `${b.project_prefix} · ${b.project_name}`;
+  return null;
+}
+
+function HolidaysEditor({ bh, onChange }) {
+  const [draft, setDraft] = useState({ date: "", name: "", recurring: false });
+  const [saving, setSaving] = useState(false);
+
+  async function add() {
+    if (!draft.date) { toast.error("Pick a date"); return; }
+    setSaving(true);
+    try {
+      await api.post(`/api/sla/business-hours/${bh.id}/holidays`, draft);
+      setDraft({ date: "", name: "", recurring: false });
+      await onChange();
+    } catch (err) {
+      toast.error(err.message || "Failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove(id) {
+    try {
+      await api.delete(`/api/sla/business-hours/${bh.id}/holidays/${id}`);
+      await onChange();
+    } catch (err) {
+      toast.error(err.message || "Failed");
+    }
+  }
+
+  const holidays = bh.holidays || [];
+  return (
+    <div className="space-y-2">
+      <p className="text-xs text-fg-muted">
+        Closed all day in {bh.tz}. SLA clocks and escalation delays skip
+        these like a weekend. <b>Every year</b> repeats the month and day.
+      </p>
+      {holidays.length === 0 ? (
+        <div className="text-xs text-fg-dim italic">No holidays yet.</div>
+      ) : (
+        <ul className="divide-y divide-border border border-border rounded">
+          {holidays.map((h) => (
+            <li key={h.id} className="flex items-center gap-3 px-2 py-1 text-sm">
+              <span className="font-mono text-xs w-24">
+                {h.recurring ? h.date.slice(5) : h.date}
+              </span>
+              <span className="flex-1 min-w-0 truncate">{h.name || <span className="text-fg-dim">—</span>}</span>
+              {h.recurring && <span className="text-[11px] text-fg-muted">every year</span>}
+              <button onClick={() => remove(h.id)} className="text-xs text-red-600 hover:underline">Remove</button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <input type="date" value={draft.date}
+          onChange={(e) => setDraft((d) => ({ ...d, date: e.target.value }))}
+          className="border border-border-strong rounded px-2 py-1 text-sm font-mono" />
+        <input value={draft.name} placeholder="Name (optional)"
+          onChange={(e) => setDraft((d) => ({ ...d, name: e.target.value }))}
+          className="border border-border-strong rounded px-2 py-1 text-sm w-48" />
+        <label className="flex items-center gap-1 text-xs text-fg-muted">
+          <input type="checkbox" checked={draft.recurring}
+            onChange={(e) => setDraft((d) => ({ ...d, recurring: e.target.checked }))} />
+          Every year
+        </label>
+        <button onClick={add} disabled={saving}
+          className="text-xs px-2 py-1 bg-brand text-white rounded disabled:opacity-50">
+          Add holiday
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function BusinessHoursSection({ bhList, projects, locations, onChange }) {
   const [edits, setEdits] = useState({});
   const [addOpen, setAddOpen] = useState(false);
+  const [holidaysOpen, setHolidaysOpen] = useState(null);
   const [newBh, setNewBh] = useState({
     name: "",
-    project_id: "",
+    scope: "",
     tz: "America/Chicago",
     days: [1, 2, 3, 4, 5],
     start_time: "09:00",
@@ -376,13 +464,11 @@ function BusinessHoursSection({ bhList, projects, onChange }) {
     if (!newBh.tz.trim()) { toast.error("Timezone required"); return; }
     if (!newBh.days.length) { toast.error("Pick at least one day"); return; }
     try {
-      await api.post("/api/sla/business-hours", {
-        ...newBh,
-        project_id: newBh.project_id ? Number(newBh.project_id) : null,
-      });
+      const { scope, ...rest } = newBh;
+      await api.post("/api/sla/business-hours", { ...rest, ...scopeToBody(scope) });
       toast.success("Added");
       setNewBh({
-        name: "", project_id: "", tz: "America/Chicago",
+        name: "", scope: "", tz: "America/Chicago",
         days: [1, 2, 3, 4, 5], start_time: "09:00", end_time: "17:00",
       });
       setAddOpen(false);
@@ -402,9 +488,11 @@ function BusinessHoursSection({ bhList, projects, onChange }) {
       </div>
       <p className="text-xs text-fg-muted mb-3">
         Pinned by SLA policies. Clock skips outside the configured days &
-        times. The org default is seeded Mon–Fri 9–5 CT; edit or disable
-        it, or add per-project rows. Pin a policy to an SLA via the{" "}
-        <b>Business hours</b> column below.
+        times and on each policy's holidays. The org default is seeded
+        Mon–Fri 9–5 CT; edit or disable it, or add per-project rows. Pin a
+        policy to an SLA via the <b>Business hours</b> column below. A{" "}
+        <b>location</b> row overrides the pinned hours for tickets at that
+        site (24/7 SLA policies stay 24/7).
       </p>
 
       {addOpen && (
@@ -416,13 +504,24 @@ function BusinessHoursSection({ bhList, projects, onChange }) {
                 placeholder="e.g. MOT Tier-1 9–5" className="border border-border-strong rounded px-2 py-1 text-sm w-56" />
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-xs text-fg-muted">Project (blank = org default)</span>
-              <select value={newBh.project_id} onChange={e => setNewBh(p => ({ ...p, project_id: e.target.value }))}
+              <span className="text-xs text-fg-muted">Scope</span>
+              <select value={newBh.scope} onChange={e => setNewBh(p => ({ ...p, scope: e.target.value }))}
                 className="border border-border-strong rounded px-2 py-1 text-sm">
                 <option value="">— org default —</option>
-                {projects.filter(pj => pj.status === "active").map(pj => (
-                  <option key={pj.id} value={pj.id}>{pj.prefix} · {pj.name}</option>
-                ))}
+                <optgroup label="Project">
+                  {projects.filter(pj => pj.status === "active").map(pj => (
+                    <option key={pj.id} value={`p:${pj.id}`}>{pj.prefix} · {pj.name}</option>
+                  ))}
+                </optgroup>
+                {locations.length > 0 && (
+                  <optgroup label="Location">
+                    {locations.map(l => (
+                      <option key={l.id} value={`l:${l.id}`}>
+                        {l.company_name ? `${l.company_name} · ` : ""}{l.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
               </select>
             </label>
             <label className="flex flex-col gap-1">
@@ -477,15 +576,17 @@ function BusinessHoursSection({ bhList, projects, onChange }) {
               const e = edits[b.id] || {};
               const merged = { ...b, ...e };
               const dirty = !!Object.keys(e).length;
+              const scoped = b.project_id != null || b.location_id != null;
               return (
-                <tr key={b.id} className="border-t border-border">
+                <Fragment key={b.id}>
+                <tr className="border-t border-border">
                   <td className="py-2 pr-3">
                     <input value={merged.name || ""}
                       onChange={ev => setEdits(prev => ({ ...prev, [b.id]: { ...prev[b.id], name: ev.target.value } }))}
                       className="border border-border-strong rounded px-2 py-1 text-sm w-44" />
                   </td>
                   <td className="py-2 pr-3 text-fg-muted">
-                    {b.project_id == null ? <span className="text-fg-dim">org default</span> : `${b.project_prefix} · ${b.project_name}`}
+                    {scopeLabel(b) || <span className="text-fg-dim">org default</span>}
                   </td>
                   <td className="py-2 pr-3">
                     <input value={merged.tz}
@@ -528,11 +629,23 @@ function BusinessHoursSection({ bhList, projects, onChange }) {
                   </td>
                   <td className="py-2 flex gap-2">
                     {dirty && <button onClick={() => saveBh(b)} className="text-xs px-2 py-1 bg-brand text-white rounded">Save</button>}
-                    {b.project_id != null && (
+                    <button onClick={() => setHolidaysOpen(o => (o === b.id ? null : b.id))}
+                      className="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2 whitespace-nowrap">
+                      Holidays ({(b.holidays || []).length})
+                    </button>
+                    {scoped && (
                       <button onClick={() => deleteBh(b.id)} className="text-xs px-2 py-1 text-red-600 hover:underline">Delete</button>
                     )}
                   </td>
                 </tr>
+                {holidaysOpen === b.id && (
+                  <tr className="bg-surface-2/40">
+                    <td colSpan={7} className="px-3 py-3">
+                      <HolidaysEditor bh={b} onChange={onChange} />
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               );
             })}
           </tbody>

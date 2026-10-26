@@ -416,6 +416,73 @@ function Field({ label, children }) {
   );
 }
 
+// Ticket site. Staff pick from every active location; the submitter's
+// company location is filled in on create. Per-location business hours
+// key off this for escalation delays.
+function LocationField({ ticket, canEdit, saving, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [locations, setLocations] = useState(null);
+  const [value, setValue] = useState("");
+
+  async function startEdit() {
+    setValue(ticket.location_id ? String(ticket.location_id) : "");
+    setEditing(true);
+    if (!locations) {
+      try {
+        setLocations(await api.get("/api/companies/locations"));
+      } catch (err) {
+        toast.error(err.message);
+        setLocations([]);
+      }
+    }
+  }
+
+  if (editing) {
+    return (
+      <div className="flex gap-2">
+        <select
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          disabled={!locations}
+          className="border border-border-strong rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-brand/40 flex-1 min-w-0"
+        >
+          <option value="">— none —</option>
+          {(locations || []).map((l) => (
+            <option key={l.id} value={l.id}>
+              {l.company_name ? `${l.company_name} · ` : ""}{l.name}
+            </option>
+          ))}
+        </select>
+        <button
+          onClick={async () => {
+            await onSave({ location_id: value ? Number(value) : null });
+            setEditing(false);
+          }}
+          disabled={saving || !locations}
+          className="btn-primary btn btn-sm"
+        >
+          Save
+        </button>
+        <button onClick={() => setEditing(false)} className="btn-secondary btn btn-sm">
+          ×
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center justify-between">
+      <span className="text-sm text-fg">
+        {ticket.location_name || <span className="text-fg-dim">—</span>}
+      </span>
+      {canEdit && (
+        <button onClick={startEdit} className="text-xs text-brand hover:underline">
+          Edit
+        </button>
+      )}
+    </div>
+  );
+}
+
 export default function TicketDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -3058,6 +3125,16 @@ export default function TicketDetail() {
                   </div>
                 )}
               </Field>
+              {(isAdmin || ticket.location_id) && (
+                <Field label="Location">
+                  <LocationField
+                    ticket={ticket}
+                    canEdit={isAdmin}
+                    saving={saving}
+                    onSave={patch}
+                  />
+                </Field>
+              )}
             </dl>
           </div>
 
