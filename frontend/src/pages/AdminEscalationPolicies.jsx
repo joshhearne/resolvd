@@ -1,6 +1,7 @@
 import { useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
+import NumberInput from "../components/NumberInput";
 
 // Escalation chain admin. Step rows grouped by (priority, project,
 // trigger). delay_minutes = grace period after the trigger fires.
@@ -349,10 +350,10 @@ export default function AdminEscalationPolicies() {
               <>
                 <label className="flex items-center gap-1 text-xs text-fg-muted">
                   Levels
-                  <input
-                    type="number" min="1" max="4"
+                  <NumberInput
+                    min="1" max="4"
                     value={a.levels ?? 1}
-                    onChange={(e) => setAction(i, { levels: Number(e.target.value) })}
+                    onChange={(n) => setAction(i, { levels: n })}
                     className="border border-border-strong rounded px-2 py-1 text-sm font-mono w-14"
                   />
                 </label>

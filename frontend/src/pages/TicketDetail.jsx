@@ -41,6 +41,7 @@ import RunbookPanel from "../components/RunbookPanel";
 import TroveKbKnowledge from "../components/TroveKbKnowledge";
 import AssistBriefModal from "../components/AssistBriefModal";
 import TroveKbRunbookPanel from "../components/TroveKbRunbookPanel";
+import NumberInput from "../components/NumberInput";
 
 // External ticket refs may hold multiple vendor IDs separated by comma
 // or semicolon (e.g. "VND-1234, VND-5678" or "VND-1234;VND-5678").
@@ -156,12 +157,11 @@ function FollowupControl({ ticketId, followupAt, onChange }) {
   }
   return (
     <div className="flex items-center gap-2">
-      <input
-        type="number"
+      <NumberInput
         min="1"
         max="90"
         value={days}
-        onChange={(e) => setDays(Math.max(1, Math.floor(Number(e.target.value) || 1)))}
+        onChange={(n) => setDays(Math.max(1, Math.floor(n) || 1))}
         className="w-16 border border-border-strong rounded-md px-2 py-1 text-sm"
       />
       <span className="text-xs text-fg-muted">day{days === 1 ? "" : "s"}</span>
