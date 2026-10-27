@@ -88,6 +88,7 @@ export default function AiRewriteModal({ open, onClose, originalText, surface, p
     comment_vendor: "vendor comment",
     ticket_description: "ticket description",
     ticket_subject: "subject line",
+    time_note: "work log note",
   }[surface] || surface;
 
   return createPortal(
