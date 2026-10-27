@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
 import HybridTime from "./HybridTime";
@@ -180,7 +181,30 @@ function VisibilityPill({ visibility }) {
   );
 }
 
-export default function TimeTracker({ ticketId, ticket, user, onLogged }) {
+// True at the sm breakpoint and up (where the ticket header goes two-column).
+function useWide() {
+  const query = "(min-width: 640px)";
+  const [wide, setWide] = useState(() => typeof window !== "undefined" && !!window.matchMedia?.(query).matches);
+  useEffect(() => {
+    const mql = window.matchMedia?.(query);
+    if (!mql) return undefined;
+    const on = () => setWide(mql.matches);
+    mql.addEventListener("change", on);
+    return () => mql.removeEventListener("change", on);
+  }, []);
+  return wide;
+}
+
+// barSlot           — DOM node to render the timer bar into on desktop
+//                     (the ticket header's right column); inline otherwise.
+// renderStatusAction — ({ disabled, onPick(status) }) => node: the "Log & …"
+//                     status menu beside the log form's submit button.
+// onStatusAfterLog  — (status) => Promise, run after a "Log & <status>".
+// aiProjectId       — project context for the note's AI rewrite.
+export default function TimeTracker({
+  ticketId, ticket, user, onLogged, barSlot, renderStatusAction, onStatusAfterLog, aiProjectId,
+}) {
+  const wide = useWide();
   const [settings, setSettings] = useState(null);
   const [timer, setTimer] = useState(null);
   const [fetchedAt, setFetchedAt] = useState(Date.now());
@@ -351,7 +375,7 @@ export default function TimeTracker({ ticketId, ticket, user, onLogged }) {
     }
   }
 
-  async function submitLog(form) {
+  async function submitLog(form, andStatus = null) {
     const ok = await saveWithOverlapCheck((confirm) => api.post(`/api/tickets/${ticketId}/time`, {
       started_at: form.started_at,
       ended_at: form.ended_at,
@@ -365,6 +389,7 @@ export default function TimeTracker({ ticketId, ticket, user, onLogged }) {
     if (!ok) return;
     toast.success(`Logged ${fmtMinutes(form.minutes)}`);
     setPanel(null);
+    if (andStatus) await onStatusAfterLog?.(andStatus);
     await load();
     announceTimersChanged();
     onLogged?.();
@@ -430,8 +455,9 @@ export default function TimeTracker({ ticketId, ticket, user, onLogged }) {
       ? "border-emerald-300 bg-emerald-50/60 dark:border-emerald-900 dark:bg-emerald-950/20"
       : "border-border bg-surface-2/40";
 
-  return (
-    <div className="mt-2">
+  const docked = !!barSlot && wide;
+  const bar = (
+    <div className={docked ? "flex flex-col items-end" : ""}>
       <div className={`inline-flex flex-wrap items-center gap-2 border rounded-md px-2 py-1 text-xs ${barTone}`}>
         <span className="font-mono tabular-nums text-sm text-fg" aria-label="Elapsed time">
           ⏱ {fmtClock(seconds)}
@@ -470,15 +496,21 @@ export default function TimeTracker({ ticketId, ticket, user, onLogged }) {
       </div>
 
       {warning && (
-        <p className="mt-1 text-xs text-amber-800 dark:text-amber-200">
+        <p className={`mt-1 text-xs text-amber-800 dark:text-amber-200 ${docked ? "text-right max-w-xs" : ""}`}>
           Timer has run {fmtMinutes(seconds / 60)} with no work logged. Log what you did, pause it, or discard it.
         </p>
       )}
       {discardHint && !warning && (
-        <p className="mt-1 text-[11px] text-fg-dim">
+        <p className={`mt-1 text-[11px] text-fg-dim ${docked ? "text-right max-w-xs" : ""}`}>
           Discarded if you leave without changing the status or logging work.
         </p>
       )}
+    </div>
+  );
+
+  return (
+    <div className={docked ? "" : "mt-2"}>
+      {docked ? createPortal(bar, barSlot) : bar}
 
       {panel === "log" && logInitial && (
         <TimeEntryForm
@@ -489,6 +521,8 @@ export default function TimeTracker({ ticketId, ticket, user, onLogged }) {
           busy={busy}
           submitLabel="Log"
           onSubmit={submitLog}
+          renderStatusAction={renderStatusAction}
+          aiProjectId={aiProjectId}
           onCancel={() => setPanel(null)}
         />
       )}
@@ -575,6 +609,7 @@ export default function TimeTracker({ ticketId, ticket, user, onLogged }) {
                       showVisibility={false}
                       busy={busy}
                       submitLabel="Save"
+                      aiProjectId={aiProjectId}
                       onSubmit={(form) => saveEdit(e.id, form)}
                       onCancel={() => setEditingId(null)}
                     />

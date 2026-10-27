@@ -274,7 +274,7 @@ function Lightbox({ attachment, onClose }) {
 // including admin-defined custom statuses (e.g. "Escalated"). Caller
 // supplies a single onPostAndStatus(name); confirm-before-close UX is
 // owned by the parent.
-function CommentActionDropdown({ disabled, statuses, currentStatus, onPostAndStatus }) {
+function CommentActionDropdown({ disabled, statuses, currentStatus, onPostAndStatus, verb = "Post" }) {
   const [open, setOpen] = useState(false);
   const [coords, setCoords] = useState({ left: 0, top: 0, maxHeight: undefined, openUp: false });
   const triggerRef = useRef(null);
@@ -357,7 +357,7 @@ function CommentActionDropdown({ disabled, statuses, currentStatus, onPostAndSta
         onClick={() => setOpen((o) => !o)}
         className="btn-secondary btn btn-sm disabled:opacity-50 flex items-center gap-1"
       >
-        Post &amp; …
+        {verb} &amp; …
         <svg
           className="w-3 h-3"
           fill="none"
@@ -395,7 +395,7 @@ function CommentActionDropdown({ disabled, statuses, currentStatus, onPostAndSta
               }}
               className={`w-full text-left px-4 py-2 text-sm ${rowClass(s)}`}
             >
-              Post &amp; {s.name}
+              {verb} &amp; {s.name}
             </button>
           ))}
         </div>,
@@ -542,6 +542,9 @@ export default function TicketDetail() {
   const [dragOver, setDragOver] = useState(false);
   const [followers, setFollowers] = useState([]);
   const [followLoading, setFollowLoading] = useState(false);
+  // DOM node in the header's right column that hosts the time tracker bar
+  // on desktop (a callback ref so TimeTracker re-renders once it exists).
+  const [timerSlot, setTimerSlot] = useState(null);
   const [allUsers, setAllUsers] = useState([]);
   const [editingSubmitter, setEditingSubmitter] = useState(false);
   const [submitterDraft, setSubmitterDraft] = useState("");
@@ -1015,6 +1018,47 @@ export default function TicketDetail() {
     if (ticket?.submitted_by && user?.id !== ticket.submitted_by) return 'has-submitter';
     if (!ticket?.submitted_by) return 'no-submitter';
     return null;
+  }
+
+  // Statuses offered by the "Post & …" / "Log & …" menus: every status the
+  // ticket can move to from here (custom ones included). An empty
+  // transition graph for the current status means unrestricted — mirrors
+  // the Internal Status edit dropdown.
+  function postActionStatuses() {
+    const cur = statusByName(statusCfg.internal, ticket.internal_status);
+    const allowedIds = cur
+      ? new Set(nextAllowedStatusIds(statusCfg.transitions, cur.id))
+      : null;
+    const restrict = allowedIds && allowedIds.size > 0;
+    return statusCfg.internal.length
+      ? statusCfg.internal.filter((s) =>
+          s.show_in_post_actions !== false &&
+          (!restrict || allowedIds.has(s.id))
+        )
+      : DEFAULT_INTERNAL_STATUSES.map((n) => ({ name: n }));
+  }
+
+  // Honours the "confirm before close" preference for terminal statuses.
+  function confirmStatusMove(name, what) {
+    const def = statusByName(statusCfg.internal, name);
+    return !(def?.is_terminal &&
+      user?.preferences?.confirm_before_close &&
+      !window.confirm(`${what} and move ${ticket.internal_ref} to "${name}"?`));
+  }
+
+  // After time is logged with "Log & <status>".
+  async function setStatusAfterLog(name) {
+    try {
+      const updated = await api.patch(`/api/tickets/${id}`, {
+        internal_status: name,
+        ...(name === "Closed" ? { flagged_for_review: false } : {}),
+      });
+      setTicket(updated);
+      api.get(`/api/tickets/${id}/audit`).then(setAuditLog).catch(() => {});
+      toast.success(`Ticket ${name.toLowerCase()}`);
+    } catch (err) {
+      toast.error(err.message || "Time logged, but the status didn't change");
+    }
   }
 
   async function submitComment(e, andStatus = null, send_as = null) {
@@ -1600,10 +1644,26 @@ export default function TicketDetail() {
               ticket={ticket}
               user={user}
               onLogged={reloadAfterTimeLog}
+              barSlot={timerSlot}
+              aiProjectId={ticket.project_id || null}
+              onStatusAfterLog={setStatusAfterLog}
+              renderStatusAction={({ disabled, onPick }) => (
+                <CommentActionDropdown
+                  verb="Log"
+                  disabled={disabled}
+                  statuses={postActionStatuses()}
+                  currentStatus={ticket.internal_status}
+                  onPostAndStatus={(name) => {
+                    if (!confirmStatusMove(name, "Log this time")) return;
+                    onPick(name);
+                  }}
+                />
+              )}
             />
           )}
         </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
+        <div className="flex flex-col items-start sm:items-end gap-2 flex-shrink-0">
+        <div className="flex items-center gap-2">
           <button
             onClick={toggleFollow}
             disabled={followLoading}
@@ -1809,6 +1869,9 @@ export default function TicketDetail() {
               </div>
             )}
           </div>
+        </div>
+        {/* Desktop: the time tracker's bar renders here, under Follow. */}
+        <div ref={setTimerSlot} className="hidden sm:flex flex-col items-end empty:hidden" />
         </div>
       </div>
 
@@ -2421,23 +2484,7 @@ export default function TicketDetail() {
                         />
                       </label>
                       {isAdmin && (() => {
-                        const cur = statusByName(statusCfg.internal, ticket.internal_status);
-                        const allowedIds = cur
-                          ? new Set(nextAllowedStatusIds(statusCfg.transitions, cur.id))
-                          : null;
-                        // Show every status the ticket can transition to,
-                        // including admin-defined custom ones (Escalated,
-                        // etc.). When transitions table is empty for this
-                        // status (admin hasn't drawn the graph yet), treat
-                        // as unrestricted — show every status. Mirrors
-                        // the Internal Status edit dropdown.
-                        const restrict = allowedIds && allowedIds.size > 0;
-                        const items = statusCfg.internal.length
-                          ? statusCfg.internal.filter((s) =>
-                              s.show_in_post_actions !== false &&
-                              (!restrict || allowedIds.has(s.id))
-                            )
-                          : DEFAULT_INTERNAL_STATUSES.map((n) => ({ name: n }));
+                        const items = postActionStatuses();
                         return (
                           <CommentActionDropdown
                             disabled={
@@ -2447,14 +2494,7 @@ export default function TicketDetail() {
                             statuses={items}
                             currentStatus={ticket.internal_status}
                             onPostAndStatus={(name) => {
-                              const def = statusByName(statusCfg.internal, name);
-                              if (def?.is_terminal &&
-                                  user?.preferences?.confirm_before_close &&
-                                  !window.confirm(
-                                    `Post this comment and move ${ticket.internal_ref} to "${name}"?`,
-                                  )) {
-                                return;
-                              }
+                              if (!confirmStatusMove(name, "Post this comment")) return;
                               submitComment(null, name);
                             }}
                           />
