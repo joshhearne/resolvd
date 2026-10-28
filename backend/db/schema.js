@@ -2068,6 +2068,21 @@ async function initSchema() {
     `);
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_business_hours_holidays_rule
       ON business_hours_holidays(business_hours_id, month, weekday, nth) WHERE kind = 'nth_weekday'`);
+    // Multi-day spans and partial days. span_days closes that many
+    // consecutive days from the date a holiday is taken; closes_at makes it
+    // an early close (open until then, closed after) and is single-day only.
+    await client.query(`ALTER TABLE business_hours_holidays ADD COLUMN IF NOT EXISTS span_days INTEGER NOT NULL DEFAULT 1`);
+    await client.query(`ALTER TABLE business_hours_holidays ADD COLUMN IF NOT EXISTS closes_at TIME`);
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'business_hours_holidays_span') THEN
+          ALTER TABLE business_hours_holidays ADD CONSTRAINT business_hours_holidays_span CHECK (
+            span_days BETWEEN 1 AND 14 AND (closes_at IS NULL OR span_days = 1)
+          );
+        END IF;
+      END $$
+    `);
 
     // Per-location business hours. A location-scoped row (location_id
     // set, project_id NULL) replaces the SLA policy's pinned window for

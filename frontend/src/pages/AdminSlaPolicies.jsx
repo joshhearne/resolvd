@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
+import NumberInput from "../components/NumberInput";
 
 // SLA policies admin: org-default + per-project (priority, target) rows,
 // plus a per-policy warning threshold (% of window elapsed before the
@@ -354,7 +355,10 @@ const NTH_OPTIONS = [
 ];
 
 function emptyHoliday() {
-  return { kind: "date", date: "", recurring: false, nth: 1, weekday: 1, month: 1, observed: false, name: "" };
+  return {
+    kind: "date", date: "", recurring: false, nth: 1, weekday: 1, month: 1, observed: false, name: "",
+    length: "full", span_days: 1, closes_at: "12:00",
+  };
 }
 
 function HolidaysEditor({ bh, onChange }) {
@@ -373,6 +377,9 @@ function HolidaysEditor({ bh, onChange }) {
         ...body,
         observed: draft.observed,
         name: draft.name || undefined,
+        ...(draft.length === "early"
+          ? { closes_at: draft.closes_at }
+          : { span_days: Number(draft.span_days) || 1 }),
       });
       setDraft(emptyHoliday());
       await onChange();
@@ -397,12 +404,14 @@ function HolidaysEditor({ bh, onChange }) {
   return (
     <div className="space-y-2">
       <p className="text-xs text-fg-muted">
-        Closed all day in {bh.tz}. SLA clocks and escalation delays skip
-        these like a weekend. Use a <b>date</b> (optionally every year) or a{" "}
+        Closed in {bh.tz}. SLA clocks and escalation delays skip these like
+        a weekend. Use a <b>date</b> (optionally every year) or a{" "}
         <b>weekday rule</b> for holidays that move, like "the last Monday of
-        May". <b>Observed</b> takes a Saturday holiday on the Friday before
-        and a Sunday one on the Monday after. Staff can subscribe to this
-        list from <b>Account settings → Calendar</b>.
+        May". A holiday can run for <b>several days</b> (Thanksgiving
+        Thursday + Friday), or be an <b>early close</b> — open as usual until
+        the time you set, closed after. <b>Observed</b> takes a Saturday
+        holiday on the Friday before and a Sunday one on the Monday after.
+        Staff can subscribe to this list from <b>Account settings → Calendar</b>.
       </p>
       {holidays.length === 0 ? (
         <div className="text-xs text-fg-dim italic">No holidays yet.</div>
@@ -448,6 +457,25 @@ function HolidaysEditor({ bh, onChange }) {
               {MONTH_NAMES.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
             </select>
           </>
+        )}
+        <select value={draft.length} onChange={(e) => set({ length: e.target.value })} className={select} aria-label="Length">
+          <option value="full">Closed all day</option>
+          <option value="early">Early close</option>
+        </select>
+        {draft.length === "full" ? (
+          <label className="flex items-center gap-1 text-xs text-fg-muted">
+            for
+            <NumberInput min="1" max="14" value={draft.span_days} emptyValue={1}
+              onChange={(n) => set({ span_days: Math.min(14, Math.max(1, Math.round(n) || 1)) })}
+              className={`${select} w-16`} aria-label="Days" />
+            {Number(draft.span_days) === 1 ? "day" : "days"}
+          </label>
+        ) : (
+          <label className="flex items-center gap-1 text-xs text-fg-muted">
+            at
+            <input type="time" value={draft.closes_at} onChange={(e) => set({ closes_at: e.target.value })}
+              className={`${select} font-mono`} aria-label="Closes at" />
+          </label>
         )}
         <label className="flex items-center gap-1 text-xs text-fg-muted">
           <input type="checkbox" checked={draft.observed} onChange={(e) => set({ observed: e.target.checked })} />
