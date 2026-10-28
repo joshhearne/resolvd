@@ -15,7 +15,9 @@
 #      restarts the stack, and waits for /api/version to report the new
 #      commit. If that doesn't happen, it rolls back to the previous commit
 #      and images.
-#   4. Reports the outcome to the app.
+#   4. Reports the outcome to the app, with the change files
+#      (backend/changes/*.md) the target build adds, so admins can preview
+#      what's coming.
 #
 # Never moves to an older build: the target must descend from the running
 # commit (the schema only migrates forward).
@@ -57,6 +59,7 @@ main() {
   UPDATE_HOUR="$(policy_get update_hour <<<"$policy")"
   UPDATE_NOW="$(policy_get update_now <<<"$policy")"
   HANDLED=0
+  PENDING_ARGS=()
 
   CURRENT_COMMIT="$(git rev-parse HEAD)"
   CURRENT_TAG="$(env_get RESOLVD_IMAGE_TAG)"
@@ -79,6 +82,9 @@ main() {
   case "$CHANNEL" in
     manual)
       AVAILABLE="$latest_release"
+      if [ -n "$latest_release" ]; then
+        collect_pending "$(git rev-parse "refs/tags/$latest_release^{commit}")"
+      fi
       report manual "Manual updates: the newest release is ${latest_release:-not published yet}."
       return 0
       ;;
@@ -100,6 +106,7 @@ main() {
       ;;
   esac
   AVAILABLE="$target_tag"
+  collect_pending "$target_commit"
 
   if [ "$target_commit" = "$CURRENT_COMMIT" ] && [ "$target_tag" = "$CURRENT_TAG" ]; then
     [ "$UPDATE_NOW" = 1 ] && HANDLED=1
@@ -155,6 +162,7 @@ main() {
   if wait_healthy "$target_commit"; then
     docker image prune -f >/dev/null 2>&1 || true
     rm -f "$FAILED_FILE"
+    PENDING_ARGS=(--data-urlencode "pending_changes_sent=1")
     report updated "Updated $CURRENT_TAG -> $target_tag." "$CURRENT_TAG" "$target_tag"
     return 0
   fi
@@ -206,7 +214,31 @@ report() {
     --data-urlencode "host_time=$(date -Iseconds)" \
     --data-urlencode "host_tz=$(date +%Z)" \
     --data-urlencode "handled_request=$HANDLED" \
+    ${PENDING_ARGS[@]+"${PENDING_ARGS[@]}"} \
     "$URL/api/system-updates/report" || log "could not send the report to $URL"
+}
+
+# Change files the target commit adds over the running one, as report
+# fields ("<name>\n<contents>"). Nothing when the target isn't newer.
+# Stops at ~30 KB of text (up to 3x that once URL-encoded) so the report
+# stays under the app's 100 KB form limit;
+# pending_changes_total still counts every file.
+collect_pending() {
+  PENDING_ARGS=(--data-urlencode "pending_changes_sent=1")
+  git merge-base --is-ancestor "$CURRENT_COMMIT" "$1" 2>/dev/null || return 0
+  local files f body size=0 total=0
+  files="$(git diff --no-renames --name-only --diff-filter=A "$CURRENT_COMMIT" "$1" -- backend/changes/ \
+    | grep '\.md$' | grep -vi '/readme\.md$' || true)"
+  while IFS= read -r f; do
+    [ -n "$f" ] || continue
+    total=$((total + 1))
+    [ "$size" -lt 30000 ] || continue
+    body="$(git show "$1:$f" 2>/dev/null | head -c 2000)"
+    size=$((size + ${#body}))
+    PENDING_ARGS+=(--data-urlencode "pending_change=$(basename "$f" .md)
+$body")
+  done <<<"$files"
+  PENDING_ARGS+=(--data-urlencode "pending_changes_total=$total")
 }
 
 # Gzipped pg_dump into backups/, keeping the newest 7 pre-update dumps.

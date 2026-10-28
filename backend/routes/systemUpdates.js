@@ -11,6 +11,7 @@ const crypto = require('crypto');
 const express = require('express');
 const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
+const { parseChange } = require('../services/whatsNew');
 
 const router = express.Router();
 
@@ -56,6 +57,10 @@ router.get('/', requireAuth, requireRole('Admin'), async (req, res) => {
       update_requested_at: settings.update_requested_at,
       host_last_seen_at: settings.host_last_seen_at,
       last_report: settings.last_report,
+      // Change files in the build the host would install next (Admin preview).
+      // { total, entries }: total counts every new file, entries may be cut
+      // short to keep the report small.
+      pending_changes: settings.pending_changes || { total: 0, entries: [] },
       updater_configured: !!process.env.RESOLVD_UPDATER_TOKEN,
       running: {
         version: process.env.APP_VERSION || 'dev',
@@ -147,13 +152,30 @@ router.post('/report', requireUpdaterToken, async (req, res) => {
     host_time: clip(b.host_time, 40),
     host_tz: clip(b.host_tz, 64),
   };
+  // The updater sends each change file new in the build it would install
+  // as "<file name>\n<contents>". pending_changes_sent=1 marks a report that
+  // carries the full set (possibly empty); without it the last set stays.
+  let pending = null;
+  if (b.pending_changes_sent === '1') {
+    const raw = [].concat(b.pending_change ?? []).slice(0, 200);
+    pending = raw
+      .map((s) => {
+        const text = String(s);
+        const nl = text.indexOf('\n');
+        return nl > 0 ? parseChange(text.slice(0, nl).trim(), text.slice(nl + 1)) : null;
+      })
+      .filter(Boolean);
+    const total = Number(b.pending_changes_total);
+    pending = { total: Number.isInteger(total) && total >= pending.length ? total : pending.length, entries: pending };
+  }
   try {
     await pool.query(
       `UPDATE update_settings
           SET last_report = $1, host_last_seen_at = NOW(),
-              update_requested_at = CASE WHEN $2 THEN NULL ELSE update_requested_at END
+              update_requested_at = CASE WHEN $2 THEN NULL ELSE update_requested_at END,
+              pending_changes = CASE WHEN $3 THEN $4::jsonb ELSE pending_changes END
         WHERE id = 1`,
-      [report, b.handled_request === '1'],
+      [report, b.handled_request === '1', pending !== null, JSON.stringify(pending)],
     );
     if (EVENT_STATUSES.includes(b.status)) {
       await pool.query(

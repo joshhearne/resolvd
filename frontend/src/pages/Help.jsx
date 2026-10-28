@@ -492,7 +492,7 @@ function SectionAdmin({ role }) {
           <Feature name="AI Assist — provider, model, project context" roles={PRIV} note="BYO-AI org config + per-user keys; rewrite surfaces on comments, descriptions, canned responses." />
           <Feature name="Authentication — MFA policy, SSO / Azure AD" roles={["Admin"]} />
           <Feature name="Branding — logo, site name, colors, locale defaults" roles={PRIV} />
-          <Feature name="System health — scheduler heartbeats + DB / queue stats" roles={PRIV} note="Auto-refreshes every 30s; shows ok / stale / error / never_ran per scheduled job. Build info card at the top displays the running version / commit / built-at. Admins also get the Updates panel: update channel (Production / Development / Manual), update hour, what's running vs. available, and recent updates. Docker installs only update when the host updater is installed; see the README's Updates section." />
+          <Feature name="System health — scheduler heartbeats + DB / queue stats" roles={PRIV} note="Auto-refreshes every 30s; shows ok / stale / error / never_ran per scheduled job. Build info card at the top displays the running version / commit / built-at. Admins also get the Updates panel: update channel (Production / Development / Manual), update hour, what's running vs. available, recent updates, and a preview of the changes in the next update. Docker installs only update when the host updater is installed; see the README's Updates section." />
           <Feature name="Login security — failed-login forensics" roles={["Admin"]} note="Raw + per-IP / per-email aggregates. Backed by the per-IP block + dwell timer + honeypot pipeline." />
           <Feature name="Support — issue JIT access grants" roles={["Admin"]} note="Time-limited read grants for Support role users." />
           <Feature name="Export — full data export" roles={PRIV} />
@@ -545,6 +545,7 @@ function SectionNotifications({ role }) {
         <Feature name="In-app tray with all 6 event types" roles="all" note="Bell icon. Mention rows scroll-and-flash to the specific comment. (v0.10.0) Mention emails deep-link to the response too." />
         <Feature name="New-ticket fanout to Admins / Managers" roles={PRIV} note="(v0.10.0) Every create path — form, inbound email, alert promotion — notifies active Admins and Managers. In-app on, email off by default." />
         <Feature name="Browser push (opt-in)" roles="all" note="Requires permission per device. Mention defaults on; other events default off." />
+        <Feature name="What's new after an update" roles="all" note="A pop-up lists what changed in the update: new features (blue), improvements (green), fixes (orange). It stays in the bell as &quot;Resolvd was updated&quot;. Admins, Managers and Techs see every change; everyone else sees only the changes that affect them." />
         <Feature name="Mark all read" roles="all" />
         <Feature name="Auto-follow on comment + mention" roles={["Admin","Manager","Submitter"]} note="Posting a comment subscribes you to the ticket; being mentioned subscribes you." />
       </div>

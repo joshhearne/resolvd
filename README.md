@@ -977,6 +977,8 @@ The user it runs as needs Docker access (the `docker` group). The installer firs
 
 Auto-updates expect the standard setup: a git checkout with no local edits to tracked files (put local overrides in `.env` or `docker-compose.override.yml`), running the published images.
 
+**What's new.** After an update, people get a **What's new: `<version>`** pop-up (`v1.2.3` on Production, `dev-<commit>` on Development) and a "Resolvd was updated" entry in the notification bell that reopens it. Changes are listed as new features (blue), improvements (green) and fixes (orange). Admins, Managers and Techs see every change; Submitters and Viewers see only the ones marked for everyone, and get nothing when an update has none. Before an update installs, admins can preview its changes under Admin → System health → Updates. The lists come from the change files described under [Releases](#change-files).
+
 ### Building from source
 
 To run images built from your checkout instead of the published ones:
@@ -1003,6 +1005,20 @@ Resolvd follows **semantic versioning** (`vMAJOR.MINOR.PATCH`):
 - **`dev`** — integration branch. Feature branches merge here by PR. Each merge publishes `:dev-<sha>` images, and Development-channel servers pick them up that night.
 - **`main`** — releases only. It moves forward when `dev` is promoted.
 
+### Change files
+
+Every PR with a user-visible change adds a file to `backend/changes/`. These files feed the in-app What's new pop-up and the admin update preview. See [`backend/changes/README.md`](backend/changes/README.md) for the format:
+
+```markdown
+---
+type: improvement    # feature | improvement | fix
+audience: everyone   # everyone | staff (default)
+---
+The ticket list loads faster on large projects.
+```
+
+Mark an entry `audience: everyone` only when Submitters and Viewers will notice the change. Dependency bumps, refactors and CI changes don't need a file. Smaller, more frequent updates keep each pop-up short.
+
 ### Cutting a release
 
 ```bash
@@ -1020,7 +1036,7 @@ Pushing the tag runs `.github/workflows/images.yml`, which publishes `:v1.2.3` (
 - publishes a GitHub Release with that body,
 - marks any tag containing a hyphen (`v1.2.3-rc.1`, `v1.2.3-beta.0`) as a pre-release.
 
-`.github/workflows/notify-website.yml` listens for `release: published` and POSTs the configured deploy hook (Vercel / Netlify / Cloudflare Pages — set `RESOLVD_DEPLOY_HOOK_URL` in repo Secrets) so the marketing site's changelog rebuilds with the new release.
+- POSTs the marketing site's deploy hook (Vercel / Netlify / Cloudflare Pages; set `RESOLVD_DEPLOY_HOOK_URL` in repo Secrets) so its changelog rebuilds with the new release.
 
 ### Repository setup (one time)
 
