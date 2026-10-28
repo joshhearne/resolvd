@@ -4,7 +4,7 @@ import { describe, it, expect } from 'vitest';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { holidayMatcher, occurrences, nextOccurrence, describeRule, nthWeekdayDay } = require('../services/holidays');
+const { holidayMatcher, holidayClosures, occurrences, nextOccurrence, describeRule, nthWeekdayDay, validRule } = require('../services/holidays');
 
 const dates = (rules, from, to = from) => occurrences(rules, from, to).map((o) => o.date);
 
@@ -88,5 +88,55 @@ describe('nextOccurrence / describeRule', () => {
     expect(describeRule({ kind: 'nth_weekday', month: 5, weekday: 1, nth: -1 })).toBe('last Monday of May');
     expect(describeRule({ kind: 'date', date: '2000-12-25', recurring: true })).toBe('Every December 25');
     expect(describeRule({ kind: 'date', date: '2026-06-08' })).toBe('2026-06-08');
+  });
+});
+
+describe('spans and early closes', () => {
+  const thanksgiving = { kind: 'nth_weekday', month: 11, weekday: 4, nth: 4, span_days: 2 };
+
+  it('closes consecutive days from the date taken', () => {
+    const closed = holidayMatcher([thanksgiving]);
+    expect(closed(2026, 11, 26)).toBe(true);   // Thu
+    expect(closed(2026, 11, 27)).toBe(true);   // Fri
+    expect(closed(2026, 11, 28)).toBe(false);
+    expect(occurrences([thanksgiving], 2026, 2026)[0]).toMatchObject({ date: '2026-11-26', last: '2026-11-27' });
+    // A dated span works the same: 11/26–27 this year only.
+    expect(holidayMatcher([{ kind: 'date', date: '2026-11-26', span_days: 2 }])(2026, 11, 27)).toBe(true);
+  });
+
+  it('runs a span across the year boundary', () => {
+    const closed = holidayMatcher([{ kind: 'date', date: '2026-12-31', span_days: 2 }]);
+    expect(closed(2026, 12, 31)).toBe(true);
+    expect(closed(2027, 1, 1)).toBe(true);
+    expect(closed(2027, 1, 2)).toBe(false);
+  });
+
+  it('an early close is open, with a closing time', () => {
+    const early = { kind: 'date', date: '2026-11-25', closes_at: '12:00' };
+    expect(holidayMatcher([early])(2026, 11, 25)).toBe(false);
+    expect(holidayClosures([early])(2026, 11, 25)).toEqual({ closesAt: '12:00' });
+    expect(holidayClosures([early])(2026, 11, 24)).toBeNull();
+  });
+
+  it('a whole day beats an early close; the earlier close wins', () => {
+    const at = (rules) => holidayClosures(rules)(2026, 11, 25);
+    expect(at([{ date: '2026-11-25', closes_at: '12:00' }, { date: '2026-11-25' }])).toEqual({ closesAt: null });
+    expect(at([{ date: '2026-11-25', closes_at: '15:00' }, { date: '2001-11-25', recurring: true, closes_at: '12:00' }]))
+      .toEqual({ closesAt: '12:00' });
+  });
+
+  it('validates span and closing time', () => {
+    expect(validRule({ date: '2026-11-26', span_days: 14 })).toBe(true);
+    expect(validRule({ date: '2026-11-26', span_days: 15 })).toBe(false);
+    expect(validRule({ date: '2026-11-26', span_days: 0 })).toBe(false);
+    expect(validRule({ date: '2026-11-26', closes_at: '24:00' })).toBe(false);
+    expect(validRule({ date: '2026-11-26', closes_at: '12:00', span_days: 2 })).toBe(false);
+  });
+
+  it('describes spans and early closes; next covers a span under way', () => {
+    expect(describeRule(thanksgiving)).toBe('4th Thursday of November · 2 days');
+    expect(describeRule({ kind: 'date', date: '2026-11-25', closes_at: '12:00' })).toBe('2026-11-25 · closes 12:00');
+    expect(nextOccurrence(thanksgiving, '2026-11-27')).toBe('2026-11-26');
+    expect(nextOccurrence(thanksgiving, '2026-11-28')).toBe('2027-11-25');
   });
 });

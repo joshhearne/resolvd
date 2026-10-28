@@ -50,7 +50,8 @@ router.get('/business-hours', requireAuth, requireRole('Admin', 'Manager'), asyn
                SELECT json_agg(json_build_object(
                         'id', h.id, 'kind', h.kind, 'date', to_char(h.holiday_date, 'YYYY-MM-DD'),
                         'name', h.name, 'recurring', h.recurring, 'month', h.month,
-                        'weekday', h.weekday, 'nth', h.nth, 'observed', h.observed)
+                        'weekday', h.weekday, 'nth', h.nth, 'observed', h.observed,
+                        'span_days', h.span_days, 'closes_at', to_char(h.closes_at, 'HH24:MI'))
                       ORDER BY COALESCE(EXTRACT(MONTH FROM h.holiday_date)::int, h.month), h.id)
                  FROM business_hours_holidays h WHERE h.business_hours_id = b.id
              ), '[]'::json) AS holidays
@@ -172,8 +173,10 @@ function localToday(tz) {
 }
 
 // POST /api/sla/business-hours/:id/holidays
-//   { kind: 'date', date: 'YYYY-MM-DD', recurring?, name?, observed? }
-//   { kind: 'nth_weekday', month: 1-12, weekday: 0-6, nth: 1-5 | -1, name?, observed? }
+//   { kind: 'date', date: 'YYYY-MM-DD', recurring?, name?, observed?, span_days?, closes_at? }
+//   { kind: 'nth_weekday', month: 1-12, weekday: 0-6, nth: 1-5 | -1, name?, observed?, span_days?, closes_at? }
+// span_days 1-14 (default 1) closes consecutive days; closes_at 'HH:MM'
+// makes a single day an early close instead of a full day off.
 router.post('/business-hours/:id/holidays', requireAuth, requireRole('Admin'), async (req, res) => {
   const b = req.body || {};
   const kind = b.kind || 'date';
@@ -181,9 +184,20 @@ router.post('/business-hours/:id/holidays', requireAuth, requireRole('Admin'), a
   if (kind === 'date' && (!/^\d{4}-\d{2}-\d{2}$/.test(String(b.date || '')) || Number.isNaN(Date.parse(`${b.date}T00:00:00Z`)))) {
     return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
   }
+  const spanDays = b.span_days == null || b.span_days === '' ? 1 : Number(b.span_days);
+  if (!Number.isInteger(spanDays) || spanDays < 1 || spanDays > holidays.MAX_SPAN) {
+    return res.status(400).json({ error: `span_days must be 1–${holidays.MAX_SPAN}` });
+  }
+  const closesAt = b.closes_at ? String(b.closes_at).slice(0, 5) : null;
+  if (closesAt && !/^([01]\d|2[0-3]):[0-5]\d$/.test(closesAt)) {
+    return res.status(400).json({ error: 'closes_at must be HH:MM' });
+  }
+  if (closesAt && spanDays !== 1) {
+    return res.status(400).json({ error: 'an early close is a single day — use span_days 1' });
+  }
   const rule = kind === 'date'
-    ? { kind, date: b.date, recurring: !!b.recurring }
-    : { kind, month: b.month, weekday: b.weekday, nth: b.nth };
+    ? { kind, date: b.date, recurring: !!b.recurring, span_days: spanDays, closes_at: closesAt }
+    : { kind, month: b.month, weekday: b.weekday, nth: b.nth, span_days: spanDays, closes_at: closesAt };
   if (!holidays.validRule(rule)) {
     return res.status(400).json({ error: 'nth_weekday needs month 1–12, weekday 0–6 (Sun–Sat) and nth 1–5 or -1 (last)' });
   }
@@ -193,10 +207,12 @@ router.post('/business-hours/:id/holidays', requireAuth, requireRole('Admin'), a
   try {
     const r = await pool.query(
       `INSERT INTO business_hours_holidays
-         (business_hours_id, kind, holiday_date, recurring, month, weekday, nth, observed, name)
-       VALUES ($1, $2, $3::date, $4, $5, $6, $7, $8, $9)
+         (business_hours_id, kind, holiday_date, recurring, month, weekday, nth, observed, name,
+          span_days, closes_at)
+       VALUES ($1, $2, $3::date, $4, $5, $6, $7, $8, $9, $10, $11::time)
        RETURNING id, kind, to_char(holiday_date, 'YYYY-MM-DD') AS date, recurring,
-                 month, weekday, nth, observed, name`,
+                 month, weekday, nth, observed, name, span_days,
+                 to_char(closes_at, 'HH24:MI') AS closes_at`,
       [
         Number(req.params.id), kind,
         kind === 'date' ? b.date : null,
@@ -206,6 +222,7 @@ router.post('/business-hours/:id/holidays', requireAuth, requireRole('Admin'), a
         kind === 'nth_weekday' ? b.nth : null,
         !!b.observed,
         b.name ? String(b.name).trim().slice(0, 120) : null,
+        spanDays, closesAt,
       ]
     );
     res.status(201).json(r.rows[0]);
