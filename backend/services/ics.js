@@ -1,6 +1,6 @@
 // Minimal iCalendar (RFC 5545) writer for subscribable feeds. Only what
-// read-only calendars need: VCALENDAR + VEVENT with UTC times, text
-// escaping and 75-octet line folding.
+// read-only calendars need: VCALENDAR + VEVENT with UTC times or all-day
+// dates, text escaping and 75-octet line folding.
 
 const CRLF = '\r\n';
 
@@ -35,8 +35,16 @@ function fold(line) {
   return parts.join(`${CRLF} `);
 }
 
+// 'YYYY-MM-DD' → 20261225 (DATE value for all-day events)
+function dateStamp(isoDate) {
+  return String(isoDate).replace(/-/g, '');
+}
+
 // events: [{ uid, start, end, summary, description?, location?, url?,
-//            categories?: [], updated?, sequence?, status? }]
+//            categories?: [], updated?, sequence?, status?,
+//            allDay?, transparent? }]
+// allDay events take start/end as 'YYYY-MM-DD' (end exclusive, per RFC
+// 5545). transparent marks the event as not busy (holidays).
 function buildCalendar({ name, description, events, now = new Date() }) {
   const lines = [
     'BEGIN:VCALENDAR',
@@ -54,8 +62,13 @@ function buildCalendar({ name, description, events, now = new Date() }) {
     lines.push('BEGIN:VEVENT');
     lines.push(`UID:${ev.uid}`);
     lines.push(`DTSTAMP:${stamp}`);
-    lines.push(`DTSTART:${utcStamp(ev.start)}`);
-    lines.push(`DTEND:${utcStamp(ev.end)}`);
+    if (ev.allDay) {
+      lines.push(`DTSTART;VALUE=DATE:${dateStamp(ev.start)}`);
+      lines.push(`DTEND;VALUE=DATE:${dateStamp(ev.end)}`);
+    } else {
+      lines.push(`DTSTART:${utcStamp(ev.start)}`);
+      lines.push(`DTEND:${utcStamp(ev.end)}`);
+    }
     lines.push(`SUMMARY:${escapeText(ev.summary)}`);
     if (ev.description) lines.push(`DESCRIPTION:${escapeText(ev.description)}`);
     if (ev.location) lines.push(`LOCATION:${escapeText(ev.location)}`);
@@ -64,11 +77,11 @@ function buildCalendar({ name, description, events, now = new Date() }) {
     if (ev.updated) lines.push(`LAST-MODIFIED:${utcStamp(ev.updated)}`);
     if (Number.isInteger(ev.sequence)) lines.push(`SEQUENCE:${ev.sequence}`);
     lines.push(`STATUS:${ev.status || 'CONFIRMED'}`);
-    lines.push('TRANSP:OPAQUE');
+    lines.push(`TRANSP:${ev.transparent ? 'TRANSPARENT' : 'OPAQUE'}`);
     lines.push('END:VEVENT');
   }
   lines.push('END:VCALENDAR');
   return lines.map(fold).join(CRLF) + CRLF;
 }
 
-module.exports = { buildCalendar, escapeText, utcStamp, fold };
+module.exports = { buildCalendar, escapeText, utcStamp, dateStamp, fold };

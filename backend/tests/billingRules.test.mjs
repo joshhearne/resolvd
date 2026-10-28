@@ -30,6 +30,11 @@ describe('hoursClass', () => {
     expect(hoursClass('2026-10-21T23:30:00Z', bh)).toBe('after_hours'); // Wed 18:30 CDT
     expect(hoursClass('2026-10-24T15:00:00Z', bh)).toBe('weekend');     // Sat
   });
+  it('prices a holiday on the policy like a weekend', () => {
+    const hol = { ...bh, holidays: [{ date: '2026-10-21' }] };
+    expect(hoursClass('2026-10-21T15:00:00Z', hol)).toBe('weekend');    // Wed 10:00 CDT, holiday
+    expect(hoursClass('2026-10-22T15:00:00Z', hol)).toBe('business');   // Thu unaffected
+  });
   it('without a policy, only Sat/Sun count (in the org zone)', () => {
     expect(hoursClass('2026-10-21T23:30:00Z', null, 'America/Chicago')).toBe('business');
     expect(hoursClass('2026-10-25T03:00:00Z', null, 'America/Chicago')).toBe('weekend'); // Sat 22:00 CDT

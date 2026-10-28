@@ -21,6 +21,7 @@
 // Money is integer cents throughout.
 
 const tt = require('./timeTrackingRules');
+const { holidayMatcher } = require('./holidays');
 
 const BEHAVIORS = ['hourly', 'prepaid_block', 'covered', 'non_billable'];
 const WEEKDAY = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
@@ -50,19 +51,23 @@ function resolveRate(card, rates, entry) {
 function wallParts(date, tz) {
   const fmt = new Intl.DateTimeFormat('en-US', {
     timeZone: tz || 'UTC', weekday: 'short', hour: '2-digit', minute: '2-digit', hour12: false,
+    year: 'numeric', month: '2-digit', day: '2-digit',
   });
   const out = {};
   for (const p of fmt.formatToParts(new Date(date))) {
     if (p.type === 'weekday') out.weekday = WEEKDAY[p.value];
     else if (p.type === 'hour') out.hour = Number(p.value) % 24;
     else if (p.type === 'minute') out.minute = Number(p.value);
+    else if (p.type === 'year') out.year = Number(p.value);
+    else if (p.type === 'month') out.month = Number(p.value);
+    else if (p.type === 'day') out.day = Number(p.value);
   }
   return out;
 }
 
 // 'business' | 'after_hours' | 'weekend' for an instant. With a business-
-// hours policy: a day outside its days is weekend; outside its window is
-// after-hours. Without one: Sat/Sun (in `tz`) are weekend, nothing is
+// hours policy: a day outside its days, or one of its holidays, is
+// weekend; outside its window is after-hours. Without one: Sat/Sun (in `tz`) are weekend, nothing is
 // after-hours.
 function hoursClass(date, bh, tz) {
   const zone = (bh && bh.enabled !== false && bh.tz) || tz || 'UTC';
@@ -71,6 +76,7 @@ function hoursClass(date, bh, tz) {
   if (!bh || bh.enabled === false) return p.weekday === 0 || p.weekday === 6 ? 'weekend' : 'business';
   const days = Array.isArray(bh.days) ? bh.days.map(Number) : [1, 2, 3, 4, 5];
   if (!days.includes(p.weekday)) return 'weekend';
+  if (holidayMatcher(bh.holidays)(p.year, p.month, p.day)) return 'weekend';
   const [sh, sm] = String(bh.start_time || '09:00').split(':').map(Number);
   const [eh, em] = String(bh.end_time || '17:00').split(':').map(Number);
   const mins = p.hour * 60 + p.minute;

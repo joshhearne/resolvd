@@ -2013,8 +2013,6 @@ async function initSchema() {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
-    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_business_hours_org_default
-      ON business_hours_policies((project_id IS NULL)) WHERE project_id IS NULL`);
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_business_hours_project
       ON business_hours_policies(project_id) WHERE project_id IS NOT NULL`);
     // SLA policy can pin a business-hours policy. NULL = clock runs
@@ -2028,6 +2026,63 @@ async function initSchema() {
       SELECT 'Org default — Mon–Fri 9–5 CT', NULL, 'America/Chicago', ARRAY[1,2,3,4,5], '09:00', '17:00', TRUE
       WHERE NOT EXISTS (SELECT 1 FROM business_hours_policies WHERE project_id IS NULL)
     `);
+
+    // Holiday / exception dates: closed days overlaid on a business-hours
+    // policy. The SLA clock and escalation delays skip them like a
+    // weekend; billing prices them at the weekend multiplier. recurring
+    // repeats the month/day every year (fixed-date holidays only —
+    // "4th Thursday" style dates are entered per year).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS business_hours_holidays (
+        id SERIAL PRIMARY KEY,
+        business_hours_id INTEGER NOT NULL REFERENCES business_hours_policies(id) ON DELETE CASCADE,
+        holiday_date DATE NOT NULL,
+        name TEXT,
+        recurring BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (business_hours_id, holiday_date)
+      )
+    `);
+    // Rule-based holidays: kind 'nth_weekday' = "the nth (1-5, or -1 =
+    // last) <weekday> of <month>" every year, e.g. the 4th Thursday of
+    // November. observed moves a Saturday holiday to Friday and a Sunday
+    // one to Monday. Rule rows leave holiday_date NULL. No holiday set is
+    // seeded — each organisation enters its own. See services/holidays.js.
+    await client.query(`ALTER TABLE business_hours_holidays ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'date'`);
+    await client.query(`ALTER TABLE business_hours_holidays ADD COLUMN IF NOT EXISTS month INTEGER`);
+    await client.query(`ALTER TABLE business_hours_holidays ADD COLUMN IF NOT EXISTS weekday INTEGER`);
+    await client.query(`ALTER TABLE business_hours_holidays ADD COLUMN IF NOT EXISTS nth INTEGER`);
+    await client.query(`ALTER TABLE business_hours_holidays ADD COLUMN IF NOT EXISTS observed BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`ALTER TABLE business_hours_holidays ALTER COLUMN holiday_date DROP NOT NULL`);
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'business_hours_holidays_shape') THEN
+          ALTER TABLE business_hours_holidays ADD CONSTRAINT business_hours_holidays_shape CHECK (
+            (kind = 'date' AND holiday_date IS NOT NULL)
+            OR (kind = 'nth_weekday' AND month BETWEEN 1 AND 12 AND weekday BETWEEN 0 AND 6
+                AND nth IN (1, 2, 3, 4, 5, -1))
+          );
+        END IF;
+      END $$
+    `);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_business_hours_holidays_rule
+      ON business_hours_holidays(business_hours_id, month, weekday, nth) WHERE kind = 'nth_weekday'`);
+
+    // Per-location business hours. A location-scoped row (location_id
+    // set, project_id NULL) replaces the SLA policy's pinned window for
+    // tickets at that location — see businessHours.policyForSla.
+    // One org default: project_id AND location_id both NULL. (The
+    // pre-location index keyed on project_id IS NULL alone.)
+    await client.query(`ALTER TABLE business_hours_policies ADD COLUMN IF NOT EXISTS location_id INTEGER REFERENCES locations(id) ON DELETE CASCADE`);
+    await client.query(`DROP INDEX IF EXISTS idx_business_hours_org_default`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_business_hours_org_default_v2
+      ON business_hours_policies((project_id IS NULL)) WHERE project_id IS NULL AND location_id IS NULL`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_business_hours_location
+      ON business_hours_policies(location_id) WHERE location_id IS NOT NULL`);
+    // Ticket's site. Stamped on create from the submitter's company
+    // membership (company_members.location_id); editable on the ticket.
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL`);
 
     // Backfill warn_at on existing tickets: warn_at = created_at +
     // ((due_at - created_at) * threshold / 100). Idempotent — only
@@ -2046,6 +2101,51 @@ async function initSchema() {
     `);
 
     await client.query(`INSERT INTO system_jobs (name) VALUES ('sla_breach_check') ON CONFLICT DO NOTHING`);
+
+    // Outbound SLA webhooks (Slack / Teams / PagerDuty / generic) fired on
+    // warn + breach next to the in-app/email fanout — services/slaWebhooks.js.
+    // target_enc holds the URL or PagerDuty routing key, secret_enc the
+    // generic signing secret; both encrypted, never returned to clients
+    // (target_hint is the masked display). project_id NULL = every
+    // project; max_priority N fires for P1..PN.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS sla_webhooks (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('slack', 'teams', 'pagerduty', 'generic')),
+        target_enc BYTEA NOT NULL,
+        target_hint TEXT,
+        secret_enc BYTEA,
+        project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+        events TEXT[] NOT NULL DEFAULT ARRAY['breach_response', 'breach_resolve']::TEXT[],
+        max_priority INTEGER NOT NULL DEFAULT 5 CHECK (max_priority BETWEEN 1 AND 5),
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        last_sent_at TIMESTAMPTZ,
+        last_ok BOOLEAN,
+        last_error TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    // Delivery log. dedup_key + resolved_at track open PagerDuty
+    // incidents so the sweep can resolve them when the ticket resolves.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS sla_webhook_deliveries (
+        id SERIAL PRIMARY KEY,
+        webhook_id INTEGER NOT NULL REFERENCES sla_webhooks(id) ON DELETE CASCADE,
+        ticket_id INTEGER REFERENCES tickets(id) ON DELETE CASCADE,
+        event TEXT NOT NULL,
+        ok BOOLEAN NOT NULL,
+        http_status INTEGER,
+        error TEXT,
+        dedup_key TEXT,
+        resolved_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_sla_webhook_deliveries_hook ON sla_webhook_deliveries(webhook_id, created_at DESC)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_sla_webhook_deliveries_open
+      ON sla_webhook_deliveries(ticket_id) WHERE dedup_key IS NOT NULL AND resolved_at IS NULL AND ok = TRUE`);
 
     // Auto-assignment policies. Same (priority, project_id) scoping as
     // sla_policies — project-specific row beats org default. Strategy
@@ -2188,6 +2288,41 @@ async function initSchema() {
     // an admin overriding priority on a previously-escalated ticket
     // shouldn't re-arm the chain at a different tier).
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS escalation_priority_snapshot INTEGER CHECK (escalation_priority_snapshot BETWEEN 1 AND 5)`);
+
+    // On-call rotations for notify_oncall / reassign_oncall escalation
+    // actions. A rotation cycles member_ids in order, shift_hours each,
+    // starting at handoff_at — who is on call is computed, not stored
+    // (services/oncall.js). project_id NULL = org-wide; a project's own
+    // rotations beat org-wide ones. Overrides put a user on call for a
+    // window (swaps, leave cover) and beat the rotation.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS oncall_rotations (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+        member_ids INTEGER[] NOT NULL DEFAULT '{}'::int[],
+        shift_hours INTEGER NOT NULL DEFAULT 168 CHECK (shift_hours BETWEEN 1 AND 8760),
+        handoff_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_oncall_rotations_project ON oncall_rotations(project_id) WHERE enabled = TRUE`);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS oncall_overrides (
+        id SERIAL PRIMARY KEY,
+        rotation_id INTEGER NOT NULL REFERENCES oncall_rotations(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        starts_at TIMESTAMPTZ NOT NULL,
+        ends_at TIMESTAMPTZ NOT NULL,
+        note TEXT,
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CHECK (ends_at > starts_at)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_oncall_overrides_rotation ON oncall_overrides(rotation_id, ends_at)`);
 
     // Sensible org-default targets per priority. Idempotent: only inserts
     // when the row doesn't already exist. Customers tune these in the
@@ -3172,6 +3307,11 @@ Thanks,
     // for a fresh install.
     await client.query(`ALTER TABLE auto_resolve_settings ADD COLUMN IF NOT EXISTS reply_stale_days INTEGER NOT NULL DEFAULT 30`);
     await client.query(`ALTER TABLE auto_resolve_settings ADD COLUMN IF NOT EXISTS suppress_ooo_replies BOOLEAN NOT NULL DEFAULT TRUE`);
+    // External-escalation auto-advance: the first time a vendor ref is
+    // written onto a ticket still in the initial external status, move
+    // external forward (Unacknowledged → Acknowledged by default) and let
+    // 'mirror' status mappings carry the internal status along.
+    await client.query(`ALTER TABLE auto_resolve_settings ADD COLUMN IF NOT EXISTS external_ref_auto_advance BOOLEAN NOT NULL DEFAULT TRUE`);
 
     // ── Trove KB (external knowledge base) ──────────────────────────────────
     // Trove KB (trove-kb.gomotx.com) is the company documentation platform.
@@ -3517,6 +3657,39 @@ Thanks,
     await client.query(`ALTER TABLE time_entries ADD COLUMN IF NOT EXISTS approved_by INTEGER REFERENCES users(id) ON DELETE SET NULL`);
     // Overlap checks scan a tech's entries by time range.
     await client.query(`CREATE INDEX IF NOT EXISTS idx_time_entries_user_span ON time_entries(user_id, started_at, ended_at)`);
+
+    // ── Automatic updates (Admin → System health) ───────────────────────
+    // The admin's update policy, read by the host updater
+    // (deploy/resolvd-update.sh) over /api/system-updates/policy. The app
+    // never runs Docker itself; it only stores the choice and the reports
+    // the host sends back. Defaults to manual: nothing updates until an
+    // admin opts in.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS update_settings (
+        id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+        channel TEXT NOT NULL DEFAULT 'manual'
+          CHECK (channel IN ('production', 'development', 'manual')),
+        update_hour INTEGER NOT NULL DEFAULT 3 CHECK (update_hour BETWEEN 0 AND 23),
+        update_requested_at TIMESTAMPTZ,
+        host_last_seen_at TIMESTAMPTZ,
+        last_report JSONB,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`INSERT INTO update_settings (id) VALUES (1) ON CONFLICT DO NOTHING`);
+    // Updates, rollbacks and failures the host reported (routine "checked,
+    // nothing new" reports only refresh update_settings.last_report).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS update_events (
+        id BIGSERIAL PRIMARY KEY,
+        at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        status TEXT NOT NULL,
+        channel TEXT,
+        from_version TEXT,
+        to_version TEXT,
+        message TEXT
+      )
+    `);
 
     await client.query('COMMIT');
   } catch (err) {

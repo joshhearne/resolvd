@@ -1,5 +1,6 @@
 import { useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
+import NumberInput from "./NumberInput";
 
 // Clock-face time picker, modelled on Android's Material dialog: tap or
 // drag around the dial for the hour, then the minutes, flip AM/PM, or
@@ -96,16 +97,16 @@ export default function ClockPicker({ hours, minutes, snap = "five", onConfirm, 
         <div className="flex items-center justify-center gap-3 mb-3">
           {typing ? (
             <div className="flex items-center gap-1 text-3xl font-mono">
-              <input
-                type="number" inputMode="numeric" min="1" max="12" value={h12}
-                onChange={(e) => setH12(Math.min(12, Math.max(1, Number(e.target.value) || 1)))}
+              <NumberInput
+                inputMode="numeric" min="1" max="12" value={h12}
+                onChange={(n) => setH12(Math.min(12, Math.max(1, Math.round(n) || 1)))}
                 className="input w-16 text-2xl text-center py-1" aria-label="Hour"
                 autoFocus
               />
               <span>:</span>
-              <input
-                type="number" inputMode="numeric" min="0" max="59" value={String(m).padStart(2, "0")}
-                onChange={(e) => setM(Math.min(59, Math.max(0, Number(e.target.value) || 0)))}
+              <NumberInput
+                inputMode="numeric" min="0" max="59" value={m} format={(v) => String(v).padStart(2, "0")}
+                emptyValue={0} onChange={(n) => setM(Math.min(59, Math.max(0, Math.round(n) || 0)))}
                 className="input w-16 text-2xl text-center py-1" aria-label="Minute"
               />
             </div>

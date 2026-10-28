@@ -22,9 +22,11 @@ Internal issue and project tracking — keep every ticket in reach until it's cl
 cp .env.example .env
 # Fill in required values — see Environment Variables below
 mkdir -p data/uploads
-docker compose up -d --build
+docker compose up -d
 docker compose logs -f
 ```
+
+`docker compose up` pulls the published images (`ghcr.io/joshhearne/resolvd-backend` / `-frontend`) for `RESOLVD_IMAGE_TAG` (default `stable`, the latest release). To build from this checkout instead, see [Building from source](#building-from-source).
 
 The stack binds to `127.0.0.1:8090`. A host proxy (nginx, Caddy) or `cloudflared` tunnel handles TLS and forwards there. For a full server setup, see [Running on a VPS](#running-on-a-vps).
 
@@ -60,10 +62,9 @@ Set at least these in `.env` (full list under [Environment Variables](#environme
 | `COOKIE_SECURE` | `true` |
 | `RESOLVD_MASTER_KEY` | `openssl rand -base64 32`. **Store a copy off the server**; encrypted data and AI keys can't be recovered without it. |
 
-Leave the Entra / Google variables empty to start with local accounts only. Then build and start:
+Leave the Entra / Google variables empty to start with local accounts only. Then start it (this pulls the latest release's images):
 
 ```bash
-./scripts/build-with-version.sh   # docker compose build, stamped with the git version
 docker compose up -d
 ```
 
@@ -93,12 +94,20 @@ With a Cloudflare Tunnel, only SSH needs to be open.
 
 **5. First login.** Open `https://issues.example.com`. With no users yet, the login page offers to create the first admin (see [First-time setup](#first-time-setup-bootstrap)).
 
-**Updating.** Schema changes apply automatically when the backend starts:
+**6. Automatic updates (optional).** Install the host updater, then pick a channel in **Admin → System health → Updates**:
 
 ```bash
-git pull
-./scripts/build-with-version.sh
-docker compose up -d
+sudo deploy/install-updater.sh
+```
+
+Details in [Updates](#updates).
+
+**Updating by hand.** Without the updater (or on the Manual channel), check out the release you want and pull its images. Schema changes apply automatically when the backend starts:
+
+```bash
+git fetch --tags && git checkout v1.4.0
+sed -i 's/^RESOLVD_IMAGE_TAG=.*/RESOLVD_IMAGE_TAG=v1.4.0/' .env   # add the line if it's missing
+docker compose pull && docker compose up -d
 ```
 
 **Backups.** Schedule the commands in [Backup](#backup) (e.g. a nightly cron job) and copy the files off the server. Keep `RESOLVD_MASTER_KEY` with them, but stored separately.
@@ -119,6 +128,8 @@ docker compose up -d
 | `UPLOADS_DIR` | no | Attachment dir (default `/data/uploads`) |
 | `MAX_UPLOAD_MB` | no | Max attachment size (default `50`) |
 | `COMPOSE_PROJECT_NAME` | no | Override Compose project (preserve volumes after dir rename) |
+| `RESOLVD_IMAGE_TAG` | no | Which published images to run: a release (`v1.4.0`), a dev build (`dev-<sha>`), or `stable` (default). Managed by the host updater when it's installed. |
+| `RESOLVD_UPDATER_TOKEN` | no | Shared secret between the host updater and the app. `deploy/install-updater.sh` generates it. |
 
 ### Microsoft Entra ID (login + email backend OAuth)
 
@@ -930,8 +941,52 @@ Surfaces:
 - **Alert sources** — event count + last_seen per source, with link to manage
 - **Email backends** — active, inbox monitor, last test
 - **Inbound email queue** — counts per status (unmatched / matched / discarded / spam)
+- **Updates** (Admin only) — update channel and hour, what's running vs. available, the host updater's last check-in, recent updates and rollbacks. See [Updates](#updates).
 
 Manager role gets read access; Admin sees the same view.
+
+---
+
+## Updates
+
+Docker installs can update themselves overnight. A small script on the host (`deploy/resolvd-update.sh`, run by a systemd timer every 10 minutes) does the work. The containers never get Docker access: the app only stores the admin's choice and shows the results.
+
+**Channels** (Admin → System health → Updates):
+
+| Channel | Gets | Use for |
+|---|---|---|
+| **Production** | Each new release (`vX.Y.Z` tag on `main`) | Live servers |
+| **Development** | The latest `dev` build, nightly | Test / staging servers |
+| **Manual** (default) | Nothing automatically; the panel shows what's available | Admins who update by hand |
+
+At the chosen **update hour** (server time), or when an admin presses **Update now**, the host script:
+
+1. Skips the update if the target isn't newer than what's running. It never moves to an older build, because the schema only migrates forward. Switching a server from Development to Production therefore waits until a release includes the dev build it's running.
+2. Backs up the database to `backups/pre-update-*.sql.gz`, keeping the last 7.
+3. Checks out the target commit, sets `RESOLVD_IMAGE_TAG` to its images, and restarts the stack. That's a few seconds of downtime.
+4. Waits for `/api/version` to report the new commit. If it doesn't within 3 minutes, it rolls back to the previous commit and images, and skips that build until a newer one appears or an admin presses Update now.
+
+**Install** (once per server, from the Resolvd folder):
+
+```bash
+sudo deploy/install-updater.sh             # runs as the folder's owner
+sudo deploy/install-updater.sh --user ops  # or another user
+```
+
+The user it runs as needs Docker access (the `docker` group). The installer generates `RESOLVD_UPDATER_TOKEN` in `.env`, restarts the backend so it picks the token up, and enables `resolvd-update.timer`. Logs: `journalctl -u resolvd-update.service`. To remove it: `sudo systemctl disable --now resolvd-update.timer`.
+
+Auto-updates expect the standard setup: a git checkout with no local edits to tracked files (put local overrides in `.env` or `docker-compose.override.yml`), running the published images.
+
+### Building from source
+
+To run images built from your checkout instead of the published ones:
+
+```bash
+./scripts/build-with-version.sh
+docker compose -f docker-compose.yml -f docker-compose.build.yml up -d
+```
+
+Source builds are tagged `resolvd-*:local`. Don't combine them with the host updater, which manages the published images.
 
 ---
 
@@ -943,21 +998,40 @@ Resolvd follows **semantic versioning** (`vMAJOR.MINOR.PATCH`):
 - **minor** (`v1.X.0`) — new features, additive schema changes. Roughly monthly.
 - **major** (`vX.0.0`) — breaking schema migrations or API changes. Read the release notes carefully before upgrading.
 
+### Branches
+
+- **`dev`** — integration branch. Feature branches merge here by PR. Each merge publishes `:dev-<sha>` images, and Development-channel servers pick them up that night.
+- **`main`** — releases only. It moves forward when `dev` is promoted.
+
 ### Cutting a release
 
 ```bash
-# 1. Land your changes on main (CI green).
-# 2. Tag locally and push:
-git tag v1.2.3
+# 1. Open a PR dev -> main and merge it with a MERGE COMMIT (not squash/rebase).
+#    Servers only move forward along history, so main must contain dev's commits.
+# 2. Tag the merge and push the tag:
+git fetch origin && git tag v1.2.3 origin/main
 git push origin v1.2.3
 ```
 
-`.github/workflows/release.yml` then:
+3. Merge `main` back into `dev` (a PR `main → dev`) so `dev` contains the release merge commit. Without it, a server on the release can't switch to the Development channel: the updater would see `dev` as older, because `dev` doesn't contain that release commit.
+
+Pushing the tag runs `.github/workflows/images.yml`, which publishes `:v1.2.3` (and moves `:stable`) through the `production` environment. Production-channel servers install it at their next update hour. `.github/workflows/release.yml` also:
 - generates release notes from every commit since the previous tag,
 - publishes a GitHub Release with that body,
 - marks any tag containing a hyphen (`v1.2.3-rc.1`, `v1.2.3-beta.0`) as a pre-release.
 
 `.github/workflows/notify-website.yml` listens for `release: published` and POSTs the configured deploy hook (Vercel / Netlify / Cloudflare Pages — set `RESOLVD_DEPLOY_HOOK_URL` in repo Secrets) so the marketing site's changelog rebuilds with the new release.
+
+### Repository setup (one time)
+
+In GitHub **Settings**:
+
+- **Environments**
+  - `development`: deployment branches limited to `dev`.
+  - `production`: deployment tags limited to `v*`, with required reviewers (the release approvers). Image publishing for a release waits for their approval.
+- **Branches** → rulesets for `dev` and `main`: require a PR and passing CI (`Backend (lint + test)`, `Frontend (build)`). On `main`, allow merge commits; `dev → main` must not be squashed.
+- **Packages**: after the first publish, open each package (`resolvd-backend`, `resolvd-frontend`) → Package settings → set visibility to **Public**, so servers can pull without logging in.
+- **General → Pull Requests**: "Automatically delete head branches" on.
 
 ### Pre-release tracks
 

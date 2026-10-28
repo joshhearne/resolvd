@@ -112,6 +112,28 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager'), async (req, res) 
 });
 
 // GET /api/companies/:id
+// GET /api/companies/locations — every active location with its company,
+// for pickers that span companies (ticket site, business-hours scope).
+router.get('/locations', requireAuth, async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT l.id, l.name, l.location_code, l.timezone, l.company_id,
+              c.name AS company_name, c.name_enc AS company_name_enc
+         FROM locations l
+         JOIN companies c ON c.id = l.company_id
+        WHERE l.is_archived = FALSE
+        ORDER BY l.company_id, l.is_primary DESC, l.name`
+    );
+    // Locations have no encrypted columns; the companies map is used only
+    // for the company_name alias (decryptRow skips tables without a map).
+    await decryptRows('companies', r.rows, { aliases: { company_name: 'companies.name' } });
+    res.json(r.rows);
+  } catch (err) {
+    console.error(err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
 router.get('/:id', requireAuth, async (req, res) => {
   try {
     const result = await pool.query(`

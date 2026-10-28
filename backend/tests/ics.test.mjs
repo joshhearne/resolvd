@@ -45,3 +45,16 @@ describe('ics', () => {
     expect(out.split('\r\n').filter((l) => l && !l.startsWith(' ')).every((l) => /^[A-Z-]+[:;]/.test(l))).toBe(true);
   });
 });
+
+describe('buildCalendar — all-day events', () => {
+  it('writes DATE values and marks holidays free', () => {
+    const out = buildCalendar({
+      name: 'Holidays',
+      events: [{ uid: 'h1@x', start: '2026-11-26', end: '2026-11-27', allDay: true, transparent: true, summary: 'Thanksgiving' }],
+      now: new Date('2026-10-12T21:08:08Z'),
+    });
+    expect(out).toContain('DTSTART;VALUE=DATE:20261126\r\n');
+    expect(out).toContain('DTEND;VALUE=DATE:20261127\r\n');
+    expect(out).toContain('TRANSP:TRANSPARENT\r\n');
+  });
+});

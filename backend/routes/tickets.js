@@ -573,6 +573,34 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter
           );
         }
       }
+      // Filed with the vendor ref already in hand → the external side is
+      // past Unacknowledged. External only: the internal status of a
+      // brand-new ticket stays at its initial value.
+      if (t.external_ticket_ref) {
+        const { getWorkflowAutomationSettings } = require('../services/autoResolve');
+        const { planExternalRefAdvance, loadStatusConfig } = require('../services/externalEscalation');
+        const { external_ref_auto_advance } = await getWorkflowAutomationSettings();
+        const plan = external_ref_auto_advance && planExternalRefAdvance({
+          oldRef: null,
+          newRef: t.external_ticket_ref,
+          explicitInternalStatus: t.internal_status,
+          ticket: t,
+          ...(await loadStatusConfig(client)),
+        });
+        if (plan) {
+          const upd = await client.query(
+            `UPDATE tickets SET external_status = $1, external_updated_at = NOW()
+              WHERE id = $2 RETURNING external_status, external_updated_at`,
+            [plan.externalStatus, t.id]
+          );
+          Object.assign(t, upd.rows[0]);
+          await auditLog(client, {
+            ticketId: t.id, userId: user.id, action: 'external_status_update',
+            oldValue: plan.fromExternalStatus, newValue: plan.externalStatus,
+            note: 'Auto-advanced: created with vendor ticket ref',
+          });
+        }
+      }
       return t;
     });
 
@@ -698,13 +726,15 @@ router.get('/:id', requireAuth, async (req, res) => {
         sub.display_name as submitted_by_name, sub.email as submitted_by_email,
         asgn.display_name as assigned_to_name,
         bt.internal_ref as blocking_ticket_ref, bt.title as blocking_ticket_title, bt.title_enc as blocking_ticket_title_enc, bt.internal_status as blocking_ticket_status,
-        ast.hostname as asset_hostname, ast.serial as asset_serial
+        ast.hostname as asset_hostname, ast.serial as asset_serial,
+        loc.name as location_name
       FROM tickets t
       LEFT JOIN projects proj ON t.project_id = proj.id
       LEFT JOIN users sub ON t.submitted_by = sub.id
       LEFT JOIN users asgn ON t.assigned_to = asgn.id
       LEFT JOIN tickets bt ON t.blocked_by_ticket = bt.id
       LEFT JOIN assets ast ON t.asset_id = ast.id
+      LEFT JOIN locations loc ON t.location_id = loc.id
       WHERE t.id = $1
     `, [req.params.id]);
 
@@ -809,9 +839,33 @@ router.patch('/:id', requireAuth, async (req, res) => {
     const isAdmin = ['Admin', 'Manager', 'Tech'].includes(user.role);
     const isSubmitter = user.role === 'Submitter';
     const updates = {};
-    const body = req.body;
+    // Shallow copy: the external-ref auto-advance below folds its planned
+    // status moves into body so they run through the same paths (audit,
+    // SLA, timers, notifications) as an admin-picked status.
+    const body = { ...(req.body || {}) };
+    let autoAdvance = null;
 
     const updated = await transaction(async (client) => {
+      if (isAdmin && body.external_ticket_ref !== undefined) {
+        const { getWorkflowAutomationSettings } = require('../services/autoResolve');
+        const { planExternalRefAdvance, loadStatusConfig } = require('../services/externalEscalation');
+        const { external_ref_auto_advance } = await getWorkflowAutomationSettings();
+        if (external_ref_auto_advance) {
+          autoAdvance = planExternalRefAdvance({
+            oldRef: ticket.external_ticket_ref,
+            newRef: body.external_ticket_ref,
+            explicitExternalStatus: body.external_status,
+            explicitInternalStatus: body.internal_status,
+            ticket,
+            ...(await loadStatusConfig(client)),
+          });
+        }
+        if (autoAdvance) {
+          body.external_status = autoAdvance.externalStatus;
+          if (autoAdvance.internalStatus) body.internal_status = autoAdvance.internalStatus;
+        }
+      }
+
       if ((isAdmin || isSubmitter) && body.title !== undefined) updates.title = body.title;
       if ((isAdmin || isSubmitter) && body.description !== undefined) updates.description = body.description;
       // Resolution summary — free-text capture of how the ticket was
@@ -924,6 +978,9 @@ router.patch('/:id', requireAuth, async (req, res) => {
         await auditLog(client, {
           ticketId: ticket.id, userId: user.id,
           action: 'status_change', oldValue: old, newValue: nextStatus,
+          ...(autoAdvance?.internalStatus === nextStatus
+            ? { note: `Mirrored external ${autoAdvance.externalStatus} after vendor ref was added` }
+            : {}),
         });
         if (nextStatus === 'Reopened') {
           await auditLog(client, { ticketId: ticket.id, userId: user.id, action: 'reopened', note: 'Ticket reopened' });
@@ -1028,7 +1085,11 @@ router.patch('/:id', requireAuth, async (req, res) => {
         const old = ticket.external_status;
         updates.external_status = body.external_status;
         updates.external_updated_at = new Date().toISOString();
-        await auditLog(client, { ticketId: ticket.id, userId: user.id, action: 'external_status_update', oldValue: old, newValue: body.external_status });
+        await auditLog(client, {
+          ticketId: ticket.id, userId: user.id, action: 'external_status_update',
+          oldValue: old, newValue: body.external_status,
+          ...(autoAdvance ? { note: 'Auto-advanced: vendor ticket ref added' } : {}),
+        });
         if (body.external_status === 'Resolved') {
           updates.internal_status = 'Pending Review';
           updates.flagged_for_review = true;
@@ -1038,6 +1099,22 @@ router.patch('/:id', requireAuth, async (req, res) => {
       }
 
       if (isAdmin && body.external_ticket_ref !== undefined) updates.external_ticket_ref = body.external_ticket_ref;
+      // Site the ticket is for. Drives per-location business hours for
+      // escalation delays from here on; due-at stamps already set stay.
+      if (isAdmin && body.location_id !== undefined) {
+        const next = body.location_id ? Number(body.location_id) : null;
+        if (next !== null && (!Number.isInteger(next) || next <= 0)) {
+          throw Object.assign(new Error('location_id must be a location id or null'), { httpStatus: 400 });
+        }
+        if (next !== (ticket.location_id ?? null)) {
+          updates.location_id = next;
+          await auditLog(client, {
+            ticketId: ticket.id, userId: user.id, action: 'location_change',
+            oldValue: ticket.location_id == null ? null : String(ticket.location_id),
+            newValue: next == null ? null : String(next),
+          });
+        }
+      }
       if (isAdmin && body.review_note !== undefined) updates.review_note = body.review_note;
       if (isAdmin && body.flagged_for_review !== undefined) updates.flagged_for_review = !!body.flagged_for_review;
       // Per-ticket "mute the vendor" toggle. Vendor replies still land
@@ -1146,13 +1223,15 @@ router.patch('/:id', requireAuth, async (req, res) => {
           asgn.display_name as assigned_to_name,
           bt.internal_ref as blocking_ticket_ref, bt.title as blocking_ticket_title,
           bt.title_enc as blocking_ticket_title_enc, bt.internal_status as blocking_ticket_status,
-          ast.hostname as asset_hostname, ast.serial as asset_serial
+          ast.hostname as asset_hostname, ast.serial as asset_serial,
+          loc.name as location_name
         FROM tickets t
         LEFT JOIN projects proj ON t.project_id = proj.id
         LEFT JOIN users sub ON t.submitted_by = sub.id
         LEFT JOIN users asgn ON t.assigned_to = asgn.id
         LEFT JOIN tickets bt ON t.blocked_by_ticket = bt.id
         LEFT JOIN assets ast ON t.asset_id = ast.id
+        LEFT JOIN locations loc ON t.location_id = loc.id
         WHERE t.id = $1
       `, [ticket.id]);
 
