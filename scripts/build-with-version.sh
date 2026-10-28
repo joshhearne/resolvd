@@ -1,11 +1,12 @@
 #!/usr/bin/env bash
-# Wrapper around `docker compose build` that stamps APP_VERSION /
-# APP_COMMIT / BUILT_AT into the backend image so /api/version + the
-# Admin → System health "Build info" card report something useful.
+# Builds the backend + frontend from this checkout (instead of pulling the
+# published images), stamping APP_VERSION / APP_COMMIT / BUILT_AT into the
+# backend image so /api/version + the Admin → System health "Build info"
+# card report something useful. Run the result with the same override:
 #
-# Usage:
 #   ./scripts/build-with-version.sh                  # build all services
 #   ./scripts/build-with-version.sh backend          # one service
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d
 #
 # Falls back to "dev" / "unknown" when run outside a git checkout.
 
@@ -25,4 +26,4 @@ BUILT_AT="${BUILT_AT:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}"
 export APP_VERSION APP_COMMIT BUILT_AT
 
 echo "Building with APP_VERSION=$APP_VERSION APP_COMMIT=$APP_COMMIT BUILT_AT=$BUILT_AT"
-exec docker compose build "$@"
+exec docker compose -f docker-compose.yml -f docker-compose.build.yml build "$@"

@@ -19,12 +19,11 @@ services:
       retries: 10
 
   backend:
-    build:
-      context: ./backend
-      args:
-        APP_VERSION: ${APP_VERSION:-dev}
-        APP_COMMIT: ${APP_COMMIT:-unknown}
-        BUILT_AT: ${BUILT_AT:-}
+    # Published by .github/workflows/images.yml. RESOLVD_IMAGE_TAG (in .env)
+    # picks the build: a release (v1.4.0), a dev build (dev-<sha>), or the
+    # floating :stable / :dev. The host updater manages it on auto-update
+    # installs. To build from source instead, add -f docker-compose.build.yml.
+    image: ghcr.io/joshhearne/resolvd-backend:${RESOLVD_IMAGE_TAG:-stable}
     container_name: resolvd-backend
     restart: unless-stopped
     env_file: .env
@@ -53,7 +52,7 @@ services:
         condition: service_healthy
 
   frontend:
-    build: ./frontend
+    image: ghcr.io/joshhearne/resolvd-frontend:${RESOLVD_IMAGE_TAG:-stable}
     container_name: resolvd-frontend
     restart: unless-stopped
     networks:

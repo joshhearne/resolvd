@@ -162,6 +162,7 @@ app.use('/api/email-backends', emailBackendRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/push', pushRoutes);
 app.use('/api/system-health', systemHealthRoutes);
+app.use('/api/system-updates', require('./routes/systemUpdates'));
 app.use('/api/alert-sources', alertSourceRoutes);
 app.use('/api/alerts', alertRoutes);
 app.use('/api/status-pages', statusPageRoutes);

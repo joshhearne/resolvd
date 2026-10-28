@@ -3658,6 +3658,39 @@ Thanks,
     // Overlap checks scan a tech's entries by time range.
     await client.query(`CREATE INDEX IF NOT EXISTS idx_time_entries_user_span ON time_entries(user_id, started_at, ended_at)`);
 
+    // ── Automatic updates (Admin → System health) ───────────────────────
+    // The admin's update policy, read by the host updater
+    // (deploy/resolvd-update.sh) over /api/system-updates/policy. The app
+    // never runs Docker itself; it only stores the choice and the reports
+    // the host sends back. Defaults to manual: nothing updates until an
+    // admin opts in.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS update_settings (
+        id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+        channel TEXT NOT NULL DEFAULT 'manual'
+          CHECK (channel IN ('production', 'development', 'manual')),
+        update_hour INTEGER NOT NULL DEFAULT 3 CHECK (update_hour BETWEEN 0 AND 23),
+        update_requested_at TIMESTAMPTZ,
+        host_last_seen_at TIMESTAMPTZ,
+        last_report JSONB,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`INSERT INTO update_settings (id) VALUES (1) ON CONFLICT DO NOTHING`);
+    // Updates, rollbacks and failures the host reported (routine "checked,
+    // nothing new" reports only refresh update_settings.last_report).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS update_events (
+        id BIGSERIAL PRIMARY KEY,
+        at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        status TEXT NOT NULL,
+        channel TEXT,
+        from_version TEXT,
+        to_version TEXT,
+        message TEXT
+      )
+    `);
+
     await client.query('COMMIT');
   } catch (err) {
     await client.query('ROLLBACK');
