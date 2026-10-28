@@ -3705,6 +3705,33 @@ Thanks,
         message TEXT
       )
     `);
+    // Change files (backend/changes/*.md) from the build the host is about
+    // to install, sent by the updater so admins can preview what's coming.
+    await client.query(`ALTER TABLE update_settings ADD COLUMN IF NOT EXISTS pending_changes JSONB`);
+
+    // ── What's new (services/whatsNew.js) ───────────────────────────────
+    // A release is the set of change files a build brought in for the
+    // first time; each entry is one change file. The user's pointer marks
+    // the newest release whose pop-up they've closed.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS change_releases (
+        id SERIAL PRIMARY KEY,
+        version TEXT,
+        commit TEXT,
+        deployed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS change_entries (
+        id TEXT PRIMARY KEY,
+        release_id INTEGER NOT NULL REFERENCES change_releases(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK (kind IN ('feature', 'improvement', 'fix')),
+        audience TEXT NOT NULL CHECK (audience IN ('everyone', 'staff')),
+        items JSONB NOT NULL
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS change_entries_release_idx ON change_entries (release_id)`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS whats_new_seen_release_id INTEGER`);
 
     await client.query('COMMIT');
   } catch (err) {

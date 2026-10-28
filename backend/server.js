@@ -163,6 +163,7 @@ app.use('/api/notifications', notificationRoutes);
 app.use('/api/push', pushRoutes);
 app.use('/api/system-health', systemHealthRoutes);
 app.use('/api/system-updates', require('./routes/systemUpdates'));
+app.use('/api/whats-new', require('./routes/whatsNew'));
 app.use('/api/alert-sources', alertSourceRoutes);
 app.use('/api/alerts', alertRoutes);
 app.use('/api/status-pages', statusPageRoutes);
@@ -196,7 +197,18 @@ app.use('/api/billing', require('./routes/billing'));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 initSchema()
-  .then(() => {
+  .then(async () => {
+    // What's new: record change files this build brings in (and notify),
+    // or drop ones a rollback took away. Never blocks startup.
+    try {
+      const r = await require('./services/whatsNew').syncChanges({
+        version: process.env.APP_VERSION,
+        commit: process.env.APP_COMMIT,
+      });
+      if (r.added || r.removed) console.log(`[whats-new] ${r.added} new change(s), ${r.removed} removed`);
+    } catch (err) {
+      console.error('[whats-new] sync failed:', err);
+    }
     // Scheduled jobs: muted-vendor digest fires at the configured local
     // time once per day (cadence checked every 5 min).
     require('./services/mutedDigest').startScheduler();

@@ -3,6 +3,7 @@ import toast from "react-hot-toast";
 import { api } from "../utils/api";
 import { useAuth } from "../context/AuthContext";
 import HybridTime from "../components/HybridTime";
+import ChangeList, { ChangeKey } from "../components/ChangeList";
 
 function fmtBytes(n) {
   if (!n) return "—";
@@ -253,6 +254,27 @@ docker compose pull && docker compose up -d`}</pre>
           )}
         </div>
       </div>
+
+      {u.pending_changes?.total > 0 && (
+        <div className="border-t border-border px-4 py-3">
+          <details open={u.pending_changes.total <= 10}>
+            <summary className="cursor-pointer text-[10px] uppercase tracking-wide text-fg-dim">
+              Coming in <span className="font-mono normal-case">{report?.available_version || "the next update"}</span>
+              {" "}· {u.pending_changes.total} change{u.pending_changes.total === 1 ? "" : "s"}
+            </summary>
+            <div className="mt-3 space-y-3">
+              <ChangeList entries={u.pending_changes.entries} />
+              {u.pending_changes.total > u.pending_changes.entries.length && (
+                <p className="text-xs text-fg-dim">
+                  …and {u.pending_changes.total - u.pending_changes.entries.length} more.
+                </p>
+              )}
+              <ChangeKey />
+              <p className="text-xs text-fg-dim">Only admins see this preview. Everyone sees the changes that concern them after the update installs.</p>
+            </div>
+          </details>
+        </div>
+      )}
 
       {u.events?.length > 0 && (
         <div className="border-t border-border px-4 py-3">

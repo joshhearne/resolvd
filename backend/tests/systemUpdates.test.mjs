@@ -82,4 +82,33 @@ describe('host updater endpoints', () => {
     const insert = queries.find((q) => q.sql.includes('INSERT INTO update_events'));
     expect(insert.params.slice(0, 4)).toEqual(['updated', null, 'v1.0.0', 'v1.1.0']);
   });
+
+  it('store the change files of the build the host would install next', async () => {
+    const body = new URLSearchParams({ status: 'waiting', pending_changes_sent: '1', pending_changes_total: '3' });
+    body.append('pending_change', '97-holidays\n---\ntype: feature\naudience: everyone\n---\nHoliday spans');
+    body.append('pending_change', '98-fix\n---\ntype: fix\n---\n- one\n- two');
+    body.append('pending_change', 'broken\nno frontmatter');
+    const r = await fetch(`${base}/report`, { method: 'POST', headers: auth('secret-token'), body });
+    expect(r.status).toBe(200);
+    const update = queries.find((q) => q.sql.includes('UPDATE update_settings'));
+    expect(update.params[2]).toBe(true);
+    expect(JSON.parse(update.params[3])).toEqual({
+      total: 3,
+      entries: [
+        { id: '97-holidays', kind: 'feature', audience: 'everyone', items: ['Holiday spans'] },
+        { id: '98-fix', kind: 'fix', audience: 'staff', items: ['one', 'two'] },
+      ],
+    });
+
+    // An empty set clears the preview; an older updater that sends nothing keeps it.
+    queries.length = 0;
+    await fetch(`${base}/report`, { method: 'POST', headers: auth('secret-token'), body: new URLSearchParams({ status: 'up_to_date', pending_changes_sent: '1' }) });
+    let u = queries.find((q) => q.sql.includes('UPDATE update_settings'));
+    expect(u.params[2]).toBe(true);
+    expect(JSON.parse(u.params[3])).toEqual({ total: 0, entries: [] });
+    queries.length = 0;
+    await fetch(`${base}/report`, { method: 'POST', headers: auth('secret-token'), body: new URLSearchParams({ status: 'up_to_date' }) });
+    u = queries.find((q) => q.sql.includes('UPDATE update_settings'));
+    expect(u.params[2]).toBe(false);
+  });
 });
