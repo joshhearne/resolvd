@@ -3,7 +3,9 @@ services:
     image: postgres:16-alpine
     container_name: resolvd-postgres
     restart: unless-stopped
-    env_file: .env
+    # Only what Postgres needs, not the whole .env: it holds the app's
+    # secrets, and the host updater rewrites RESOLVD_IMAGE_TAG there on
+    # every update, which would recreate this container each time.
     environment:
       - POSTGRES_DB=resolvd
       - POSTGRES_USER=resolvd
