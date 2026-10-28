@@ -57,7 +57,7 @@ jobs:
           # Pipe through grep -v to strip noise lines. `|| true` keeps
           # the step green when grep filters everything (zero matches
           # exits 1).
-          BODY_LIST=$(git log "$RANGE" --pretty=format:'- %s (%h)' --reverse \
+          BODY_LIST=$(git log "$RANGE" --no-merges --pretty=format:'- %s (%h)' --reverse \
             | grep -viE "$NOISE_RE" \
             || true)
           if [ -z "$BODY_LIST" ]; then
