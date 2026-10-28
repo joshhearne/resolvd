@@ -973,7 +973,7 @@ sudo deploy/install-updater.sh             # runs as the folder's owner
 sudo deploy/install-updater.sh --user ops  # or another user
 ```
 
-The user it runs as needs Docker access (the `docker` group). The installer generates `RESOLVD_UPDATER_TOKEN` in `.env`, restarts the backend so it picks the token up, and enables `resolvd-update.timer`. Logs: `journalctl -u resolvd-update.service`. To remove it: `sudo systemctl disable --now resolvd-update.timer`.
+The user it runs as needs Docker access (the `docker` group). The installer first checks that the images for `RESOLVD_IMAGE_TAG` can be pulled, and changes nothing if they can't. `:stable` only exists once a release is published; to follow `dev` before then, set `RESOLVD_IMAGE_TAG=dev-<commit>` for the checked-out commit, and the installer suggests the exact line. It then generates `RESOLVD_UPDATER_TOKEN` in `.env`, starts the stack on those images, and enables `resolvd-update.timer`. Logs: `journalctl -u resolvd-update.service`. To remove it: `sudo systemctl disable --now resolvd-update.timer`.
 
 Auto-updates expect the standard setup: a git checkout with no local edits to tracked files (put local overrides in `.env` or `docker-compose.override.yml`), running the published images.
 
