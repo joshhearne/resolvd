@@ -5,6 +5,54 @@ import { api } from "../utils/api";
 
 const STATUSES = ["unmatched", "matched", "discarded", "spam"];
 
+const UNBLOCK_REASON_LABELS = {
+  ticket_ref: "ticket ref in subject",
+  external_ref: "vendor ref",
+  contact: "sender is a ticket contact",
+};
+
+// Tickets waiting on input that this message plausibly answers. Matching
+// onto one moves it out of its waiting status automatically.
+function UnblockHints({ candidates, onUse }) {
+  return (
+    <div className="rounded border border-amber-300 dark:border-amber-800/60 bg-amber-50 dark:bg-amber-950/30 p-3 space-y-2">
+      <div className="text-xs font-medium text-amber-800 dark:text-amber-300">
+        {candidates.length === 1
+          ? "This likely unblocks a waiting ticket"
+          : "This likely unblocks one of these waiting tickets"}
+      </div>
+      {candidates.map((c) => (
+        <div key={c.id} className="flex items-center gap-2 text-sm flex-wrap">
+          <Link
+            to={`/tickets/${c.id}`}
+            className="font-mono text-brand underline"
+          >
+            {c.internal_ref}
+          </Link>
+          <span className="text-fg truncate min-w-0 flex-1">
+            {c.title || "(untitled)"}
+          </span>
+          <span className="text-[11px] text-fg-muted">
+            {c.internal_status} ·{" "}
+            {c.reason === "external_ref" && c.matched_ref
+              ? `vendor ref ${c.matched_ref}`
+              : UNBLOCK_REASON_LABELS[c.reason] || c.reason}
+          </span>
+          <button
+            onClick={() => onUse(c.internal_ref)}
+            className="btn btn-secondary btn-sm"
+          >
+            Use
+          </button>
+        </div>
+      ))}
+      <div className="text-[11px] text-fg-muted">
+        Matching moves the ticket out of its waiting status.
+      </div>
+    </div>
+  );
+}
+
 export default function AdminInbound() {
   const [status, setStatus] = useState("unmatched");
   const [items, setItems] = useState([]);
@@ -33,14 +81,17 @@ export default function AdminInbound() {
   }
 
   async function match() {
-    if (!ticketId) return toast.error("Ticket id required");
+    const v = ticketId.trim();
+    if (!v) return toast.error("Ticket id or ref required");
+    const body = { contact_id: detail?.suggested_contact?.id };
+    if (/^\d+$/.test(v)) body.ticket_id = Number(v);
+    else body.ticket_ref = v;
     setMatching(true);
     try {
-      const r = await api.post(`/api/inbound/${openId}/match`, {
-        ticket_id: Number(ticketId),
-        contact_id: detail?.suggested_contact?.id,
-      });
-      toast.success(r.muted ? "Matched (muted on ticket)" : "Matched");
+      const r = await api.post(`/api/inbound/${openId}/match`, body);
+      let msg = r.muted ? "Matched (muted on ticket)" : "Matched";
+      if (r.resumed_to) msg += ` — moved to ${r.resumed_to}`;
+      toast.success(msg);
       setOpenId(null);
       await reload();
     } catch (e) { toast.error(e.message); }
@@ -185,13 +236,21 @@ export default function AdminInbound() {
                     </div>
                   )}
 
+                  {openItem.status === "unmatched" &&
+                    detail.unblock_candidates?.length > 0 && (
+                      <UnblockHints
+                        candidates={detail.unblock_candidates}
+                        onUse={(ref) => setTicketId(ref)}
+                      />
+                    )}
+
                   {openItem.status === "unmatched" ? (
                     <div className="flex flex-wrap items-center gap-2 pt-2 border-t border-border">
                       <input
                         value={ticketId}
                         onChange={(e) => setTicketId(e.target.value)}
-                        placeholder="Target ticket id"
-                        className="bg-surface border border-border rounded px-2 py-1 text-sm w-48"
+                        placeholder="Ticket id or ref (e.g. SUP-0042)"
+                        className="bg-surface border border-border rounded px-2 py-1 text-sm w-64"
                       />
                       <button
                         onClick={match}

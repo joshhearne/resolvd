@@ -5,26 +5,36 @@
 const express = require('express');
 const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
+const formula = require('../services/formula');
 
 const router = express.Router();
 
-const ENTITY_TYPES = ['asset', 'ticket'];
-const FIELD_TYPES = ['text', 'number', 'date', 'bool', 'select'];
+const ENTITY_TYPES = ['asset', 'ticket', 'consumable'];
+const FIELD_TYPES = ['text', 'number', 'date', 'bool', 'select', 'multiselect'];
 
 // Slugify a label: lowercase, alphanumeric + underscore. Used as the
-// stable machine handle so renames don't break attribute mappings.
-function slugify(label) {
-  return String(label || '')
+// stable machine handle so renames don't break attribute mappings. When a
+// projectPrefix is supplied (project-local def), the slug is prefixed with
+// the lowercased project tag + hyphen (e.g. "hr-username") to cut
+// cross-project name collisions.
+function slugify(label, projectPrefix) {
+  const base = String(label || '')
     .toLowerCase()
     .trim()
     .replace(/[^a-z0-9]+/g, '_')
     .replace(/^_+|_+$/g, '')
     .slice(0, 60);
+  if (!base) return base;
+  if (projectPrefix) {
+    const tag = String(projectPrefix).toLowerCase().replace(/[^a-z0-9]+/g, '');
+    if (tag) return `${tag}-${base}`.slice(0, 80);
+  }
+  return base;
 }
 
 function validateOptions(options, type) {
-  if (type !== 'select') return null;
-  if (!Array.isArray(options) || !options.length) return 'select type requires non-empty options array';
+  if (type !== 'select' && type !== 'multiselect') return null;
+  if (!Array.isArray(options) || !options.length) return `${type} type requires non-empty options array`;
   for (const o of options) {
     if (!o || typeof o.value !== 'string' || typeof o.label !== 'string') {
       return 'each option must be { value: string, label: string }';
@@ -58,6 +68,16 @@ function coerceValue(value, def) {
       if (!valid) return { error: 'value not in options' };
       return { col: 'value_text', value: String(value) };
     }
+    case 'multiselect': {
+      // Accept an array of option values, or a comma-separated string.
+      const arr = Array.isArray(value)
+        ? value
+        : String(value).split(',').map((s) => s.trim()).filter(Boolean);
+      if (!arr.length) return { col: null, value: null };
+      const valid = new Set((def.options || []).map((o) => o.value));
+      for (const v of arr) if (!valid.has(String(v))) return { error: `value "${v}" not in options` };
+      return { col: 'value_text', value: JSON.stringify(arr.map(String)) };
+    }
     default:
       return { error: 'unknown type' };
   }
@@ -69,12 +89,26 @@ router.get('/', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req
   try {
     const entity = req.query.entity_type;
     const params = [];
-    let where = '';
+    const clauses = [];
     if (entity) {
       if (!ENTITY_TYPES.includes(entity)) return res.status(400).json({ error: 'invalid entity_type' });
       params.push(entity);
-      where = `WHERE entity_type = $1`;
+      clauses.push(`entity_type = $${params.length}`);
     }
+    // project_id filter: pass an id for "shared library + that project's
+    // locals"; omit for all. ?project_id=null|0 restricts to shared only.
+    if (req.query.project_id !== undefined) {
+      const pid = Number(req.query.project_id);
+      if (Number.isInteger(pid) && pid > 0) {
+        params.push(pid);
+        clauses.push(`(project_id IS NULL OR project_id = $${params.length})`);
+      } else {
+        clauses.push(`project_id IS NULL`);
+      }
+    }
+    // Hide soft-archived defs unless explicitly asked.
+    if (req.query.include_archived !== '1') clauses.push(`archived = FALSE`);
+    const where = clauses.length ? `WHERE ${clauses.join(' AND ')}` : '';
     const r = await pool.query(
       `SELECT * FROM custom_field_defs ${where} ORDER BY entity_type, sort_order, id`,
       params
@@ -86,32 +120,102 @@ router.get('/', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req
   }
 });
 
+// POST /api/custom-fields/formula-preview — validate + dry-run a formula
+// against sample inputs so the admin can see the output before saving. Body:
+// { formula, field: {slug: value, ...}, ticket/submitter/... : {...} }. The
+// whole body (minus `formula`) becomes the evaluation context, so any
+// namespace ({field.x}, {ticket.title}, …) can be exercised.
+router.post('/formula-preview', requireAuth, requireRole('Admin'), (req, res) => {
+  const body = req.body || {};
+  const src = String(body.formula || '').trim();
+  if (!src) return res.status(400).json({ error: 'formula required' });
+  const v = formula.validate(src);
+  if (!v.ok) return res.status(400).json({ ok: false, error: v.error });
+  const ctx = {};
+  for (const [k, val] of Object.entries(body)) {
+    if (k === 'formula') continue;
+    // Lower-case namespace + keys to match how buildContext stores them.
+    if (val && typeof val === 'object' && !Array.isArray(val)) {
+      const ns = {};
+      for (const [kk, vv] of Object.entries(val)) ns[String(kk).toLowerCase()] = vv;
+      ctx[k.toLowerCase()] = ns;
+    }
+  }
+  try {
+    return res.json({ ok: true, value: formula.evaluate(src, ctx, { safe: false }) });
+  } catch (e) {
+    return res.status(400).json({ ok: false, error: e.message });
+  }
+});
+
 router.post('/', requireAuth, requireRole('Admin'), async (req, res) => {
   try {
-    const { entity_type, label, type, options, required, sort_order, help_text } = req.body || {};
+    const { entity_type, label, type, options, required, sort_order, help_text, project_id, sensitive, agent_only } = req.body || {};
     if (!ENTITY_TYPES.includes(entity_type)) return res.status(400).json({ error: 'invalid entity_type' });
     if (!label || typeof label !== 'string') return res.status(400).json({ error: 'label required' });
-    if (!FIELD_TYPES.includes(type)) return res.status(400).json({ error: 'invalid type' });
-    const optErr = validateOptions(options, type);
+
+    // Computed fields derive their value from `formula` instead of human input:
+    // value is always stored as text, and the field is forced agent_only (never
+    // on the submitter form) + non-required. Validate formula syntax up front.
+    const computed = !!(req.body && req.body.computed);
+    const formulaSrc = computed ? String(req.body.formula || '').trim() : null;
+    let effType = type;
+    if (computed) {
+      if (!formulaSrc) return res.status(400).json({ error: 'formula required for a computed field' });
+      const v = formula.validate(formulaSrc);
+      if (!v.ok) return res.status(400).json({ error: `invalid formula — ${v.error}` });
+      effType = 'text';
+    }
+    if (!FIELD_TYPES.includes(effType)) return res.status(400).json({ error: 'invalid type' });
+    const optErr = validateOptions(computed ? [] : options, effType);
     if (optErr) return res.status(400).json({ error: optErr });
 
-    const slug = slugify(label);
+    // Resolve project scope + tag for the slug prefix. project_id absent/null
+    // = shared global library (no prefix).
+    let projId = null;
+    let prefix = null;
+    if (project_id !== undefined && project_id !== null && project_id !== '') {
+      projId = Number(project_id);
+      if (!Number.isInteger(projId) || projId <= 0) return res.status(400).json({ error: 'invalid project_id' });
+      const proj = await pool.query(`SELECT prefix FROM projects WHERE id = $1`, [projId]);
+      if (!proj.rows[0]) return res.status(404).json({ error: 'project not found' });
+      prefix = proj.rows[0].prefix;
+    }
+
+    const slug = slugify(label, prefix);
     if (!slug) return res.status(400).json({ error: 'label must produce a non-empty slug' });
+
+    // Friendly collision check within the target scope before relying on the
+    // partial-unique index, so we can name the clashing slug + scope.
+    const dupe = await pool.query(
+      `SELECT id FROM custom_field_defs
+        WHERE entity_type = $1 AND slug = $2 AND project_id IS NOT DISTINCT FROM $3`,
+      [entity_type, slug, projId]
+    );
+    if (dupe.rows[0]) {
+      return res.status(409).json({
+        error: `Field slug "${slug}" already exists in ${projId ? `project ${prefix}` : 'the shared library'}. Pick a different label.`,
+        slug,
+      });
+    }
 
     const r = await pool.query(
       `INSERT INTO custom_field_defs
-         (entity_type, slug, label, type, options, required, sort_order, help_text)
-       VALUES ($1, $2, $3, $4, $5::jsonb, COALESCE($6, FALSE), COALESCE($7, 0), $8)
+         (entity_type, slug, label, type, options, required, sort_order, help_text, project_id, sensitive, agent_only, computed, formula)
+       VALUES ($1, $2, $3, $4, $5::jsonb, COALESCE($6, FALSE), COALESCE($7, 0), $8, $9, COALESCE($10, FALSE), COALESCE($11, FALSE), $12, $13)
        RETURNING *`,
       [
-        entity_type, slug, label.trim(), type,
-        JSON.stringify(options || []),
-        required, sort_order, help_text || null,
+        entity_type, slug, label.trim(), effType,
+        JSON.stringify(computed ? [] : (options || [])),
+        // Computed fields are never required and always agent_only.
+        computed ? false : required, sort_order, help_text || null,
+        projId, !!sensitive, computed ? true : !!agent_only,
+        computed, formulaSrc,
       ]
     );
     res.status(201).json(r.rows[0]);
   } catch (err) {
-    if (err.code === '23505') return res.status(409).json({ error: 'slug already in use for that entity_type' });
+    if (err.code === '23505') return res.status(409).json({ error: 'slug already in use in that scope' });
     console.error('custom field def create:', err);
     res.status(500).json({ error: 'Database error' });
   }
@@ -155,6 +259,28 @@ router.patch('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
       sets.push(`help_text = $${p++}`);
       values.push(body.help_text || null);
     }
+    if (body.sensitive !== undefined) {
+      sets.push(`sensitive = $${p++}`);
+      values.push(!!body.sensitive);
+    }
+    if (body.agent_only !== undefined) {
+      sets.push(`agent_only = $${p++}`);
+      values.push(!!body.agent_only);
+    }
+    if (body.archived !== undefined) {
+      sets.push(`archived = $${p++}`);
+      values.push(!!body.archived);
+    }
+    if (body.formula !== undefined) {
+      // Only meaningful on a computed def; validate syntax before storing.
+      if (!def.rows[0].computed) return res.status(400).json({ error: 'field is not computed; cannot set a formula' });
+      const src = String(body.formula || '').trim();
+      if (!src) return res.status(400).json({ error: 'formula cannot be empty' });
+      const v = formula.validate(src);
+      if (!v.ok) return res.status(400).json({ error: `invalid formula — ${v.error}` });
+      sets.push(`formula = $${p++}`);
+      values.push(src);
+    }
     if (!sets.length) return res.status(400).json({ error: 'no updatable fields supplied' });
     sets.push('updated_at = NOW()');
     values.push(id);
@@ -169,11 +295,26 @@ router.patch('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
   }
 });
 
+// Soft-delete: archive the def so historical ticket/asset values survive and
+// the slug stays reserved. Hard ?purge=1 still available for never-used defs.
 router.delete('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
   try {
-    const r = await pool.query(`DELETE FROM custom_field_defs WHERE id = $1 RETURNING id`, [req.params.id]);
+    const id = Number(req.params.id);
+    if (req.query.purge === '1') {
+      const inUse = await pool.query(`SELECT 1 FROM custom_field_values WHERE def_id = $1 LIMIT 1`, [id]);
+      if (inUse.rows[0]) return res.status(409).json({ error: 'def has stored values; archive instead of purge' });
+      const bound = await pool.query(`SELECT 1 FROM ticket_form_fields WHERE field_def_id = $1 LIMIT 1`, [id]);
+      if (bound.rows[0]) return res.status(409).json({ error: 'def is bound to a form; unbind first' });
+      const d = await pool.query(`DELETE FROM custom_field_defs WHERE id = $1 RETURNING id`, [id]);
+      if (!d.rows[0]) return res.status(404).json({ error: 'not found' });
+      return res.json({ ok: true, purged: true });
+    }
+    const r = await pool.query(
+      `UPDATE custom_field_defs SET archived = TRUE, updated_at = NOW() WHERE id = $1 RETURNING id`,
+      [id]
+    );
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
-    res.json({ ok: true });
+    res.json({ ok: true, archived: true });
   } catch (err) {
     console.error('custom field def delete:', err);
     res.status(500).json({ error: 'Database error' });
@@ -247,7 +388,7 @@ router.put('/values/asset/:id', requireAuth, requireRole('Admin', 'Manager', 'Te
           `INSERT INTO custom_field_values
              (def_id, asset_id, value_text, value_number, value_date, value_bool)
            VALUES ($1, $2, $3, $4, $5, $6)
-           ON CONFLICT (def_id, asset_id) DO UPDATE SET
+           ON CONFLICT (def_id, asset_id) WHERE asset_id IS NOT NULL DO UPDATE SET
              value_text = EXCLUDED.value_text,
              value_number = EXCLUDED.value_number,
              value_date = EXCLUDED.value_date,
@@ -271,3 +412,7 @@ router.put('/values/asset/:id', requireAuth, requireRole('Admin', 'Manager', 'Te
 });
 
 module.exports = router;
+// Reusable helpers for the forms + ticket-create paths.
+module.exports.slugify = slugify;
+module.exports.coerceValue = coerceValue;
+module.exports.FIELD_TYPES = FIELD_TYPES;

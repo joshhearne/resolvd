@@ -6,6 +6,7 @@ const {
   PRESETS,
   DEFAULT_ZABBIX_SEVERITY_MAP,
   DEFAULT_ACTION1_SEVERITY_MAP,
+  DEFAULT_UPTIME_KUMA_SEVERITY_MAP,
   getPreset,
 } = require('../services/alertMappers');
 const { buildWritePatch, decryptRow } = require('../services/fields');
@@ -19,6 +20,7 @@ const PRESET_NAMES = Object.keys(PRESETS);
 const PRESET_DEFAULT_SEVERITY_MAPS = {
   zabbix: DEFAULT_ZABBIX_SEVERITY_MAP,
   action1: DEFAULT_ACTION1_SEVERITY_MAP,
+  'uptime-kuma': DEFAULT_UPTIME_KUMA_SEVERITY_MAP,
 };
 
 // Strip secrets before returning. token_hash + api_token_enc are bytea
@@ -143,7 +145,7 @@ router.post('/', requireAuth, requireRole('Admin'), async (req, res) => {
       return res.status(400).json({ error: 'kind must be rmm | monitor | webhook_only' });
     }
 
-    const ALLOWED_CAPS = ['alerts', 'inventory', 'software', 'vulnerabilities', 'companies'];
+    const ALLOWED_CAPS = ['alerts', 'inventory', 'software', 'vulnerabilities', 'companies', 'status'];
     let capabilities;
     if (Array.isArray(capsIn) && capsIn.length) {
       const bad = capsIn.find((c) => !ALLOWED_CAPS.includes(c));
@@ -253,13 +255,25 @@ router.patch('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
 
     // Plain fields
     const plain = ['name', 'default_project_id', 'default_assignee_id',
-      'auto_resolve_on_recovery', 'enabled', 'api_url', 'api_client_id',
-      'poll_interval_minutes', 'affect_inventory', 'inventory_company_id'];
+      'auto_resolve_on_recovery', 'enabled', 'api_url', 'web_url', 'api_client_id',
+      'poll_interval_minutes', 'affect_inventory', 'inventory_company_id',
+      'dedup_alert_enabled', 'dedup_alert_decay_days'];
     for (const k of plain) {
       if (Object.prototype.hasOwnProperty.call(body, k)) {
         sets.push(`${k} = $${p++}`);
         values.push(body[k]);
       }
+    }
+    // Integration-wide promotion delay. Clamp 0..10080 (7 days), same
+    // bound as per-rule delay_minutes.
+    if (Object.prototype.hasOwnProperty.call(body, 'default_delay_minutes')) {
+      const n = Number(body.default_delay_minutes);
+      if (!Number.isFinite(n) || n < 0 || n > 7 * 24 * 60) {
+        await client.query('ROLLBACK');
+        return res.status(400).json({ error: 'default_delay_minutes 0..10080' });
+      }
+      sets.push(`default_delay_minutes = $${p++}`);
+      values.push(Math.floor(n));
     }
     if (Object.prototype.hasOwnProperty.call(body, 'severity_map')) {
       sets.push(`severity_map = $${p++}::jsonb`);
@@ -300,7 +314,7 @@ router.patch('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
         await client.query('ROLLBACK');
         return res.status(400).json({ error: 'capabilities must be an array' });
       }
-      const ALLOWED = ['alerts', 'inventory', 'software', 'vulnerabilities', 'companies'];
+      const ALLOWED = ['alerts', 'inventory', 'software', 'vulnerabilities', 'companies', 'status'];
       const bad = body.capabilities.find((c) => !ALLOWED.includes(c));
       if (bad) {
         await client.query('ROLLBACK');
@@ -840,6 +854,106 @@ router.delete('/:id/rules/:ruleId', requireAuth, requireRole('Admin', 'Manager')
     res.json({ ok: true });
   } catch (err) {
     console.error('rules delete:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// Monitored items — things this integration watches, discovered as
+// alerts arrive. project_id pins the item's tickets to a project,
+// overriding rule overrides and the source default.
+router.get('/:id/items', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT i.*, p.prefix AS project_prefix, p.name AS project_name,
+              (SELECT COUNT(*)::int FROM alerts a
+                WHERE a.source_id = i.source_id AND a.item_key = i.item_key) AS alert_count
+         FROM alert_monitored_items i
+         LEFT JOIN projects p ON p.id = i.project_id
+         LEFT JOIN alert_monitored_items parent ON parent.id = i.parent_item_id
+        WHERE i.source_id = $1
+        ORDER BY COALESCE(parent.label, i.label) ASC NULLS LAST,
+                 (i.parent_item_id IS NOT NULL) ASC, i.is_primary DESC, i.label ASC`,
+      [Number(req.params.id)]
+    );
+    res.json(r.rows);
+  } catch (err) {
+    console.error('items list:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// body: any of { project_id, parent_item_id, is_primary }. Only keys
+// present are changed; null clears a pin / parent.
+router.patch('/:id/items/:itemId', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+  const body = req.body || {};
+  const has = (k) => Object.prototype.hasOwnProperty.call(body, k);
+  const asId = (v) => (v === null || v === '' ? null : Number(v));
+  const sourceId = Number(req.params.id);
+  const itemId = Number(req.params.itemId);
+  const sets = [];
+  const vals = [];
+  let p = 1;
+  try {
+    if (has('project_id')) {
+      const projectId = asId(body.project_id);
+      if (projectId !== null && !Number.isInteger(projectId)) {
+        return res.status(400).json({ error: 'project_id must be an integer or null' });
+      }
+      if (projectId !== null) {
+        const r = await pool.query(`SELECT 1 FROM projects WHERE id = $1`, [projectId]);
+        if (!r.rows[0]) return res.status(400).json({ error: 'Unknown project' });
+      }
+      sets.push(`project_id = $${p++}`); vals.push(projectId);
+      sets.push(`pinned_by = $${p++}`); vals.push(projectId === null ? null : (req.session?.user?.id || null));
+      sets.push(`pinned_at = ${projectId === null ? 'NULL' : 'NOW()'}`);
+    }
+    if (has('parent_item_id')) {
+      const parentId = asId(body.parent_item_id);
+      if (parentId !== null) {
+        if (!Number.isInteger(parentId) || parentId === itemId) {
+          return res.status(400).json({ error: 'parent_item_id must be another item' });
+        }
+        // Same source, and one level deep: a service can't itself be a component.
+        const r = await pool.query(
+          `SELECT parent_item_id FROM alert_monitored_items WHERE id = $1 AND source_id = $2`,
+          [parentId, sourceId]
+        );
+        if (!r.rows[0]) return res.status(400).json({ error: 'Unknown parent item' });
+        if (r.rows[0].parent_item_id) return res.status(400).json({ error: 'Parent is itself a component' });
+        const kids = await pool.query(`SELECT 1 FROM alert_monitored_items WHERE parent_item_id = $1 LIMIT 1`, [itemId]);
+        if (kids.rows[0]) return res.status(400).json({ error: 'Item has components; it cannot join another service' });
+      }
+      sets.push(`parent_item_id = $${p++}`); vals.push(parentId);
+    }
+    if (has('is_primary')) {
+      sets.push(`is_primary = $${p++}`); vals.push(!!body.is_primary);
+    }
+    if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
+    vals.push(itemId, sourceId);
+    const r = await pool.query(
+      `UPDATE alert_monitored_items SET ${sets.join(', ')}
+        WHERE id = $${p} AND source_id = $${p + 1}
+        RETURNING *`,
+      vals
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'Item not found' });
+    res.json(r.rows[0]);
+  } catch (err) {
+    console.error('items patch:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+router.delete('/:id/items/:itemId', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+  try {
+    const r = await pool.query(
+      `DELETE FROM alert_monitored_items WHERE id = $1 AND source_id = $2 RETURNING id`,
+      [Number(req.params.itemId), Number(req.params.id)]
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'Item not found' });
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('items delete:', err);
     res.status(500).json({ error: 'Database error' });
   }
 });

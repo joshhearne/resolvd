@@ -20,8 +20,18 @@ router.get('/', requireAuth, requireRole(...HANDLERS), async (req, res) => {
     const where = [];
     const params = [];
     if (req.query.state) {
-      params.push(req.query.state);
-      where.push(`a.state = $${params.length}`);
+      // Accept comma-separated lists so the UI can toggle multi-state
+      // chips ("firing,acknowledged") without needing a separate
+      // include-multi endpoint. Empty entries ignored.
+      const list = String(req.query.state)
+        .split(',').map((s) => s.trim()).filter(Boolean);
+      if (list.length === 1) {
+        params.push(list[0]);
+        where.push(`a.state = $${params.length}`);
+      } else if (list.length > 1) {
+        params.push(list);
+        where.push(`a.state = ANY($${params.length}::text[])`);
+      }
     }
     if (req.query.source_id) {
       params.push(Number(req.query.source_id));
@@ -155,8 +165,8 @@ router.post('/bulk', requireAuth, requireRole(...HANDLERS), async (req, res) => 
     const action = String(req.body?.action || '');
     if (!ids.length) return res.status(400).json({ error: 'ids array required' });
     if (ids.length > 2000) return res.status(400).json({ error: 'max 2000 ids per call' });
-    if (!['suppress', 'delete', 'recover'].includes(action)) {
-      return res.status(400).json({ error: 'action must be suppress | delete | recover' });
+    if (!['suppress', 'delete', 'recover', 'acknowledge', 'unacknowledge'].includes(action)) {
+      return res.status(400).json({ error: 'action must be suppress | delete | recover | acknowledge | unacknowledge' });
     }
     if (action === 'delete' && req.session.user.role !== 'Admin') {
       return res.status(403).json({ error: 'Only Admin can bulk-delete alerts' });
@@ -181,6 +191,29 @@ router.post('/bulk', requireAuth, requireRole(...HANDLERS), async (req, res) => 
             SET state = 'recovered', recovered_at = NOW(), last_seen_at = NOW(),
                 next_evaluation_at = NULL
           WHERE id = ANY($1::bigint[]) AND state = 'firing'
+          RETURNING id`,
+        [ids]
+      );
+      updated = r.rowCount;
+      appliedIds = r.rows.map((x) => x.id);
+    } else if (action === 'acknowledge') {
+      // Hide noisy active alerts off the default Problems board
+      // without losing them. Idempotent: already-acknowledged rows
+      // are no-ops. Only firing rows transition.
+      const r = await pool.query(
+        `UPDATE alerts SET state = 'acknowledged'
+          WHERE id = ANY($1::bigint[]) AND state = 'firing'
+          RETURNING id`,
+        [ids]
+      );
+      updated = r.rowCount;
+      appliedIds = r.rows.map((x) => x.id);
+    } else if (action === 'unacknowledge') {
+      // Bring an acknowledged alert back to firing — admin made a
+      // mistake or wants it visible again.
+      const r = await pool.query(
+        `UPDATE alerts SET state = 'firing'
+          WHERE id = ANY($1::bigint[]) AND state = 'acknowledged'
           RETURNING id`,
         [ids]
       );

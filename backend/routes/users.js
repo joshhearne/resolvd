@@ -4,6 +4,7 @@ const fs = require('fs');
 const path = require('path');
 const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
+const { handleUploadErrors, fileRejected } = require('../middleware/upload');
 const { buildSessionUser } = require('../auth/session');
 const { avatarPath, saveAvatarFromBytes, clearAvatar } = require('../services/avatar');
 const {
@@ -15,11 +16,12 @@ const {
 
 const router = express.Router();
 
+const MAX_AVATAR_BYTES = 5 * 1024 * 1024;
 const avatarUpload = multer({
   storage: multer.memoryStorage(),
-  limits: { fileSize: 5 * 1024 * 1024 },
+  limits: { fileSize: MAX_AVATAR_BYTES },
   fileFilter: (req, file, cb) => {
-    if (!file.mimetype.startsWith('image/')) return cb(new Error('Avatar must be an image'));
+    if (!file.mimetype.startsWith('image/')) return cb(fileRejected('Avatar must be an image'));
     cb(null, true);
   },
 });
@@ -122,6 +124,22 @@ const PREF_DEFAULTS = Object.freeze({
   compact_mode: false,
   phonetic_readback: true,
   default_ticket_sort: 'updated_at_desc',
+  // Local hour-of-day (0-23) for the daily digest cadence. 9 = 09:00
+  // user-local. Honored when email_digest === 'daily'.
+  notification_digest_local_hour: 9,
+  // Optional signature appended to outgoing comments. `signature` is the
+  // raw markdown text (max 2000 chars). When `append_signature` is on the
+  // composer appends it after a single blank line. `append_signature_scope`
+  // controls when: 'vendor_only' (default) only when Share with vendor is
+  // ticked; 'all' for every comment. Empty/falsey signature short-circuits
+  // the append regardless of the toggle.
+  signature: '',
+  append_signature: false,
+  append_signature_scope: 'vendor_only',
+  // Clock-dial time picker (time entries): 'five' snaps a tap to the
+  // nearest 5 minutes, holding the dial gives single minutes; 'exact'
+  // always takes the exact minute tapped.
+  clock_minute_snap: 'five',
   // Locale overrides — empty string means "inherit org branding".
   date_style_override: '',
   time_style_override: '',
@@ -189,6 +207,34 @@ router.patch('/me/prefs', requireAuth, async (req, res) => {
     // pattern for QoL toggles).
     if (patch.email_digest !== undefined && !CADENCES.includes(patch.email_digest)) {
       return res.status(400).json({ error: 'Invalid email_digest' });
+    }
+    if (patch.notification_digest_local_hour !== undefined) {
+      const h = Number(patch.notification_digest_local_hour);
+      if (!Number.isInteger(h) || h < 0 || h > 23) {
+        return res.status(400).json({ error: 'notification_digest_local_hour must be 0-23' });
+      }
+      patch.notification_digest_local_hour = h;
+    }
+    if (patch.signature !== undefined) {
+      if (typeof patch.signature !== 'string') {
+        return res.status(400).json({ error: 'signature must be a string' });
+      }
+      // Hard cap to bound DB row + outgoing email body. 2000 chars covers
+      // any reasonable plain-text or markdown sign-off (legal disclaimers
+      // belong in the org-wide vendor outbound template, not per-user).
+      if (patch.signature.length > 2000) {
+        return res.status(400).json({ error: 'signature must be 2000 chars or fewer' });
+      }
+    }
+    if (patch.clock_minute_snap !== undefined) {
+      if (!['five', 'exact'].includes(patch.clock_minute_snap)) {
+        return res.status(400).json({ error: "clock_minute_snap must be 'five' or 'exact'" });
+      }
+    }
+    if (patch.append_signature_scope !== undefined) {
+      if (!['vendor_only', 'all'].includes(patch.append_signature_scope)) {
+        return res.status(400).json({ error: "append_signature_scope must be 'vendor_only' or 'all'" });
+      }
     }
     if (patch.notification_prefs !== undefined) {
       const np = patch.notification_prefs;
@@ -381,7 +427,7 @@ router.get('/:id/avatar', requireAuth, async (req, res) => {
 });
 
 // POST /api/users/me/avatar — upload own avatar (image bytes, e.g. cropped PNG)
-router.post('/me/avatar', requireAuth, avatarUpload.single('avatar'), async (req, res) => {
+router.post('/me/avatar', requireAuth, handleUploadErrors(avatarUpload.single('avatar'), { maxBytes: MAX_AVATAR_BYTES }), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   try {
     const userId = req.session.user.id;
@@ -408,6 +454,87 @@ router.delete('/me/avatar', requireAuth, async (req, res) => {
   } catch (err) {
     console.error('avatar delete error:', err);
     res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// POST /api/users/bulk-enrich (Admin) — fan out enrichExistingUser
+// against a list of user ids. Used by the bulk editor on the Users
+// admin page so admins can backfill display_name + entra_oid for every
+// auto-provisioned account in one click instead of opening each row's
+// kebab menu. Returns per-id outcomes so the UI can surface which rows
+// didn't resolve (no directory match) versus which actually changed.
+router.post('/bulk-enrich', requireAuth, requireRole('Admin'), async (req, res) => {
+  try {
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isInteger) : null;
+    const force = !!req.body?.force;
+    const { enrichExistingUser } = require('../services/userAutoProvision');
+
+    // No ids -> select every active user that still looks unenriched.
+    // Cheap heuristic: missing display_name OR (auth_provider='local'
+    // AND email-shaped). Admins almost always want this superset when
+    // they hit the "Refresh all" button.
+    let targets;
+    if (ids && ids.length) {
+      targets = ids;
+    } else {
+      const r = await pool.query(
+        `SELECT id FROM users
+          WHERE status = 'active'
+            AND (display_name IS NULL OR display_name = ''
+                 OR (auth_provider = 'local' AND email IS NOT NULL))
+          ORDER BY id ASC`
+      );
+      targets = r.rows.map((row) => row.id);
+    }
+
+    // Cap concurrency so we don't hammer Graph/Google on large tenants;
+    // each lookup is rate-limited per-provider but we still serialise
+    // batches of 4 to keep the response time predictable.
+    const results = [];
+    const CONCURRENCY = 4;
+    for (let i = 0; i < targets.length; i += CONCURRENCY) {
+      const batch = targets.slice(i, i + CONCURRENCY);
+      const settled = await Promise.allSettled(
+        batch.map((id) => enrichExistingUser(id, { force }))
+      );
+      settled.forEach((s, j) => {
+        const id = batch[j];
+        if (s.status === 'fulfilled' && s.value) {
+          results.push({
+            id, ok: true,
+            display_name: s.value.display_name,
+            auth_provider: s.value.auth_provider,
+          });
+        } else {
+          results.push({ id, ok: false, error: s.reason?.message || 'not_found' });
+        }
+      });
+    }
+    res.json({ count: results.length, results });
+  } catch (err) {
+    console.error('bulk enrich:', err);
+    res.status(500).json({ error: err.message || 'bulk enrich failed' });
+  }
+});
+
+// POST /api/users/:id/enrich (Admin) — refresh a user record from the
+// configured directory (Microsoft Graph or Google Workspace). Used to
+// backfill display_name on accounts that were auto-provisioned from
+// inbound email / alert payloads before a directory backend was
+// connected. Returns the updated row; the front-end refreshes the
+// submitter dropdown so the resolved name takes over from the bare
+// email immediately.
+router.post('/:id/enrich', requireAuth, requireRole('Admin'), async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    if (!Number.isInteger(id) || id <= 0) return res.status(400).json({ error: 'invalid id' });
+    const { enrichExistingUser } = require('../services/userAutoProvision');
+    const updated = await enrichExistingUser(id, { force: !!req.body?.force });
+    if (!updated) return res.status(404).json({ error: 'user not found' });
+    res.json(updated);
+  } catch (err) {
+    console.error('enrich user:', err);
+    res.status(500).json({ error: err.message || 'enrich failed' });
   }
 });
 

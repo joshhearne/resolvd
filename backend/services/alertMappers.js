@@ -13,6 +13,25 @@
 // returns 400. Soft "missing field" cases get sane defaults so a
 // half-templated webhook still yields a visible ticket.
 
+// Find the first parseable email in a list of macro-substituted
+// candidates. Zabbix macros expand to *UNKNOWN* (literal string) when
+// the inventory field is unpopulated, and admins frequently stuff
+// comma- or semicolon-separated lists into a single field. Drop both
+// noise patterns and return a normalised lowercased address.
+const _EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+function pickFirstEmail(candidates) {
+  for (const raw of candidates) {
+    if (!raw) continue;
+    const s = String(raw).trim();
+    if (!s || /^\*?UNKNOWN\*?$/i.test(s)) continue;
+    for (const part of s.split(/[,;]/)) {
+      const e = part.trim().toLowerCase();
+      if (_EMAIL_RE.test(e)) return e;
+    }
+  }
+  return null;
+}
+
 // Zabbix Webhook media-type. The Zabbix admin pastes a one-script
 // template that posts the following shape (configurable in their UI but
 // the script we hand them produces this). Keys are conservative — most
@@ -55,7 +74,26 @@ function zabbix(payload) {
   const triggerDesc = payload.trigger_description || payload.description || '';
   const opdata = payload.operational_data || payload.opdata || '';
 
-  const userEmail = String(payload.user_email || '').trim().toLowerCase() || null;
+  // Zabbix exposes contact email through several macros depending on
+  // which inventory field the admin populated. Accept all of them so a
+  // template that maps either Primary POC, Secondary POC, the legacy
+  // single "Contact" field, or a custom CONTACT/notes blob still
+  // resolves a user. First non-empty wins; primary trumps secondary.
+  // Comma- or semicolon-separated lists pick the first valid address.
+  const emailCandidates = [
+    payload.user_email,
+    payload.host_contact_email,
+    payload.poc_primary_email,
+    payload.poc_secondary_email,
+    payload.inventory_contact,
+    payload.host_contact,
+  ];
+  const userEmail = pickFirstEmail(emailCandidates);
+  const contactName = String(
+    payload.host_contact_name ||
+    payload.poc_primary_name ||
+    ''
+  ).trim() || null;
 
   const titleParts = [];
   if (host) titleParts.push(`[${host}]`);
@@ -65,7 +103,12 @@ function zabbix(payload) {
   const lines = [];
   if (host) lines.push(`**Host:** ${host}`);
   lines.push(`**Severity:** ${severity}`);
-  if (userEmail) lines.push(`**Inventory contact:** ${userEmail}`);
+  if (userEmail) {
+    const display = contactName ? `${contactName} <${userEmail}>` : userEmail;
+    lines.push(`**Inventory contact:** ${display}`);
+  } else if (contactName) {
+    lines.push(`**Inventory contact:** ${contactName}`);
+  }
   lines.push(`**Event ID:** ${eventId}`);
   if (triggerDesc) lines.push('', triggerDesc);
   if (opdata) lines.push('', `Operational data: ${opdata}`);
@@ -241,9 +284,80 @@ const DEFAULT_ACTION1_SEVERITY_MAP = {
   Info: 5,
 };
 
+// Uptime Kuma "Webhook" notification, default JSON body:
+//   { heartbeat: { monitorID, status, time, msg, timezone, ... },
+//     monitor:   { id, name, pathName, type, url, hostname, port,
+//                  docker_container, ... },
+//     msg: "[name] [🔴 Down] ..." }
+// status: 0 DOWN, 1 UP, 2 PENDING, 3 MAINTENANCE. Kuma only notifies
+// on DOWN and DOWN->UP and stays silent during maintenance windows.
+// The "Test" button posts heartbeat/monitor = null.
+//
+// Kuma has no per-outage id, so external_event_id is monitor+time and
+// item_key lets the ingest pipeline pair a recovery with the open
+// outage for that monitor. Returns { ignore, reason } for payloads
+// that are valid but shouldn't become alerts.
+const KUMA_STATUS = { 0: 'DOWN', 1: 'UP', 2: 'PENDING', 3: 'MAINTENANCE' };
+
+function uptimeKuma(payload) {
+  if (!payload || typeof payload !== 'object') {
+    throw new Error('payload required');
+  }
+  const { heartbeat, monitor } = payload;
+  if (!heartbeat && !monitor) {
+    return { ignore: true, reason: 'test notification' };
+  }
+  if (!heartbeat || !monitor) throw new Error('heartbeat and monitor required');
+  const monitorId = monitor.id ?? heartbeat.monitorID;
+  if (monitorId == null || monitorId === '') throw new Error('monitor.id required');
+
+  const status = Number(heartbeat.status);
+  let eventType;
+  if (status === 0) eventType = 'problem';
+  else if (status === 1) eventType = 'recovery';
+  else return { ignore: true, reason: `status ${KUMA_STATUS[status] || heartbeat.status}` };
+
+  const name = String(monitor.pathName || monitor.name || `Monitor ${monitorId}`).trim();
+  const target = monitor.docker_container
+    || monitor.url
+    || (monitor.hostname ? `${monitor.hostname}${monitor.port ? `:${monitor.port}` : ''}` : null);
+  const time = String(heartbeat.localDateTime || heartbeat.time || '').trim();
+  const lines = [
+    `**Monitor:** ${name}${monitor.type ? ` (${monitor.type})` : ''}`,
+    target ? `**Target:** \`${target}\`` : null,
+    heartbeat.msg ? `**Message:** ${heartbeat.msg}` : null,
+    time ? `**${eventType === 'problem' ? 'Down since' : 'Up at'}:** ${time}${heartbeat.timezone ? ` (${heartbeat.timezone})` : ''}` : null,
+  ].filter(Boolean);
+
+  return {
+    external_event_id: `${monitorId}:${heartbeat.time || Date.now()}`,
+    event_type: eventType,
+    severity: 'Down',
+    title: `${name} is ${eventType === 'problem' ? 'DOWN' : 'UP'}`,
+    description: lines.join('\n'),
+    vendor_ref: null,
+    user_email: null,
+    item_key: `monitor:${monitorId}`,
+    // Bare monitor name: the group shows as the parent service.
+    item_label: String(monitor.name || name).trim(),
+    item_detail: target ? `${monitor.type || 'monitor'} · ${target}` : (monitor.type || null),
+    item_state: eventType === 'problem' ? 'down' : 'up',
+    // Kuma group = service. path is [..., group, monitor].
+    parent_key: monitor.parent != null ? `monitor:${monitor.parent}` : null,
+    parent_label: Array.isArray(monitor.path) && monitor.path.length > 1
+      ? String(monitor.path[monitor.path.length - 2])
+      : null,
+  };
+}
+
+// Kuma carries no severity; every notification is a DOWN. Admins
+// tune via the per-source severity map (key "Down").
+const DEFAULT_UPTIME_KUMA_SEVERITY_MAP = { Down: 2 };
+
 const PRESETS = {
   zabbix: { mapper: zabbix, defaultSeverityMap: DEFAULT_ZABBIX_SEVERITY_MAP },
   action1: { mapper: action1, defaultSeverityMap: DEFAULT_ACTION1_SEVERITY_MAP },
+  'uptime-kuma': { mapper: uptimeKuma, defaultSeverityMap: DEFAULT_UPTIME_KUMA_SEVERITY_MAP },
 };
 
 function getPreset(name) {
@@ -269,4 +383,5 @@ module.exports = {
   PRESETS,
   DEFAULT_ZABBIX_SEVERITY_MAP,
   DEFAULT_ACTION1_SEVERITY_MAP,
+  DEFAULT_UPTIME_KUMA_SEVERITY_MAP,
 };

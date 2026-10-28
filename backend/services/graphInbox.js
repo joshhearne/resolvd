@@ -16,7 +16,6 @@
 // The access token is refreshed via emailBackends.refreshIfNeeded
 // before any Graph call so renewal/fetch survive token expiry.
 
-const fetch = require('node-fetch');
 const crypto = require('crypto');
 const { pool } = require('../db/pool');
 const eb = require('./emailBackends');
@@ -119,6 +118,54 @@ async function deleteSubscription(account) {
   );
 }
 
+// Catch-up sweep. Walks the Inbox for anything received since `sinceIso`
+// and pushes every message we have no inbound_email_queue row for through
+// the generic ingestor. Used after a subscription is recreated: Graph does
+// not replay notifications that failed to deliver (tunnel outage, edge
+// 403, expired subscription), so anything that arrived in the gap is
+// silently lost unless we go and look. Idempotent — the queue is checked
+// by internetMessageId before fetching, and the ingestor dedups on
+// external_message_id anyway.
+async function sweepInbox(account, sinceIso, { feed } = {}) {
+  const { feedToGeneric } = require('./inboundFeed');
+  const send = feed || feedToGeneric;
+  const since = new Date(sinceIso).toISOString();
+  const select = 'id,subject,from,receivedDateTime,internetMessageId';
+  let url = `${GRAPH}/me/mailFolders/inbox/messages` +
+    `?$filter=${encodeURIComponent(`receivedDateTime ge ${since}`)}` +
+    `&$orderby=receivedDateTime asc&$top=50&$select=${select}`;
+  const out = { since, scanned: 0, fed: 0, skipped: 0, failed: 0, items: [] };
+  while (url) {
+    const r = await authedFetch(account, url);
+    if (!r.ok) {
+      const text = await r.text();
+      throw new Error(`Graph inbox sweep ${r.status}: ${text}`);
+    }
+    const page = await r.json();
+    for (const m of page.value || []) {
+      out.scanned++;
+      const imid = m.internetMessageId || m.id;
+      const seen = await pool.query(
+        `SELECT 1 FROM inbound_email_queue WHERE external_message_id = $1 OR message_id = $1 LIMIT 1`,
+        [imid]
+      );
+      if (seen.rowCount) { out.skipped++; continue; }
+      try {
+        const payload = await fetchMessageAsPayload(account, m.id);
+        const res = await send(payload);
+        out.fed++;
+        out.items.push({ received: m.receivedDateTime, from: m.from?.emailAddress?.address, subject: m.subject, result: res });
+      } catch (e) {
+        out.failed++;
+        out.items.push({ received: m.receivedDateTime, from: m.from?.emailAddress?.address, subject: m.subject, error: e.message });
+        console.error(`graph inbox sweep: failed to feed "${m.subject}" (${imid}): ${e.message}`);
+      }
+    }
+    url = page['@odata.nextLink'] || null;
+  }
+  return out;
+}
+
 // Applies admin-configured banner-strip regex patterns to an inbound
 // body. Each pattern compiled with /im flags. Bad patterns are skipped
 // with a warning so a single typo can't break ingestion.
@@ -135,7 +182,15 @@ function applyBannerPatterns(body, patterns) {
 // Fetch a message + its attachments and convert to the JSON shape the
 // /api/inbound/generic ingestor expects.
 async function fetchMessageAsPayload(account, messageId) {
-  const r = await authedFetch(account, `${GRAPH}/me/messages/${encodeURIComponent(messageId)}?$expand=attachments`);
+  // internetMessageHeaders is NOT in Graph's default projection — without an
+  // explicit $select it comes back undefined, which silently emptied the
+  // headers dict below and made the ingestor's auto-loop checks (including
+  // our own X-Resolvd-No-Reply self-loop guard) dead code on this path.
+  const select = [
+    'id', 'subject', 'body', 'from', 'sender', 'toRecipients', 'ccRecipients',
+    'receivedDateTime', 'internetMessageId', 'internetMessageHeaders',
+  ].join(',');
+  const r = await authedFetch(account, `${GRAPH}/me/messages/${encodeURIComponent(messageId)}?$select=${select}&$expand=attachments`);
   if (!r.ok) {
     const text = await r.text();
     throw new Error(`Graph /me/messages/${messageId} ${r.status}: ${text}`);
@@ -183,6 +238,25 @@ function stripHtml(html) {
   return String(html)
     .replace(/<style[\s\S]*?<\/style>/gi, '')
     .replace(/<script[\s\S]*?<\/script>/gi, '')
+    // Preserve code formatting: wrap <pre>...</pre> bodies in fenced
+    // backticks so they survive the rest of the tag stripper and
+    // render as a code block when re-displayed via MarkdownContent.
+    // Inline <code> gets single-backtick wrapping for the same reason.
+    .replace(/<pre[^>]*>([\s\S]*?)<\/pre>/gi, (_m, body) => `\n\n\`\`\`\n${body.replace(/<[^>]+>/g, '')}\n\`\`\`\n\n`)
+    .replace(/<code[^>]*>([\s\S]*?)<\/code>/gi, (_m, body) => `\`${body.replace(/<[^>]+>/g, '')}\``)
+    // Preserve hyperlinks. The generic tag stripper below would drop the
+    // <a> wrapper and leave only the link text ("View in dashboard"),
+    // losing the URL. Convert to a markdown link first so MarkdownContent
+    // renders it clickable. Emit a bare URL when the anchor text is empty
+    // or identical to the href; skip non-http(s) targets (mailto:, tel:,
+    // javascript:) by leaving just their text.
+    .replace(/<a\b[^>]*?\bhref\s*=\s*(["'])([\s\S]*?)\1[^>]*>([\s\S]*?)<\/a>/gi, (_m, _q, href, inner) => {
+      const label = inner.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+      const url = href.trim();
+      if (!/^https?:\/\//i.test(url)) return label || url;
+      if (!label || label === url) return url;
+      return `[${label}](${url})`;
+    })
     .replace(/<br\s*\/?>/gi, '\n')
     .replace(/<\/(p|div|li|h[1-6]|tr|td|th|blockquote|article|section|header|footer|pre)\s*>/gi, '\n')
     .replace(/<[^>]+>/g, '')
@@ -192,7 +266,7 @@ function stripHtml(html) {
     .replace(/&gt;/g, '>')
     .replace(/&quot;/g, '"')
     .replace(/&#39;/g, "'")
-    // Inky and similar mail-security scanners pad their banners with long
+    // Mail-security scanners pad their banners with long
     // runs of zero-width non-joiners (U+200C). Collapse those to nothing
     // so the surrounding banner text becomes detectable as one block.
     .replace(/‌+/g, '')
@@ -204,6 +278,7 @@ function stripHtml(html) {
 module.exports = {
   createSubscription,
   renewSubscription,
+  sweepInbox,
   deleteSubscription,
   fetchMessageAsPayload,
   RENEWAL_THRESHOLD_MS,

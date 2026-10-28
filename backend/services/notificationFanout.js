@@ -43,6 +43,36 @@ async function getFollowerRecipients(client, ticketId, excludeUserId, extraExclu
   return r.rows;
 }
 
+// Lightweight helper: fetch the ticket's submitter id without dragging
+// the rest of the row across the wire. Used by SLA fanout to opt
+// submitters out of the default recipient list.
+async function getTicketSubmitterId(ticketId) {
+  if (!ticketId) return null;
+  const r = await pool.query(
+    `SELECT submitted_by FROM tickets WHERE id = $1`, [ticketId]
+  );
+  return r.rows[0]?.submitted_by || null;
+}
+
+// Terminal-status gate. Returns true when the ticket's current
+// internal_status is flagged is_terminal=TRUE (Closed, etc.). Fanout
+// entry points consult this to drop notifications on already-closed
+// tickets — protects against re-firing during rebuilds / migrations /
+// background sweeps / accidental status-noise on stale rows.
+async function isTicketTerminal(ticketId) {
+  if (!ticketId) return false;
+  const r = await pool.query(
+    `SELECT 1 FROM tickets t
+       JOIN statuses s
+         ON s.kind = 'internal' AND s.name = t.internal_status
+      WHERE t.id = $1
+        AND s.is_terminal = TRUE
+      LIMIT 1`,
+    [ticketId]
+  );
+  return r.rowCount > 0;
+}
+
 async function getUserById(userId) {
   const r = await pool.query(
     `SELECT id, email, display_name, preferences FROM users WHERE id = $1 AND status = 'active'`,
@@ -72,8 +102,11 @@ function nextFlushBoundary(prefsBlob, brandingTz) {
     return nextLocalHour(now, tz, [0, 12]);
   }
   if (cadence === 'daily') {
-    // 09:00 user-local. Org-configurable hour piggybacks later if needed.
-    return nextLocalHour(now, tz, [9]);
+    // User can pick their preferred delivery hour (0-23 local) via
+    // AccountPreferences. Falls back to 09:00 when unset / out of range.
+    const raw = prefsBlob && prefsBlob.notification_digest_local_hour;
+    const hr = Number.isInteger(raw) && raw >= 0 && raw <= 23 ? raw : 9;
+    return nextLocalHour(now, tz, [hr]);
   }
   return null;
 }
@@ -197,8 +230,55 @@ async function dispatchPerRecipient({ user, eventType, inApp, push, ticketId, ti
 
 // ─── Public fanout entry points ──────────────────────────────────────────
 
+// New-ticket fanout. Recipients = all active Admins + Managers, minus
+// the actor, the assignee (covered by fanoutAssignment), and the
+// submitter (they obviously know they filed it). Default matrix has
+// email off so the firehose doesn't spam, but in_app shows up in the
+// tray for opted-in users.
+async function fanoutNewTicket(_unusedPool, { ticket, actorId, actorName, submitterId }) {
+  if (!ticket || !ticket.id) return;
+  if (await isTicketTerminal(ticket.id)) return;
+  const excludes = [actorId, ticket.assigned_to, submitterId].filter(x => x != null);
+  const r = await pool.query(
+    `SELECT id, email, display_name, preferences FROM users
+      WHERE role IN ('Admin','Manager') AND status = 'active'
+        AND NOT (id = ANY($1::int[]))`,
+    [excludes.length ? excludes : [0]]
+  );
+  const ticketRef = ticket.internal_ref;
+  const ticketTitle = ticket.title || '';
+  const payload = {
+    ticket_id: ticket.id,
+    ticket_ref: ticketRef,
+    ticket_title: ticketTitle,
+    actor_name: actorName || 'System',
+    priority: ticket.effective_priority || null,
+    source: ticket.external_source || 'web',
+  };
+  for (const user of r.rows) {
+    const matrix = await dispatchPerRecipient({
+      user,
+      eventType: 'new_ticket',
+      ticketId: ticket.id,
+      ticketRef,
+      inApp: {
+        title: `New ticket: ${ticketRef}`,
+        body: ticketTitle
+          ? `${ticketTitle}${actorName ? ` · by ${actorName}` : ''}`
+          : `Filed${actorName ? ` by ${actorName}` : ''}.`,
+      },
+      push: null,
+      payload,
+    });
+    if (matrix.email) {
+      await routeEmail({ user, eventType: 'new_ticket', payload, ticketId: ticket.id, projectId: ticket.project_id });
+    }
+  }
+}
+
 async function fanoutAssignment(_unusedPool, { ticket, assigneeId, actorId, actorName }) {
   if (!assigneeId || assigneeId === actorId) return;
+  if (await isTicketTerminal(ticket.id)) return;
   const user = await getUserById(assigneeId);
   if (!user) return;
   const ticketRef = ticket.internal_ref;
@@ -232,6 +312,18 @@ async function fanoutAssignment(_unusedPool, { ticket, assigneeId, actorId, acto
 }
 
 async function fanoutStatusChange(_unusedPool, { ticket, oldStatus, newStatus, actorId }) {
+  // Allow legitimate close transition (non-terminal → terminal) so
+  // followers learn the ticket closed. Suppress terminal → terminal
+  // re-fires (e.g. background re-stamping during a rebuild).
+  const oldTerminal = await pool.query(
+    `SELECT 1 FROM statuses WHERE kind='internal' AND name=$1 AND is_terminal=TRUE LIMIT 1`,
+    [oldStatus]
+  );
+  const newTerminal = await pool.query(
+    `SELECT 1 FROM statuses WHERE kind='internal' AND name=$1 AND is_terminal=TRUE LIMIT 1`,
+    [newStatus]
+  );
+  if (oldTerminal.rowCount && newTerminal.rowCount) return;
   const recipients = await getFollowerRecipients(null, ticket.id, actorId);
   if (!recipients.length) return;
   const ticketRef = ticket.internal_ref;
@@ -266,9 +358,19 @@ async function fanoutStatusChange(_unusedPool, { ticket, oldStatus, newStatus, a
   }
 }
 
-async function fanoutNewComment(_unusedPool, { ticket, comment, actorId, actorName, excludeUserIds = [] }) {
+async function fanoutNewComment(_unusedPool, { ticket, comment, commentId = null, actorId, actorName, excludeUserIds = [] }) {
+  if (await isTicketTerminal(ticket.id)) return;
   const recipients = await getFollowerRecipients(null, ticket.id, actorId, excludeUserIds);
   if (!recipients.length) return;
+  // First internal exposure to non-author recipients — stamp once so the
+  // "(edited)" badge can later distinguish "edits before anyone saw it"
+  // from "edits after distribution". No-op if already stamped or no id.
+  if (commentId) {
+    await pool.query(
+      'UPDATE comments SET distributed_at = NOW() WHERE id = $1 AND distributed_at IS NULL',
+      [commentId]
+    );
+  }
   const ticketRef = ticket.internal_ref;
   const ticketTitle = ticket.title || '';
   const preview = String(comment || '').length > 300 ? String(comment).slice(0, 300) + '…' : String(comment || '');
@@ -298,11 +400,23 @@ async function fanoutNewComment(_unusedPool, { ticket, comment, actorId, actorNa
   }
 }
 
-async function fanoutMention(_unusedPool, { ticket, comment, commentId, mentionedUsers, actorId, actorName }) {
+async function fanoutMention(_unusedPool, { ticket, comment, commentId, mentionedUsers, actorId, actorName, kind = 'comment' }) {
   if (!mentionedUsers || !mentionedUsers.length) return;
+  if (await isTicketTerminal(ticket.id)) return;
   const ticketRef = ticket.internal_ref;
   const ticketTitle = ticket.title || '';
   const preview = String(comment || '').length > 300 ? String(comment).slice(0, 300) + '…' : String(comment || '');
+  // Distribution stamp for comment mentions only — note mentions also
+  // route through here and would hit the wrong table by id.
+  if (kind === 'comment' && commentId) {
+    const realMentions = mentionedUsers.filter((m) => m && m.id && m.id !== actorId);
+    if (realMentions.length) {
+      await pool.query(
+        'UPDATE comments SET distributed_at = NOW() WHERE id = $1 AND distributed_at IS NULL',
+        [commentId]
+      );
+    }
+  }
   // Mention implicitly subscribes the user as a follower.
   for (const m of mentionedUsers) {
     if (!m || !m.id || m.id === actorId) continue;
@@ -349,6 +463,7 @@ async function fanoutMention(_unusedPool, { ticket, comment, commentId, mentione
 }
 
 async function fanoutPendingReview(_unusedPool, { ticket, actorId }) {
+  if (await isTicketTerminal(ticket.id)) return;
   // Recipients = all active Admins minus the actor.
   const r = await pool.query(
     `SELECT id, email, display_name, preferences FROM users
@@ -387,6 +502,7 @@ async function fanoutPendingReview(_unusedPool, { ticket, actorId }) {
 
 async function fanoutFollowUp(_unusedPool, { ticket, schedulerUserId, schedulerEmail, schedulerName }) {
   if (!schedulerUserId) return;
+  if (await isTicketTerminal(ticket.id)) return;
   const user = await getUserById(schedulerUserId);
   if (!user) return;
   const ticketRef = ticket.internal_ref;
@@ -420,9 +536,23 @@ async function fanoutFollowUp(_unusedPool, { ticket, schedulerUserId, schedulerE
 
 async function fanoutSlaBreach(_unusedPool, { ticket, kind }) {
   // kind: 'response' | 'resolve'
-  // Recipients: assignee (if any) + ticket followers + submitter, minus
-  // the actor (which doesn't exist for cron-fired events — pass null).
-  const recipients = await getFollowerRecipients(null, ticket.id, null);
+  // Defense-in-depth: sla.tickBreaches already filters terminal tickets,
+  // but guard here in case the helper is called from a future path.
+  if (await isTicketTerminal(ticket.id)) return;
+  // Recipients: assignee (if any) + ticket followers, minus the actor.
+  // Submitter is excluded by default — they auto-follow their own
+  // ticket so getFollowerRecipients would pull them in, but raw SLA
+  // breach copy reads poorly for customers. Tenants that genuinely
+  // want submitters paged on SLA breach flip
+  // auth_settings.sla_notify_submitter_default to TRUE; per-priority
+  // chains can also opt them in via a `notify_submitter` escalation
+  // action without touching the global default.
+  const settings = await pool.query(
+    `SELECT sla_notify_submitter_default FROM auth_settings WHERE id = 1`
+  ).then(r => r.rows[0] || {}).catch(() => ({}));
+  const submitterId = await getTicketSubmitterId(ticket.id);
+  const submitterExcludes = settings.sla_notify_submitter_default ? [] : [submitterId].filter(Boolean);
+  const recipients = await getFollowerRecipients(null, ticket.id, null, submitterExcludes);
   const assigneeId = ticket.assigned_to;
   if (assigneeId && !recipients.find(u => u.id === assigneeId)) {
     const u = await getUserById(assigneeId);
@@ -476,7 +606,16 @@ async function fanoutSlaBreach(_unusedPool, { ticket, kind }) {
 // title and a separate matrix event so users can opt out of warnings
 // without losing the actual breach signal.
 async function fanoutSlaWarning(_unusedPool, { ticket, kind }) {
-  const recipients = await getFollowerRecipients(null, ticket.id, null);
+  if (await isTicketTerminal(ticket.id)) return;
+  // Same submitter-exclusion policy as fanoutSlaBreach. Warnings are
+  // even noisier than breaches (pre-deadline nudges), so the
+  // "submitter doesn't need this" default is even more important here.
+  const settings = await pool.query(
+    `SELECT sla_notify_submitter_default FROM auth_settings WHERE id = 1`
+  ).then(r => r.rows[0] || {}).catch(() => ({}));
+  const submitterId = await getTicketSubmitterId(ticket.id);
+  const submitterExcludes = settings.sla_notify_submitter_default ? [] : [submitterId].filter(Boolean);
+  const recipients = await getFollowerRecipients(null, ticket.id, null, submitterExcludes);
   const assigneeId = ticket.assigned_to;
   if (assigneeId && !recipients.find(u => u.id === assigneeId)) {
     const u = await getUserById(assigneeId);
@@ -522,6 +661,7 @@ async function fanoutSlaWarning(_unusedPool, { ticket, kind }) {
 }
 
 module.exports = {
+  fanoutNewTicket,
   fanoutAssignment,
   fanoutStatusChange,
   fanoutNewComment,

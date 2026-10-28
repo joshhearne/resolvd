@@ -1,6 +1,7 @@
 const express = require('express');
 const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
+const { numericId } = require('../middleware/params');
 const { decryptRows } = require('../services/fields');
 
 const router = express.Router();
@@ -9,7 +10,7 @@ const router = express.Router();
 // surface for smoke testing the Action1 sync before the dedicated UI
 // lands. project_id query param scopes results to assets eligible for
 // linking on that project (used by the ticket asset picker).
-router.get('/', requireAuth, async (req, res) => {
+router.get('/', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const limit = Math.max(1, Math.min(500, Number(req.query.limit) || 100));
     const offset = Math.max(0, Number(req.query.offset) || 0);
@@ -56,6 +57,7 @@ router.get('/', requireAuth, async (req, res) => {
 
     const r = await pool.query(
       `SELECT a.id, a.source_system, a.source_external_id, a.hostname, a.serial,
+              a.asset_tag,
               a.manufacturer, a.model, a.os, a.os_version, a.organization,
               a.linked_user_id, a.company_id, a.asset_type_id,
               at.slug AS asset_type_slug, at.label AS asset_type_label,
@@ -81,7 +83,7 @@ router.get('/', requireAuth, async (req, res) => {
 
 // GET /api/assets/:id — single asset incl. raw_data + linked user
 // details + tickets[]. Tickets decrypted via the standard helper.
-router.get('/:id(\\d+)', requireAuth, async (req, res) => {
+router.get('/:id', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const r = await pool.query(
       `SELECT a.*, u.display_name AS linked_user_name, u.email AS linked_user_email,
@@ -116,19 +118,19 @@ router.get('/:id(\\d+)', requireAuth, async (req, res) => {
 
 // Fields editable on RMM-managed assets — sync overrides these on every
 // pull, so only the cross-reference cols are useful to override here.
-const RMM_EDITABLE = ['linked_user_id', 'company_id', 'asset_type_id'];
+const RMM_EDITABLE = ['linked_user_id', 'company_id', 'asset_type_id', 'asset_tag'];
 
 // Fields editable on manual assets — admin owns the data, so the full
 // structural set is fair game.
 const MANUAL_EDITABLE = [
   'hostname', 'serial', 'mac', 'manufacturer', 'model', 'os', 'os_version',
   'cpu', 'ip_address', 'organization', 'linked_user_id', 'company_id',
-  'ram_bytes', 'storage_bytes', 'asset_type_id',
+  'ram_bytes', 'storage_bytes', 'asset_type_id', 'asset_tag',
 ];
 
 const TEXT_FIELDS = new Set([
   'hostname', 'serial', 'mac', 'manufacturer', 'model',
-  'os', 'os_version', 'cpu', 'ip_address', 'organization',
+  'os', 'os_version', 'cpu', 'ip_address', 'organization', 'asset_tag',
 ]);
 const INT_FIELDS = new Set(['linked_user_id', 'company_id', 'ram_bytes', 'storage_bytes', 'asset_type_id']);
 
@@ -194,7 +196,7 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (re
 // PATCH /api/assets/:id — manual assets get the full editable set,
 // RMM-managed assets keep the narrow override set (sync clobbers
 // structural fields on every pull anyway).
-router.patch('/:id(\\d+)', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+router.patch('/:id', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const id = Number(req.params.id);
     const existing = await pool.query(`SELECT source_system FROM assets WHERE id = $1`, [id]);
@@ -237,7 +239,7 @@ router.patch('/:id(\\d+)', requireAuth, requireRole('Admin', 'Manager', 'Tech'),
 // DELETE /api/assets/:id — only manual assets are deletable; RMM-
 // managed ones should disappear via their source's lifecycle. Tickets
 // linked to a deleted asset get asset_id = NULL (FK ON DELETE SET NULL).
-router.delete('/:id(\\d+)', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+router.delete('/:id', numericId, requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
     const id = Number(req.params.id);
     const r = await pool.query(`SELECT source_system FROM assets WHERE id = $1`, [id]);
@@ -261,7 +263,7 @@ function csvEscape(v) {
   if (/[",\n\r]/.test(s)) return `"${s.replace(/"/g, '""')}"`;
   return s;
 }
-router.get('/export.csv', requireAuth, async (req, res) => {
+router.get('/export.csv', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const q = (req.query.q || '').trim();
     const offlineRaw = Number(req.query.offline_days);
@@ -323,7 +325,7 @@ router.get('/export.csv', requireAuth, async (req, res) => {
 // Returns canonical_name + canonical_vendor + last_alias_id so the UI
 // can show "Adobe Acrobat (was: Adobe Acrobat Pro DC 64-bit)" and link
 // the alias rule that won the match.
-router.get('/:id(\\d+)/software', requireAuth, async (req, res) => {
+router.get('/:id/software', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const id = Number(req.params.id);
     const q = (req.query.q || '').trim().toLowerCase();
@@ -356,7 +358,7 @@ router.get('/:id(\\d+)/software', requireAuth, async (req, res) => {
 // projects. Admin / Manager see every row; others are scoped to
 // projects they're members of. Useful for the asset detail page's
 // "what tickets touched this machine" panel.
-router.get('/:id(\\d+)/tickets', requireAuth, async (req, res) => {
+router.get('/:id/tickets', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const id = Number(req.params.id);
     const user = req.session.user;
@@ -374,9 +376,12 @@ router.get('/:id(\\d+)/tickets', requireAuth, async (req, res) => {
       `SELECT t.id, t.internal_ref, t.title, t.title_enc,
               t.internal_status, t.effective_priority, t.project_id,
               p.name AS project_name, p.prefix AS project_prefix,
-              t.created_at, t.updated_at, t.resolved_at
+              t.created_at, t.updated_at, t.resolved_at,
+              COALESCE(te.minutes, 0)::int AS time_minutes
          FROM tickets t
          LEFT JOIN projects p ON p.id = t.project_id
+         LEFT JOIN (SELECT ticket_id, SUM(duration_minutes) AS minutes FROM time_entries GROUP BY ticket_id) te
+                ON te.ticket_id = t.id
         WHERE t.asset_id = $1 ${projectFilter}
         ORDER BY
           CASE WHEN t.resolved_at IS NULL THEN 0 ELSE 1 END,
@@ -394,11 +399,86 @@ router.get('/:id(\\d+)/tickets', requireAuth, async (req, res) => {
   }
 });
 
+// GET /api/assets/:id/time — time logged on tickets linked to this asset:
+// totals (all time / last 30 / last 90 days), per tech, per month (last
+// 12). Same project scoping as /tickets for non-privileged users. In MSP
+// mode Admin/Manager also get the billed amount (rates + contracts).
+router.get('/:id/time', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const user = req.session.user;
+    const isPriv = user.role === 'Admin' || user.role === 'Manager';
+    const params = [id];
+    let projectFilter = '';
+    if (!isPriv) {
+      params.push(user.id);
+      projectFilter = `AND EXISTS (
+        SELECT 1 FROM project_members pm WHERE pm.project_id = t.project_id AND pm.user_id = $2
+      )`;
+    }
+    const r = await pool.query(
+      `SELECT e.id, e.ticket_id, e.user_id, e.duration_minutes, e.billable, e.ended_at,
+              u.display_name AS user_name, u.email AS user_email
+         FROM time_entries e
+         JOIN tickets t ON t.id = e.ticket_id
+    LEFT JOIN users u ON u.id = e.user_id
+        WHERE t.asset_id = $1 ${projectFilter}`,
+      params
+    );
+    const now = Date.now();
+    const blank = () => ({ minutes: 0, billable_minutes: 0, entries: 0 });
+    const totals = { all: blank(), d30: blank(), d90: blank() };
+    const techs = new Map();
+    const months = new Map();
+    const add = (bucket, e) => {
+      bucket.minutes += e.duration_minutes;
+      bucket.entries += 1;
+      if (e.billable) bucket.billable_minutes += e.duration_minutes;
+    };
+    for (const e of r.rows) {
+      const age = now - new Date(e.ended_at).getTime();
+      add(totals.all, e);
+      if (age <= 30 * 86400000) add(totals.d30, e);
+      if (age <= 90 * 86400000) add(totals.d90, e);
+      const key = e.user_id || 0;
+      if (!techs.has(key)) techs.set(key, { user_id: e.user_id, name: e.user_name || e.user_email || 'Unknown', ...blank() });
+      add(techs.get(key), e);
+      if (age <= 366 * 86400000) {
+        const m = new Date(e.ended_at).toISOString().slice(0, 7);
+        if (!months.has(m)) months.set(m, { month: m, ...blank() });
+        add(months.get(m), e);
+      }
+    }
+    const out = {
+      tickets: new Set(r.rows.map((e) => e.ticket_id)).size,
+      totals,
+      by_tech: [...techs.values()].sort((a, b) => b.minutes - a.minutes),
+      by_month: [...months.values()].sort((a, b) => (a.month < b.month ? -1 : 1)),
+      billing: null,
+    };
+    const billing = require('../services/billing');
+    if (isPriv && r.rows.length && await billing.isMspMode()) {
+      const ids = [...new Set(r.rows.map((e) => e.ticket_id))];
+      const priced = await billing.priceTickets(ids);
+      const settings = await require('../services/timeTracking').getSettings();
+      out.billing = {
+        currency: settings.billing_currency,
+        amount_cents: ids.reduce((sum, tid) => sum + (priced.byTicket[tid]?.amount_cents || 0), 0),
+        billable_minutes: ids.reduce((sum, tid) => sum + (priced.byTicket[tid]?.billable_minutes || 0), 0),
+      };
+    }
+    res.json(out);
+  } catch (err) {
+    console.error('asset time error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
 // GET /api/assets/:id/vulnerabilities — placeholder for Phase 5
 // per-CVE data. Today returns the count columns the assets table
 // already carries; future vendors that ship per-CVE rows will
 // populate an asset_vulnerabilities table the UI is already reading.
-router.get('/:id(\\d+)/vulnerabilities', requireAuth, async (req, res) => {
+router.get('/:id/vulnerabilities', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const id = Number(req.params.id);
     const a = await pool.query(
@@ -423,7 +503,7 @@ router.get('/:id(\\d+)/vulnerabilities', requireAuth, async (req, res) => {
 
 // POST /api/assets/:id/sync-software — on-demand pull from the asset's
 // upstream RMM source.
-router.post('/:id(\\d+)/sync-software', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+router.post('/:id/sync-software', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const { syncSoftwareForAsset } = require('../services/action1Software');
     const result = await syncSoftwareForAsset(Number(req.params.id));
@@ -431,6 +511,118 @@ router.post('/:id(\\d+)/sync-software', requireAuth, requireRole('Admin', 'Manag
   } catch (err) {
     console.error('asset software sync error:', err.message);
     res.status(400).json({ error: err.message });
+  }
+});
+
+// POST /api/assets/:id/print-label — render + send an asset label to
+// the configured Zebra. QR payload is `asset:<id>` so a scanner can
+// deep-link back to the inventory row.
+router.post('/:id/print-label', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT id, hostname, serial, model, manufacturer, asset_tag FROM assets WHERE id = $1`,
+      [Number(req.params.id)]
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'Asset not found' });
+    const labelPrinter = require('../services/labelPrinter');
+    const labelTemplates = require('../services/labelTemplates');
+    const cfg = await labelPrinter.getConfig();
+    if (!cfg?.enabled) return res.status(400).json({ error: 'Label printer disabled' });
+    if (!cfg.host) return res.status(400).json({ error: 'Label printer host not configured' });
+    const zpl = labelTemplates.renderAssetLabel({ asset: r.rows[0] }, cfg);
+    await labelPrinter.print(zpl);
+    res.json({ ok: true });
+  } catch (err) {
+    console.error('asset print-label:', err);
+    res.status(500).json({ error: err.message || 'Print failed' });
+  }
+});
+
+// POST /api/assets/:id/checkout — Admin/Manager/Tech. Opens a custody
+// row to a user. 409 if asset already has an active checkout (caller
+// should check in first). Auto-syncs assets.linked_user_id so the
+// existing "linked user" column reflects the current holder.
+router.post('/:id/checkout', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+  const assetId = Number(req.params.id);
+  const { user_id, note } = req.body || {};
+  const userId = user_id != null ? Number(user_id) : null;
+  if (!Number.isInteger(userId) || userId <= 0) {
+    return res.status(400).json({ error: 'user_id required' });
+  }
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const asset = await client.query('SELECT id FROM assets WHERE id = $1', [assetId]);
+    if (!asset.rows[0]) { await client.query('ROLLBACK'); return res.status(404).json({ error: 'asset not found' }); }
+    const u = await client.query(`SELECT id FROM users WHERE id = $1 AND status = 'active'`, [userId]);
+    if (!u.rows[0]) { await client.query('ROLLBACK'); return res.status(400).json({ error: 'user not found or inactive' }); }
+    const active = await client.query(
+      'SELECT id FROM asset_checkouts WHERE asset_id = $1 AND in_at IS NULL',
+      [assetId]
+    );
+    if (active.rows[0]) { await client.query('ROLLBACK'); return res.status(409).json({ error: 'Asset already checked out — check in first' }); }
+    const ins = await client.query(
+      `INSERT INTO asset_checkouts (asset_id, user_id, out_by, out_note)
+       VALUES ($1, $2, $3, $4) RETURNING id, out_at`,
+      [assetId, userId, req.session.user.id, note ? String(note).trim() : null]
+    );
+    await client.query('UPDATE assets SET linked_user_id = $1, updated_at = NOW() WHERE id = $2', [userId, assetId]);
+    await client.query('COMMIT');
+    res.status(201).json({ ok: true, checkout_id: ins.rows[0].id, out_at: ins.rows[0].out_at });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('asset checkout error:', err);
+    res.status(500).json({ error: 'Database error' });
+  } finally {
+    client.release();
+  }
+});
+
+// POST /api/assets/:id/checkin — close the active checkout. Optional
+// note. No-ops with 404 if there's no active row. Leaves
+// assets.linked_user_id alone so the most-recent holder is still
+// visible on the detail page; admin can clear it explicitly via PATCH.
+router.post('/:id/checkin', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+  const assetId = Number(req.params.id);
+  const { note } = req.body || {};
+  try {
+    const r = await pool.query(
+      `UPDATE asset_checkouts
+          SET in_at = NOW(), in_by = $1, in_note = $2
+        WHERE asset_id = $3 AND in_at IS NULL
+        RETURNING id, in_at`,
+      [req.session.user.id, note ? String(note).trim() : null, assetId]
+    );
+    if (!r.rows[0]) return res.status(404).json({ error: 'No active checkout' });
+    res.json({ ok: true, checkout_id: r.rows[0].id, in_at: r.rows[0].in_at });
+  } catch (err) {
+    console.error('asset checkin error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// GET /api/assets/:id/checkouts — chronological custody history.
+// Newest first. Decorates with holder + actor display names.
+router.get('/:id/checkouts', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+  try {
+    const r = await pool.query(
+      `SELECT c.id, c.asset_id, c.user_id, c.out_at, c.out_by, c.out_note,
+              c.in_at, c.in_by, c.in_note,
+              uh.display_name AS holder_name, uh.email AS holder_email,
+              ob.display_name AS out_by_name,
+              ib.display_name AS in_by_name
+         FROM asset_checkouts c
+         LEFT JOIN users uh ON uh.id = c.user_id
+         LEFT JOIN users ob ON ob.id = c.out_by
+         LEFT JOIN users ib ON ib.id = c.in_by
+        WHERE c.asset_id = $1
+        ORDER BY c.out_at DESC`,
+      [Number(req.params.id)]
+    );
+    res.json(r.rows);
+  } catch (err) {
+    console.error('asset checkouts list:', err);
+    res.status(500).json({ error: 'Database error' });
   }
 });
 

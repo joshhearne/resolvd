@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
+import SaveBar, { useSavedBaseline } from "../components/SaveBar";
 
 const ROLES = ["Admin", "Submitter", "Viewer"];
 
@@ -10,12 +11,15 @@ export default function AdminAuth() {
   const [saving, setSaving] = useState(false);
   const [smtpPassword, setSmtpPassword] = useState("");
   const [testEmailTo, setTestEmailTo] = useState("");
+  const { dirty: formDirty, markSaved, savedValue } = useSavedBaseline(s);
+  const dirty = formDirty || !!smtpPassword;
 
   useEffect(() => {
     api
       .get("/api/auth-settings")
       .then((data) => {
         setS(data);
+        markSaved(data);
         setLoading(false);
       })
       .catch((err) => {
@@ -50,6 +54,7 @@ export default function AdminAuth() {
       else delete patch.smtp_password;
       const updated = await api.patch("/api/auth-settings", patch);
       setS(updated);
+      markSaved(updated);
       setSmtpPassword("");
       toast.success("Settings saved");
     } catch (err) {
@@ -239,6 +244,24 @@ export default function AdminAuth() {
         />
       </Section>
 
+      <Section title="Inbound email auto-provisioning">
+        <Toggle
+          label="Allow inbound email from unknown senders to create local accounts"
+          checked={!!s.allow_email_unknown_users}
+          onChange={(v) => update("allow_email_unknown_users", v)}
+          hint="When OFF (default), inbound email from a sender that no configured directory (Microsoft Graph / Google Workspace) recognises is rejected — keeps the ingestion mailbox from being a spam onboarding vector. When ON, an unmatched sender is minted as a local Submitter so the ticket has an owner."
+        />
+      </Section>
+
+      <Section title="SLA notifications">
+        <Toggle
+          label="Notify submitters on SLA warnings / breaches by default"
+          checked={!!s.sla_notify_submitter_default}
+          onChange={(v) => update("sla_notify_submitter_default", v)}
+          hint="OFF (default): SLA warnings + breaches fan out to the assignee and internal followers only — submitters are excluded because they auto-follow their own tickets and the raw breach copy reads poorly for customers. Opt them in per priority / project via a 'Notify submitter' action on an escalation policy. ON: every SLA event also pages the submitter directly."
+        />
+      </Section>
+
       <Section title="Vendor outbound &amp; muted-reply digest">
         <Field
           label="Generic-mailbox blocklist (extra local-parts)"
@@ -288,15 +311,14 @@ export default function AdminAuth() {
         </div>
       </Section>
 
-      <div className="flex gap-2">
-        <button
-          onClick={save}
-          disabled={saving}
-          className="bg-brand hover:bg-brand-bright disabled:opacity-60 text-brand-fg text-sm font-medium px-4 py-2 rounded"
-        >
-          {saving ? "Saving…" : "Save settings"}
-        </button>
-      </div>
+      <SaveBar
+        dirty={dirty}
+        saving={saving}
+        onSave={save}
+        onDiscard={() => { setS(savedValue); setSmtpPassword(""); }}
+        saveLabel="Save settings"
+        savedHint="test and send-now buttons act immediately"
+      />
     </div>
   );
 }

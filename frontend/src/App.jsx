@@ -1,5 +1,5 @@
 import React from "react";
-import { BrowserRouter, Routes, Route, Navigate } from "react-router-dom";
+import { BrowserRouter, Routes, Route, Navigate, useLocation } from "react-router-dom";
 import { Toaster } from "react-hot-toast";
 import { AuthProvider, useAuth } from "./context/AuthContext";
 import { BrandingProvider } from "./context/BrandingContext";
@@ -8,6 +8,8 @@ import { ThemeProvider } from "./context/ThemeContext";
 import Layout from "./components/Layout";
 import Dashboard from "./pages/Dashboard";
 import TicketList from "./pages/TicketList";
+import Tasks from "./pages/Tasks";
+import Time from "./pages/Time";
 import NewTicket from "./pages/NewTicket";
 import TicketDetail from "./pages/TicketDetail";
 import Admin from "./pages/Admin";
@@ -23,27 +25,38 @@ import AdminSupport from "./pages/AdminSupport";
 import AdminEncryption from "./pages/AdminEncryption";
 import AdminEmailBackends from "./pages/AdminEmailBackends";
 import AdminAiAssist from "./pages/AdminAiAssist";
+import AdminTroveKb from "./pages/AdminTroveKb";
 import AdminMerge from "./pages/AdminMerge";
 import AdminAlertSources from "./pages/AdminAlertSources";
 import AdminSoftwareAliases from "./pages/AdminSoftwareAliases";
 import AdminSystemHealth from "./pages/AdminSystemHealth";
 import AdminCannedResponses from "./pages/AdminCannedResponses";
+import AdminLabelPrinter from "./pages/AdminLabelPrinter";
 import AdminSlaPolicies from "./pages/AdminSlaPolicies";
+import AdminTicketSchedules from "./pages/AdminTicketSchedules";
 import AdminAssignmentPolicies from "./pages/AdminAssignmentPolicies";
+import AdminDedupOmitRules from "./pages/AdminDedupOmitRules";
 import AdminEscalationPolicies from "./pages/AdminEscalationPolicies";
+import AdminOnCall from "./pages/AdminOnCall";
 import AdminCustomFields from "./pages/AdminCustomFields";
+import AdminForms from "./pages/AdminForms";
+import AdminTimeTracking from "./pages/AdminTimeTracking";
 import PrintExport from "./pages/PrintExport";
 import Projects from "./pages/Projects";
 import ProjectDetail from "./pages/ProjectDetail";
 import Inventory from "./pages/Inventory";
+import Consumables from "./pages/Consumables";
 import Alerts from "./pages/Alerts";
 import AlertDetail from "./pages/AlertDetail";
+import StatusPages from "./pages/StatusPages";
+import Maintenance from "./pages/Maintenance";
 import Login from "./pages/Login";
 import MfaChallenge from "./pages/MfaChallenge";
 import MfaSetup from "./pages/MfaSetup";
 import AccountSettings from "./pages/AccountSettings";
 import AccountPreferences from "./pages/AccountPreferences";
 import AccountProfile from "./pages/account/AccountProfile";
+import AccountCalendar from "./pages/account/AccountCalendar";
 import AccountPassword from "./pages/account/AccountPassword";
 import ForgotPassword from "./pages/ForgotPassword";
 import ResetPassword from "./pages/ResetPassword";
@@ -52,18 +65,32 @@ import Help from "./pages/Help";
 import KbIndex from "./pages/KbIndex";
 import KbProject from "./pages/KbProject";
 import KbArticle from "./pages/KbArticle";
+import TroveKbArticle from "./pages/TroveKbArticle";
+import TroveKbCollection from "./pages/TroveKbCollection";
 import KbEditor from "./pages/KbEditor";
 
-function ProtectedRoute({ children, adminOnly = false }) {
+function ProtectedRoute({ children, adminOnly = false, handlerOnly = false }) {
   const { user, loading } = useAuth();
+  const location = useLocation();
   if (loading)
     return (
       <div className="flex items-center justify-center h-screen text-fg-muted">
         Loading...
       </div>
     );
-  if (!user) return <Navigate to="/login" replace />;
+  if (!user) {
+    // Preserve where the user was headed (e.g. a ticket deep-linked from a
+    // mention email) so login can return them there instead of the dashboard.
+    const returnTo = location.pathname + location.search;
+    const q =
+      returnTo && returnTo !== "/"
+        ? `?returnTo=${encodeURIComponent(returnTo)}`
+        : "";
+    return <Navigate to={`/login${q}`} replace />;
+  }
   if (adminOnly && !["Admin", "Manager"].includes(user.role))
+    return <Navigate to="/" replace />;
+  if (handlerOnly && !["Admin", "Manager", "Tech"].includes(user.role))
     return <Navigate to="/" replace />;
   return children;
 }
@@ -111,8 +138,19 @@ function AppRoutes() {
         <Route index element={<Navigate to="/dashboard" replace />} />
         <Route path="dashboard" element={<Dashboard />} />
         <Route path="tickets" element={<TicketList />} />
+        <Route path="tasks" element={<Tasks />} />
+        <Route path="time" element={<Time />} />
         <Route
           path="tickets/new"
+          element={
+            <ProtectedRoute>
+              <NewTicket />
+            </ProtectedRoute>
+          }
+        />
+        {/* Deep links: /tickets/new/<project>/<category>/<form> (+ ?field=… prefills) */}
+        <Route
+          path="tickets/new/*"
           element={
             <ProtectedRoute>
               <NewTicket />
@@ -131,6 +169,7 @@ function AppRoutes() {
           <Route path="password" element={<AccountPassword />} />
           <Route path="mfa" element={<MfaSetup />} />
           <Route path="preferences" element={<AccountPreferences />} />
+          <Route path="calendar" element={<AccountCalendar />} />
         </Route>
         <Route
           path="projects"
@@ -156,6 +195,9 @@ function AppRoutes() {
             </ProtectedRoute>
           }
         />
+        <Route path="status" element={<ProtectedRoute><StatusPages /></ProtectedRoute>} />
+        <Route path="status/:slug" element={<ProtectedRoute><StatusPages /></ProtectedRoute>} />
+        <Route path="maintenance" element={<ProtectedRoute><Maintenance /></ProtectedRoute>} />
         <Route
           path="alerts/:id"
           element={
@@ -167,7 +209,7 @@ function AppRoutes() {
         <Route
           path="inventory/:id"
           element={
-            <ProtectedRoute>
+            <ProtectedRoute handlerOnly>
               <Inventory />
             </ProtectedRoute>
           }
@@ -175,12 +217,30 @@ function AppRoutes() {
         <Route
           path="inventory"
           element={
-            <ProtectedRoute>
+            <ProtectedRoute handlerOnly>
               <Inventory />
             </ProtectedRoute>
           }
         />
+        <Route
+          path="consumables"
+          element={
+            <ProtectedRoute handlerOnly>
+              <Consumables />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="consumables/:id"
+          element={
+            <ProtectedRoute handlerOnly>
+              <Consumables />
+            </ProtectedRoute>
+          }
+        />
         <Route path="kb" element={<ProtectedRoute><KbIndex /></ProtectedRoute>} />
+        <Route path="kb/article/:id" element={<ProtectedRoute><TroveKbArticle /></ProtectedRoute>} />
+        <Route path="kb/collection/:id" element={<ProtectedRoute><TroveKbCollection /></ProtectedRoute>} />
         <Route path="kb/:projectId" element={<ProtectedRoute><KbProject /></ProtectedRoute>} />
         <Route path="kb/:projectId/new" element={<ProtectedRoute><KbEditor /></ProtectedRoute>} />
         <Route path="kb/:projectId/:slug" element={<ProtectedRoute><KbArticle /></ProtectedRoute>} />
@@ -206,16 +266,23 @@ function AppRoutes() {
           <Route path="encryption" element={<AdminEncryption />} />
           <Route path="email-backends" element={<AdminEmailBackends />} />
           <Route path="ai-assist" element={<AdminAiAssist />} />
+          <Route path="trove-kb" element={<AdminTroveKb />} />
           <Route path="merge" element={<AdminMerge />} />
           <Route path="alert-sources" element={<AdminAlertSources />} />
           <Route path="integrations" element={<AdminAlertSources />} />
           <Route path="software-aliases" element={<AdminSoftwareAliases />} />
           <Route path="system-health" element={<AdminSystemHealth />} />
           <Route path="canned-responses" element={<AdminCannedResponses />} />
+          <Route path="label-printer" element={<AdminLabelPrinter />} />
           <Route path="sla" element={<AdminSlaPolicies />} />
           <Route path="assignment" element={<AdminAssignmentPolicies />} />
+          <Route path="dedup-omit-rules" element={<AdminDedupOmitRules />} />
           <Route path="escalations" element={<AdminEscalationPolicies />} />
+          <Route path="oncall" element={<AdminOnCall />} />
           <Route path="custom-fields" element={<AdminCustomFields />} />
+          <Route path="forms" element={<AdminForms />} />
+          <Route path="ticket-schedules" element={<AdminTicketSchedules />} />
+          <Route path="time-tracking" element={<AdminTimeTracking />} />
         </Route>
       </Route>
     </Routes>

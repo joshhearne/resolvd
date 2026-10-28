@@ -1,7 +1,6 @@
 const fs = require('fs');
 const path = require('path');
 const { randomUUID } = require('crypto');
-const fetch = require('node-fetch');
 const { pool } = require('../db/pool');
 
 const UPLOADS_DIR = process.env.UPLOADS_DIR || '/data/uploads';
@@ -43,11 +42,11 @@ async function clearAvatar(userId) {
 
 async function fetchAndSaveAvatarFromUrl(userId, url) {
   try {
-    const res = await fetch(url, { timeout: 8000 });
+    const res = await fetch(url, { signal: AbortSignal.timeout(8000) });
     if (!res.ok) return null;
     const mimetype = res.headers.get('content-type') || 'image/jpeg';
     if (!mimetype.startsWith('image/')) return null;
-    const buffer = await res.buffer();
+    const buffer = Buffer.from(await res.arrayBuffer());
     if (buffer.length > 5 * 1024 * 1024) return null;
     return await saveAvatarBytes(userId, buffer, mimetype.split(';')[0].trim());
   } catch {

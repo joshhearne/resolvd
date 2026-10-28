@@ -1,8 +1,9 @@
-import React, { useEffect, useState, useCallback } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState, useCallback } from "react";
 import { createPortal } from "react-dom";
 import { Link, useParams, useNavigate, useLocation } from "react-router-dom";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
+import { pushRecentTicket } from "../utils/recentTickets";
 import { useAuth } from "../context/AuthContext";
 import {
   computePriority,
@@ -12,7 +13,9 @@ import {
 } from "../utils/helpers";
 import HybridTime from "../components/HybridTime";
 import SlaTimer from "../components/SlaTimer";
+import TimeTracker from "../components/TimeTracker";
 import AiUsageBadge from "../components/AiUsageBadge";
+import CustomFieldsCard from "../components/CustomFieldsCard";
 import MentionTextarea from "../components/MentionTextarea";
 import {
   useStatuses,
@@ -26,12 +29,19 @@ import PriorityBadge from "../components/PriorityBadge";
 import StatusBadge from "../components/StatusBadge";
 import MarkdownEditor from "../components/MarkdownEditor";
 import MarkdownContent from "../components/MarkdownContent";
+import SourceEmailReveal from "../components/SourceEmailReveal";
 import ConfirmDialog from "../components/ConfirmDialog";
 import PhoneticPopover from "../components/PhoneticPopover";
 import MergePicker from "../components/MergePicker";
 import { vendorPillStyle, VENDOR_PILL_CLASSES } from "../utils/vendorColor";
+import { isUrlLike, truncateRef } from "../utils/externalRef";
 import PageShell from "../components/PageShell";
 import CannedPicker from "../components/CannedPicker";
+import RunbookPanel from "../components/RunbookPanel";
+import TroveKbKnowledge from "../components/TroveKbKnowledge";
+import AssistBriefModal from "../components/AssistBriefModal";
+import TroveKbRunbookPanel from "../components/TroveKbRunbookPanel";
+import NumberInput from "../components/NumberInput";
 
 // External ticket refs may hold multiple vendor IDs separated by comma
 // or semicolon (e.g. "VND-1234, VND-5678" or "VND-1234;VND-5678").
@@ -45,7 +55,29 @@ function ExternalRefList({ value }) {
         if (p === "," || p === ";") return <span key={i}>{p} </span>;
         const trimmed = p.trim();
         if (!trimmed) return null;
-        return <PhoneticPopover key={i} value={trimmed}>{trimmed}</PhoneticPopover>;
+        const shown = truncateRef(trimmed, 36);
+        // URL refs (alert payloads) stay reachable: wrap the truncated
+        // text in an anchor with the full URL. Non-URL refs keep their
+        // phonetic-readback popover so vendors-on-phones can be dictated.
+        if (isUrlLike(trimmed)) {
+          return (
+            <a
+              key={i}
+              href={trimmed}
+              target="_blank"
+              rel="noopener noreferrer"
+              title={trimmed}
+              className="text-brand hover:underline break-all"
+            >
+              {shown}
+            </a>
+          );
+        }
+        return (
+          <PhoneticPopover key={i} value={trimmed}>
+            <span title={trimmed.length > shown.length ? trimmed : undefined}>{shown}</span>
+          </PhoneticPopover>
+        );
       })}
     </>
   );
@@ -125,12 +157,11 @@ function FollowupControl({ ticketId, followupAt, onChange }) {
   }
   return (
     <div className="flex items-center gap-2">
-      <input
-        type="number"
+      <NumberInput
         min="1"
         max="90"
         value={days}
-        onChange={(e) => setDays(Math.max(1, Math.floor(Number(e.target.value) || 1)))}
+        onChange={(n) => setDays(Math.max(1, Math.floor(n) || 1))}
         className="w-16 border border-border-strong rounded-md px-2 py-1 text-sm"
       />
       <span className="text-xs text-fg-muted">day{days === 1 ? "" : "s"}</span>
@@ -180,17 +211,153 @@ function fileIcon(name, mime) {
   return "📎";
 }
 
-function CommentActionDropdown({ disabled, onPostAndClose, onPostAndReopen }) {
-  const [open, setOpen] = useState(false);
-  return (
-    <div className="relative">
+function isImageAttachment(a) {
+  if (!a) return false;
+  const mime = (a.mimetype || "").toLowerCase();
+  if (mime.startsWith("image/")) return true;
+  const ext = (a.original_name || "").split(".").pop().toLowerCase();
+  return ["jpg", "jpeg", "png", "gif", "webp", "bmp", "svg"].includes(ext);
+}
+
+function Lightbox({ attachment, onClose }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === "Escape") onClose(); };
+    window.addEventListener("keydown", onKey);
+    const prev = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      window.removeEventListener("keydown", onKey);
+      document.body.style.overflow = prev;
+    };
+  }, [onClose]);
+  if (!attachment) return null;
+  return createPortal(
+    <div
+      className="fixed inset-0 z-[200] bg-black/85 flex items-center justify-center p-6 cursor-zoom-out"
+      onClick={onClose}
+      role="dialog"
+      aria-modal="true"
+      aria-label={attachment.original_name || "Image preview"}
+    >
+      <img
+        src={`/api/attachments/${attachment.id}/view`}
+        alt={attachment.original_name || ""}
+        className="max-h-full max-w-full object-contain shadow-2xl cursor-default"
+        onClick={(e) => e.stopPropagation()}
+      />
+      <div className="absolute top-4 left-4 right-16 truncate text-xs text-white/80">
+        {attachment.original_name}
+      </div>
+      <a
+        href={`/api/attachments/${attachment.id}`}
+        download={attachment.original_name}
+        onClick={(e) => e.stopPropagation()}
+        className="absolute bottom-4 right-4 text-xs px-3 py-1.5 rounded bg-white/10 text-white/90 hover:bg-white/20"
+      >
+        Download
+      </a>
       <button
+        type="button"
+        onClick={onClose}
+        aria-label="Close preview"
+        className="absolute top-3 right-4 text-white/80 hover:text-white text-3xl leading-none"
+      >
+        ×
+      </button>
+    </div>,
+    document.body,
+  );
+}
+
+// Dynamic "Post & …" menu. Pulls every status the ticket can legally
+// transition to from its current status (per status_transitions),
+// including admin-defined custom statuses (e.g. "Escalated"). Caller
+// supplies a single onPostAndStatus(name); confirm-before-close UX is
+// owned by the parent.
+function CommentActionDropdown({ disabled, statuses, currentStatus, onPostAndStatus, verb = "Post" }) {
+  const [open, setOpen] = useState(false);
+  const [coords, setCoords] = useState({ left: 0, top: 0, maxHeight: undefined, openUp: false });
+  const triggerRef = useRef(null);
+  const panelRef = useRef(null);
+  const items = (statuses || []).filter((s) => s.name !== currentStatus);
+  if (!items.length) return null;
+  // Terminal statuses (Closed / Resolved equivalents) render in fg
+  // colour; "Reopened" / non-terminal renders accent so the admin can
+  // visually distinguish destructive-ish actions from forward motion.
+  function rowClass(s) {
+    if (s.is_terminal) return "text-fg hover:bg-surface-2";
+    if (s.semantic_tag === "reopened") return "text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 dark:bg-red-950/40";
+    return "text-fg hover:bg-surface-2";
+  }
+
+  const PANEL_WIDTH = 208; // matches w-52
+  const EDGE_PAD = 8;
+
+  const recompute = React.useCallback(() => {
+    const trig = triggerRef.current;
+    if (!trig) return;
+    const r = trig.getBoundingClientRect();
+    const panelH = panelRef.current?.offsetHeight || 0;
+    const vh = window.innerHeight;
+    const vw = window.innerWidth;
+    let left = r.left;
+    if (left + PANEL_WIDTH > vw - EDGE_PAD) left = vw - PANEL_WIDTH - EDGE_PAD;
+    if (left < EDGE_PAD) left = EDGE_PAD;
+    const spaceBelow = vh - r.bottom - EDGE_PAD;
+    const spaceAbove = r.top - EDGE_PAD;
+    // Composer sits near the page bottom — flip up when below is too
+    // tight OR above has materially more room. Cap max-height to the
+    // chosen side so unusually long status lists scroll internally
+    // instead of forcing page scroll.
+    const openUp = spaceBelow < Math.min(240, panelH || 240) && spaceAbove > spaceBelow;
+    const maxHeight = openUp ? spaceAbove : spaceBelow;
+    const top = openUp
+      ? Math.max(EDGE_PAD, r.top - (panelRef.current?.offsetHeight || 0) - 4)
+      : r.bottom + 4;
+    setCoords({ left, top, maxHeight, openUp });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    recompute();
+    const raf = requestAnimationFrame(recompute);
+    const onScroll = () => recompute();
+    const onResize = () => recompute();
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onResize);
+    return () => {
+      cancelAnimationFrame(raf);
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [open, recompute]);
+
+  useEffect(() => {
+    if (!open) return;
+    const onDocDown = (e) => {
+      if (triggerRef.current?.contains(e.target)) return;
+      if (panelRef.current?.contains(e.target)) return;
+      setOpen(false);
+    };
+    const onKey = (e) => { if (e.key === "Escape") setOpen(false); };
+    document.addEventListener("mousedown", onDocDown);
+    document.addEventListener("keydown", onKey);
+    return () => {
+      document.removeEventListener("mousedown", onDocDown);
+      document.removeEventListener("keydown", onKey);
+    };
+  }, [open]);
+
+  return (
+    <>
+      <button
+        ref={triggerRef}
         type="button"
         disabled={disabled}
         onClick={() => setOpen((o) => !o)}
         className="btn-secondary btn btn-sm disabled:opacity-50 flex items-center gap-1"
       >
-        Post &amp; …
+        {verb} &amp; …
         <svg
           className="w-3 h-3"
           fill="none"
@@ -205,31 +372,36 @@ function CommentActionDropdown({ disabled, onPostAndClose, onPostAndReopen }) {
           />
         </svg>
       </button>
-      {open && (
-        <div className="absolute left-0 top-full mt-1 w-44 bg-surface rounded-md shadow-lg border border-border z-20 py-1">
-          <button
-            type="button"
-            onClick={() => {
-              setOpen(false);
-              onPostAndClose();
-            }}
-            className="w-full text-left px-4 py-2 text-sm text-fg hover:bg-surface-2"
-          >
-            Post &amp; Close
-          </button>
-          <button
-            type="button"
-            onClick={() => {
-              setOpen(false);
-              onPostAndReopen();
-            }}
-            className="w-full text-left px-4 py-2 text-sm text-red-600 dark:text-red-400 hover:bg-red-50 dark:hover:bg-red-950/40 dark:bg-red-950/40"
-          >
-            Post &amp; Reopen
-          </button>
-        </div>
+      {open && createPortal(
+        <div
+          ref={panelRef}
+          style={{
+            position: "fixed",
+            left: coords.left,
+            top: coords.top,
+            width: PANEL_WIDTH,
+            maxHeight: coords.maxHeight ? `${coords.maxHeight}px` : undefined,
+          }}
+          className="z-[9999] bg-surface rounded-md shadow-lg border border-border py-1 overflow-auto"
+          onClick={(e) => e.stopPropagation()}
+        >
+          {items.map((s) => (
+            <button
+              key={s.id ?? s.name}
+              type="button"
+              onClick={() => {
+                setOpen(false);
+                onPostAndStatus(s.name);
+              }}
+              className={`w-full text-left px-4 py-2 text-sm ${rowClass(s)}`}
+            >
+              {verb} &amp; {s.name}
+            </button>
+          ))}
+        </div>,
+        document.body,
       )}
-    </div>
+    </>
   );
 }
 
@@ -244,13 +416,85 @@ function Field({ label, children }) {
   );
 }
 
+// Ticket site. Staff pick from every active location; the submitter's
+// company location is filled in on create. Per-location business hours
+// key off this for escalation delays.
+function LocationField({ ticket, canEdit, saving, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [locations, setLocations] = useState(null);
+  const [value, setValue] = useState("");
+
+  async function startEdit() {
+    setValue(ticket.location_id ? String(ticket.location_id) : "");
+    setEditing(true);
+    if (!locations) {
+      try {
+        setLocations(await api.get("/api/companies/locations"));
+      } catch (err) {
+        toast.error(err.message);
+        setLocations([]);
+      }
+    }
+  }
+
+  if (editing) {
+    return (
+      <div className="flex gap-2">
+        <select
+          value={value}
+          onChange={(e) => setValue(e.target.value)}
+          disabled={!locations}
+          className="border border-border-strong rounded-md px-2 py-1 text-sm focus:outline-none focus:ring-1 focus:ring-brand/40 flex-1 min-w-0"
+        >
+          <option value="">— none —</option>
+          {(locations || []).map((l) => (
+            <option key={l.id} value={l.id}>
+              {l.company_name ? `${l.company_name} · ` : ""}{l.name}
+            </option>
+          ))}
+        </select>
+        <button
+          onClick={async () => {
+            await onSave({ location_id: value ? Number(value) : null });
+            setEditing(false);
+          }}
+          disabled={saving || !locations}
+          className="btn-primary btn btn-sm"
+        >
+          Save
+        </button>
+        <button onClick={() => setEditing(false)} className="btn-secondary btn btn-sm">
+          ×
+        </button>
+      </div>
+    );
+  }
+  return (
+    <div className="flex items-center justify-between">
+      <span className="text-sm text-fg">
+        {ticket.location_name || <span className="text-fg-dim">—</span>}
+      </span>
+      {canEdit && (
+        <button onClick={startEdit} className="text-xs text-brand hover:underline">
+          Edit
+        </button>
+      )}
+    </div>
+  );
+}
+
 export default function TicketDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
   const location = useLocation();
   const { user } = useAuth();
   const [highlightedComment, setHighlightedComment] = useState(
-    location.state?.highlightComment ?? null
+    // In-app nav passes highlightComment via router state; an emailed deep
+    // link (mention notification) can't carry state, so fall back to the
+    // ?comment= query param. Both feed the same scroll/flash effect below.
+    location.state?.highlightComment ??
+      new URLSearchParams(location.search).get("comment") ??
+      null
   );
   const statusCfg = useStatuses();
   // "isAdmin" here = elevated ticket handler. Tech is in this group
@@ -265,10 +509,21 @@ export default function TicketDetail() {
   const [attachments, setAttachments] = useState([]);
   const [loading, setLoading] = useState(true);
   const [commentBody, setCommentBody] = useState("");
+  // Inline comment edit — only one open at a time. editCommentDraft holds
+  // the in-progress text so the textarea stays controlled.
+  const [editingCommentId, setEditingCommentId] = useState(null);
+  const [editCommentDraft, setEditCommentDraft] = useState("");
+  const [savingCommentEdit, setSavingCommentEdit] = useState(false);
   // Captured when the AI modal applies a rewrite to commentBody. Sent
   // up with the next comment POST + cleared. One-shot — discarded if
   // the user edits the body further before submitting.
   const [commentAiLogId, setCommentAiLogId] = useState(null);
+  // Trove KB knowledge brief (scope a response before rewriting it).
+  const [troveKbStatus, setTroveKbStatus] = useState(null);
+  const [briefOpen, setBriefOpen] = useState(false);
+  useEffect(() => {
+    api.get("/api/trove-kb/status").then(setTroveKbStatus).catch(() => setTroveKbStatus({ enabled: false }));
+  }, []);
   const [commentFiles, setCommentFiles] = useState([]);
   const [submittingComment, setSubmittingComment] = useState(false);
   const [shareWithVendor, setShareWithVendor] = useState(false);
@@ -287,19 +542,34 @@ export default function TicketDetail() {
   const [dragOver, setDragOver] = useState(false);
   const [followers, setFollowers] = useState([]);
   const [followLoading, setFollowLoading] = useState(false);
+  // DOM node in the header's right column that hosts the time tracker bar
+  // on desktop (a callback ref so TimeTracker re-renders once it exists).
+  const [timerSlot, setTimerSlot] = useState(null);
   const [allUsers, setAllUsers] = useState([]);
   const [editingSubmitter, setEditingSubmitter] = useState(false);
   const [submitterDraft, setSubmitterDraft] = useState("");
+  const [editingAssignee, setEditingAssignee] = useState(false);
+  const [assigneeDraft, setAssigneeDraft] = useState("");
+  const [eligibleAssignees, setEligibleAssignees] = useState([]);
   const [showFollowerMgr, setShowFollowerMgr] = useState(false);
   const [addFollowerId, setAddFollowerId] = useState("");
   const [showMobileActions, setShowMobileActions] = useState(false);
+  const [labelModal, setLabelModal] = useState(null);
+  // labelModal shape: { loading, resolved: {requestor, location, ticket_ref, graph_available},
+  //                     consumables: [{id, part_no, title, on_hand}], consumableId, requestor, location, printing }
 
-  // Internal notes (Admin/Manager/Tech only). Server enforces visibility;
-  // we just don't render the tab for other roles. Vendor-filter dropdown
-  // on the Comments tab lives in this same client state so the toggle
-  // survives tab switches.
+  // Internal notes are open to handlers — global Admin/Manager/Tech OR
+  // project members with a handler role_override / is_agent. Server
+  // gate is authoritative; canHandleNotes is set when the notes GET
+  // returns 2xx so the tab and composer only render for users the
+  // server lets through.
   const [notes, setNotes] = useState([]);
+  const [canHandleNotes, setCanHandleNotes] = useState(false);
+  const [lightboxAttachment, setLightboxAttachment] = useState(null);
   const [noteDraft, setNoteDraft] = useState("");
+  const [editingNoteId, setEditingNoteId] = useState(null);
+  const [editNoteDraft, setEditNoteDraft] = useState("");
+  const [savingNoteEdit, setSavingNoteEdit] = useState(false);
   const [savingNote, setSavingNote] = useState(false);
   const [commentFilter, setCommentFilter] = useState("all"); // all | vendor | internal
 
@@ -356,6 +626,30 @@ export default function TicketDetail() {
     } catch (e) { toast.error(e.message); }
   }
 
+  // Eligible assignees on this project — Admin/Manager/Tech globally
+  // OR is_agent project members. Server union endpoint, scoped to the
+  // current project so the picker matches the assignment-policy pool.
+  useEffect(() => {
+    if (!canEdit || !ticket?.project_id) return;
+    api
+      .get(`/api/agents/eligible?project_id=${ticket.project_id}`)
+      .then((rows) => setEligibleAssignees(rows || []))
+      .catch(() => setEligibleAssignees([]));
+  }, [canEdit, ticket?.project_id]);
+
+  async function saveAssignee(nextId) {
+    try {
+      const updated = await api.patch(`/api/tickets/${id}`, {
+        assigned_to: nextId == null ? null : Number(nextId),
+      });
+      setTicket(updated);
+      setEditingAssignee(false);
+      toast.success(nextId ? "Assigned" : "Unassigned");
+    } catch (err) {
+      toast.error(err.message || "Failed");
+    }
+  }
+
   const [project, setProject] = useState(null);
   useEffect(() => {
     if (!isAdmin || !ticket?.project_id) return;
@@ -385,6 +679,10 @@ export default function TicketDetail() {
     ]).then(([t, c]) => {
       setTicket(t);
       setComments(c);
+      // Push into the TicketList "Recently opened" rail. Done here so
+      // direct deep-links + ticket-detail nav populate history, not
+      // just clicks from the list page.
+      pushRecentTicket({ id: t.id, ref: t.internal_ref, title: t.title });
     });
   }, [id]);
 
@@ -395,20 +693,33 @@ export default function TicketDetail() {
       api.get(`/api/tickets/${id}/attachments`).catch(() => []),
       api.get(`/api/tickets/${id}/followers`).catch(() => []),
       api.get(`/api/tickets/${id}/contacts`).catch(() => []),
-      // Notes route is role-gated server-side; non-handlers get 403 and
-      // we silently swallow so the rest of the page still renders.
-      isAdmin ? api.get(`/api/tickets/${id}/notes`).catch(() => []) : Promise.resolve([]),
+      // Notes route is gated server-side. Attempt unconditionally — a
+      // 403 just means the user isn't a handler on this project; we
+      // hide the tab in that case. { granted, notes } shape lets the
+      // .then() distinguish "no access" from "access but empty".
+      api.get(`/api/tickets/${id}/notes`)
+        .then((n) => ({ granted: true, notes: Array.isArray(n) ? n : [] }))
+        .catch(() => ({ granted: false, notes: [] })),
     ])
       .then(([, audit, atts, fols, vcs, nts]) => {
         setAuditLog(audit);
         setAttachments(atts);
         setFollowers(fols);
         setVendorContacts(vcs);
-        setNotes(Array.isArray(nts) ? nts : []);
+        setNotes(nts.notes);
+        setCanHandleNotes(nts.granted);
         setLoading(false);
       })
       .catch(() => setLoading(false));
-  }, [id, loadTicket, isAdmin]);
+  }, [id, loadTicket]);
+
+  // A work log lands as a private note or a public comment (plus an
+  // audit row), so refresh all three.
+  function reloadAfterTimeLog() {
+    loadTicket().catch(() => {});
+    api.get(`/api/tickets/${id}/notes`).then((n) => setNotes(Array.isArray(n) ? n : [])).catch(() => {});
+    api.get(`/api/tickets/${id}/audit`).then(setAuditLog).catch(() => {});
+  }
 
   async function addNote() {
     const body = noteDraft.trim();
@@ -430,6 +741,33 @@ export default function TicketDetail() {
       await api.delete(`/api/tickets/${id}/notes/${noteId}`);
       setNotes((prev) => prev.filter((n) => n.id !== noteId));
     } catch (e) { toast.error(e.message); }
+  }
+
+  function startEditNote(n) {
+    setEditingNoteId(n.id);
+    setEditNoteDraft(n.body || "");
+  }
+
+  function cancelEditNote() {
+    setEditingNoteId(null);
+    setEditNoteDraft("");
+  }
+
+  async function saveNoteEdit(noteId) {
+    const body = editNoteDraft.trim();
+    if (!body) { toast.error("Note body cannot be empty"); return; }
+    setSavingNoteEdit(true);
+    try {
+      const r = await api.patch(`/api/tickets/${id}/notes/${noteId}`, { body });
+      setNotes(prev => prev.map(n => n.id === noteId ? { ...n, body, edited_at: r.edited_at } : n));
+      setEditingNoteId(null);
+      setEditNoteDraft("");
+      toast.success("Note updated");
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setSavingNoteEdit(false);
+    }
   }
 
   // Mode-switch helpers — let an agent flip a draft from one composer
@@ -578,6 +916,41 @@ export default function TicketDetail() {
     }
   }
 
+  function startEditComment(c) {
+    setEditingCommentId(c.id);
+    setEditCommentDraft(c.body || "");
+  }
+
+  function cancelEditComment() {
+    setEditingCommentId(null);
+    setEditCommentDraft("");
+  }
+
+  async function saveCommentEdit(commentId) {
+    const body = editCommentDraft.trim();
+    if (!body) {
+      toast.error("Comment body cannot be empty");
+      return;
+    }
+    setSavingCommentEdit(true);
+    try {
+      const r = await api.patch(`/api/comments/${commentId}`, { body });
+      setComments(prev => prev.map(c => c.id === commentId
+        ? { ...c, body, edited_at: r.edited_at,
+            ai_provider: null, ai_model: null, ai_input_tokens: null,
+            ai_output_tokens: null, ai_tone: null, ai_verbosity: null,
+            ai_eli5: null, ai_publish_consent: null, ai_project_context_used: null }
+        : c));
+      setEditingCommentId(null);
+      setEditCommentDraft("");
+      toast.success("Comment updated");
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setSavingCommentEdit(false);
+    }
+  }
+
   async function setCommentMuted(commentId, value) {
     try {
       const r = await api.post(`/api/comments/${commentId}/${value ? "mute" : "unmute"}`, {});
@@ -597,7 +970,7 @@ export default function TicketDetail() {
         body: formData,
       });
       if (!res.ok) {
-        const e = await res.json();
+        const e = await res.json().catch(() => ({}));
         throw new Error(e.error || "Upload failed");
       }
       const inserted = await res.json();
@@ -647,6 +1020,47 @@ export default function TicketDetail() {
     return null;
   }
 
+  // Statuses offered by the "Post & …" / "Log & …" menus: every status the
+  // ticket can move to from here (custom ones included). An empty
+  // transition graph for the current status means unrestricted — mirrors
+  // the Internal Status edit dropdown.
+  function postActionStatuses() {
+    const cur = statusByName(statusCfg.internal, ticket.internal_status);
+    const allowedIds = cur
+      ? new Set(nextAllowedStatusIds(statusCfg.transitions, cur.id))
+      : null;
+    const restrict = allowedIds && allowedIds.size > 0;
+    return statusCfg.internal.length
+      ? statusCfg.internal.filter((s) =>
+          s.show_in_post_actions !== false &&
+          (!restrict || allowedIds.has(s.id))
+        )
+      : DEFAULT_INTERNAL_STATUSES.map((n) => ({ name: n }));
+  }
+
+  // Honours the "confirm before close" preference for terminal statuses.
+  function confirmStatusMove(name, what) {
+    const def = statusByName(statusCfg.internal, name);
+    return !(def?.is_terminal &&
+      user?.preferences?.confirm_before_close &&
+      !window.confirm(`${what} and move ${ticket.internal_ref} to "${name}"?`));
+  }
+
+  // After time is logged with "Log & <status>".
+  async function setStatusAfterLog(name) {
+    try {
+      const updated = await api.patch(`/api/tickets/${id}`, {
+        internal_status: name,
+        ...(name === "Closed" ? { flagged_for_review: false } : {}),
+      });
+      setTicket(updated);
+      api.get(`/api/tickets/${id}/audit`).then(setAuditLog).catch(() => {});
+      toast.success(`Ticket ${name.toLowerCase()}`);
+    } catch (err) {
+      toast.error(err.message || "Time logged, but the status didn't change");
+    }
+  }
+
   async function submitComment(e, andStatus = null, send_as = null) {
     if (e) e.preventDefault();
     if (!commentBody.trim() && commentFiles.length === 0) return;
@@ -673,9 +1087,30 @@ export default function TicketDetail() {
       // once the files are persisted (notify_vendor flag below).
       const hasFiles = commentFiles.length > 0;
       const deferVendorEmail = shareWithVendor && hasFiles;
-      if (commentBody.trim()) {
+      // Optional per-user signature append. Scope rules: 'vendor_only'
+      // only when this is a vendor-visible comment; 'all' always.
+      // Single blank line separator. Empty signature is a no-op even
+      // if the toggle is on (matches the AccountPreferences hint).
+      const sigEnabled = !!user?.preferences?.append_signature;
+      const sigScope = user?.preferences?.append_signature_scope || 'vendor_only';
+      const sigText = (user?.preferences?.signature || '').trim();
+      const wantSig = sigEnabled && sigText &&
+        (sigScope === 'all' || (sigScope === 'vendor_only' && shareWithVendor));
+      // Signatures are written line-per-line ("Josh Hearne\nSystems
+      // Admin\n..."). Markdown collapses single newlines into spaces, so
+      // the signature renders on one line in the comment view. Force a
+      // hard break on every non-blank intra-signature newline by
+      // suffixing it with two spaces — markdown's literal "line break"
+      // marker. Blank lines (paragraph breaks) pass through untouched.
+      const sigForPost = wantSig
+        ? sigText.replace(/([^\n])\n(?!\n)/g, '$1  \n')
+        : '';
+      const bodyForPost = wantSig
+        ? `${commentBody.trim()}\n\n${sigForPost}`
+        : commentBody.trim();
+      if (bodyForPost) {
         c = await api.post(`/api/tickets/${id}/comments`, {
-          body: commentBody.trim(),
+          body: bodyForPost,
           is_external_visible: shareWithVendor,
           ...(shareWithVendor && send_as ? { send_as } : {}),
           ...(commentAiLogId ? { ai_rewrite_log_id: commentAiLogId } : {}),
@@ -693,7 +1128,10 @@ export default function TicketDetail() {
           credentials: "include",
           body: fd,
         });
-        if (!res.ok) throw new Error("Attachment upload failed");
+        if (!res.ok) {
+          const e = await res.json().catch(() => ({}));
+          throw new Error(e.error || "Attachment upload failed");
+        }
         const newAtts = await res.json();
         setAttachments((prev) => [...prev, ...newAtts]);
       }
@@ -814,6 +1252,108 @@ export default function TicketDetail() {
       toast.error("Failed to update follow status");
     } finally {
       setFollowLoading(false);
+    }
+  }
+
+  async function openLabelModal() {
+    setLabelModal({ loading: true });
+    try {
+      const [resolved, consList] = await Promise.all([
+        api.get(`/api/tickets/${id}/print-label-resolve`),
+        api.get(`/api/consumables`),
+      ]);
+      const consumables = (Array.isArray(consList) ? consList : consList?.items || [])
+        .filter((c) => !c.is_archived);
+      // Auto-select ONLY the consumable the backend actually matched (alert
+      // part.number tag, or a part_no found in the ticket title/description).
+      // On no match, leave the picker empty — never silently default to the
+      // first row (which is alphabetically the B200 drum and was getting
+      // dispatched by accident). The admin must consciously pick or Rescan.
+      const suggestedId = resolved.suggested_consumable_id;
+      setLabelModal({
+        loading: false,
+        resolved,
+        consumables,
+        consumableId: suggestedId ? String(suggestedId) : "",
+        suggestedFromTag: resolved.suggested_from_tag || null,
+        suggestedFromText: resolved.suggested_from_text || null,
+        suggestedSource: resolved.suggested_source || null,
+        suggestedHit: !!suggestedId,
+        requestor: resolved.requestor || "",
+        location: resolved.location || "",
+        graphAvailable: resolved.graph_available,
+      });
+    } catch (e) {
+      toast.error(e.message || "Failed to load label data");
+      setLabelModal(null);
+    }
+  }
+
+  // Re-run the consumable match against the CURRENT ticket (alert tag + the
+  // latest title/description). Use after correcting a bad description or fixing
+  // the Zabbix part.number tag so the label re-picks the right part.
+  async function rescanLabel() {
+    setLabelModal((m) => (m ? { ...m, rescanning: true } : m));
+    try {
+      const resolved = await api.get(`/api/tickets/${id}/print-label-resolve`);
+      const suggestedId = resolved.suggested_consumable_id;
+      setLabelModal((m) => m ? {
+        ...m,
+        rescanning: false,
+        resolved,
+        // Adopt the fresh match; if none, clear so nothing prints by accident.
+        consumableId: suggestedId ? String(suggestedId) : "",
+        suggestedFromTag: resolved.suggested_from_tag || null,
+        suggestedFromText: resolved.suggested_from_text || null,
+        suggestedSource: resolved.suggested_source || null,
+        suggestedHit: !!suggestedId,
+      } : m);
+      if (suggestedId) {
+        const c = (labelModal?.consumables || []).find((x) => String(x.id) === String(suggestedId));
+        toast.success(`Matched ${c ? (c.part_no || c.title) : "a consumable"}`);
+      } else {
+        toast("No consumable matched — pick one manually", { icon: "⚠️" });
+      }
+    } catch (e) {
+      toast.error(e.message || "Rescan failed");
+      setLabelModal((m) => (m ? { ...m, rescanning: false } : m));
+    }
+  }
+
+  async function sendLabelPrint() {
+    if (!labelModal?.consumableId) {
+      toast.error("Pick a consumable");
+      return;
+    }
+    setLabelModal((m) => ({ ...m, printing: true }));
+    try {
+      const r = await api.post(`/api/tickets/${id}/print-consumable-label`, {
+        consumable_id: Number(labelModal.consumableId),
+        requestor_override: labelModal.requestor || "",
+        location_override: labelModal.location || "",
+      });
+      toast.success(r?.reprint ? "Reprint sent (stock not adjusted)" : "Label sent — stock adjusted");
+      setLabelModal(null);
+      // Refresh comments so the system comment from an OOS / low-stock
+      // alert (or just to reflect the allocation) appears immediately.
+      api.get(`/api/tickets/${id}/comments`).then(setComments).catch(() => {});
+    } catch (e) {
+      // 409 = out of stock. Surface the restock CTA inline so the
+      // user can copy a canned response or hit the purchase URL
+      // without leaving the modal. Server already posted the system
+      // comment + paged admins, so we don't fire those client-side.
+      if (e?.status === 409 || /out_of_stock/.test(e?.message || "")) {
+        const c = e?.body?.consumable || {};
+        const cta = c.is_metered
+          ? `Metered — contact vendor for restock under service agreement (${c.vendor_part_no || c.part_no || ""}).`
+          : (c.purchase_url
+              ? `Restock URL: ${c.purchase_url}`
+              : `No purchase URL on file. Add one in Admin → Consumables.`);
+        toast.error(`Out of stock. ${cta}`, { duration: 8000 });
+      } else {
+        toast.error(e.message || "Print failed");
+      }
+      setLabelModal((m) => ({ ...m, printing: false }));
     }
   }
 
@@ -1027,14 +1567,103 @@ export default function TicketDetail() {
               </>
             )}{" "}
             · <HybridTime dt={ticket.created_at} />
-            {ticket.assigned_to_name &&
-              ` · Assigned: ${ticket.assigned_to_name}`}
+            {" · Assigned: "}
+            {editingAssignee ? (
+              <span className="inline-flex items-center gap-1">
+                <select
+                  value={assigneeDraft}
+                  onChange={(e) => setAssigneeDraft(e.target.value)}
+                  className="bg-surface border border-border-strong rounded px-1 py-0.5 text-xs"
+                >
+                  <option value="">— Unassigned —</option>
+                  {eligibleAssignees.map((u) => (
+                    <option key={u.id} value={u.id}>
+                      {u.display_name || u.email}
+                    </option>
+                  ))}
+                </select>
+                <button
+                  onClick={() => saveAssignee(assigneeDraft || null)}
+                  className="text-brand hover:underline text-xs"
+                >
+                  save
+                </button>
+                <button
+                  onClick={() => setEditingAssignee(false)}
+                  className="text-fg-muted hover:text-fg text-xs"
+                >
+                  ×
+                </button>
+              </span>
+            ) : (
+              <>
+                <span className={ticket.assigned_to_name ? "" : "text-fg-dim italic"}>
+                  {ticket.assigned_to_name || "Unassigned"}
+                </span>
+                {canEdit && (
+                  <>
+                    {" "}
+                    {ticket.assigned_to !== user?.id && (
+                      <button
+                        onClick={() => saveAssignee(user?.id)}
+                        className="ml-1 text-brand hover:underline"
+                        title="Assign this ticket to me"
+                      >
+                        (assign to me)
+                      </button>
+                    )}
+                    <button
+                      onClick={() => {
+                        setAssigneeDraft(String(ticket.assigned_to || ""));
+                        setEditingAssignee(true);
+                      }}
+                      className="ml-1 text-brand hover:underline"
+                    >
+                      (change)
+                    </button>
+                    {ticket.assigned_to_name && (
+                      <button
+                        onClick={() => saveAssignee(null)}
+                        className="ml-1 text-fg-muted hover:text-red-600"
+                        title="Unassign"
+                      >
+                        (clear)
+                      </button>
+                    )}
+                  </>
+                )}
+              </>
+            )}
           </p>
           <div className="mt-1.5">
             <SlaTimer ticket={ticket} />
           </div>
+          {canHandleNotes && (
+            <TimeTracker
+              ticketId={ticket.id}
+              ticket={ticket}
+              user={user}
+              onLogged={reloadAfterTimeLog}
+              barSlot={timerSlot}
+              aiProjectId={ticket.project_id || null}
+              onStatusAfterLog={setStatusAfterLog}
+              renderStatusAction={({ disabled, onPick }) => (
+                <CommentActionDropdown
+                  verb="Log"
+                  disabled={disabled}
+                  statuses={postActionStatuses()}
+                  currentStatus={ticket.internal_status}
+                  onPostAndStatus={(name) => {
+                    if (!confirmStatusMove(name, "Log this time")) return;
+                    onPick(name);
+                  }}
+                />
+              )}
+            />
+          )}
         </div>
-        <div className="flex items-center gap-2 flex-shrink-0">
+        <div className="flex flex-col items-start sm:items-end gap-2 flex-shrink-0">
+        <div className="flex items-center gap-2">
           <button
             onClick={toggleFollow}
             disabled={followLoading}
@@ -1065,6 +1694,15 @@ export default function TicketDetail() {
               </span>
             )}
           </button>
+          {isAdmin && project?.prefix === "SR" && (
+            <button
+              onClick={openLabelModal}
+              className="btn-secondary btn btn-sm"
+              title="Print a delivery label for a consumable on this ticket"
+            >
+              Print delivery label
+            </button>
+          )}
           {isAdmin && (
             <div className="relative">
               <button
@@ -1232,6 +1870,9 @@ export default function TicketDetail() {
             )}
           </div>
         </div>
+        {/* Desktop: the time tracker's bar renders here, under Follow. */}
+        <div ref={setTimerSlot} className="hidden sm:flex flex-col items-end empty:hidden" />
+        </div>
       </div>
 
       {/* Vendor contacts strip (only when ticket has attached contacts or admin can attach) */}
@@ -1333,8 +1974,10 @@ export default function TicketDetail() {
         )}
 
       <div className="grid lg:grid-cols-3 gap-6">
-        {/* Left: main details */}
-        <div className="lg:col-span-2 space-y-4">
+        {/* Left: main details. min-w-0 keeps long descriptions /
+            markdown content from forcing the grid track wider than
+            the viewport on narrow screens. */}
+        <div className="lg:col-span-2 space-y-4 min-w-0">
           {/* Description */}
           <div className="bg-surface rounded-lg border border-border shadow-sm p-4">
             <div className="flex items-center justify-between mb-2 gap-2 flex-wrap">
@@ -1408,54 +2051,76 @@ export default function TicketDetail() {
                 <span className="text-fg-dim text-sm">No description</span>
               )
             )}
+            {/* Inbound-created tickets: reveal the raw email (sig/quote/banner
+                content stripped from the description) behind a toggle. Handlers
+                only — mirrors the role gate on the source-email endpoint. */}
+            {isAdmin && !editing.description && ticket.source_inbound_email_id && (
+              <SourceEmailReveal ticketId={ticket.id} className="mt-2" />
+            )}
           </div>
 
-          {/* Comments + Attachments + Resolution + Audit tabs */}
-          <div className="bg-surface rounded-lg border border-border shadow-sm">
-            <div className="flex border-b border-border">
-              <button
-                onClick={() => setActiveTab("comments")}
-                className={`px-4 py-3 text-sm font-medium transition-colors ${activeTab === "comments" ? "border-b-2 border-brand text-brand" : "text-fg-muted hover:text-fg"}`}
-              >
-                Comments ({comments.length})
-              </button>
-              {isAdmin && (
-                <button
-                  onClick={() => setActiveTab("notes")}
-                  className={`px-4 py-3 text-sm font-medium transition-colors ${activeTab === "notes" ? "border-b-2 border-brand text-brand" : "text-fg-muted hover:text-fg"}`}
-                  title="Internal notes — hidden from Submitters and Vendors"
-                >
-                  Notes{notes.length > 0 && ` (${notes.length})`}
-                  <span className="ml-1 text-[10px] text-fg-dim normal-case">internal</span>
-                </button>
-              )}
-              <button
-                onClick={() => setActiveTab("attachments")}
-                className={`px-4 py-3 text-sm font-medium transition-colors ${activeTab === "attachments" ? "border-b-2 border-brand text-brand" : "text-fg-muted hover:text-fg"}`}
-              >
-                Attachments{" "}
-                {attachments.length > 0 && `(${attachments.length})`}
-              </button>
-              <button
-                onClick={() => setActiveTab("resolution")}
-                className={`relative px-4 py-3 text-sm font-medium transition-colors ${activeTab === "resolution" ? "border-b-2 border-brand text-brand" : "text-fg-muted hover:text-fg"}`}
-                title="Record how this was fixed and link KB articles"
-              >
-                Resolution
-                {canEdit && !!ticket.resolved_at && !ticket.resolution_summary && (
-                  <span
-                    className="ml-1.5 inline-flex h-2 w-2 rounded-full bg-amber-500 animate-pulse align-middle"
-                    aria-label="Fix not yet recorded"
-                  />
-                )}
-              </button>
-              <button
-                onClick={() => setActiveTab("audit")}
-                className={`px-4 py-3 text-sm font-medium transition-colors ${activeTab === "audit" ? "border-b-2 border-brand text-brand" : "text-fg-muted hover:text-fg"}`}
-              >
-                Audit Log
-              </button>
-            </div>
+          {/* Comments + Attachments + Resolution + Audit tabs. Two
+              presentations: a real tab strip from sm and up, a
+              <select> dropdown on mobile so 4+ tabs don't overflow
+              the header and bleed sibling layout. */}
+          <div className="bg-surface rounded-lg border border-border shadow-sm min-w-0">
+            {(() => {
+              const resolutionUrgent = canEdit && !!ticket.resolved_at && !ticket.resolution_summary;
+              const tabs = [
+                { id: "comments", label: `Comments (${comments.length})`, show: true },
+                { id: "notes", label: `Notes${notes.length > 0 ? ` (${notes.length})` : ""}`, sub: "internal", show: canHandleNotes },
+                { id: "runbook", label: "Runbook", sub: "internal", show: canHandleNotes },
+                { id: "attachments", label: `Attachments${attachments.length > 0 ? ` (${attachments.length})` : ""}`, show: true },
+                { id: "resolution", label: "Resolution", show: true, urgent: resolutionUrgent },
+                { id: "audit", label: "Audit Log", show: true },
+              ].filter((t) => t.show);
+              return (
+                <>
+                  {/* Mobile: compact select. No overflow, no truncation. */}
+                  <div className="sm:hidden border-b border-border p-2">
+                    <label className="block">
+                      <span className="sr-only">Section</span>
+                      <select
+                        value={activeTab}
+                        onChange={(e) => setActiveTab(e.target.value)}
+                        className="w-full bg-surface border border-border-strong text-fg rounded-md px-2 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40"
+                      >
+                        {tabs.map((t) => (
+                          <option key={t.id} value={t.id}>
+                            {t.urgent ? "• " : ""}{t.label}{t.sub ? ` — ${t.sub}` : ""}
+                          </option>
+                        ))}
+                      </select>
+                    </label>
+                  </div>
+                  {/* Tablet+: tab strip. flex-wrap on md and below so a
+                      handler ticket with all six tabs wraps onto two
+                      rows instead of overflowing. */}
+                  <div className="hidden sm:flex flex-wrap border-b border-border">
+                    {tabs.map((t) => (
+                      <button
+                        key={t.id}
+                        type="button"
+                        onClick={() => setActiveTab(t.id)}
+                        className={`relative px-4 py-3 text-sm font-medium transition-colors ${activeTab === t.id ? "border-b-2 border-brand text-brand" : "text-fg-muted hover:text-fg"}`}
+                        title={t.sub === "internal" ? "Handler-only — hidden from Submitters and Vendors" : undefined}
+                      >
+                        {t.label}
+                        {t.sub && (
+                          <span className="ml-1 text-[10px] text-fg-dim normal-case">{t.sub}</span>
+                        )}
+                        {t.urgent && (
+                          <span
+                            className="ml-1.5 inline-flex h-2 w-2 rounded-full bg-amber-500 animate-pulse align-middle"
+                            aria-label="Fix not yet recorded"
+                          />
+                        )}
+                      </button>
+                    ))}
+                  </div>
+                </>
+              );
+            })()}
 
             {activeTab === "comments" && (
               <div className="p-4 space-y-4">
@@ -1487,6 +2152,13 @@ export default function TicketDetail() {
                       : !c.vendor_contact_id;
                   const visible = comments.filter(c => !c.is_muted && matchesFilter(c));
                   const muted   = comments.filter(c =>  c.is_muted && matchesFilter(c));
+                  // Lock editing after a newer non-system comment lands —
+                  // server enforces; frontend mirrors so the action just
+                  // disappears instead of erroring on click. System rows
+                  // don't lock the thread.
+                  const latestCommentId = comments
+                    .filter(c => !c.is_system)
+                    .reduce((max, c) => c.id > max ? c.id : max, 0);
                   const renderComment = (c) => (
                     <div
                       key={c.id}
@@ -1523,6 +2195,12 @@ export default function TicketDetail() {
                             eli5={c.ai_eli5}
                             projectContextUsed={c.ai_project_context_used}
                           />
+                          {!c.is_system && !c.vendor_contact_id && (c.user_id === user?.id || isAdmin) && editingCommentId !== c.id && c.id === latestCommentId && (
+                            <button onClick={() => startEditComment(c)}
+                              className="text-[11px] text-fg-dim hover:text-brand transition-colors">
+                              Edit
+                            </button>
+                          )}
                           {isAdmin && !c.is_system && (
                             <>
                               <button onClick={() => setCommentMuted(c.id, !c.is_muted)}
@@ -1536,21 +2214,89 @@ export default function TicketDetail() {
                             </>
                           )}
                           <HybridTime dt={c.created_at} className="text-xs text-fg-dim" />
+                          {c.edited_at && c.distributed_at &&
+                            new Date(c.distributed_at) <= new Date(c.edited_at) && (
+                            <span className="text-[10px] text-fg-dim italic" title={`Edited ${new Date(c.edited_at).toLocaleString()}`}>
+                              (edited)
+                            </span>
+                          )}
                         </span>
                       </div>
-                      <MarkdownContent>{c.body}</MarkdownContent>
+                      {editingCommentId === c.id ? (
+                        <div className="space-y-2">
+                          <textarea
+                            value={editCommentDraft}
+                            onChange={(e) => setEditCommentDraft(e.target.value)}
+                            rows={Math.max(3, editCommentDraft.split('\n').length)}
+                            className="w-full border border-border-strong rounded px-2 py-1.5 text-sm bg-bg focus:outline-none focus:ring-1 focus:ring-brand/40"
+                            autoFocus
+                          />
+                          <div className="flex items-center gap-2">
+                            <button
+                              type="button"
+                              onClick={() => saveCommentEdit(c.id)}
+                              disabled={savingCommentEdit || !editCommentDraft.trim()}
+                              className="btn btn-primary btn-xs disabled:opacity-60"
+                            >
+                              {savingCommentEdit ? "Saving…" : "Save"}
+                            </button>
+                            <button
+                              type="button"
+                              onClick={cancelEditComment}
+                              disabled={savingCommentEdit}
+                              className="text-xs text-fg-muted hover:text-fg"
+                            >
+                              Cancel
+                            </button>
+                            <span className="text-[10px] text-fg-dim ml-auto">
+                              Edits clear AI provenance · vendor outbound is not re-sent
+                            </span>
+                          </div>
+                        </div>
+                      ) : (
+                        <MarkdownContent>{c.body}</MarkdownContent>
+                      )}
+                      {/* Inbound-reply comments: reveal the raw email behind a
+                          toggle (handlers only). */}
+                      {isAdmin && editingCommentId !== c.id && c.source_inbound_email_id && (
+                        <SourceEmailReveal ticketId={ticket.id} commentId={c.id} className="mt-2" />
+                      )}
                       {attachments.filter((a) => a.comment_id === c.id).length > 0 && (
                         <div className="mt-2 flex flex-wrap gap-1.5">
-                          {attachments.filter((a) => a.comment_id === c.id).map((a) => (
-                            <a key={a.id} href={`/api/attachments/${a.id}`}
-                              className="inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded bg-surface border border-border hover:border-border-strong hover:bg-surface-2 text-fg-muted hover:text-fg transition-colors">
-                              <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
-                                  d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 10-5.656-5.656L4.586 11.172a6 6 0 108.486 8.486L19.07 13.7" />
-                              </svg>
-                              <span className="truncate max-w-[180px]">{a.original_name}</span>
-                            </a>
-                          ))}
+                          {attachments.filter((a) => a.comment_id === c.id).map((a) => {
+                            const fromVendor = !!a.vendor_contact_id;
+                            const vendorTitle = fromVendor
+                              ? `${a.original_name} — from ${a.vendor_company_name || a.vendor_contact_name || "vendor"}`
+                              : `${a.original_name}${a.uploaded_by_name ? ` — from ${a.uploaded_by_name}` : ""}`;
+                            return isImageAttachment(a) ? (
+                              <button
+                                key={a.id}
+                                type="button"
+                                onClick={() => setLightboxAttachment(a)}
+                                title={`${vendorTitle} — click to preview`}
+                                className={`block rounded overflow-hidden bg-surface focus:outline-none focus:ring-2 focus:ring-brand/40 ${fromVendor ? "border-2" : "border border-border hover:border-border-strong"}`}
+                                style={fromVendor ? { ...vendorPillStyle(a.vendor_company_id ?? a.vendor_contact_id), borderColor: "var(--vendor-text)" } : undefined}
+                              >
+                                <img
+                                  src={`/api/attachments/${a.id}/view`}
+                                  alt={a.original_name || ""}
+                                  loading="lazy"
+                                  className="max-h-32 max-w-[200px] object-contain bg-black/5 dark:bg-white/5"
+                                />
+                              </button>
+                            ) : (
+                              <a key={a.id} href={`/api/attachments/${a.id}`}
+                                title={vendorTitle}
+                                className={`inline-flex items-center gap-1.5 text-xs px-2 py-1 rounded transition-colors ${fromVendor ? `${VENDOR_PILL_CLASSES} border border-current/30 hover:opacity-90` : "bg-surface border border-border hover:border-border-strong hover:bg-surface-2 text-fg-muted hover:text-fg"}`}
+                                style={fromVendor ? vendorPillStyle(a.vendor_company_id ?? a.vendor_contact_id) : undefined}>
+                                <svg className="w-3 h-3" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                  <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2}
+                                    d="M15.172 7l-6.586 6.586a2 2 0 102.828 2.828l6.414-6.586a4 4 0 10-5.656-5.656L4.586 11.172a6 6 0 108.486 8.486L19.07 13.7" />
+                                </svg>
+                                <span className="truncate max-w-[180px]">{a.original_name}</span>
+                              </a>
+                            );
+                          })}
                         </div>
                       )}
                     </div>
@@ -1562,7 +2308,14 @@ export default function TicketDetail() {
                         <div className="border border-dashed border-border rounded-lg">
                           <button onClick={() => setShowMuted(s => !s)}
                             className="w-full flex items-center justify-between px-3 py-2 text-xs text-fg-muted hover:text-fg">
-                            <span>{muted.length} muted vendor {muted.length === 1 ? "reply" : "replies"} {showMuted ? "(hide)" : "(show)"}</span>
+                            <span>{(() => {
+                              const vendorCount = muted.filter(c => c.vendor_contact_id).length;
+                              const otherCount = muted.length - vendorCount;
+                              const parts = [];
+                              if (vendorCount) parts.push(`${vendorCount} muted vendor ${vendorCount === 1 ? "reply" : "replies"}`);
+                              if (otherCount) parts.push(`${otherCount} muted ${otherCount === 1 ? "reply" : "replies"}`);
+                              return parts.join(" + ");
+                            })()} {showMuted ? "(hide)" : "(show)"}</span>
                             <span>{showMuted ? "▾" : "▸"}</span>
                           </button>
                           {showMuted && (
@@ -1618,11 +2371,46 @@ export default function TicketDetail() {
                           submitComment(e);
                         }
                       }}
-                      rows={3}
+                      rows={6}
                       placeholder="Add a comment... (Ctrl+Enter to post)"
                       mentionProjectId={ticket?.project_id}
                     />
-                    {isAdmin && vendorContacts.length > 0 && (
+                    {(isAdmin || canHandleNotes) && troveKbStatus?.enabled && (
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <button
+                          type="button"
+                          onClick={() => setBriefOpen(true)}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded border border-border-strong text-fg-muted hover:text-fg hover:bg-surface-2"
+                          title="Gather what the user reported, your draft, project context, and matching Trove KB articles. Review, correct, then build a reply and resolution (no AI unless you ask)."
+                        >
+                          📚 Scope with knowledge
+                        </button>
+                        <span className="text-fg-dim">
+                          {troveKbStatus?.ai?.available ? "AI rewrite optional" : "No AI token: builds from documentation only"}
+                        </span>
+                        <AssistBriefModal
+                          open={briefOpen}
+                          onClose={() => setBriefOpen(false)}
+                          ticketId={ticket.id}
+                          draft={commentBody}
+                          aiAvailable={troveKbStatus?.ai?.available === true}
+                          aiNote={troveKbStatus?.ai?.note || null}
+                          onUseReply={(text, meta) => {
+                            setCommentBody(text);
+                            setCommentAiLogId(meta?.logId || null);
+                          }}
+                          onUseResolution={async (md) => {
+                            try {
+                              await api.patch(`/api/tickets/${ticket.id}`, { resolution_summary: md });
+                              const refreshed = await api.get(`/api/tickets/${ticket.id}`);
+                              setTicket(refreshed);
+                              toast.success("Resolution saved");
+                            } catch (e) { toast.error(e.message); }
+                          }}
+                        />
+                      </div>
+                    )}
+                    {(isAdmin || canHandleNotes) && vendorContacts.length > 0 && (
                       <label className="flex items-center gap-2 text-xs text-fg-muted">
                         <input type="checkbox" checked={shareWithVendor}
                           onChange={(e) => setShareWithVendor(e.target.checked)} />
@@ -1695,29 +2483,24 @@ export default function TicketDetail() {
                           }}
                         />
                       </label>
-                      {isAdmin && (
-                        <CommentActionDropdown
-                          disabled={
-                            submittingComment ||
-                            (!commentBody.trim() && commentFiles.length === 0)
-                          }
-                          onPostAndClose={() => {
-                            if (
-                              user?.preferences?.confirm_before_close &&
-                              !window.confirm(
-                                `Post this comment and close ${ticket.internal_ref}?`,
-                              )
-                            ) {
-                              return;
+                      {isAdmin && (() => {
+                        const items = postActionStatuses();
+                        return (
+                          <CommentActionDropdown
+                            disabled={
+                              submittingComment ||
+                              (!commentBody.trim() && commentFiles.length === 0)
                             }
-                            submitComment(null, "Closed");
-                          }}
-                          onPostAndReopen={() =>
-                            submitComment(null, "Reopened")
-                          }
-                        />
-                      )}
-                      {isAdmin && (
+                            statuses={items}
+                            currentStatus={ticket.internal_status}
+                            onPostAndStatus={(name) => {
+                              if (!confirmStatusMove(name, "Post this comment")) return;
+                              submitComment(null, name);
+                            }}
+                          />
+                        );
+                      })()}
+                      {canHandleNotes && (
                         <button
                           type="button"
                           onClick={commentDraftToNote}
@@ -1734,7 +2517,7 @@ export default function TicketDetail() {
               </div>
             )}
 
-            {activeTab === "notes" && isAdmin && (
+            {activeTab === "notes" && canHandleNotes && (
               <div className="p-4 space-y-3">
                 <div className="text-xs text-fg-muted bg-amber-50 dark:bg-amber-950/30 border border-amber-200 dark:border-amber-800 rounded px-2 py-1.5">
                   Internal notes are visible only to handlers (Admin / Manager / Tech).
@@ -1745,7 +2528,9 @@ export default function TicketDetail() {
                     No internal notes yet.
                   </p>
                 )}
-                {notes.map((n) => (
+                {notes.map((n) => {
+                  const canEditNote = n.user_id === user?.id || ["Admin","Manager"].includes(user?.role);
+                  return (
                   <div key={n.id} className="rounded-lg p-3 bg-amber-50/40 dark:bg-amber-950/20 border border-amber-200/60 dark:border-amber-800/60">
                     <div className="flex items-center justify-between mb-1 gap-2 flex-wrap">
                       <span className="text-xs font-semibold text-fg-muted">
@@ -1753,6 +2538,12 @@ export default function TicketDetail() {
                         <span className="ml-1.5 text-[10px] px-1 py-0.5 rounded bg-amber-200/70 dark:bg-amber-800/60 text-amber-900 dark:text-amber-100 uppercase">internal</span>
                       </span>
                       <span className="flex items-center gap-2">
+                        {canEditNote && editingNoteId !== n.id && (
+                          <button
+                            onClick={() => startEditNote(n)}
+                            className="text-[11px] text-fg-dim hover:text-brand"
+                          >Edit</button>
+                        )}
                         {(n.user_id === user?.id || user?.role === "Admin") && (
                           <button
                             onClick={() => deleteNote(n.id)}
@@ -1760,11 +2551,45 @@ export default function TicketDetail() {
                           >Delete</button>
                         )}
                         <HybridTime dt={n.created_at} className="text-xs text-fg-dim" />
+                        {n.edited_at && (
+                          <span className="text-[10px] text-fg-dim italic" title={`Edited ${new Date(n.edited_at).toLocaleString()}`}>
+                            (edited)
+                          </span>
+                        )}
                       </span>
                     </div>
-                    <MarkdownContent>{n.body}</MarkdownContent>
+                    {editingNoteId === n.id ? (
+                      <div className="space-y-2">
+                        <textarea
+                          value={editNoteDraft}
+                          onChange={(e) => setEditNoteDraft(e.target.value)}
+                          rows={Math.max(3, editNoteDraft.split('\n').length)}
+                          className="w-full border border-amber-300 dark:border-amber-700 rounded px-2 py-1.5 text-sm bg-bg focus:outline-none focus:ring-1 focus:ring-amber-400/40"
+                          autoFocus
+                        />
+                        <div className="flex items-center gap-2">
+                          <button
+                            type="button"
+                            onClick={() => saveNoteEdit(n.id)}
+                            disabled={savingNoteEdit || !editNoteDraft.trim()}
+                            className="btn btn-primary btn-xs disabled:opacity-60"
+                          >
+                            {savingNoteEdit ? "Saving…" : "Save"}
+                          </button>
+                          <button
+                            type="button"
+                            onClick={cancelEditNote}
+                            disabled={savingNoteEdit}
+                            className="text-xs text-fg-muted hover:text-fg"
+                          >Cancel</button>
+                        </div>
+                      </div>
+                    ) : (
+                      <MarkdownContent>{n.body}</MarkdownContent>
+                    )}
                   </div>
-                ))}
+                  );
+                })}
                 <div className="border-t border-border pt-3 space-y-2">
                   <MentionTextarea
                     value={noteDraft}
@@ -1794,6 +2619,30 @@ export default function TicketDetail() {
                     </button>
                   </div>
                 </div>
+              </div>
+            )}
+
+            {activeTab === "runbook" && canHandleNotes && (
+              <div className="p-4 space-y-4">
+                <TroveKbRunbookPanel
+                  ticket={ticket}
+                  user={user}
+                  onApplyCanned={(rendered) => {
+                    setCommentBody(rendered);
+                    setActiveTab("comments");
+                  }}
+                />
+                {troveKbStatus?.local_kb_enabled !== false && (
+                  <RunbookPanel
+                    ticket={ticket}
+                    user={user}
+                    projectMembers={projectMembers}
+                    onApplyCanned={(rendered) => {
+                      setCommentBody(rendered);
+                      setActiveTab("comments");
+                    }}
+                  />
+                )}
               </div>
             )}
 
@@ -1850,21 +2699,69 @@ export default function TicketDetail() {
                   <ul className="divide-y divide-border">
                     {attachments.map((a) => (
                       <li key={a.id} className="flex items-center gap-3 py-2.5">
-                        <span className="text-xl">
-                          {fileIcon(a.original_name, a.mimetype)}
-                        </span>
-                        <div className="flex-1 min-w-0">
-                          <a
-                            href={`/api/attachments/${a.id}`}
-                            className="text-sm font-medium text-brand hover:underline truncate block"
-                            download={a.original_name}
+                        {isImageAttachment(a) ? (
+                          <button
+                            type="button"
+                            onClick={() => setLightboxAttachment(a)}
+                            title="Click to preview"
+                            className="block w-14 h-14 rounded border border-border hover:border-border-strong overflow-hidden bg-surface-2 flex-shrink-0 focus:outline-none focus:ring-2 focus:ring-brand/40"
                           >
-                            {a.original_name}
-                          </a>
+                            <img
+                              src={`/api/attachments/${a.id}/view`}
+                              alt={a.original_name || ""}
+                              loading="lazy"
+                              className="w-full h-full object-cover"
+                            />
+                          </button>
+                        ) : (
+                          <span className="text-xl w-14 text-center flex-shrink-0">
+                            {fileIcon(a.original_name, a.mimetype)}
+                          </span>
+                        )}
+                        <div className="flex-1 min-w-0">
+                          {isImageAttachment(a) ? (
+                            <button
+                              type="button"
+                              onClick={() => setLightboxAttachment(a)}
+                              className="text-sm font-medium text-brand hover:underline truncate block text-left w-full"
+                            >
+                              {a.original_name}
+                            </button>
+                          ) : (
+                            <a
+                              href={`/api/attachments/${a.id}`}
+                              className="text-sm font-medium text-brand hover:underline truncate block"
+                              download={a.original_name}
+                            >
+                              {a.original_name}
+                            </a>
+                          )}
                           <span className="text-xs text-fg-dim">
                             {formatBytes(a.size)} ·{" "}
-                            {a.uploaded_by_name || "Unknown"} ·{" "}
-                            <HybridTime dt={a.created_at} />
+                            {a.vendor_contact_id ? (
+                              <span
+                                className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] uppercase tracking-wide ${VENDOR_PILL_CLASSES}`}
+                                style={vendorPillStyle(a.vendor_company_id ?? a.vendor_contact_id)}
+                                title={a.vendor_contact_name ? `${a.vendor_contact_name}${a.vendor_company_name ? ` (${a.vendor_company_name})` : ""}` : "From vendor"}
+                              >
+                                from {a.vendor_company_name || a.vendor_contact_name || "vendor"}
+                              </span>
+                            ) : (
+                              a.uploaded_by_name || "Unknown"
+                            )}{" "}
+                            · <HybridTime dt={a.created_at} />
+                            {isImageAttachment(a) && (
+                              <>
+                                {" · "}
+                                <a
+                                  href={`/api/attachments/${a.id}`}
+                                  download={a.original_name}
+                                  className="text-fg-muted hover:text-fg underline-offset-2 hover:underline"
+                                >
+                                  Download
+                                </a>
+                              </>
+                            )}
                           </span>
                         </div>
                         {(["Admin", "Manager"].includes(user?.role) ||
@@ -2268,6 +3165,16 @@ export default function TicketDetail() {
                   </div>
                 )}
               </Field>
+              {(isAdmin || ticket.location_id) && (
+                <Field label="Location">
+                  <LocationField
+                    ticket={ticket}
+                    canEdit={isAdmin}
+                    saving={saving}
+                    onSave={patch}
+                  />
+                </Field>
+              )}
             </dl>
           </div>
 
@@ -2454,6 +3361,15 @@ export default function TicketDetail() {
               </dl>
             </div>
           )}
+
+          {/* Custom Fields — agent-fill panel, between Status and Blocker.
+              Handlers edit inline (incl. agent-only fields); submitters see a
+              read-only list with sensitive values masked. */}
+          <CustomFieldsCard
+            ticket={ticket}
+            canEdit={isAdmin}
+            onUpdated={(cfs) => setTicket((t) => ({ ...t, custom_fields: cfs }))}
+          />
 
           {/* Blocker */}
           {isAdmin && (
@@ -2790,6 +3706,140 @@ export default function TicketDetail() {
         </div>,
         document.body,
       )}
+
+      {lightboxAttachment && (
+        <Lightbox
+          attachment={lightboxAttachment}
+          onClose={() => setLightboxAttachment(null)}
+        />
+      )}
+
+      {labelModal && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/40 p-4"
+          onClick={() => !labelModal.printing && setLabelModal(null)}
+        >
+          <div
+            onClick={(e) => e.stopPropagation()}
+            className="bg-surface border border-border-strong rounded-lg shadow-xl w-full max-w-md p-5 space-y-4"
+          >
+            <div className="flex items-center justify-between">
+              <h2 className="text-lg font-semibold text-fg">Print delivery label</h2>
+              <button
+                onClick={() => !labelModal.printing && setLabelModal(null)}
+                className="text-fg-muted hover:text-fg text-xl leading-none"
+              >×</button>
+            </div>
+
+            {labelModal.loading ? (
+              <div className="text-sm text-fg-dim py-6 text-center">Loading…</div>
+            ) : (
+              <>
+                <div className="text-xs text-fg-dim">
+                  Ticket{" "}
+                  <span className="font-mono font-semibold text-fg">
+                    {labelModal.resolved?.ticket_ref}
+                  </span>
+                  {labelModal.graphAvailable ? null : (
+                    <span className="ml-2 text-amber-600 dark:text-amber-400">
+                      · Graph lookup unavailable — fill in fields manually
+                    </span>
+                  )}
+                </div>
+
+                <div className="space-y-1">
+                  <div className="flex items-center justify-between">
+                    <label className="text-xs font-medium text-fg-muted">Consumable</label>
+                    <button
+                      type="button"
+                      onClick={rescanLabel}
+                      disabled={labelModal.rescanning || labelModal.printing}
+                      title="Re-match the part from the alert tag and the current ticket title/description"
+                      className="text-[11px] text-brand hover:underline disabled:opacity-50"
+                    >
+                      {labelModal.rescanning ? "Rescanning…" : "↻ Rescan"}
+                    </button>
+                  </div>
+                  <select
+                    value={labelModal.consumableId}
+                    onChange={(e) =>
+                      setLabelModal((m) => ({ ...m, consumableId: e.target.value }))
+                    }
+                    className="w-full bg-surface-2 border border-border rounded px-2 py-1.5 text-sm"
+                  >
+                    <option value="">— pick consumable —</option>
+                    {labelModal.consumables.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.part_no ? `${c.part_no} — ${c.title}` : c.title}
+                      </option>
+                    ))}
+                  </select>
+                  <div className="text-[11px] mt-1">
+                    {labelModal.suggestedSource === "alert_tag" ? (
+                      <span className="text-emerald-600 dark:text-emerald-400">
+                        Auto-matched from alert tag <code className="font-mono">part.number:{labelModal.suggestedFromTag}</code>
+                      </span>
+                    ) : labelModal.suggestedSource === "ticket_text" ? (
+                      <span className="text-emerald-600 dark:text-emerald-400">
+                        Matched <code className="font-mono">{labelModal.suggestedFromText}</code> from the ticket title/description
+                      </span>
+                    ) : labelModal.suggestedFromTag ? (
+                      <span className="text-amber-600 dark:text-amber-400">
+                        Alert tag <code className="font-mono">part.number:{labelModal.suggestedFromTag}</code> — no matching consumable. Fix the description and Rescan, or pick manually.
+                      </span>
+                    ) : (
+                      <span className="text-amber-600 dark:text-amber-400">
+                        No part auto-matched — pick a consumable, or fix the description and Rescan.
+                      </span>
+                    )}
+                  </div>
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-fg-muted">Requestor</label>
+                  <input
+                    type="text"
+                    value={labelModal.requestor}
+                    onChange={(e) =>
+                      setLabelModal((m) => ({ ...m, requestor: e.target.value }))
+                    }
+                    placeholder="(blank)"
+                    className="w-full bg-surface-2 border border-border rounded px-2 py-1.5 text-sm"
+                  />
+                </div>
+
+                <div className="space-y-1">
+                  <label className="text-xs font-medium text-fg-muted">Location</label>
+                  <input
+                    type="text"
+                    value={labelModal.location}
+                    onChange={(e) =>
+                      setLabelModal((m) => ({ ...m, location: e.target.value }))
+                    }
+                    placeholder="(blank)"
+                    className="w-full bg-surface-2 border border-border rounded px-2 py-1.5 text-sm"
+                  />
+                </div>
+
+                <div className="flex items-center justify-end gap-2 pt-2">
+                  <button
+                    onClick={() => setLabelModal(null)}
+                    disabled={labelModal.printing}
+                    className="btn btn-sm btn-secondary"
+                  >Cancel</button>
+                  <button
+                    onClick={sendLabelPrint}
+                    disabled={labelModal.printing || !labelModal.consumableId}
+                    className="btn btn-sm btn-primary"
+                  >
+                    {labelModal.printing ? "Printing…" : "Print"}
+                  </button>
+                </div>
+              </>
+            )}
+          </div>
+        </div>
+      )}
     </PageShell>
   );
 }
@@ -3055,9 +4105,30 @@ function KnowledgePanel({ ticketId, projectId, canEdit, isAdmin, ticketResolved,
     } catch (e) { /* onResolutionChange toasts on failure */ }
   }
 
-  async function promoteToKb() {
+  const [troveKbFlags, setTroveKbFlags] = useState(null);
+  useEffect(() => {
+    api.get("/api/trove-kb/status").then(setTroveKbFlags).catch(() => setTroveKbFlags({ enabled: false }));
+  }, []);
+  async function promoteToKb(kind = "article") {
     if (!resolutionSummary || resolutionSummary.trim().length < 20) {
       toast.error("Add a resolution summary first (20+ chars).");
+      return;
+    }
+    // Trove KB is the documentation platform: when it is on, a promotion
+    // becomes an internal-only draft in the project's collection.
+    if (troveKbFlags?.enabled) {
+      try {
+        const article = await api.post(`/api/trove-kb/tickets/${ticketId}/promote`, { kind });
+        const what = kind === "runbook" ? "Draft runbook" : "Draft article";
+        if (article.fallback_from) {
+          toast(`${what} saved to ${article.collection_name}: Resolvd can't write to ${article.fallback_from} yet.`,
+            { icon: "⚠️", duration: 8000 });
+        } else {
+          toast.success(`${what} created in ${article.collection_name || "Trove KB"}`);
+        }
+        await loadAll();
+        window.location.href = article.staff_url ? article.staff_url : `/kb/article/${article.article_id}?ticket=${ticketId}`;
+      } catch (e) { toast.error(e.message); }
       return;
     }
     try {
@@ -3118,7 +4189,7 @@ function KnowledgePanel({ ticketId, projectId, canEdit, isAdmin, ticketResolved,
           </div>
         )}
 
-        {canEdit && (
+        {canEdit && troveKbFlags?.local_kb_enabled !== false && (
           <div className="relative">
             <input
               type="text"
@@ -3146,6 +4217,16 @@ function KnowledgePanel({ ticketId, projectId, canEdit, isAdmin, ticketResolved,
           </div>
         )}
       </div>
+
+      {/* Trove KB (company knowledge base) */}
+      <TroveKbKnowledge
+        ticketId={ticketId}
+        canEdit={canEdit}
+        onDraft={(md) => {
+          setResDraft((prev) => (prev && prev.trim() ? `${prev.trim()}\n\n${md}` : md));
+          setResEdit(true);
+        }}
+      />
 
       {/* Suggestions */}
       {canEdit && suggestions.length > 0 && (
@@ -3175,15 +4256,34 @@ function KnowledgePanel({ ticketId, projectId, canEdit, isAdmin, ticketResolved,
         <div className="flex items-center justify-between">
           <div className="text-[11px] text-fg-muted uppercase tracking-wide">Resolution summary</div>
           <div className="flex items-center gap-2">
-            {isAdmin && resolutionSummary && (
+            {isAdmin && resolutionSummary && (troveKbFlags?.enabled ? (
+              <span className="text-[11px] text-fg-muted">
+                Promote to KB:{" "}
+                <button
+                  onClick={() => promoteToKb("article")}
+                  className="text-brand hover:underline"
+                  title="Draft an article: Symptom from the description, Resolution from this summary"
+                >
+                  Article
+                </button>
+                {" · "}
+                <button
+                  onClick={() => promoteToKb("runbook")}
+                  className="text-brand hover:underline"
+                  title="Draft a runbook: each paragraph or list item of this summary becomes a step"
+                >
+                  Runbook
+                </button>
+              </span>
+            ) : (
               <button
-                onClick={promoteToKb}
+                onClick={() => promoteToKb("article")}
                 className="text-[11px] text-brand hover:underline"
                 title="Draft a KB article seeded with this resolution + the ticket description"
               >
                 Promote to KB →
               </button>
-            )}
+            ))}
             {canEdit && !resEdit && (
               <button
                 onClick={() => setResEdit(true)}

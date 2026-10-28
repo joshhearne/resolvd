@@ -1,9 +1,11 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { useSearchParams } from "react-router-dom";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
 import { useBranding } from "../context/BrandingContext";
 import { useAuth } from "../context/AuthContext";
 import CompanyNotificationPrefs from "../components/CompanyNotificationPrefs";
+import CompanyContracts from "../components/CompanyContracts";
 
 const KIND_LABEL = {
   vendor: "Vendor",
@@ -45,7 +47,11 @@ export default function AdminCompanies() {
   const [companies, setCompanies] = useState([]);
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
-  const [selectedId, setSelectedId] = useState(null);
+  // ?company=<id>&tab=<tab> deep-links a company (e.g. from a prepaid
+  // block alert notification).
+  const [params] = useSearchParams();
+  const [selectedId, setSelectedId] = useState(() => Number(params.get("company")) || null);
+  const deepTab = params.get("tab");
   const [showCreate, setShowCreate] = useState(false);
 
   async function loadList() {
@@ -191,6 +197,7 @@ export default function AdminCompanies() {
             </div>
           ) : (
             <CompanyDetail
+              initialTab={selected.id === Number(params.get("company")) ? deepTab : null}
               company={selected}
               projects={projects}
               onBack={() => setSelectedId(null)}
@@ -326,7 +333,49 @@ function CreateForm({ enabledKinds, projects, onCancel, onCreated }) {
 // ─────────────────────────────────────────────────────────────────────
 // Detail pane
 // ─────────────────────────────────────────────────────────────────────
-function CompanyDetail({ company, projects, onBack, onReload, onDeleted }) {
+// MSP mode lives in Branding, but the internal company is where an
+// admin sets up "us" — so the switch is offered here too. It enables
+// customer companies (contracts, billing) and the billing settings under
+// Admin → Time tracking.
+function MspModeCard() {
+  const { branding, setBranding } = useBranding();
+  const on = branding?.enable_customer_companies === true;
+  const [busy, setBusy] = useState(false);
+
+  async function toggle() {
+    if (on && !window.confirm("Turn off MSP mode? Customer companies and billing settings will be hidden (nothing is deleted).")) return;
+    setBusy(true);
+    try {
+      const next = await api.patch("/api/branding", { enable_customer_companies: !on });
+      setBranding((b) => ({ ...b, ...next }));
+      toast.success(!on ? "MSP mode on" : "MSP mode off");
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return (
+    <div className={`rounded-lg border p-3 flex flex-wrap items-center gap-3 ${on ? "border-purple-500/40 bg-purple-500/5" : "border-border bg-surface-2/40"}`}>
+      <div className="flex-1 min-w-[14rem]">
+        <div className="text-sm font-medium text-fg">
+          MSP mode {on ? <span className="text-purple-700 dark:text-purple-300">— on</span> : <span className="text-fg-muted">— off</span>}
+        </div>
+        <div className="text-xs text-fg-muted mt-0.5">
+          Serve outside customers: customer companies with contracts, rate
+          cards, billable hours and billing exports. Leave off for an
+          internal-only helpdesk.
+        </div>
+      </div>
+      <button onClick={toggle} disabled={busy} className={`btn btn-sm ${on ? "btn-secondary" : "btn-primary"}`}>
+        {busy ? "Saving…" : on ? "Turn off" : "Turn on MSP mode"}
+      </button>
+    </div>
+  );
+}
+
+function CompanyDetail({ company, projects, onBack, onReload, onDeleted, initialTab }) {
   const { user } = useAuth();
   const [name, setName] = useState(company.name);
   const [domain, setDomain] = useState(company.domain || "");
@@ -335,7 +384,8 @@ function CompanyDetail({ company, projects, onBack, onReload, onDeleted }) {
     Array.isArray(company.auto_add_domains) ? company.auto_add_domains.join(", ") : ""
   );
   const [savingCore, setSavingCore] = useState(false);
-  const [tab, setTab] = useState(company.kind === "internal" ? "members" : "contacts");
+  const defaultTab = company.kind === "internal" ? "members" : "contacts";
+  const [tab, setTab] = useState(initialTab || defaultTab);
 
   useEffect(() => {
     setName(company.name);
@@ -344,7 +394,7 @@ function CompanyDetail({ company, projects, onBack, onReload, onDeleted }) {
     setAutoDomains(
       Array.isArray(company.auto_add_domains) ? company.auto_add_domains.join(", ") : ""
     );
-    setTab(company.kind === "internal" ? "members" : "contacts");
+    setTab(initialTab || defaultTab);
   }, [company.id]);
 
   async function saveCore() {
@@ -403,6 +453,7 @@ function CompanyDetail({ company, projects, onBack, onReload, onDeleted }) {
         { id: "contacts", label: "Contacts" },
         { id: "locations", label: "Locations" },
         { id: "projects", label: "Projects" },
+        { id: "billing", label: "Billing" },
       ];
     }
     return [
@@ -434,6 +485,8 @@ function CompanyDetail({ company, projects, onBack, onReload, onDeleted }) {
           </button>
         )}
       </div>
+
+      {company.kind === "internal" && isAdmin && <MspModeCard />}
 
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 pt-3 border-t border-border">
         <label className="text-xs text-fg-muted flex flex-col gap-1">
@@ -508,6 +561,7 @@ function CompanyDetail({ company, projects, onBack, onReload, onDeleted }) {
         {tab === "members" && <MembersTab company={company} onChange={onReload} />}
         {tab === "projects" && <ProjectsTab company={company} projects={projects} />}
         {tab === "notifications" && <CompanyNotificationPrefs company={company} />}
+        {tab === "billing" && <CompanyContracts company={company} />}
       </div>
     </div>
   );

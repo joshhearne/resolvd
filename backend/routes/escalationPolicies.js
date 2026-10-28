@@ -10,7 +10,10 @@ const { requireAuth, requireRole } = require('../middleware/auth');
 const router = express.Router();
 
 const TRIGGERS = ['warning_response', 'warning_resolve', 'breach_response', 'breach_resolve'];
-const ACTION_KINDS = ['notify_user', 'notify_role', 'notify_assignee', 'reassign_user', 'reassign_role', 'reassign_agent', 'bump_priority'];
+const ACTION_KINDS = [
+  'notify_user', 'notify_role', 'notify_assignee', 'notify_submitter', 'notify_oncall',
+  'reassign_user', 'reassign_role', 'reassign_agent', 'reassign_oncall', 'bump_priority',
+];
 const ROLES = ['Admin', 'Manager', 'Tech'];
 const PRIORITY_OPS = ['=', '<', '>', '<=', '>='];
 
@@ -29,6 +32,11 @@ function validateAction(a) {
   if (a.kind === 'notify_role' || a.kind === 'reassign_role') {
     if (!ROLES.includes(a.target_role)) {
       return `${a.kind} requires target_role ∈ ${ROLES.join(', ')}`;
+    }
+  }
+  if ((a.kind === 'notify_oncall' || a.kind === 'reassign_oncall') && a.rotation_id != null) {
+    if (!Number.isInteger(a.rotation_id) || a.rotation_id <= 0) {
+      return `${a.kind} rotation_id must be a positive integer when set`;
     }
   }
   if (a.kind === 'bump_priority') {
@@ -82,6 +90,7 @@ function normalizeActions(actions) {
     const out = { kind: a.kind };
     if (a.target_user_id) out.target_user_id = Number(a.target_user_id);
     if (a.target_role) out.target_role = a.target_role;
+    if (a.rotation_id) out.rotation_id = Number(a.rotation_id);
     if (a.kind === 'bump_priority') {
       out.levels = Number(a.levels);
       if (a.floor !== undefined && a.floor !== null) out.floor = Number(a.floor);

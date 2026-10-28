@@ -415,13 +415,17 @@ function AccountDetail({
   );
 }
 
-function ScopeSection({ account, currentUser, onAdd, onRemove, onApprove }) {
+function ScopeSection({ account, currentUser, onAdd, onRemove, onApprove, onDefaultChange }) {
   const [open, setOpen] = useState(false);
   const [scopes, setScopes] = useState([]);
   const [projects, setProjects] = useState([]);
   const [pickProject, setPickProject] = useState("");
   const [pickSend, setPickSend] = useState(true);
   const [pickRecv, setPickRecv] = useState(true);
+  const [defaultProjectId, setDefaultProjectId] = useState(
+    account.default_inbound_project_id ?? ""
+  );
+  const [savingDefault, setSavingDefault] = useState(false);
   const isAdmin = currentUser?.role === "Admin";
 
   useEffect(() => {
@@ -460,6 +464,29 @@ function ScopeSection({ account, currentUser, onAdd, onRemove, onApprove }) {
   const isSingleScope = scopes.length === 1;
   const usedIds = new Set(scopes.map((s) => s.project_id));
   const choices = projects.filter((p) => !usedIds.has(p.id));
+  // Eligible defaults: approved + recv_enabled scopes only. Single-scope
+  // accounts auto-route, so the picker is shown only when there are >=2
+  // eligible scopes (which makes prefix-less mail otherwise drop to
+  // manual queue).
+  const eligibleDefaults = scopes.filter((s) => s.approved_at && s.recv_enabled);
+  const showDefaultPicker = eligibleDefaults.length >= 2;
+
+  async function saveDefaultProject(nextId) {
+    setSavingDefault(true);
+    try {
+      const projectId = nextId === "" ? null : Number(nextId);
+      const r = await api.put(`/api/email-backends/${account.id}/default-inbound-project`, { project_id: projectId });
+      setDefaultProjectId(r.default_inbound_project_id ?? "");
+      onDefaultChange?.(account.id, r.default_inbound_project_id ?? null);
+      toast.success(projectId
+        ? `Default landing project set to ${eligibleDefaults.find((s) => s.project_id === projectId)?.project_name || projectId}`
+        : "Default landing project cleared");
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setSavingDefault(false);
+    }
+  }
 
   return (
     <div className="border-t border-border pt-3">
@@ -535,6 +562,35 @@ function ScopeSection({ account, currentUser, onAdd, onRemove, onApprove }) {
             </div>
           )}
 
+          {showDefaultPicker && (
+            <div className="rounded border border-border bg-surface-2 p-2.5 space-y-1.5">
+              <label className="font-semibold text-fg block">
+                Default landing project (no <code>#PREFIX</code>)
+              </label>
+              <p className="text-fg-muted">
+                When inbound mail arrives without a <code>#PREFIX</code> and the inbox
+                serves several projects, route to this one instead of dropping
+                to the manual queue.
+              </p>
+              <select
+                value={defaultProjectId}
+                onChange={(e) => saveDefaultProject(e.target.value)}
+                disabled={!isAdmin || savingDefault}
+                className="bg-surface border border-border rounded px-2 py-1"
+              >
+                <option value="">— No default (use manual queue) —</option>
+                {eligibleDefaults.map((s) => (
+                  <option key={s.project_id} value={s.project_id}>
+                    {s.project_name} ({s.project_prefix})
+                  </option>
+                ))}
+              </select>
+              {!isAdmin && (
+                <p className="text-fg-dim">Only Admins can pin a default landing project.</p>
+              )}
+            </div>
+          )}
+
           {choices.length > 0 && (
             <form onSubmit={handleAdd} className="flex items-center gap-2 flex-wrap">
               <select value={pickProject} onChange={(e) => setPickProject(e.target.value)}
@@ -565,11 +621,6 @@ function ScopeSection({ account, currentUser, onAdd, onRemove, onApprove }) {
 }
 
 const BANNER_PRESETS = [
-  {
-    key: "inky",
-    label: "Inky",
-    pattern: "^\\s*Caution:\\s*External[\\s\\S]*?Protection by INKY[^\\n]*",
-  },
   {
     key: "mimecast",
     label: "Mimecast",
@@ -626,7 +677,7 @@ function BannerStripSection({ account, onSave }) {
         <div className="mt-2 space-y-2 text-xs">
           <div className="rounded bg-blue-50 dark:bg-blue-950/40 border border-blue-300 dark:border-blue-700 px-2.5 py-2 text-blue-900 dark:text-blue-200 leading-snug">
             <strong>Try the gateway first.</strong> If this is a licensed
-            resource mailbox (no human user), most gateways (Inky, Mimecast,
+            resource mailbox (no human user), most gateways (Mimecast,
             Proofpoint) let you suppress recipient banners per-mailbox while
             keeping malware/phishing scans active. That delivers cleaner
             replies than regex stripping ever will. Use the patterns below

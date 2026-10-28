@@ -213,6 +213,43 @@ router.post('/test', requireAuth, async (req, res) => {
   }
 });
 
+// GET /api/ai/usage — caller's cumulative token usage across comments,
+// tickets, and ticket_notes. Each row stamps ai_input_tokens +
+// ai_output_tokens at apply time so this is just a SUM. Returns
+// { calls, input_tokens, output_tokens } — UI renders a small ledger
+// under AI Assist on AccountPreferences.
+router.get('/usage', requireAuth, async (req, res) => {
+  try {
+    const uid = req.session.user.id;
+    const q = `
+      WITH rows AS (
+        SELECT ai_input_tokens AS i, ai_output_tokens AS o
+          FROM comments
+         WHERE user_id = $1 AND ai_provider IS NOT NULL
+        UNION ALL
+        SELECT ai_input_tokens, ai_output_tokens
+          FROM tickets
+         WHERE submitted_by = $1 AND ai_provider IS NOT NULL
+      )
+      SELECT COUNT(*)::int AS calls,
+             COALESCE(SUM(i), 0)::bigint AS input_tokens,
+             COALESCE(SUM(o), 0)::bigint AS output_tokens
+        FROM rows
+    `;
+    const r = await pool.query(q, [uid]);
+    const row = r.rows[0] || { calls: 0, input_tokens: 0, output_tokens: 0 };
+    res.json({
+      calls: row.calls,
+      input_tokens: Number(row.input_tokens),
+      output_tokens: Number(row.output_tokens),
+      total_tokens: Number(row.input_tokens) + Number(row.output_tokens),
+    });
+  } catch (err) {
+    console.error('ai usage:', err);
+    res.status(500).json({ error: err.message || 'usage lookup failed' });
+  }
+});
+
 // POST /api/ai/rewrite — the main entry point. Body:
 // { text, surface, tone, verbosity, eli5? }. Returns { rewritten, usage }.
 router.post('/rewrite', requireAuth, async (req, res) => {

@@ -26,7 +26,82 @@ docker compose up -d --build
 docker compose logs -f
 ```
 
-The stack binds to `127.0.0.1:8090`. A host proxy (nginx, Caddy) or `cloudflared` tunnel handles TLS and forwards there.
+The stack binds to `127.0.0.1:8090`. A host proxy (nginx, Caddy) or `cloudflared` tunnel handles TLS and forwards there. For a full server setup, see [Running on a VPS](#running-on-a-vps).
+
+---
+
+## Running on a VPS
+
+Any Linux VPS with **2 GB RAM or more** works (the frontend build needs the headroom). Commands assume Ubuntu/Debian.
+
+**1. Install Docker and point DNS at the server.**
+
+```bash
+curl -fsSL https://get.docker.com | sh
+```
+
+Create an A (and AAAA, if the server has IPv6) record for your hostname, e.g. `issues.example.com`. Skip this if you'll use a Cloudflare Tunnel, which creates its own DNS record.
+
+**2. Configure and start the stack.**
+
+```bash
+git clone https://github.com/joshhearne/resolvd.git
+cd resolvd
+cp .env.example .env
+```
+
+Set at least these in `.env` (full list under [Environment Variables](#environment-variables)):
+
+| Variable | Value |
+|---|---|
+| `POSTGRES_PASSWORD` | `openssl rand -hex 24` |
+| `SESSION_SECRET` | `openssl rand -hex 32` |
+| `FRONTEND_URL` | `https://issues.example.com` |
+| `COOKIE_SECURE` | `true` |
+| `RESOLVD_MASTER_KEY` | `openssl rand -base64 32`. **Store a copy off the server**; encrypted data and AI keys can't be recovered without it. |
+
+Leave the Entra / Google variables empty to start with local accounts only. Then build and start:
+
+```bash
+./scripts/build-with-version.sh   # docker compose build, stamped with the git version
+docker compose up -d
+```
+
+The stack listens on `127.0.0.1:8090` only, so nothing is public yet.
+
+**3. Put HTTPS in front.** Pick one; details in [Host reverse proxy](#host-reverse-proxy).
+
+- **Caddy**: simplest; gets and renews Let's Encrypt certificates itself. `sudo apt install caddy`, then set `/etc/caddy/Caddyfile` to:
+  ```caddy
+  issues.example.com {
+      reverse_proxy 127.0.0.1:8090 {
+          header_up -CF-Connecting-IP
+      }
+  }
+  ```
+  and `sudo systemctl reload caddy`.
+- **Cloudflare Tunnel**: no inbound ports at all. Install `cloudflared`, create a tunnel in the Cloudflare dashboard (Zero Trust → Networks → Tunnels), and route your hostname to `http://localhost:8090`.
+- **nginx**: if you already run it on the host. Use the snippet below, or `nginx/host-proxy.conf` with Cloudflare origin certificates.
+
+**4. Firewall.** With Caddy or nginx:
+
+```bash
+sudo ufw allow OpenSSH && sudo ufw allow 80,443/tcp && sudo ufw enable
+```
+
+With a Cloudflare Tunnel, only SSH needs to be open.
+
+**5. First login.** Open `https://issues.example.com`. With no users yet, the login page offers to create the first admin (see [First-time setup](#first-time-setup-bootstrap)).
+
+**Updating.** Schema changes apply automatically when the backend starts:
+
+```bash
+git pull
+./scripts/build-with-version.sh
+docker compose up -d
+```
+
+**Backups.** Schedule the commands in [Backup](#backup) (e.g. a nightly cron job) and copy the files off the server. Keep `RESOLVD_MASTER_KEY` with them, but stored separately.
 
 ---
 
@@ -44,7 +119,6 @@ The stack binds to `127.0.0.1:8090`. A host proxy (nginx, Caddy) or `cloudflared
 | `UPLOADS_DIR` | no | Attachment dir (default `/data/uploads`) |
 | `MAX_UPLOAD_MB` | no | Max attachment size (default `50`) |
 | `COMPOSE_PROJECT_NAME` | no | Override Compose project (preserve volumes after dir rename) |
-| `CLOUDFLARE_TUNNEL_TOKEN` | no | When set, the optional in-Compose `cloudflared` service runs the tunnel. Leave unset if you run `cloudflared` on the host instead (recommended — see [Host reverse proxy](#host-reverse-proxy)). |
 
 ### Microsoft Entra ID (login + email backend OAuth)
 
@@ -129,9 +203,12 @@ Fresh install with local auth enabled shows a **Create Admin Account** form. Fir
 |---|---|
 | **Admin** | Everything — branding, auth, encryption mode, support grants, email templates, email backends, status workflows, all Manager actions |
 | **Manager** | Projects, users, tickets, exports, invites, vendor companies/contacts, comments + attachments, vendor-visible comments, delete any comment |
+| **Tech** | Handler tier between Manager and Submitter. Edit any ticket they have project access to, manage assets + custom-field values, edit KB articles, post handler-only notes, receive assignment + escalation pages. Cannot configure org settings, branding, auth, or run bulk admin actions. |
 | **Submitter** | Create tickets, comment, follow, upload attachments |
 | **Viewer** | Read-only |
 | **Support** | External support principals — every request blocked unless an active grant exists (see "JIT support access") |
+
+Tech is the v0.7.0 addition — the role NinjaOne / Action1 / ConnectWise customers expect for the day-to-day workstation operators who shouldn't be Admin but need to do more than file tickets.
 
 ---
 
@@ -269,6 +346,106 @@ Matching is additive: an Org-Wide step (project_id NULL) and a project-scoped st
 - **Ctrl+Enter posts a comment** (per-user pref).
 - **Bulk Edit** (Admin only): button next to the "Tickets (##)" header swaps the search bar + New Ticket button for an action bar (Status / Assignee / Project) and adds a checkbox column. Select up to 500 rows, pick the fields to change, hit Apply. Each ticket is updated in its own transaction (one failure doesn't roll back the batch), audited, and assignment / status-change notifications fan out per recipient prefs. Vendor outbound is skipped for bulk to avoid noise — fire per-ticket if needed. Project moves re-issue `internal_ref` and detach vendor contacts (mirrors single-move semantics).
 - **Merge tickets** (Admin only): search-driven picker by ticket reference (e.g. `WEB-0042`), title, or description — no more guessing numeric IDs. Inline from a ticket (the current ticket is pre-filled as one side; pick the partner) or standalone via **Admin → Merge tickets** with both sides empty. Direction is chosen with a "Swap winner ⇄" toggle, not by which ticket you opened first. Comments, attachments, audit history, vendor contacts, and followers reassign to the winner; loser is closed with a pointer.
+
+### Notes tab (handler-only)
+
+Admin / Manager / Tech see a **Notes** tab on every ticket. Notes are project-handler-only internal commentary — separate from comments, never visible to submitters or vendors, never fanned out via email/push to non-handlers. `@mentions` inside notes resolve only against active agents on the ticket's project. Useful for triage scratchpad ("checked DNS, ServiceNow IP responding"), shift handoffs, or anything that shouldn't bleed into the comment thread the submitter reads.
+
+### Ticket nav (Mine + filters + recents)
+
+The ticket list landing page is filter-driven, not sidebar-driven. Header carries a `Mine` quick-toggle, a `Filters` button (date range / projects / statuses / priorities / Flagged / Has fix / sort), and a saved-views dropdown. The breadcrumb chip below the title renders a plain-English summary of the active filter set (`Active · last 60d · all projects · P1/P2`). The left rail is a per-user **Recently opened** history (capped 20, deduped, populated on row click + TicketDetail mount) — that's the navigation surface; the filter modal is the query surface. Default landing: active (not Closed) · last 60 days · sort priority P1 → P5 with updated_at as the tie-breaker. URL `?preset=open|in_progress|awaiting_mot|pending_review|flagged|closed|mine|sla_breached` overlays on the persisted filter once per nav (so dashboard tiles + email links still deep-link). Backend accepts CSV `project_id` / `internal_status` / `effective_priority`, plus `assigned_to=me` (resolved server-side so saved-view URLs stay user-portable) and `since=ISO`.
+
+### Bulk reply
+
+Admin / Manager can post the same comment to many tickets at once from the bulk-edit action bar. Mirror of the existing bulk-status / bulk-assignee / bulk-project flow. Each post goes through the same comment pipeline as a single post — `@mention` resolution, vendor visibility, follower notifications. Skipped tickets surface in the toast.
+
+---
+
+## Dashboard
+
+`/dashboard` lands on a wide grid of status tiles, a Priority Distribution bar chart, the SLA card, an Active alerts widget (Admin / Manager / Tech), a Time-in-status report, plus Recent Activity + Pending Review.
+
+### Global filters
+
+A single **Filters** button (top right of the dashboard header) opens a modal that drives every module on the page: date range (7 / 30 / 60 / 90 / 180 / 365 / all-time), projects multi-select, internal-status multi-select. Selection persists in `localStorage.resolvd.dashboardFilters.v1`. Active filters render as chips above the modules with × quick-clear and a `Reset` link. Submitter / Viewer requested project_id is intersected with their `project_members` set so they can never widen past their access.
+
+Pending Review tile bypasses the status filter (its whole purpose is that one status). SLA dashboard skips the status filter (SLA scope is inherently breached / open).
+
+---
+
+## Inventory + assets
+
+`/inventory` is Resolvd's CMDB-lite. The `assets` table carries `id`, `hostname`, `fqdn`, `asset_type_id`, `company_id`, `project_id`, `source` (`action1` / `screenconnect` / `manual`), `source_id`, `last_seen_at`, `attributes` JSONB, and an encrypted `attribute_enc` payload for fields tagged sensitive at the type level. `asset_types` + `asset_type_fields` drive per-type schema (laptop / server / printer / network device / generic — admin-extensible). Tickets gain `asset_id` FK; ticket detail renders the asset's hostname instead of an opaque `#id`.
+
+### Manual CRUD + per-type schemas
+
+Admin / Manager / Tech can create / edit / archive assets from the inventory page. The asset-type picker drives which fields appear; each `asset_type_fields` row carries `kind` (text / number / select / multiselect / date / boolean / sensitive), `required`, `default`, `options` (for select), and a `sort_order`. Sensitive fields land in the encrypted column so they don't show up in plaintext database dumps. **Admin → Custom fields** also exposes `entity='asset'` custom-field defs that surface across asset types.
+
+### Action1 inventory pull
+
+When an `external_alert_source` with `preset='action1'` has its **Feed inventory module** capability enabled, Resolvd periodically polls Action1's REST API for endpoint inventory (hostname, OS, last-online, installed software). Reuses the encrypted `api_token_enc` storage pattern on the source row. Polling cadence is bounded by `services/action1RateLimit.js` (token bucket per source) + 429 retry-after backoff so we don't trip Action1's API limits at scale. On-demand software inventory sync runs from the asset detail page for any computer-type asset. Hudu-style **org → company mapping** handles the MSP silo case where one Action1 tenant feeds multiple Resolvd companies; per-source company override pins all unmapped assets to a default.
+
+### Offline detection
+
+The inventory list flags assets with `last_seen_at` older than 14 days as **Offline**. Filter pill on the list narrows to offline-only.
+
+### Software-name normalization
+
+`software_aliases` maps vendor-specific names ("Microsoft 365 Apps for Enterprise" / "M365 Apps" / "Office 365") to a canonical product so software reports don't fragment per vendor. Admin manage page at **Admin → Software aliases**. Action1's `ReportRow` `{fields:{Name,Version,...}}` shape is unwrapped on ingest so we don't store the wrapper in the DB.
+
+### Patches + vulnerabilities
+
+Each asset row surfaces patch counts (`critical` / `other`) and vulnerability counts pulled from the source's reports endpoint. Drill-in on the asset detail page lists the open CVEs and pending patches.
+
+### CSV export
+
+`GET /api/assets/export.csv?…` streams the current filtered view as CSV. The `:id(\\d+)` digit constraint on the asset-detail route prevents `/inventory/export.csv` from colliding with the `:id` param.
+
+---
+
+## Knowledge Base
+
+`/kb` is per-project rich-text documentation with version history, tagging, and ticket linking. Every project owns its own articles — editors author them in **BlockNote** (block-based editor on top of ProseMirror), readers see a rendered surface that matches the Resolvd theme.
+
+### Schema
+
+`kb_articles` carries `project_id` + `slug` (unique per project), `title`, `content_json` (BlockNote document), `content_text` (plain-text mirror used for FTS + summaries), `status` (`draft` / `published` / `archived`), `author_id`, `last_edited_by`, `view_count`, `tags TEXT[]`, `keywords TEXT[]`. `kb_article_versions` snapshots every save with an optional `change_summary`; the API can restore any past version (writes a fresh version row marked `Restored from vN`). `ticket_kb_links` is the ticket↔KB junction with `kind` `manual` / `suggested_accepted` / `system`.
+
+### Authoring
+
+Admin / Manager / Tech can create + edit + archive articles. Editor surfaces a title input, slug input (auto-generates from title), status dropdown (draft / published / archived), change-summary field, and the BlockNote canvas. Tags and keywords are chip inputs — both are lowercase / length-capped / dedup'd. Keywords differ from tags in that they don't surface as filter chips on the index, but they boost the trigram similarity score when matching an article to a ticket (use them for SKU codes, model numbers, error strings that would clutter a tag chip but are searchable signal).
+
+### Reading + filtering
+
+`/kb/:projectId` is the article index with a search input, status filter (draft / published / archived), and **tag filter chips** above the list. Multiple tags AND together via `tags @> $1::text[]`. Article rows show their own tag pills (brighter shade when part of the active filter). Article detail at `/kb/:projectId/:slug` renders the BlockNote document read-only and surfaces version history + archive controls for editors. Per-user starred projects shared between Projects + KB.
+
+### Ticket ↔ KB linking
+
+The ticket Resolution tab carries a **Knowledge** panel. The suggestion ranker uses pg_trgm similarity over the article's `title || array_to_string(tags, ' ') || array_to_string(keywords, ' ')` vs the ticket's title. Auto-surface fires on ticket open for high-confidence matches (score > 0.4 by default). Accepting a suggestion stamps a `kind='suggested_accepted'` link; manually picking from the picker stamps `kind='manual'`; ticket-promote-to-KB stamps `kind='system'`.
+
+### Promote-to-KB + close-time nudge
+
+`POST /api/kb/from-ticket/:id` (Admin / Manager only) drafts a new KB article seeded from the ticket's title, description, and `resolution_summary`. Resulting article is `status='draft'` so an editor reviews it before publish; a `kind='system'` link back to the source ticket is recorded. At ticket close time, a small nudge prompts the closer to capture a one-line resolution summary — this drives the "Fix applied" ticket-list filter (`resolution_summary IS NOT NULL` OR a `ticket_kb_links` row exists). KB shortcut button on **ProjectDetail** opens the project's KB directly.
+
+---
+
+## Alerts
+
+`/alerts` is the deduped state-machined alerts page — distinct from `external_alert_event` (the immutable audit log per vendor webhook). The `alerts` table is one row per `(source_id, external_event_id)` pair, transitioning `firing` → `recovered` as the vendor fires + clears. Alerts can carry an `endpoint_hostname` that links to an inventory asset when the host is known to Resolvd.
+
+### Promotion rules
+
+`alert_rules` per source decide which firing alerts auto-promote to tickets. Each rule combines severity threshold, source preset, optional title regex, and an action (`promote_ticket` / `notify_only` / `ignore`). Manual promote from the alert detail page records a `kind='manual'` audit row.
+
+### Dashboard widget
+
+The dashboard's **Active alerts** card lists the top 8 firing alerts (severity badge, source label, ticket ref where promoted). Visible to Admin / Manager / Tech.
+
+---
+
+## Assignment policies
+
+`assignment_policies` per project govern auto-assign on ticket create and on escalation `reassign_agent` actions. Strategies: `round_robin` (across an active-agent pool), `least_open_tickets` (lowest current case load), or `fixed` (a single user). Configured at **Admin → Assignment policies**. `services/assignmentPolicies.js` is the resolver — used by ticket POST + by escalation `reassign_agent` to defer agent selection back to the project's policy rather than hardcoding the pool in the chain step. Excludes the current assignee on reassign so a stuck ticket actually moves.
 
 ---
 
@@ -568,29 +745,38 @@ The backfill encrypts plaintext into `*_enc` shadow columns, NULLs the plaintext
 The Docker stack does not terminate TLS. The bundled `nginx` service is plain HTTP only — it does not mount any certs (the `nginx/certs/` path is gitignored, so a cert volume on a fresh clone would point at nothing). Terminate TLS upstream with one of:
 
 - **Cloudflare Tunnel (host-based, recommended)** — run `cloudflared` as a host service (systemd) pointing at `http://localhost:8090` (or `localhost:80` if a host nginx fans out by `Host` header for multiple apps). Keeps the tunnel out of the Compose lifecycle so `docker compose down` doesn't drop it, and lets one tunnel front several stacks.
-- **Cloudflare Tunnel (in-Compose)** — set `CLOUDFLARE_TUNNEL_TOKEN` in `.env`; the optional `cloudflared` service in `docker-compose.yml` runs the tunnel inside the stack. Simpler for single-app deployments.
-- **nginx / Caddy** — forward HTTPS to `127.0.0.1:8090`. Sample nginx config in `nginx/host-proxy.conf`.
+- **nginx / Caddy** — forward HTTPS to `127.0.0.1:8090`. Caddy config is in [Running on a VPS](#running-on-a-vps); for nginx with Cloudflare origin certificates, see `nginx/host-proxy.conf`. Without Cloudflare:
 
 ```nginx
 server {
     listen 443 ssl;
     server_name issues.example.com;
-    ssl_certificate     /path/to/cert.pem;
-    ssl_certificate_key /path/to/key.pem;
+    ssl_certificate     /etc/letsencrypt/live/issues.example.com/fullchain.pem;
+    ssl_certificate_key /etc/letsencrypt/live/issues.example.com/privkey.pem;
+    client_max_body_size 55M;   # match or exceed MAX_UPLOAD_MB
     location / {
         proxy_pass http://127.0.0.1:8090;
         proxy_set_header Host $host;
         proxy_set_header X-Forwarded-Proto https;
-        proxy_set_header X-Real-IP $remote_addr;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header CF-Connecting-IP "";
     }
 }
 ```
+
+**Client IPs.** Login security blocks by IP, so the backend needs each visitor's real address. The bundled nginx takes it from `CF-Connecting-IP` when Cloudflare is in front, otherwise from the first `X-Forwarded-For` entry. Whatever sits in front must therefore **set** those headers rather than pass a visitor's own values through:
+
+- Cloudflare (Tunnel or proxied DNS) sets `CF-Connecting-IP` itself.
+- Caddy overwrites `X-Forwarded-For` by default. Strip `CF-Connecting-IP` with `header_up -CF-Connecting-IP` unless Cloudflare is in front.
+- nginx: use `X-Forwarded-For $remote_addr` (not `$proxy_add_x_forwarded_for`, which keeps the visitor's value first) and clear `CF-Connecting-IP` as above.
+
+To check, sign in as an Admin and open `/api/security/login-attempts/summary`. If every attempt shows the same address, the proxy isn't forwarding it.
 
 ---
 
 ## Backup
 
-Postgres data lives in the `<project>_pg-data` volume. Encrypted ciphertext backs up exactly the same as plaintext — but **the master key is not in the dump**. Lose `RESOLVD_MASTER_KEY` and your backup is unrecoverable.
+Postgres data lives in the `<project>_pg-data` volume and uploads in `<project>_uploads-data`, where `<project>` is the Compose project name: the checkout's directory name (`resolvd` for a default clone) unless `COMPOSE_PROJECT_NAME` is set. `docker volume ls` shows the exact names. Encrypted ciphertext backs up exactly the same as plaintext — but **the master key is not in the dump**. Lose `RESOLVD_MASTER_KEY` and your backup is unrecoverable.
 
 ```bash
 docker compose exec postgres pg_dump -U resolvd resolvd > backup-$(date +%Y%m%d).sql
@@ -605,7 +791,7 @@ docker compose exec -T postgres psql -U resolvd resolvd < backup.sql
 Uploaded files (encrypted on disk under standard mode):
 
 ```bash
-docker run --rm -v issues_uploads-data:/src:ro -v "$(pwd)":/dst alpine \
+docker run --rm -v resolvd_uploads-data:/src:ro -v "$(pwd)":/dst alpine \
   tar czf /dst/uploads-$(date +%Y%m%d).tar.gz -C /src .
 ```
 
@@ -647,13 +833,20 @@ Admin uses a left-rail grouped sidebar (mobile collapses to a hamburger that aut
 
 **Admin → Integrations → Alert sources** turns Resolvd into a direct receiver for monitoring webhooks. No Zapier middleman.
 
+Built-in adapters (`services/integrations/registry.js`): **Zabbix** (webhook, optional API for backfill), **Action1** (REST poll — see the v0.7.0 disclaimer at the bottom of the page). Anything else uses the **generic webhook** intake with a tabular field-map editor that maps inbound JSON paths to Resolvd ticket fields with optional `value_map` lookups — no code change required to onboard a new vendor.
+
 Each source has:
-- A **preset** (Zabbix today; Alertmanager / generic JSONPath fast-follow)
+- A **preset** (Zabbix, Action1, generic webhook; Alertmanager fast-follow)
+- A **vendor + kind** pair the registry resolves to an adapter
 - A **token** (hashed at rest; raw token shown once on create + rotate)
+- A **capabilities** picker — toggle which roles the source plays: alerts / inventory / software / vulnerabilities / companies
 - A **default project** + optional default assignee
 - A configurable **severity → priority** map (preset defaults preloaded; reset button)
 - An **auto-resolve on recovery** toggle
-- An optional **API connection** (URL + encrypted token) for backfill of existing open problems
+- An optional **API connection** (URL + encrypted token / client id + secret) for backfill of existing open problems and for periodic inventory polling
+- Per-account **inbound banner-strip patterns** so gateway VIP banners (Inky / Mimecast / Proofpoint / Avanan) don't bleed into the ticket description
+
+See the **Alerts** section above for what happens after ingest (deduped alerts page + rule-driven ticket promotion).
 
 ### Live ingestion
 
@@ -794,3 +987,7 @@ Need a different license for procurement? hosted@resolvd.dev
 ### Contributing
 
 By contributing, you agree your contribution is licensed under the same FSL-1.1-ALv2 terms as the rest of the project. We use the **Developer Certificate of Origin (DCO)** instead of a CLA — every commit must be signed off (`git commit -s`). See [CONTRIBUTING.md](./.github/CONTRIBUTING.md) for details.
+
+---
+
+<sub>\* This integration is an independent community project and is not affiliated with, endorsed by, sponsored by, or supported by Action1 Corporation. Action1 has not reviewed, tested, certified, or audited this integration for security, performance, or compliance purposes and is not responsible for its operation, availability, or use. &ldquo;Action1&rdquo; is a trademark of Action1 Corporation and is used solely to identify compatibility with the Action1 platform.</sub>

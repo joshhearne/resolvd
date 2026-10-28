@@ -34,15 +34,37 @@ function extractCandidateRef(...sources) {
   return null;
 }
 
-function isAutoLoop(headers) {
-  if (!headers || typeof headers !== 'object') return false;
+// Classifies auto-mail headers into two tiers.
+//
+//   hard — X-Resolvd-No-Reply: 1. We stamp this on our own outbound, so it
+//          is only ever our own mail bouncing back through a forwarder.
+//          Never a genuine reply; always discarded.
+//
+//   soft — Auto-Submitted / Precedence: bulk. Usually noise, but NOT proof
+//          of a loop. Exchange quarantine release re-injects a message via
+//          the transport and stamps Auto-Submitted: auto-generated on it,
+//          so a released vendor reply looks identical to an autoresponder.
+//          Soft hits still get a shot at the reply path, which independently
+//          verifies the sender is a contact/participant on the referenced
+//          ticket before appending anything. They never reach auto-create.
+//
+// Returns null when nothing matched.
+function classifyAutoLoop(headers) {
+  if (!headers || typeof headers !== 'object') return null;
+  let soft = null;
   for (const [k, v] of Object.entries(headers)) {
     const lk = k.toLowerCase();
-    if (lk === 'x-resolvd-no-reply' && String(v).trim() === '1') return true;
-    if (lk === 'auto-submitted' && /auto-(replied|generated)/i.test(String(v))) return true;
-    if (lk === 'precedence' && /^bulk$/i.test(String(v).trim())) return true;
+    const val = String(v).trim();
+    // Hard wins outright, so return the moment we see it.
+    if (lk === 'x-resolvd-no-reply' && val === '1') return { kind: 'hard', tag: 'x-resolvd-no-reply' };
+    if (!soft && lk === 'auto-submitted' && /auto-(replied|generated)/i.test(val)) {
+      soft = { kind: 'soft', tag: `auto-submitted=${val}` };
+    }
+    if (!soft && lk === 'precedence' && /^bulk$/i.test(val)) {
+      soft = { kind: 'soft', tag: 'precedence=bulk' };
+    }
   }
-  return false;
+  return soft;
 }
 
 // POST /api/inbound/generic — webhook ingestion
@@ -78,9 +100,10 @@ router.post('/generic', async (req, res) => {
       return res.status(400).json({ error: 'from and body required' });
     }
 
-    if (isAutoLoop(headers || {})) {
-      return res.status(202).json({ ok: true, dropped: 'auto_loop' });
-    }
+    // Classified now, acted on AFTER the row is persisted. Dropping before
+    // the insert left zero trace anywhere — no row, no log — so a silently
+    // eaten message was indistinguishable from one that never arrived.
+    const autoLoop = classifyAutoLoop(headers || {});
 
     // Idempotency: identical external_message_id → skip insert.
     if (external_message_id) {
@@ -117,8 +140,104 @@ router.post('/generic', async (req, res) => {
     );
     const queueRowId = result.rows[0].id;
 
-    // 2. If subject carries a #PREFIX, try the auto-create flow. Failures
-    //    fall through to leave the row as 'unmatched' for admin attention.
+    // 1b. Hard loop — our own outbound came back to us. Record and stop.
+    //     Discarded rows are excluded from the default admin queue view, so
+    //     this is traceable without being noise.
+    if (autoLoop?.kind === 'hard') {
+      await pool.query(
+        `UPDATE inbound_email_queue
+            SET status = 'discarded', matched_at = NOW(), reject_reason = $1
+          WHERE id = $2`,
+        [`auto_loop:${autoLoop.tag}`, queueRowId]
+      );
+      return res.status(202).json({ ok: true, id: queueRowId, dropped: 'auto_loop', tag: autoLoop.tag });
+    }
+
+    // 2a. Reply-first routing: if subject/body carries a [PREFIX-N] ref
+    //     AND the target ticket is fresh enough AND the sender belongs to
+    //     that ticket (vendor contact OR internal participant), append
+    //     the reply onto the existing thread. This must run BEFORE
+    //     tryAutoCreate so a stray OOO bounceback or a CC'd watcher's
+    //     reply doesn't spin up a duplicate ticket via the mailbox-scoped
+    //     auto-create path. Stale references fall through to auto-create
+    //     so a year-old closed ticket isn't resurrected by an unrelated
+    //     reply that happens to quote its ref.
+    let autoReply = null;
+    if (result.rows[0].candidate_ticket_ref) {
+      try {
+        autoReply = await inboundProcessor.tryAutoReply({
+          candidateRef: result.rows[0].candidate_ticket_ref,
+          subject,
+          body,
+          fromAddress: String(from).toLowerCase().trim(),
+          queueRowId,
+          attachments,
+        });
+      } catch (e) {
+        console.error('auto-reply attempt failed:', e);
+        autoReply = { ok: false, reason: `error:${e.message}` };
+      }
+    }
+    if (autoReply?.ok) {
+      const tags = [];
+      if (autoReply.oooSuppressed) tags.push('ooo_suppressed');
+      else if (autoReply.reopen?.reopened) tags.push(`auto_reopened:${autoReply.reopen.toStatus}`);
+      else if (autoReply.reopen?.gratitude) tags.push('gratitude_detected');
+      if (autoReply.senderKind === 'user') tags.push('sender:user');
+      // Landed despite an auto-mail header — worth showing so a released or
+      // relay-stamped reply is distinguishable from a clean one.
+      if (autoLoop) tags.push(`auto_loop_override:${autoLoop.tag}`);
+      await pool.query(
+        `UPDATE inbound_email_queue
+            SET status = 'matched',
+                matched_ticket_id = $1,
+                matched_at = NOW(),
+                reject_reason = $2
+          WHERE id = $3`,
+        [autoReply.ticket.id, tags.length ? tags.join(' ') : null, queueRowId]
+      );
+
+      // OOO bounce: comment lands muted, status untouched, NO fanout.
+      // Anything else fires the normal follower notification path.
+      if (!autoReply.oooSuppressed) {
+        fanoutNewComment(pool, {
+          ticket: autoReply.ticket,
+          comment: autoReply.cleanedBody || '',
+          commentId: autoReply.commentId,
+          actorId: autoReply.actorUserId || null,
+          actorName: autoReply.actorLabel || (autoReply.senderKind === 'user' ? 'Staff' : 'Vendor'),
+        }).catch(err => console.error('reply notification failed:', err.message));
+      }
+
+      return res.status(201).json({
+        ok: true, id: queueRowId,
+        kind: autoReply.oooSuppressed ? 'ooo_suppressed' : 'replied',
+        ticket_id: autoReply.ticket.id,
+        ticket_ref: autoReply.ticket.internal_ref,
+        reopen: autoReply.reopen,
+        ooo_suppressed: !!autoReply.oooSuppressed,
+      });
+    }
+
+    // 2b. Soft loop that the reply path declined. An autoresponder or bulk
+    //     blast has no business spawning a new ticket, so it stops here
+    //     rather than falling through to auto-create. The reason carries
+    //     both the header and why the reply path passed on it.
+    if (autoLoop?.kind === 'soft') {
+      const why = autoReply?.reason ? `${autoLoop.tag}/${autoReply.reason}` : autoLoop.tag;
+      await pool.query(
+        `UPDATE inbound_email_queue
+            SET status = 'discarded', matched_at = NOW(), reject_reason = $1
+          WHERE id = $2`,
+        [`auto_loop:${why}`, queueRowId]
+      );
+      return res.status(202).json({ ok: true, id: queueRowId, dropped: 'auto_loop', tag: autoLoop.tag });
+    }
+
+    // 2c. Reply path declined. Fall through to auto-create — either no
+    //     ref was present, the ref pointed at a stale/missing ticket, or
+    //     the sender has no claim on the ticket. Failures fall further
+    //     through to leave the row as 'unmatched' for admin attention.
     let autoResult = null;
     try {
       autoResult = await inboundProcessor.tryAutoCreate({
@@ -180,55 +299,18 @@ router.post('/generic', async (req, res) => {
       );
     }
 
-    // Auto-reply path: subject like "[PREFIX-N]" plus a known contact on
-    // that ticket. Appends a comment and applies resolved-state reopen
-    // logic when applicable. Skips entirely if ref or sender doesn't
-    // match — falls through to the unmatched queue.
-    let autoReply = null;
-    if (result.rows[0].candidate_ticket_ref) {
-      try {
-        autoReply = await inboundProcessor.tryAutoReply({
-          candidateRef: result.rows[0].candidate_ticket_ref,
-          body,
-          fromAddress: String(from).toLowerCase().trim(),
-          queueRowId,
-        });
-      } catch (e) {
-        console.error('auto-reply attempt failed:', e);
-      }
-    }
-    if (autoReply?.ok) {
-      const tags = [];
-      if (autoReply.reopen?.reopened) tags.push(`auto_reopened:${autoReply.reopen.toStatus}`);
-      else if (autoReply.reopen?.gratitude) tags.push('gratitude_detected');
+    // If neither auto-flow attached the row, persist whichever reason
+    // we have so the admin queue isn't a blank-reason mystery. Prefer
+    // the auto-reply reason when a candidate_ref was present — that's
+    // the more relevant path for vendor-thread replies.
+    const fallbackReason = (autoReply?.reason && autoReply.reason !== 'no_ref')
+      ? autoReply.reason
+      : (autoResult?.reason && autoResult.reason !== 'no_prefix' ? autoResult.reason : null);
+    if (fallbackReason) {
       await pool.query(
-        `UPDATE inbound_email_queue
-            SET status = 'matched',
-                matched_ticket_id = $1,
-                matched_at = NOW(),
-                reject_reason = $2
-          WHERE id = $3`,
-        [autoReply.ticket.id, tags.length ? tags.join(' ') : null, queueRowId]
+        `UPDATE inbound_email_queue SET reject_reason = COALESCE(reject_reason, $1) WHERE id = $2`,
+        [fallbackReason, queueRowId]
       );
-
-      // Fan out follower notifications for the vendor reply. No
-      // user-side actor (the comment came from a contact, not a user),
-      // so actorId is null — submitter + every follower with the
-      // comment row enabled in their notification matrix gets the email.
-      fanoutNewComment(pool, {
-        ticket: autoReply.ticket,
-        comment: autoReply.cleanedBody || '',
-        actorId: null,
-        actorName: autoReply.actorLabel || 'Vendor',
-      }).catch(err => console.error('vendor-reply notification failed:', err.message));
-
-      return res.status(201).json({
-        ok: true, id: queueRowId,
-        kind: 'replied',
-        ticket_id: autoReply.ticket.id,
-        ticket_ref: autoReply.ticket.internal_ref,
-        reopen: autoReply.reopen,
-      });
     }
 
     res.status(201).json({
@@ -300,7 +382,26 @@ router.get('/:id', requireAuth, requireRole('Admin', 'Manager'), async (req, res
       }
     }
 
-    res.json({ message: r.rows[0], suggested_contact: suggestedContact });
+    // Only unmatched rows need routing help. Best-effort: a failed lookup
+    // never blocks the preview.
+    let unblockCandidates = [];
+    if (r.rows[0].status === 'unmatched') {
+      try {
+        const { findUnblockCandidates } = require('../services/inboundHints');
+        unblockCandidates = await findUnblockCandidates({
+          message: r.rows[0],
+          contactId: suggestedContact?.id || null,
+        });
+      } catch (err) {
+        console.warn('inbound unblock hint failed:', err.message);
+      }
+    }
+
+    res.json({
+      message: r.rows[0],
+      suggested_contact: suggestedContact,
+      unblock_candidates: unblockCandidates,
+    });
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Database error' });
@@ -310,8 +411,10 @@ router.get('/:id', requireAuth, requireRole('Admin', 'Manager'), async (req, res
 // POST /api/inbound/:id/match — turn an unmatched message into a comment
 router.post('/:id/match', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
-    const { ticket_id, contact_id } = req.body || {};
-    if (!ticket_id) return res.status(400).json({ error: 'ticket_id required' });
+    const { ticket_id, ticket_ref, contact_id } = req.body || {};
+    if (!ticket_id && !ticket_ref) {
+      return res.status(400).json({ error: 'ticket_id or ticket_ref required' });
+    }
 
     const queue = await pool.query(`SELECT * FROM inbound_email_queue WHERE id = $1`, [req.params.id]);
     if (!queue.rows[0]) return res.status(404).json({ error: 'Not found' });
@@ -319,11 +422,17 @@ router.post('/:id/match', requireAuth, requireRole('Admin', 'Manager'), async (r
       return res.status(409).json({ error: `Already ${queue.rows[0].status}` });
     }
 
-    const ticket = await pool.query(
-      `SELECT id, internal_ref, title, title_enc, auto_mute_vendor_replies FROM tickets WHERE id = $1`,
-      [Number(ticket_id)]
-    );
+    const ticket = ticket_id
+      ? await pool.query(
+          `SELECT id, internal_ref, title, title_enc, auto_mute_vendor_replies FROM tickets WHERE id = $1`,
+          [Number(ticket_id)]
+        )
+      : await pool.query(
+          `SELECT id, internal_ref, title, title_enc, auto_mute_vendor_replies FROM tickets WHERE internal_ref ILIKE $1`,
+          [String(ticket_ref).trim()]
+        );
     if (!ticket.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
+    const resolvedTicketId = ticket.rows[0].id;
     await decryptRow('tickets', ticket.rows[0]);
     // Ticket-level mute does NOT block the match — the comment still
     // lands in the thread so nothing is lost in a separate bucket. It
@@ -347,7 +456,7 @@ router.post('/:id/match', requireAuth, requireRole('Admin', 'Manager'), async (r
     const cols = ['ticket_id', 'user_id', 'is_external_visible', 'is_internal',
       'is_muted', 'vendor_contact_id', 'source_inbound_email_id', ...patch.cols];
     const values = [
-      Number(ticket_id), null, true, false,
+      resolvedTicketId, null, true, false,
       muteByDefault,
       contact_id ? Number(contact_id) : null,
       queueRow.id,
@@ -367,11 +476,24 @@ router.post('/:id/match', requireAuth, requireRole('Admin', 'Manager'), async (r
               matched_at = NOW(),
               matched_by_user_id = $3
         WHERE id = $4`,
-      [Number(ticket_id), contact_id ? Number(contact_id) : null, req.session.user.id, queueRow.id]
+      [resolvedTicketId, contact_id ? Number(contact_id) : null, req.session.user.id, queueRow.id]
     );
-    await pool.query(`UPDATE tickets SET updated_at = NOW() WHERE id = $1`, [Number(ticket_id)]);
+    await pool.query(`UPDATE tickets SET updated_at = NOW() WHERE id = $1`, [resolvedTicketId]);
 
-    res.status(201).json({ ok: true, comment_id: ins.rows[0].id, muted: muteByDefault });
+    // If the manual reviewer is matching a reply onto a ticket sitting
+    // in awaiting_input, transition it back to in_progress automatically.
+    let resumed = null;
+    try {
+      const { applyReplyToWaitingTicket } = require('../services/autoResolve');
+      resumed = await applyReplyToWaitingTicket({ ticketId: resolvedTicketId, actorUserId: req.session.user.id });
+    } catch (e) {
+      console.error('awaiting_input auto-resume (manual match) failed:', e.message);
+    }
+
+    res.status(201).json({
+      ok: true, comment_id: ins.rows[0].id, muted: muteByDefault,
+      resumed_to: resumed?.resumed ? resumed.toStatus : null,
+    });
 
     // Followers only get pinged for non-muted comments — the whole point
     // of muting at the ticket level is to silence the noise.
@@ -379,6 +501,7 @@ router.post('/:id/match', requireAuth, requireRole('Admin', 'Manager'), async (r
       fanoutNewComment(pool, {
         ticket: ticket.rows[0],
         comment: commentBody,
+        commentId: ins.rows[0].id,
         actorId: req.session.user.id,
         actorName: queueRow.from_name || queueRow.from_addr,
       }).catch(() => {});

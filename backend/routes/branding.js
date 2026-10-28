@@ -5,9 +5,12 @@ const fs = require('fs');
 const { randomUUID } = require('crypto');
 const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
+const { handleUploadErrors, fileRejected } = require('../middleware/upload');
 const { invalidateBranding } = require('../services/branding');
 
 const UPLOADS_DIR = process.env.UPLOADS_DIR || '/data/uploads';
+
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
 
 function makeImageUpload(prefix) {
   const storage = multer.diskStorage({
@@ -19,10 +22,10 @@ function makeImageUpload(prefix) {
   });
   return multer({
     storage,
-    limits: { fileSize: 5 * 1024 * 1024 },
+    limits: { fileSize: MAX_IMAGE_BYTES },
     fileFilter: (req, file, cb) => {
       if (!file.mimetype.startsWith('image/')) {
-        return cb(new Error('File must be an image'));
+        return cb(fileRejected('File must be an image'));
       }
       cb(null, true);
     },
@@ -185,7 +188,7 @@ router.get('/logo', async (req, res) => {
 });
 
 // POST /api/branding/logo — Admin only
-router.post('/logo', requireAuth, requireRole('Admin'), logoUpload.single('logo'), async (req, res) => {
+router.post('/logo', requireAuth, requireRole('Admin'), handleUploadErrors(logoUpload.single('logo'), { maxBytes: MAX_IMAGE_BYTES }), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   try {
     const old = await pool.query('SELECT logo_filename FROM branding WHERE id = 1');
@@ -241,7 +244,7 @@ router.get('/favicon', async (req, res) => {
 });
 
 // POST /api/branding/favicon — Admin only
-router.post('/favicon', requireAuth, requireRole('Admin'), faviconUpload.single('favicon'), async (req, res) => {
+router.post('/favicon', requireAuth, requireRole('Admin'), handleUploadErrors(faviconUpload.single('favicon'), { maxBytes: MAX_IMAGE_BYTES }), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
   try {
     const old = await pool.query('SELECT favicon_filename FROM branding WHERE id = 1');

@@ -5,7 +5,6 @@
 // no matter how a message arrived.
 
 const express = require('express');
-const fetch = require('node-fetch');
 const { pool } = require('../db/pool');
 const { decryptRow } = require('../services/fields');
 const graphInbox = require('../services/graphInbox');
@@ -13,21 +12,7 @@ const gmailInbox = require('../services/gmailInbox');
 
 const router = express.Router();
 
-// Reuse the internal generic handler instead of duplicating the
-// dedup/insert logic. Going via the actual HTTP endpoint keeps the
-// call path consistent with externally-fed payloads.
-async function feedToGeneric(payload) {
-  const secret = process.env.INBOUND_WEBHOOK_SECRET;
-  if (!secret) {
-    throw new Error('INBOUND_WEBHOOK_SECRET not set; provider adapters require it');
-  }
-  const r = await fetch(`http://localhost:${process.env.PORT || 3001}/api/inbound/generic`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json', 'X-Inbound-Secret': secret },
-    body: JSON.stringify(payload),
-  });
-  return await r.json().catch(() => ({}));
-}
+const { feedToGeneric } = require('../services/inboundFeed');
 
 async function loadAccountByGraphSubscriptionId(subId) {
   const r = await pool.query(
@@ -83,8 +68,8 @@ router.post('/graph', async (req, res) => {
       const payload = await graphInbox.fetchMessageAsPayload(account, messageId);
       // Drop the message we sent ourselves — Graph sometimes echoes Sent
       // items into the inbox via shared mailboxes. Our outbound carries
-      // X-Resolvd-No-Reply so the existing isAutoLoop check in the
-      // generic ingestor takes care of this.
+      // X-Resolvd-No-Reply, which classifyAutoLoop() in the generic
+      // ingestor treats as a hard loop.
       await feedToGeneric(payload);
     } catch (e) {
       console.error('graph notification handling failed:', e.message);

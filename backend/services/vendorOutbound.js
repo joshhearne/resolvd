@@ -36,27 +36,43 @@ const UPLOADS_DIR = process.env.UPLOADS_DIR || '/data/uploads';
 // We cap raw bytes well below that so the encoded payload still fits.
 //   per-file: 10 MB — single large PDF / video stays sendable
 //   total:    20 MB — comfortable headroom under Graph's 25 MB body limit
+// Env overrides (whole MB):
+//   VENDOR_ATTACH_PER_FILE_MB — bump per-file cap. Graph rejects single
+//     fileAttachment payloads over ~3 MB unless you switch to the chunked
+//     upload-session API, so practical Graph ceiling stays around 3 MB
+//     per file even though SMTP/Gmail accept more. SMTP caps depend on
+//     the relay (Exchange Online: 25 MB; most cloud providers: 25–35 MB).
+//   VENDOR_ATTACH_TOTAL_MB — bump total per-message cap. The base64
+//     encoding of binary attachments inflates wire bytes by ~33%, so
+//     keep this 25–30% below the relay's hard cap.
 // Anything exceeding the caps is dropped from the message with a console
 // warn naming the file; recipients see the body without it. The original
 // attachments stay on the ticket so internal viewers still have them.
-const ATTACH_PER_FILE_BYTES = 10 * 1024 * 1024;
-const ATTACH_TOTAL_BYTES = 20 * 1024 * 1024;
+const ATTACH_PER_FILE_BYTES = Math.max(1, Number(process.env.VENDOR_ATTACH_PER_FILE_MB) || 10) * 1024 * 1024;
+const ATTACH_TOTAL_BYTES    = Math.max(1, Number(process.env.VENDOR_ATTACH_TOTAL_MB)    || 20) * 1024 * 1024;
 
-// commentId scopes the pull to attachments belonging to that comment
-// (new_comment events should only send what the comment added, not the
-// whole ticket history). Pass null/omit for ticket-wide (new_ticket).
-async function fetchAttachments({ ticketId, commentId = null }) {
-  const sql = commentId
-    ? `SELECT filename, original_name, mimetype, size, encrypted_at_rest
-         FROM attachments
-        WHERE ticket_id = $1 AND comment_id = $2
-        ORDER BY created_at ASC`
-    : `SELECT filename, original_name, mimetype, size, encrypted_at_rest
-         FROM attachments
-        WHERE ticket_id = $1
-        ORDER BY created_at ASC`;
-  const params = commentId ? [ticketId, commentId] : [ticketId];
-  const r = await pool.query(sql, params);
+// Pulls every ticket attachment that has not yet been delivered to the
+// vendor (sent_to_vendor_at IS NULL). Covers both:
+//   - new_ticket: brand-new ticket, every file is unsent → all go.
+//   - new_comment: vendor-visible comment fires after an internal
+//     back-and-forth. Files uploaded during that back-and-forth (whether
+//     attached directly to the ticket or to an internal comment) are
+//     still unsent, so they ride along with the escalation. This is the
+//     fix for the L1-tech-escalates case: previously a vendor-visible
+//     comment only carried the files linked to that comment row, so
+//     attachments uploaded earlier were silently filtered out.
+// Returns objects with `id` so the caller can stamp sent_to_vendor_at
+// on the rows that actually made it onto the wire (size-capped files
+// are excluded from the stamp so a later send can retry them).
+async function fetchUnsentAttachments({ ticketId }) {
+  const sql = `
+    SELECT id, filename, original_name, mimetype, size, encrypted_at_rest
+      FROM attachments
+     WHERE ticket_id = $1
+       AND sent_to_vendor_at IS NULL
+     ORDER BY created_at ASC
+  `;
+  const r = await pool.query(sql, [ticketId]);
 
   const result = [];
   let total = 0;
@@ -81,6 +97,7 @@ async function fetchAttachments({ ticketId, commentId = null }) {
         continue;
       }
       result.push({
+        id: row.id,
         filename: row.original_name || row.filename,
         mimetype: row.mimetype || 'application/octet-stream',
         data,
@@ -154,11 +171,40 @@ function companyAllows(contact, eventType, ticketStatusName) {
   return true; // new_ticket, new_comment always allowed
 }
 
+const { marked } = require('marked');
+const sanitizeHtml = require('sanitize-html');
+
+const MD_ALLOWED_TAGS = [
+  'p', 'br', 'strong', 'em', 'code', 'pre', 'blockquote',
+  'ul', 'ol', 'li', 'a', 'h1', 'h2', 'h3', 'h4', 'h5', 'h6',
+  'hr', 'span', 'div',
+];
+const MD_ALLOWED_ATTRS = {
+  a: ['href', 'title', 'target', 'rel'],
+};
+
 function htmlify(body) {
-  // Plaintext template body → minimally-formatted HTML for backends that
-  // expect content-type text/html (Graph default).
-  const escaped = body.replace(/[&<>]/g, (c) => c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;');
-  return `<div style="font-family:system-ui,-apple-system,sans-serif;white-space:pre-wrap;font-size:14px;color:#111827">${escaped}</div>`;
+  // Render markdown so canned responses + comments composed in markdown
+  // (e.g. hyperlinks via [label](url)) reach vendor inboxes as real HTML.
+  // Raw HTML in the source is stripped by sanitizeHtml so only the tag
+  // set produced by marked survives. Falls back to escaped pre-wrap on
+  // any rendering error so the vendor still gets the body content.
+  let rendered;
+  try {
+    rendered = marked.parse(String(body || ''), { breaks: true, gfm: true });
+  } catch (err) {
+    console.error('vendor outbound markdown render failed:', err.message);
+    const escaped = String(body || '').replace(/[&<>]/g, (c) => c === '&' ? '&amp;' : c === '<' ? '&lt;' : '&gt;');
+    return `<div style="font-family:system-ui,-apple-system,sans-serif;white-space:pre-wrap;font-size:14px;color:#111827">${escaped}</div>`;
+  }
+  const safe = sanitizeHtml(rendered, {
+    allowedTags: MD_ALLOWED_TAGS,
+    allowedAttributes: MD_ALLOWED_ATTRS,
+    transformTags: {
+      a: sanitizeHtml.simpleTransform('a', { target: '_blank', rel: 'noopener noreferrer' }),
+    },
+  });
+  return `<div style="font-family:system-ui,-apple-system,sans-serif;font-size:14px;color:#111827;line-height:1.5">${safe}</div>`;
 }
 
 // Visible marker prepended to every outbound vendor email body. The
@@ -184,6 +230,19 @@ async function sendVendorEmail({ eventType, ticketId, actorId, commentId = null 
     );
     if (!r.rows[0]?.vendor_notified_at) return { sent: 0, skipped: 1 };
   }
+  // Terminal-status gate for non-closing events: a closed ticket
+  // shouldn't ping vendors with new comments / re-fires. status_change
+  // and ticket_resolved are exempt — that's how the vendor learns the
+  // ticket reached its terminal state.
+  if (eventType !== 'status_change' && eventType !== 'ticket_resolved') {
+    const t = await pool.query(
+      `SELECT 1 FROM tickets t
+         JOIN statuses s ON s.kind='internal' AND s.name=t.internal_status
+        WHERE t.id = $1 AND s.is_terminal = TRUE LIMIT 1`,
+      [ticketId]
+    );
+    if (t.rowCount) return { sent: 0, skipped: 1 };
+  }
 
   const tplRow = await loadTemplate(eventType, 'vendor');
   if (!tplRow) {
@@ -195,16 +254,23 @@ async function sendVendorEmail({ eventType, ticketId, actorId, commentId = null 
   const contacts = await fetchTicketContacts(ticketId);
   if (!contacts.length) return { sent: 0, skipped: 0 };
 
-  // new_ticket sends the ticket-wide attachments (initial context for
-  // the vendor). new_comment scopes to the comment that triggered the
-  // send — only the files the user just added go out, not the full
-  // ticket history. status_change / ticket_resolved carry no
-  // attachments by design.
-  const attachments = (eventType === 'new_ticket')
-    ? await fetchAttachments({ ticketId })
-    : (eventType === 'new_comment')
-      ? await fetchAttachments({ ticketId, commentId })
-      : [];
+  // new_ticket + new_comment both send every ticket attachment that
+  // hasn't been delivered to the vendor yet (sent_to_vendor_at IS NULL).
+  // This covers the L1-escalation flow: files uploaded during internal
+  // back-and-forth, before anyone flipped a comment vendor-visible,
+  // get attached on the first vendor-bound send. status_change /
+  // ticket_resolved carry no attachments by design — they're status
+  // pings, not file deliveries.
+  const attachments = (eventType === 'new_ticket' || eventType === 'new_comment')
+    ? await fetchUnsentAttachments({ ticketId })
+    : [];
+  // sendMail consumers (Graph/Gmail/SMTP) read filename/mimetype/data;
+  // the `id` we tracked for the post-send stamp is for our own bookkeeping
+  // and shouldn't bleed into the wire payload. Compute once, share across
+  // every recipient in the loop.
+  const wireAttachments = attachments.map(a => ({
+    filename: a.filename, mimetype: a.mimetype, data: a.data,
+  }));
 
   const ticketStatusName = ctx.ticket.internal_status || '';
 
@@ -237,7 +303,7 @@ async function sendVendorEmail({ eventType, ticketId, actorId, commentId = null 
       // for proxied/automated mail (mailing lists, GitHub notifications,
       // Gmail "Send mail as") — Outlook and Gmail render it consistently
       // without overriding from a directory match, and anti-spoof filters
-      // (Inky VIP, Mimecast Impersonation Protect, etc.) recognize it as
+      // (Mimecast Impersonation Protect, Proofpoint, etc.) recognize it as
       // legitimate rather than treating `Name <unrelated@addr>` as an
       // exec impersonation attempt. Falls back to email local-part, then
       // to the bare site name when no actor is available.
@@ -254,7 +320,7 @@ async function sendVendorEmail({ eventType, ticketId, actorId, commentId = null 
         replyTo: REPLY_TO,
         senderName,
         projectId: ctx.ticket.project_id,
-        attachments,
+        attachments: wireAttachments,
         headers: {
           'Auto-Submitted': 'auto-generated',
           'X-Auto-Response-Suppress': 'All',
@@ -276,6 +342,20 @@ async function sendVendorEmail({ eventType, ticketId, actorId, commentId = null 
       `UPDATE tickets SET vendor_notified_at = NOW() WHERE id = $1 AND vendor_notified_at IS NULL`,
       [ticketId]
     );
+    // Stamp every attachment that actually rode on this send so the
+    // next vendor-bound event doesn't re-attach the same files. Only
+    // runs when sent>0 — if every recipient errored, leave them unsent
+    // so a retry can carry them. Size-capped files were already
+    // filtered out by fetchUnsentAttachments and stay unsent for the
+    // same retry-on-next-send reason.
+    const sentIds = attachments.map(a => a.id).filter(Boolean);
+    if (sentIds.length) {
+      await pool.query(
+        `UPDATE attachments SET sent_to_vendor_at = NOW()
+          WHERE id = ANY($1::int[]) AND sent_to_vendor_at IS NULL`,
+        [sentIds]
+      );
+    }
   }
 
   return { sent, failed, audience: contacts.length };

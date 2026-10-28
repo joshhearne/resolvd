@@ -5,7 +5,7 @@ const { getRestrictionDefaults, effectiveFlag } = require('../services/restricti
 
 const router = express.Router();
 
-const VALID_ROLES = ['Admin', 'Submitter', 'Viewer'];
+const VALID_ROLES = ['Admin', 'Manager', 'Tech', 'Submitter', 'Viewer'];
 
 // GET /api/projects — Admin: all; others: their projects
 router.get('/', requireAuth, async (req, res) => {
@@ -229,18 +229,25 @@ router.delete('/:id', requireAuth, requireRole('Admin', 'Manager'), async (req, 
 // POST /api/projects/:id/members — Admin only
 router.post('/:id/members', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
-    const { user_id, role_override } = req.body;
+    const { user_id, role_override, is_agent } = req.body;
     if (!user_id) return res.status(400).json({ error: 'user_id required' });
     if (role_override && !VALID_ROLES.includes(role_override)) {
       return res.status(400).json({ error: 'Invalid role_override' });
     }
+    // Tech role implies agent eligibility unless caller overrides explicitly.
+    const agent = typeof is_agent === 'boolean' ? is_agent : role_override === 'Tech';
 
     const result = await pool.query(`
-      INSERT INTO project_members (project_id, user_id, role_override, added_by)
-      VALUES ($1, $2, $3, $4)
-      ON CONFLICT (project_id, user_id) DO UPDATE SET role_override = EXCLUDED.role_override
+      INSERT INTO project_members (project_id, user_id, role_override, is_agent, added_by)
+      VALUES ($1, $2, $3, $4, $5)
+      ON CONFLICT (project_id, user_id) DO UPDATE SET
+        role_override = EXCLUDED.role_override,
+        is_agent = CASE
+          WHEN EXCLUDED.role_override = 'Tech' THEN TRUE
+          ELSE project_members.is_agent
+        END
       RETURNING *
-    `, [req.params.id, user_id, role_override || null, req.session.user.id]);
+    `, [req.params.id, user_id, role_override || null, agent, req.session.user.id]);
 
     // Re-fetch with user details
     const member = await pool.query(`
@@ -260,18 +267,20 @@ router.post('/:id/members', requireAuth, requireRole('Admin', 'Manager'), async 
 });
 
 // POST /api/projects/:id/members/bulk — Admin/Manager bulk-add
-// Body: { user_ids: [int], role_override?: 'Admin'|'Submitter'|'Viewer' }
+// Body: { user_ids: [int], role_override?: 'Admin'|'Manager'|'Tech'|'Submitter'|'Viewer', is_agent?: bool }
 // Idempotent (ON CONFLICT updates role_override). Returns the count of
-// rows added or updated and the full member list.
+// rows added or updated and the full member list. Tech role auto-ticks
+// is_agent unless caller passes is_agent explicitly.
 router.post('/:id/members/bulk', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
-    const { user_ids, role_override } = req.body || {};
+    const { user_ids, role_override, is_agent } = req.body || {};
     if (!Array.isArray(user_ids) || user_ids.length === 0) {
       return res.status(400).json({ error: 'user_ids array required' });
     }
     if (role_override && !VALID_ROLES.includes(role_override)) {
       return res.status(400).json({ error: 'Invalid role_override' });
     }
+    const agent = typeof is_agent === 'boolean' ? is_agent : role_override === 'Tech';
     // Capped to keep one request from chewing the connection.
     const ids = user_ids.map((n) => Number(n)).filter((n) => Number.isInteger(n) && n > 0);
     if (ids.length > 500) return res.status(400).json({ error: 'Bulk add limited to 500 users per call' });
@@ -279,11 +288,16 @@ router.post('/:id/members/bulk', requireAuth, requireRole('Admin', 'Manager'), a
     let added = 0;
     for (const uid of ids) {
       const r = await pool.query(`
-        INSERT INTO project_members (project_id, user_id, role_override, added_by)
-        VALUES ($1, $2, $3, $4)
-        ON CONFLICT (project_id, user_id) DO UPDATE SET role_override = EXCLUDED.role_override
+        INSERT INTO project_members (project_id, user_id, role_override, is_agent, added_by)
+        VALUES ($1, $2, $3, $4, $5)
+        ON CONFLICT (project_id, user_id) DO UPDATE SET
+          role_override = EXCLUDED.role_override,
+          is_agent = CASE
+            WHEN EXCLUDED.role_override = 'Tech' THEN TRUE
+            ELSE project_members.is_agent
+          END
         RETURNING id, (xmax = 0) AS inserted
-      `, [req.params.id, uid, role_override || null, req.session.user.id]);
+      `, [req.params.id, uid, role_override || null, agent, req.session.user.id]);
       if (r.rows[0]?.inserted) added++;
     }
 
@@ -314,19 +328,26 @@ router.patch('/:id/members/:uid', requireAuth, requireRole('Admin', 'Manager'), 
     const sets = [];
     const values = [];
     let p = 1;
-    if (Object.prototype.hasOwnProperty.call(body, 'role_override')) {
+    const hasRole = Object.prototype.hasOwnProperty.call(body, 'role_override');
+    const hasAgent = Object.prototype.hasOwnProperty.call(body, 'is_agent');
+    if (hasRole) {
       if (body.role_override && !VALID_ROLES.includes(body.role_override)) {
         return res.status(400).json({ error: 'Invalid role_override' });
       }
       sets.push(`role_override = $${p++}`);
       values.push(body.role_override || null);
     }
-    if (Object.prototype.hasOwnProperty.call(body, 'is_agent')) {
+    if (hasAgent) {
       if (typeof body.is_agent !== 'boolean') {
         return res.status(400).json({ error: 'is_agent must be boolean' });
       }
       sets.push(`is_agent = $${p++}`);
       values.push(body.is_agent);
+    } else if (hasRole && body.role_override === 'Tech') {
+      // Tech role implies agent eligibility. Caller can still uncheck it
+      // afterwards by patching { is_agent: false } explicitly.
+      sets.push(`is_agent = $${p++}`);
+      values.push(true);
     }
     if (!sets.length) return res.status(400).json({ error: 'no updatable fields supplied' });
     values.push(req.params.id, req.params.uid);

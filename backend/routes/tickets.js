@@ -2,18 +2,24 @@ const express = require('express');
 const { pool, transaction } = require('../db/pool');
 const { nextInternalRef, computePriority } = require('../db/schema');
 const { requireAuth, requireRole } = require('../middleware/auth');
+const { numericId } = require('../middleware/params');
 const {
   fanoutStatusChange,
   fanoutPendingReview,
   fanoutAssignment,
+  fanoutNewComment,
+  fanoutMention,
+  fanoutNewTicket,
 } = require('../services/notificationFanout');
+const { resolveMentions } = require('../services/mentions');
 const sla = require('../services/sla');
 const assignmentPolicies = require('../services/assignmentPolicies');
 const { getMode, buildWritePatch, decryptRow, decryptRows } = require('../services/fields');
 const blindIndex = require('../services/blindIndex');
 const { logSupportRead } = require('../middleware/supportAccess');
 const { sendVendorEmail } = require('../services/vendorOutbound');
-const { auditLog, systemComment } = require('../services/ticketHelpers');
+const { auditLog, systemComment, isProjectHandler } = require('../services/ticketHelpers');
+const ticketCustomFields = require('../services/ticketCustomFields');
 
 const router = express.Router();
 
@@ -137,19 +143,34 @@ router.get('/', requireAuth, async (req, res) => {
     const params = [];
     let p = 1;
 
-    // Project access control
-    if (project_id) {
-      where.push(`t.project_id = $${p++}`);
-      params.push(Number(project_id));
-    } else {
-      const accessibleIds = await getAccessibleProjectIds(user);
-      if (accessibleIds !== null) {
-        if (accessibleIds.length === 0) {
-          return res.json({ tickets: [], total: 0, page: Number(page), limit: Number(limit) });
-        }
-        where.push(`t.project_id = ANY($${p++})`);
-        params.push(accessibleIds);
+    // Project access control. `project_id` may be a single id (legacy)
+    // or a comma-separated list (matches the dashboard filter shape).
+    // Requested list is intersected with the caller's accessible set so
+    // a non-Admin can never widen past their project_members.
+    const requestedProjectIds = project_id
+      ? String(project_id)
+          .split(',')
+          .map((s) => Number(s.trim()))
+          .filter((n) => Number.isFinite(n) && n > 0)
+      : [];
+    const accessibleIds = await getAccessibleProjectIds(user);
+    let effectiveProjectIds = null;
+    if (accessibleIds !== null && requestedProjectIds.length) {
+      effectiveProjectIds = requestedProjectIds.filter((id) => accessibleIds.includes(id));
+      if (effectiveProjectIds.length === 0) {
+        return res.json({ tickets: [], total: 0, page: Number(page), limit: Number(limit) });
       }
+    } else if (accessibleIds !== null) {
+      effectiveProjectIds = accessibleIds;
+      if (effectiveProjectIds.length === 0) {
+        return res.json({ tickets: [], total: 0, page: Number(page), limit: Number(limit) });
+      }
+    } else if (requestedProjectIds.length) {
+      effectiveProjectIds = requestedProjectIds;
+    }
+    if (effectiveProjectIds !== null) {
+      where.push(`t.project_id = ANY($${p++}::int[])`);
+      params.push(effectiveProjectIds);
     }
 
     // Search: under encrypted mode the title ciphertext is opaque to ILIKE.
@@ -176,16 +197,84 @@ router.get('/', requireAuth, async (req, res) => {
         postFilterTerm = q.trim().toLowerCase();
       }
     }
-    if (internal_status) { where.push(`t.internal_status = $${p++}`); params.push(internal_status); }
-    if (external_status) { where.push(`t.external_status = $${p++}`); params.push(external_status); }
-    if (effective_priority) { where.push(`t.effective_priority = $${p++}`); params.push(Number(effective_priority)); }
+    // internal_status / external_status accept a single value (legacy)
+    // or a comma-separated list (matches dashboard filter shape).
+    if (internal_status) {
+      const list = String(internal_status).split(',').map((s) => s.trim()).filter(Boolean);
+      if (list.length === 1) {
+        where.push(`t.internal_status = $${p++}`); params.push(list[0]);
+      } else {
+        where.push(`t.internal_status = ANY($${p++}::text[])`); params.push(list);
+      }
+    }
+    if (external_status) {
+      const list = String(external_status).split(',').map((s) => s.trim()).filter(Boolean);
+      if (list.length === 1) {
+        where.push(`t.external_status = $${p++}`); params.push(list[0]);
+      } else {
+        where.push(`t.external_status = ANY($${p++}::text[])`); params.push(list);
+      }
+    }
+    if (effective_priority) {
+      const list = String(effective_priority).split(',').map((s) => Number(s.trim())).filter((n) => Number.isFinite(n));
+      if (list.length === 1) {
+        where.push(`t.effective_priority = $${p++}`); params.push(list[0]);
+      } else if (list.length > 1) {
+        where.push(`t.effective_priority = ANY($${p++}::int[])`); params.push(list);
+      }
+    }
     if (blocker_type) { where.push(`t.blocker_type = $${p++}`); params.push(blocker_type); }
-    if (assigned_to) { where.push(`t.assigned_to = $${p++}`); params.push(Number(assigned_to)); }
+    if (assigned_to) {
+      // `me` sentinel resolves server-side so the URL stays user-agnostic
+      // (saved view portability + bookmarkability).
+      const id = assigned_to === 'me' ? user.id : Number(assigned_to);
+      if (Number.isFinite(id)) {
+        where.push(`t.assigned_to = $${p++}`); params.push(id);
+      }
+    }
+    // Dashboard-style since filter — limits to tickets created in window.
+    if (req.query.since) {
+      const d = new Date(String(req.query.since));
+      if (!Number.isNaN(d.getTime())) {
+        where.push(`t.created_at >= $${p++}`); params.push(d.toISOString());
+      }
+    }
     if (flagged_for_review !== undefined && flagged_for_review !== '') {
       where.push(`t.flagged_for_review = $${p++}`);
       params.push(flagged_for_review === 'true');
     }
     if (exclude_closed === '1') { where.push(`t.internal_status != 'Closed'`); }
+    // "active" = non-terminal AND not in the resolved grace window. Matches the
+    // dashboard Priority Distribution (Active Tickets) so its bars can link to
+    // the exact set.
+    const liveExists = `EXISTS (SELECT 1 FROM statuses s
+      WHERE s.kind='internal' AND s.name = t.internal_status
+        AND s.is_terminal IS NOT TRUE
+        AND COALESCE(s.semantic_tag,'') <> 'resolved_pending_close')`;
+    if (req.query.active === '1') { where.push(liveExists); }
+    // SLA facets — mirror the dashboard SLA card definitions so each card links
+    // straight to its tickets. open/breached are scoped to live tickets (so
+    // done tickets that never recorded a first response don't leak in);
+    // mtd_* are historical (a ticket that breached this month then closed
+    // still counts toward the month-to-date number).
+    if (req.query.sla === 'open' || req.query.sla === 'breached') {
+      where.push(liveExists);
+      if (req.query.sla === 'open') {
+        where.push(`(
+          (t.sla_response_due_at IS NOT NULL AND t.sla_first_response_at IS NULL AND t.sla_response_breached = FALSE)
+          OR (t.sla_resolve_due_at IS NOT NULL AND t.resolved_at IS NULL AND t.sla_resolve_breached = FALSE)
+        )`);
+      } else {
+        where.push(`(
+          (t.sla_response_breached = TRUE AND t.sla_first_response_at IS NULL)
+          OR (t.sla_resolve_breached = TRUE AND t.resolved_at IS NULL)
+        )`);
+      }
+    } else if (req.query.sla === 'mtd_response') {
+      where.push(`t.sla_response_breached_at IS NOT NULL AND t.sla_response_breached_at >= date_trunc('month', NOW())`);
+    } else if (req.query.sla === 'mtd_resolve') {
+      where.push(`t.sla_resolve_breached_at IS NOT NULL AND t.sla_resolve_breached_at >= date_trunc('month', NOW())`);
+    }
     // "Has fix applied" — resolution_summary set OR at least one KB
     // link. Driven by the ticket-list facet of the KB linking feature.
     if (has_fix === '1' || has_fix === 'true') {
@@ -213,6 +302,10 @@ router.get('/', requireAuth, async (req, res) => {
     const allowed_sorts = ['created_at', 'updated_at', 'effective_priority', 'internal_ref'];
     const col = allowed_sorts.includes(sort_by) ? sort_by : 'updated_at';
     const dir = sort_dir === 'asc' ? 'ASC' : 'DESC';
+    // When sorting by priority, P1 should always surface above P5 with
+    // recent activity. Add updated_at DESC as the secondary key so two
+    // P1 rows don't return in arbitrary order.
+    const tieBreaker = col === 'effective_priority' ? ', t.updated_at DESC' : '';
     const offset = (Number(page) - 1) * Number(limit);
     const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : '';
 
@@ -235,7 +328,7 @@ router.get('/', requireAuth, async (req, res) => {
       LEFT JOIN users asgn ON t.assigned_to = asgn.id
       LEFT JOIN tickets bt ON t.blocked_by_ticket = bt.id
       ${whereClause}
-      ORDER BY t.${col} ${dir}
+      ORDER BY t.${col} ${dir}${tieBreaker}
       LIMIT $${p} OFFSET $${p+1}
     `, [...params, Number(limit), offset]);
 
@@ -273,7 +366,7 @@ router.get('/', requireAuth, async (req, res) => {
 router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter'), async (req, res) => {
   try {
     const user = req.session.user;
-    const { project_id, title, description, impact = 2, urgency = 2, external_ticket_ref, assigned_to, contact_ids, submitted_by } = req.body;
+    const { project_id, title, description, impact = 2, urgency = 2, external_ticket_ref, assigned_to, contact_ids, submitted_by, form_id, custom_fields } = req.body;
 
     if (!project_id) return res.status(400).json({ error: 'project_id required' });
     if (!title) return res.status(400).json({ error: 'Title required' });
@@ -298,6 +391,37 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter
         [project_id, user.id]
       );
       if (!member.rows[0]) return res.status(403).json({ error: 'Not a member of this project' });
+    }
+
+    // Custom form: validate the form belongs to this project and that every
+    // field the form marks required is supplied. Only THIS form's fields are
+    // checked — fields on other projects'/forms' never apply here.
+    let formId = null;
+    let coercedCustomFields = [];
+    if (form_id !== undefined && form_id !== null && form_id !== '') {
+      formId = Number(form_id);
+      if (!Number.isInteger(formId) || formId <= 0) return res.status(400).json({ error: 'invalid form_id' });
+      const formRow = await pool.query(
+        `SELECT c.project_id FROM ticket_forms f
+           JOIN ticket_categories c ON c.id = f.category_id
+          WHERE f.id = $1 AND f.enabled = TRUE`,
+        [formId]
+      );
+      if (!formRow.rows[0]) return res.status(404).json({ error: 'form not found or disabled' });
+      if (Number(formRow.rows[0].project_id) !== Number(project_id)) {
+        return res.status(400).json({ error: 'form does not belong to this project' });
+      }
+      try {
+        const isAgent = ['Admin', 'Manager', 'Tech'].includes(user.role);
+        const { missing, coerced } = await ticketCustomFields.validateForForm(pool, formId, custom_fields, { agentView: isAgent });
+        if (missing.length) {
+          return res.status(422).json({ error: 'Required fields missing', missing });
+        }
+        coercedCustomFields = coerced;
+      } catch (e) {
+        if (e.status === 400) return res.status(400).json({ error: e.message });
+        throw e;
+      }
     }
 
     const imp = Number(impact);
@@ -326,13 +450,14 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter
       const mode = await getMode(client);
       const baseCols = ['project_id', 'internal_ref', 'submitted_by', 'assigned_to',
         'impact', 'urgency', 'computed_priority', 'effective_priority', 'external_ticket_ref',
-        'title_blind_idx'];
+        'title_blind_idx', 'form_id'];
       const baseValues = [
         Number(project_id), internalRef, effectiveSubmitterId,
         effectiveAssignee || null,
         imp, urg, computed, computed,
         external_ticket_ref || null,
         mode === 'standard' ? blindIndex.buildIndex(title) : null,
+        formId,
       ];
       const cols = [...baseCols, ...sensitivePatch.cols];
       const values = [...baseValues, ...sensitivePatch.values];
@@ -344,6 +469,12 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter
       );
 
       const t = result.rows[0];
+
+      // Persist custom-field values for the chosen form (sensitive defs are
+      // encrypted inside writeValues). Same transaction as the ticket INSERT.
+      if (coercedCustomFields.length) {
+        await ticketCustomFields.writeValues(client, t.id, coercedCustomFields);
+      }
 
       // Apply AI rewrite log if client passed one (description was
       // AI-rewritten in the new-ticket form). Snapshot metadata onto
@@ -442,8 +573,45 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter
           );
         }
       }
+      // Filed with the vendor ref already in hand → the external side is
+      // past Unacknowledged. External only: the internal status of a
+      // brand-new ticket stays at its initial value.
+      if (t.external_ticket_ref) {
+        const { getWorkflowAutomationSettings } = require('../services/autoResolve');
+        const { planExternalRefAdvance, loadStatusConfig } = require('../services/externalEscalation');
+        const { external_ref_auto_advance } = await getWorkflowAutomationSettings();
+        const plan = external_ref_auto_advance && planExternalRefAdvance({
+          oldRef: null,
+          newRef: t.external_ticket_ref,
+          explicitInternalStatus: t.internal_status,
+          ticket: t,
+          ...(await loadStatusConfig(client)),
+        });
+        if (plan) {
+          const upd = await client.query(
+            `UPDATE tickets SET external_status = $1, external_updated_at = NOW()
+              WHERE id = $2 RETURNING external_status, external_updated_at`,
+            [plan.externalStatus, t.id]
+          );
+          Object.assign(t, upd.rows[0]);
+          await auditLog(client, {
+            ticketId: t.id, userId: user.id, action: 'external_status_update',
+            oldValue: plan.fromExternalStatus, newValue: plan.externalStatus,
+            note: 'Auto-advanced: created with vendor ticket ref',
+          });
+        }
+      }
       return t;
     });
+
+    // Computed custom fields evaluate AFTER commit so each formula's context
+    // sees the just-written form inputs. Best-effort: a bad formula never
+    // fails the create.
+    try {
+      await ticketCustomFields.recomputeForTicket(pool, ticket.id);
+    } catch (e) {
+      console.error('recompute computed fields (ticket create) failed:', e.message);
+    }
 
     await decryptRow('tickets', ticket);
     res.status(201).json(ticket);
@@ -459,6 +627,14 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter
         actorName: user.displayName,
       }).catch(err => console.error('fanoutAssignment (create) failed:', err.message));
     }
+    // Broadcast to opted-in Admins/Managers. fanoutNewTicket excludes the
+    // assignee + submitter so they don't double-notify.
+    fanoutNewTicket(pool, {
+      ticket,
+      actorId: user.id,
+      actorName: user.displayName,
+      submitterId: ticket.submitted_by,
+    }).catch(err => console.error('fanoutNewTicket (create) failed:', err.message));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Database error' });
@@ -550,13 +726,15 @@ router.get('/:id', requireAuth, async (req, res) => {
         sub.display_name as submitted_by_name, sub.email as submitted_by_email,
         asgn.display_name as assigned_to_name,
         bt.internal_ref as blocking_ticket_ref, bt.title as blocking_ticket_title, bt.title_enc as blocking_ticket_title_enc, bt.internal_status as blocking_ticket_status,
-        ast.hostname as asset_hostname, ast.serial as asset_serial
+        ast.hostname as asset_hostname, ast.serial as asset_serial,
+        loc.name as location_name
       FROM tickets t
       LEFT JOIN projects proj ON t.project_id = proj.id
       LEFT JOIN users sub ON t.submitted_by = sub.id
       LEFT JOIN users asgn ON t.assigned_to = asgn.id
       LEFT JOIN tickets bt ON t.blocked_by_ticket = bt.id
       LEFT JOIN assets ast ON t.asset_id = ast.id
+      LEFT JOIN locations loc ON t.location_id = loc.id
       WHERE t.id = $1
     `, [req.params.id]);
 
@@ -564,9 +742,83 @@ router.get('/:id', requireAuth, async (req, res) => {
     await decryptRow('tickets', result.rows[0], { aliases: TICKET_JOIN_ALIASES });
     await logSupportRead(req, { action: 'ticket.view', targetTable: 'tickets', targetId: result.rows[0].id });
     await stripAiMetadataIfHidden(req.session.user, result.rows[0]);
+    // Custom-field values (from the form the ticket was filed with). Sensitive
+    // values are revealed only to internal handlers; everyone else sees a mask.
+    const reveal = ['Admin', 'Manager', 'Tech'].includes(req.session.user.role);
+    result.rows[0].custom_fields = await ticketCustomFields.readValues(pool, result.rows[0].id, { reveal });
     res.json(result.rows[0]);
   } catch (err) {
     console.error(err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// PATCH /api/tickets/:id/custom-fields — agent-side fill/update of custom
+// field values (including agent-only fields that are hidden from the
+// submitter form). Handlers only. Body: [{def_id, value}] or
+// { custom_fields: [...] }; an empty value clears the field. Returns the
+// refreshed (revealed) custom_fields.
+router.patch('/:id/custom-fields', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+  try {
+    const ticketId = Number(req.params.id);
+    const tk = await pool.query('SELECT id, form_id FROM tickets WHERE id = $1', [ticketId]);
+    if (!tk.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
+    if (!tk.rows[0].form_id) return res.status(400).json({ error: 'Ticket has no form; no custom fields to edit' });
+    const items = Array.isArray(req.body) ? req.body
+      : (Array.isArray(req.body?.custom_fields) ? req.body.custom_fields : null);
+    if (!items) return res.status(400).json({ error: 'expected array of {def_id, value}' });
+
+    let changed = [];
+    let badReq = null;
+    await transaction(async (client) => {
+      try {
+        changed = await ticketCustomFields.applyTicketPatch(client, ticketId, tk.rows[0].form_id, items);
+      } catch (e) {
+        if (e.status === 400) { badReq = e.message; return; } // no writes happened yet
+        throw e;
+      }
+      if (changed.length) {
+        await auditLog(client, {
+          ticketId, userId: req.session.user.id,
+          action: 'custom_fields_updated', oldValue: '', newValue: changed.join(', '),
+        });
+      }
+    });
+    if (badReq) return res.status(400).json({ error: badReq });
+    const values = await ticketCustomFields.readValues(pool, ticketId, { reveal: true });
+    res.json({ ok: true, custom_fields: values });
+  } catch (err) {
+    console.error('ticket custom-fields patch:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// POST /api/tickets/:id/recompute-fields — re-evaluate the ticket's computed
+// (formula) custom fields against the current ticket context and persist the
+// results. Handlers only. Use after editing the human inputs a formula reads.
+// Returns the refreshed (revealed) custom_fields plus the per-field results.
+router.post('/:id/recompute-fields', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+  try {
+    const ticketId = Number(req.params.id);
+    const tk = await pool.query('SELECT id, form_id FROM tickets WHERE id = $1', [ticketId]);
+    if (!tk.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
+    if (!tk.rows[0].form_id) return res.status(400).json({ error: 'Ticket has no form; nothing to recompute' });
+
+    let results = [];
+    await transaction(async (client) => {
+      results = await ticketCustomFields.recomputeForTicket(client, ticketId);
+      if (results.length) {
+        await auditLog(client, {
+          ticketId, userId: req.session.user.id,
+          action: 'custom_fields_recomputed', oldValue: '',
+          newValue: results.map((r) => r.slug).join(', '),
+        });
+      }
+    });
+    const values = await ticketCustomFields.readValues(pool, ticketId, { reveal: true });
+    res.json({ ok: true, recomputed: results.length, custom_fields: values });
+  } catch (err) {
+    console.error('ticket recompute-fields:', err);
     res.status(500).json({ error: 'Database error' });
   }
 });
@@ -587,9 +839,33 @@ router.patch('/:id', requireAuth, async (req, res) => {
     const isAdmin = ['Admin', 'Manager', 'Tech'].includes(user.role);
     const isSubmitter = user.role === 'Submitter';
     const updates = {};
-    const body = req.body;
+    // Shallow copy: the external-ref auto-advance below folds its planned
+    // status moves into body so they run through the same paths (audit,
+    // SLA, timers, notifications) as an admin-picked status.
+    const body = { ...(req.body || {}) };
+    let autoAdvance = null;
 
     const updated = await transaction(async (client) => {
+      if (isAdmin && body.external_ticket_ref !== undefined) {
+        const { getWorkflowAutomationSettings } = require('../services/autoResolve');
+        const { planExternalRefAdvance, loadStatusConfig } = require('../services/externalEscalation');
+        const { external_ref_auto_advance } = await getWorkflowAutomationSettings();
+        if (external_ref_auto_advance) {
+          autoAdvance = planExternalRefAdvance({
+            oldRef: ticket.external_ticket_ref,
+            newRef: body.external_ticket_ref,
+            explicitExternalStatus: body.external_status,
+            explicitInternalStatus: body.internal_status,
+            ticket,
+            ...(await loadStatusConfig(client)),
+          });
+        }
+        if (autoAdvance) {
+          body.external_status = autoAdvance.externalStatus;
+          if (autoAdvance.internalStatus) body.internal_status = autoAdvance.internalStatus;
+        }
+      }
+
       if ((isAdmin || isSubmitter) && body.title !== undefined) updates.title = body.title;
       if ((isAdmin || isSubmitter) && body.description !== undefined) updates.description = body.description;
       // Resolution summary — free-text capture of how the ticket was
@@ -640,7 +916,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
           return res.status(400).json({ error: 'submitted_by must be a user id' });
         }
         const targetUser = await client.query(
-          `SELECT id FROM users WHERE id = $1 AND status = 'active'`,
+          `SELECT id, display_name FROM users WHERE id = $1 AND status = 'active'`,
           [targetId]
         );
         if (!targetUser.rows[0]) return res.status(400).json({ error: 'submitted_by user not found or inactive' });
@@ -658,6 +934,18 @@ router.patch('/:id', requireAuth, async (req, res) => {
             'INSERT INTO ticket_followers (ticket_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
             [ticket.id, targetId]
           );
+        }
+        // If the target user still only has an email (no display_name),
+        // try to enrich from the configured directory (Graph / Google)
+        // before responding so the UI immediately renders the resolved
+        // name. Best-effort: failures degrade silently.
+        if (!targetUser.rows[0].display_name) {
+          try {
+            const { enrichExistingUser } = require('../services/userAutoProvision');
+            await enrichExistingUser(targetId);
+          } catch (err) {
+            console.warn('submitter enrich failed:', err.message);
+          }
         }
       }
 
@@ -685,10 +973,48 @@ router.patch('/:id', requireAuth, async (req, res) => {
           );
         }
         const old = ticket.internal_status;
-        updates.internal_status = body.internal_status;
-        await auditLog(client, { ticketId: ticket.id, userId: user.id, action: 'status_change', oldValue: old, newValue: body.internal_status });
-        if (body.internal_status === 'Reopened') {
+        const nextStatus = body.internal_status;
+        updates.internal_status = nextStatus;
+        await auditLog(client, {
+          ticketId: ticket.id, userId: user.id,
+          action: 'status_change', oldValue: old, newValue: nextStatus,
+          ...(autoAdvance?.internalStatus === nextStatus
+            ? { note: `Mirrored external ${autoAdvance.externalStatus} after vendor ref was added` }
+            : {}),
+        });
+        if (nextStatus === 'Reopened') {
           await auditLog(client, { ticketId: ticket.id, userId: user.id, action: 'reopened', note: 'Ticket reopened' });
+          // Reopening a ticket that's (or was) escalated to a vendor bumps the
+          // external side back to In Progress — the vendor's work resumes.
+          // No external ref attached → purely internal reopen, leave external
+          // status alone.
+          if (ticket.external_ticket_ref && body.external_status === undefined && ticket.external_status !== 'In Progress') {
+            updates.external_status = 'In Progress';
+            updates.external_updated_at = new Date().toISOString();
+            await auditLog(client, {
+              ticketId: ticket.id, userId: user.id, action: 'external_status_update',
+              oldValue: ticket.external_status, newValue: 'In Progress',
+              note: 'Reopened with external ticket attached — external bumped to In Progress',
+            });
+          }
+        }
+        // Alert-side ack: an alert-driven ticket moving OUT of Open
+        // signals "human has it" — flip the linked alert from firing
+        // to acknowledged so it drops off the default Problems board.
+        // Suppressed alerts are left alone (admin explicitly hid them).
+        // Recovered/acknowledged stay where they are. The alert's
+        // refire path will lift it back to firing if the underlying
+        // condition reasserts.
+        if (old === 'Open' && nextStatus !== 'Open') {
+          try {
+            await client.query(
+              `UPDATE alerts SET state = 'acknowledged'
+                WHERE ticket_id = $1 AND state = 'firing'`,
+              [ticket.id]
+            );
+          } catch (e) {
+            console.warn('alert auto-ack on ticket transition failed:', e.message);
+          }
         }
         // Track resolved_at — drives the auto-close grace window AND
         // stops the SLA resolve clock. Stamp on entering either a
@@ -700,7 +1026,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
         // status clears resolved_at so the clock resumes.
         const tagRow = await client.query(
           `SELECT semantic_tag, is_terminal FROM statuses WHERE kind='internal' AND name=$1`,
-          [body.internal_status]
+          [nextStatus]
         );
         const tag = tagRow.rows[0]?.semantic_tag || null;
         const isTerminal = !!tagRow.rows[0]?.is_terminal;
@@ -714,6 +1040,20 @@ router.patch('/:id', requireAuth, async (req, res) => {
         } else {
           updates.resolved_at = null;
         }
+        // Kill any pending response-SLA timer on resolve/close. A ticket
+        // that resolved before anyone manually replied (transient alert
+        // that recovered, duplicate that got closed, etc.) was tripping
+        // the response-breach query every minute during the grace
+        // window — surfacing a breach the team can't act on. Stamp
+        // sla_first_response_at when it's still NULL on resolve/close
+        // so the query's `sla_first_response_at IS NULL` predicate stops
+        // matching, AND clear any prior warned flag so a future reopen
+        // doesn't carry the warn state over.
+        if ((tag === 'resolved_pending_close' || isTerminal) && !ticket.sla_first_response_at) {
+          updates.sla_first_response_at = new Date().toISOString();
+          if (ticket.sla_response_warned) updates.sla_response_warned = false;
+          if (ticket.sla_response_warned_at) updates.sla_response_warned_at = null;
+        }
         // SLA pause/resume on transitions into / out of awaiting_input
         // or on_hold tagged statuses. Done in the same transaction so
         // the pause-second accounting stays consistent with the audit
@@ -722,6 +1062,11 @@ router.patch('/:id', requireAuth, async (req, res) => {
           ticketId: ticket.id,
           oldStatus: old,
           newStatus: body.internal_status,
+        });
+        // Hold / resolved / terminal pauses every running time-tracking
+        // timer on the ticket. Nothing resumes them automatically.
+        await require('../services/timeTracking').pauseForStatus(client, {
+          ticketId: ticket.id, statusName: nextStatus, tag, isTerminal,
         });
         // Follow-up timer lives on pending_review states. Defensive
         // clear on any move out of pending_review (the in-flight guard
@@ -740,7 +1085,11 @@ router.patch('/:id', requireAuth, async (req, res) => {
         const old = ticket.external_status;
         updates.external_status = body.external_status;
         updates.external_updated_at = new Date().toISOString();
-        await auditLog(client, { ticketId: ticket.id, userId: user.id, action: 'external_status_update', oldValue: old, newValue: body.external_status });
+        await auditLog(client, {
+          ticketId: ticket.id, userId: user.id, action: 'external_status_update',
+          oldValue: old, newValue: body.external_status,
+          ...(autoAdvance ? { note: 'Auto-advanced: vendor ticket ref added' } : {}),
+        });
         if (body.external_status === 'Resolved') {
           updates.internal_status = 'Pending Review';
           updates.flagged_for_review = true;
@@ -750,6 +1099,22 @@ router.patch('/:id', requireAuth, async (req, res) => {
       }
 
       if (isAdmin && body.external_ticket_ref !== undefined) updates.external_ticket_ref = body.external_ticket_ref;
+      // Site the ticket is for. Drives per-location business hours for
+      // escalation delays from here on; due-at stamps already set stay.
+      if (isAdmin && body.location_id !== undefined) {
+        const next = body.location_id ? Number(body.location_id) : null;
+        if (next !== null && (!Number.isInteger(next) || next <= 0)) {
+          throw Object.assign(new Error('location_id must be a location id or null'), { httpStatus: 400 });
+        }
+        if (next !== (ticket.location_id ?? null)) {
+          updates.location_id = next;
+          await auditLog(client, {
+            ticketId: ticket.id, userId: user.id, action: 'location_change',
+            oldValue: ticket.location_id == null ? null : String(ticket.location_id),
+            newValue: next == null ? null : String(next),
+          });
+        }
+      }
       if (isAdmin && body.review_note !== undefined) updates.review_note = body.review_note;
       if (isAdmin && body.flagged_for_review !== undefined) updates.flagged_for_review = !!body.flagged_for_review;
       // Per-ticket "mute the vendor" toggle. Vendor replies still land
@@ -858,13 +1223,15 @@ router.patch('/:id', requireAuth, async (req, res) => {
           asgn.display_name as assigned_to_name,
           bt.internal_ref as blocking_ticket_ref, bt.title as blocking_ticket_title,
           bt.title_enc as blocking_ticket_title_enc, bt.internal_status as blocking_ticket_status,
-          ast.hostname as asset_hostname, ast.serial as asset_serial
+          ast.hostname as asset_hostname, ast.serial as asset_serial,
+          loc.name as location_name
         FROM tickets t
         LEFT JOIN projects proj ON t.project_id = proj.id
         LEFT JOIN users sub ON t.submitted_by = sub.id
         LEFT JOIN users asgn ON t.assigned_to = asgn.id
         LEFT JOIN tickets bt ON t.blocked_by_ticket = bt.id
         LEFT JOIN assets ast ON t.asset_id = ast.id
+        LEFT JOIN locations loc ON t.location_id = loc.id
         WHERE t.id = $1
       `, [ticket.id]);
 
@@ -872,6 +1239,20 @@ router.patch('/:id', requireAuth, async (req, res) => {
       await decryptRow('tickets', row, { aliases: TICKET_JOIN_ALIASES });
       return row;
     });
+
+    // Taking a ticket (assigning it to yourself) can auto-start your
+    // timer. Awaited so the client's refetch sees it; failure never
+    // blocks the update.
+    if (
+      body.assigned_to !== undefined &&
+      isAdmin &&
+      updated.assigned_to === user.id &&
+      ticket.assigned_to !== user.id
+    ) {
+      await require('../services/timeTracking')
+        .startTimer({ userId: user.id, ticketId: ticket.id, auto: true, trigger: 'take' })
+        .catch((err) => console.error('time tracking auto-start on take:', err.message));
+    }
 
     res.json(updated);
 
@@ -1037,9 +1418,40 @@ router.post('/bulk', requireAuth, requireRole('Admin'), async (req, res) => {
             if (newStatus === 'Reopened') {
               await auditLog(client, { ticketId: ticket.id, userId: user.id, action: 'reopened', note: 'Bulk reopen' });
             }
-            const tagRow = await client.query(`SELECT semantic_tag FROM statuses WHERE kind='internal' AND name=$1`, [newStatus]);
+            // Alert-side ack: same as the single PATCH path. When the
+            // ticket leaves Open, mark its linked firing alert as
+            // acknowledged so it drops off the default Problems board.
+            if (old === 'Open' && newStatus !== 'Open') {
+              await client.query(
+                `UPDATE alerts SET state = 'acknowledged'
+                  WHERE ticket_id = $1 AND state = 'firing'`,
+                [ticket.id]
+              ).catch((e) => console.warn('bulk alert auto-ack failed:', e.message));
+            }
+            const tagRow = await client.query(`SELECT semantic_tag, is_terminal FROM statuses WHERE kind='internal' AND name=$1`, [newStatus]);
             const tag = tagRow.rows[0]?.semantic_tag || null;
-            updates.resolved_at = tag === 'resolved_pending_close' ? new Date().toISOString() : null;
+            const isTerminal = !!tagRow.rows[0]?.is_terminal;
+            await require('../services/timeTracking').pauseForStatus(client, {
+              ticketId: ticket.id, statusName: newStatus, tag, isTerminal,
+            });
+            // Mirror single-ticket PATCH: terminal statuses (Closed) also
+            // stop the resolve clock. Without this, SLA tickWarnings /
+            // tickBreaches keep firing on bulk-closed tickets.
+            if (tag === 'resolved_pending_close') {
+              updates.resolved_at = new Date().toISOString();
+            } else if (isTerminal) {
+              updates.resolved_at = ticket.resolved_at || new Date().toISOString();
+            } else {
+              updates.resolved_at = null;
+            }
+            // Mirror single-ticket PATCH: kill the response-SLA timer on
+            // resolve/close so bulk-resolved tickets don't trip the
+            // breach query during the grace window.
+            if ((tag === 'resolved_pending_close' || isTerminal) && !ticket.sla_first_response_at) {
+              updates.sla_first_response_at = new Date().toISOString();
+              if (ticket.sla_response_warned) updates.sla_response_warned = false;
+              if (ticket.sla_response_warned_at) updates.sla_response_warned_at = null;
+            }
             const oldTag = await client.query(`SELECT semantic_tag FROM statuses WHERE kind='internal' AND name=$1`, [ticket.internal_status]);
             if (oldTag.rows[0]?.semantic_tag === 'pending_review' && tag !== 'pending_review') {
               updates.followup_at = null;
@@ -1134,6 +1546,139 @@ router.post('/bulk', requireAuth, requireRole('Admin'), async (req, res) => {
     }
   } catch (err) {
     console.error('bulk update error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// POST /api/tickets/bulk/comment — add the same comment body to many tickets.
+// Body: { ids: int[], body: string, is_external_visible?: bool, send_as?: 'submitter'|<user_id> }.
+// Admin/Manager/Tech can post; only Admin/Manager can flag external (vendor) visibility.
+// Each ticket gets its own comment row; fanout fires per ticket. Vendor outbound
+// fires per ticket when is_external_visible=true and the ticket has contacts.
+router.post('/bulk/comment', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+  try {
+    const user = req.session.user;
+    const ids = Array.isArray(req.body?.ids) ? req.body.ids.map(Number).filter(Number.isInteger) : [];
+    if (!ids.length) return res.status(400).json({ error: 'ids required' });
+    if (ids.length > 500) return res.status(400).json({ error: 'Bulk capped at 500 tickets per call' });
+
+    const body = typeof req.body?.body === 'string' ? req.body.body.trim() : '';
+    if (!body) return res.status(400).json({ error: 'Comment body required' });
+
+    const wantsExternal = !!req.body?.is_external_visible;
+    if (wantsExternal && !['Admin', 'Manager'].includes(user.role)) {
+      return res.status(403).json({ error: 'Only Admin/Manager can mark a comment as vendor-visible' });
+    }
+    const sendAs = req.body?.send_as;
+
+    const autoFollowRow = await pool.query(
+      'SELECT preferences FROM users WHERE id = $1', [user.id]
+    );
+    const autoFollow = autoFollowRow.rows[0]?.preferences?.auto_follow_on_comment !== false;
+
+    const posted = [];
+    const skipped = [];
+
+    for (const id of ids) {
+      try {
+        const tRes = await pool.query(
+          'SELECT id, internal_ref, title, title_enc, submitted_by, project_id FROM tickets WHERE id = $1',
+          [id]
+        );
+        const ticket = tRes.rows[0];
+        if (!ticket) { skipped.push({ id, reason: 'not_found' }); continue; }
+        await decryptRow('tickets', ticket);
+
+        const patch = await buildWritePatch(pool, 'comments', { body });
+        const cols = ['ticket_id', 'user_id', 'is_external_visible', ...patch.cols];
+        const values = [ticket.id, user.id, wantsExternal, ...patch.values];
+        const placeholders = cols.map((_, i) => `$${i + 1}`).join(', ');
+        const ins = await pool.query(
+          `INSERT INTO comments (${cols.join(', ')}) VALUES (${placeholders}) RETURNING id`,
+          values
+        );
+        const commentId = ins.rows[0].id;
+
+        await pool.query('UPDATE tickets SET updated_at = NOW() WHERE id = $1', [ticket.id]);
+
+        if (autoFollow) {
+          await pool.query(
+            `INSERT INTO ticket_followers (ticket_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING`,
+            [ticket.id, user.id]
+          );
+        }
+
+        posted.push({ id: ticket.id, comment_id: commentId, internal_ref: ticket.internal_ref });
+
+        // SLA first-response stamp (skip self-reply by submitter).
+        if (user.id !== ticket.submitted_by) {
+          sla.markResponded(null, ticket.id)
+            .catch(err => console.error('sla markResponded (bulk comment) failed:', err.message));
+        }
+
+        // Vendor outbound when externally visible.
+        if (wantsExternal) {
+          let vendorActorId = user.id;
+          if (sendAs === 'submitter' && ticket.submitted_by) {
+            vendorActorId = ticket.submitted_by;
+          } else {
+            const numeric = Number(sendAs);
+            if (Number.isInteger(numeric) && numeric > 0) {
+              const u = await pool.query(
+                `SELECT id FROM users WHERE id = $1 AND status = 'active'`, [numeric]
+              );
+              if (u.rows[0]) vendorActorId = u.rows[0].id;
+            }
+          }
+          sendVendorEmail({
+            eventType: 'new_comment',
+            ticketId: ticket.id,
+            actorId: vendorActorId,
+            commentId,
+          }).catch(err => console.error('vendor outbound (bulk comment) failed:', err.message));
+        }
+
+        // In-app/push/email fanout per ticket, mentions split off.
+        (async () => {
+          try {
+            const mentioned = await resolveMentions(body, {
+              excludeUserId: user.id,
+              projectId: ticket.project_id,
+            });
+            const mentionedIds = mentioned.map(m => m.id);
+            await Promise.all([
+              fanoutNewComment(pool, {
+                ticket,
+                comment: body,
+                commentId,
+                actorId: user.id,
+                actorName: user.displayName,
+                excludeUserIds: mentionedIds,
+              }).catch(err => console.error('fanoutNewComment (bulk) failed:', err.message)),
+              mentioned.length
+                ? fanoutMention(pool, {
+                    ticket,
+                    comment: body,
+                    commentId,
+                    mentionedUsers: mentioned,
+                    actorId: user.id,
+                    actorName: user.displayName,
+                  }).catch(err => console.error('fanoutMention (bulk) failed:', err.message))
+                : null,
+            ]);
+          } catch (err) {
+            console.error('bulk comment fanout failed:', err.message);
+          }
+        })();
+      } catch (err) {
+        console.error(`bulk comment ticket ${id} failed:`, err.message);
+        skipped.push({ id, reason: 'error' });
+      }
+    }
+
+    res.json({ posted, skipped });
+  } catch (err) {
+    console.error('bulk comment error:', err);
     res.status(500).json({ error: 'Database error' });
   }
 });
@@ -1423,6 +1968,7 @@ router.delete('/:id/contacts/:contactId', requireAuth, requireRole('Admin', 'Man
 );
 
 // GET /api/tickets/:id/audit
+const TIME_AUDIT_ACTIONS = new Set(['time_logged', 'time_entry_deleted']);
 router.get('/:id/audit', requireAuth, async (req, res) => {
   try {
     const result = await pool.query(`
@@ -1433,11 +1979,524 @@ router.get('/:id/audit', requireAuth, async (req, res) => {
       ORDER BY a.created_at ASC
     `, [req.params.id]);
     await decryptRows('audit_log', result.rows);
-    res.json(result.rows);
+    // Time-tracking rows reveal private work logs — handlers only.
+    const user = req.session.user;
+    const proj = await pool.query('SELECT project_id FROM tickets WHERE id = $1', [req.params.id]);
+    const handler = await isProjectHandler(pool, {
+      userId: user.id, role: user.role, projectId: proj.rows[0]?.project_id,
+    });
+    res.json(handler ? result.rows : result.rows.filter((r) => !TIME_AUDIT_ACTIONS.has(r.action)));
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Database error' });
   }
 });
+
+// GET /api/tickets/:id/source-email[?comment_id=N]
+//
+// Returns the raw inbound email a ticket (no comment_id) or one of its
+// comments (comment_id) was created/appended from. The ingest pipeline
+// strips signatures, quoted history, external-sender banners and (for
+// reply-above-quote) forwarded blocks before writing the description /
+// comment body — this hands back the ORIGINAL so the UI can reveal that
+// hidden content behind a toggle instead of losing it.
+//
+// Internal handlers only (Admin/Manager/Tech): the raw body can carry
+// quoted third-party content that shouldn't reach submitters/vendors.
+// 404 when the ticket/comment has no inbound source row.
+router.get('/:id/source-email', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+  try {
+    const ticketId = Number(req.params.id);
+    const commentId = req.query.comment_id ? Number(req.query.comment_id) : null;
+    let queueId;
+    if (commentId) {
+      // Scope the comment to this ticket so a valid comment id from another
+      // ticket can't be used to read its source email through this route.
+      const c = await pool.query(
+        `SELECT source_inbound_email_id FROM comments WHERE id = $1 AND ticket_id = $2`,
+        [commentId, ticketId]
+      );
+      if (!c.rows[0]) return res.status(404).json({ error: 'Comment not found' });
+      queueId = c.rows[0].source_inbound_email_id;
+    } else {
+      const t = await pool.query('SELECT source_inbound_email_id FROM tickets WHERE id = $1', [ticketId]);
+      if (!t.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
+      queueId = t.rows[0].source_inbound_email_id;
+    }
+    if (!queueId) return res.status(404).json({ error: 'No inbound source' });
+
+    const q = await pool.query(
+      `SELECT id, from_addr, from_name, to_addr, subject, subject_enc,
+              body, body_enc, received_at
+         FROM inbound_email_queue WHERE id = $1`,
+      [queueId]
+    );
+    if (!q.rows[0]) return res.status(404).json({ error: 'Source email not found' });
+    await decryptRow('inbound_email_queue', q.rows[0]);
+    const row = q.rows[0];
+    res.json({
+      id: row.id,
+      from_addr: row.from_addr,
+      from_name: row.from_name,
+      to_addr: row.to_addr,
+      subject: row.subject,
+      body: row.body || '',
+      received_at: row.received_at,
+    });
+  } catch (err) {
+    console.error('source-email fetch:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// POST /api/tickets/:id/print-consumable-label
+//
+// Print a delivery label for a consumable tied to this ticket. Resolves:
+//   - ticket.internal_ref (SR-####)
+//   - requestor: Graph displayName for submitter.email → users.display_name
+//   - location:  Graph officeLocation matched ILIKE to locations.name|code
+//                → company_members.location_id linked location → raw
+//                Graph string → blank
+//   - consumable: part_no + title from consumables row
+//
+// Body: { consumable_id, requestor_override?, location_override? }
+//
+// The overrides let the print modal pre-fill from resolved values but
+// still accept a manual edit before fire. Server uses the override when
+// non-empty, otherwise the resolved value.
+router.post('/:id/print-consumable-label', numericId,
+  requireAuth, requireRole('Admin', 'Manager', 'Tech'),
+  async (req, res) => {
+    try {
+      const ticketId = Number(req.params.id);
+      const consumableId = Number(req.body?.consumable_id);
+      if (!Number.isInteger(consumableId) || consumableId <= 0) {
+        return res.status(400).json({ error: 'consumable_id required' });
+      }
+
+      const tr = await pool.query(
+        `SELECT t.id, t.internal_ref, t.submitted_by,
+                u.email AS submitter_email, u.display_name AS submitter_name
+           FROM tickets t
+           LEFT JOIN users u ON u.id = t.submitted_by
+          WHERE t.id = $1`,
+        [ticketId]
+      );
+      const ticket = tr.rows[0];
+      if (!ticket) return res.status(404).json({ error: 'ticket not found' });
+
+      const cr = await pool.query(
+        `SELECT id, part_no, title, current_stock, low_stock_threshold,
+                purchase_url, vendor_part_no, is_metered, vendor_company_id
+           FROM consumables WHERE id = $1`,
+        [consumableId]
+      );
+      const cons = cr.rows[0];
+      if (!cons) return res.status(404).json({ error: 'consumable not found' });
+
+      // Graph user lookup. Silently null on failure / missing scope.
+      const graphUsers = require('../services/graphUsers');
+      const graphUser = ticket.submitter_email
+        ? await graphUsers.lookupUserByEmail(ticket.submitter_email).catch(() => null)
+        : null;
+
+      // Requestor: Graph displayName beats local; both fall back to email
+      // local-part. Override always wins.
+      let requestor = (req.body?.requestor_override || '').trim();
+      if (!requestor) {
+        requestor = graphUser?.displayName
+          || ticket.submitter_name
+          || (ticket.submitter_email ? String(ticket.submitter_email).split('@')[0] : '');
+      }
+
+      // Location ranking: Graph officeLocation wins (per admin choice).
+      // If Graph string matches an internal location row by name or code,
+      // expand to "Name [CODE]" for label clarity. Otherwise use the raw
+      // Graph string. Fall back to company_members → locations join.
+      let location = (req.body?.location_override || '').trim();
+      if (!location) {
+        const graphLoc = (graphUser?.officeLocation || '').trim();
+        if (graphLoc) {
+          const lr = await pool.query(
+            `SELECT name, location_code FROM locations
+              WHERE is_archived = FALSE
+                AND (name ILIKE $1 OR location_code ILIKE $1)
+              ORDER BY (CASE WHEN location_code ILIKE $1 THEN 0 ELSE 1 END)
+              LIMIT 1`,
+            [graphLoc]
+          );
+          if (lr.rows[0]) {
+            location = lr.rows[0].location_code
+              ? `${lr.rows[0].name} [${lr.rows[0].location_code}]`
+              : lr.rows[0].name;
+          } else {
+            location = graphLoc;
+          }
+        } else if (ticket.submitted_by) {
+          const dbLoc = await pool.query(
+            `SELECT l.name, l.location_code
+               FROM company_members cm
+               JOIN locations l ON l.id = cm.location_id
+              WHERE cm.user_id = $1 AND l.is_archived = FALSE
+              ORDER BY cm.id ASC
+              LIMIT 1`,
+            [ticket.submitted_by]
+          );
+          if (dbLoc.rows[0]) {
+            location = dbLoc.rows[0].location_code
+              ? `${dbLoc.rows[0].name} [${dbLoc.rows[0].location_code}]`
+              : dbLoc.rows[0].name;
+          }
+        }
+      }
+
+      // ── Allocation ─────────────────────────────────────────────────
+      // First dispatch decrements stock; subsequent reprints (label
+      // damaged, end-of-roll, etc.) skip the decrement so the ledger
+      // shows one allocation per ticket/consumable pair. Out-of-stock
+      // on first dispatch blocks the print and pages the admin/tech
+      // group via system comment + admin notification with the right
+      // restock CTA (self-serve URL vs metered support call).
+      const { systemComment } = require('../services/ticketHelpers');
+      const { notifyAdmins } = require('../services/notifications');
+      const transaction = require('../db/pool').transaction;
+      const userId = req.session.user.id;
+
+      // Look up an existing allocation movement on this ticket so the
+      // reprint path can fork before we hit the consumables row.
+      const prior = await pool.query(
+        `SELECT id FROM consumable_movements
+          WHERE ticket_id = $1 AND consumable_id = $2 AND delta < 0
+          LIMIT 1`,
+        [ticket.id, cons.id]
+      );
+      const isReprint = !!prior.rows[0];
+
+      // Pull a host hint from the most recent linked alert payload so
+      // the movement ledger row carries the device name + date. Best
+      // effort: tickets without an alert just get the date.
+      let hostName = null;
+      try {
+        const ar = await pool.query(
+          `SELECT raw_payload->>'host_name' AS host
+             FROM alerts
+            WHERE ticket_id = $1
+            ORDER BY last_seen_at DESC NULLS LAST, id DESC
+            LIMIT 1`,
+          [ticket.id]
+        );
+        hostName = ar.rows[0]?.host || null;
+      } catch { /* alert lookup is non-critical */ }
+      const today = new Date().toISOString().slice(0, 10);
+      const movementNote = hostName ? `${hostName} • ${today}` : today;
+
+      // OOS gate (first dispatch only). Lock the row before deciding.
+      if (!isReprint) {
+        try {
+          await transaction(async (client) => {
+            const lock = await client.query(
+              `SELECT current_stock FROM consumables WHERE id = $1 FOR UPDATE`,
+              [cons.id]
+            );
+            const stock = Number(lock.rows[0]?.current_stock || 0);
+            if (stock <= 0) {
+              const err = new Error('out_of_stock');
+              err.oos = true;
+              throw err;
+            }
+            await client.query(
+              `UPDATE consumables SET current_stock = current_stock - 1, updated_at = NOW() WHERE id = $1`,
+              [cons.id]
+            );
+            await client.query(
+              `INSERT INTO consumable_movements (consumable_id, delta, reason, ticket_id, by_user_id, note)
+               VALUES ($1, -1, 'ticket_dispatch', $2, $3, $4)`,
+              [cons.id, ticket.id, userId, movementNote]
+            );
+          });
+        } catch (e) {
+          if (e?.oos) {
+            // Post OOS comment + admin alert + return 409 so the UI
+            // can flag the situation instead of silently printing.
+            const restockCta = cons.is_metered
+              ? `**Metered consumable** — contact the vendor (${cons.vendor_part_no || cons.part_no}) for a service-agreement restock. Use canned response "Consumable restock — metered / leased printer".`
+              : (cons.purchase_url
+                  ? `**Restock URL:** ${cons.purchase_url}\n**Vendor P/N:** ${cons.vendor_part_no || cons.part_no}\nUse canned response "Consumable restock — self-serve RFQ".`
+                  : `No purchase URL on file for **${cons.part_no}**. Add one in Admin → Consumables, or use canned response "Consumable restock — self-serve RFQ".`);
+            await systemComment(
+              pool, ticket.id,
+              `⚠ **${cons.part_no} (${cons.title || ''}) is out of stock.** Label not printed.\n\n${restockCta}`
+            ).catch((cmtErr) => console.error('OOS system comment failed:', cmtErr.message));
+            await notifyAdmins(pool, {
+              type: 'consumable_out_of_stock',
+              title: `Out of stock: ${cons.part_no}`,
+              body: `Ticket ${ticket.internal_ref} requested ${cons.part_no} (${cons.title || ''}) but stock is 0.`,
+              data: {
+                ticket_id: ticket.id, ticket_ref: ticket.internal_ref,
+                consumable_id: cons.id, part_no: cons.part_no,
+                is_metered: cons.is_metered, purchase_url: cons.purchase_url,
+                vendor_part_no: cons.vendor_part_no,
+              },
+            }).catch((nErr) => console.error('OOS admin notify failed:', nErr.message));
+            return res.status(409).json({
+              error: 'out_of_stock',
+              consumable: { id: cons.id, part_no: cons.part_no, title: cons.title,
+                            is_metered: cons.is_metered, purchase_url: cons.purchase_url,
+                            vendor_part_no: cons.vendor_part_no },
+            });
+          }
+          throw e;
+        }
+      }
+
+      const labelPrinter = require('../services/labelPrinter');
+      const labelTemplates = require('../services/labelTemplates');
+      const cfg = await labelPrinter.getConfig();
+      if (!cfg?.enabled) return res.status(400).json({ error: 'Label printer disabled' });
+      if (!cfg.host) return res.status(400).json({ error: 'Label printer host not configured' });
+
+      const zpl = labelTemplates.renderConsumableLabel({
+        ticket: { id: ticket.id, internal_ref: ticket.internal_ref },
+        requestor,
+        location,
+        consumable: { part_number: cons.part_no, title: cons.title },
+      }, cfg);
+      await labelPrinter.print(zpl);
+
+      // Reprint also logs a zero-delta movement so admins can see how
+      // many physical labels were spun off one allocation — useful when
+      // chasing why the on-hand count diverges from a roll of labels.
+      if (isReprint) {
+        await pool.query(
+          `INSERT INTO consumable_movements (consumable_id, delta, reason, ticket_id, by_user_id, note)
+           VALUES ($1, 0, 'ticket_reprint', $2, $3, $4)`,
+          [cons.id, ticket.id, userId, `reprint • ${movementNote}`]
+        ).catch((e) => console.warn('reprint movement log failed:', e.message));
+      }
+
+      // Post-decrement low-stock warning. Threshold of 0 disables this
+      // check entirely (admin opt-out). We post + alert once per
+      // crossing — repeated dispatches at low stock will fire again,
+      // which is intentional ("getting closer to zero, do something").
+      if (!isReprint) {
+        const fresh = await pool.query(
+          `SELECT current_stock, low_stock_threshold FROM consumables WHERE id = $1`,
+          [cons.id]
+        );
+        const now = Number(fresh.rows[0]?.current_stock || 0);
+        const thr = Number(fresh.rows[0]?.low_stock_threshold || 0);
+        if (thr > 0 && now <= thr) {
+          const restockCta = cons.is_metered
+            ? `**Metered consumable** — order via service agreement (${cons.vendor_part_no || cons.part_no}).`
+            : (cons.purchase_url
+                ? `**Restock URL:** ${cons.purchase_url}`
+                : `No purchase URL on file — add one in Admin → Consumables.`);
+          await systemComment(
+            pool, ticket.id,
+            `🟡 **Low stock:** ${cons.part_no} now at ${now}/${thr} (threshold). ${restockCta}`
+          ).catch((cmtErr) => console.error('low-stock system comment failed:', cmtErr.message));
+          await notifyAdmins(pool, {
+            type: 'consumable_low_stock',
+            title: `Low stock: ${cons.part_no} at ${now}/${thr}`,
+            body: `${cons.title || cons.part_no} hit the low-stock threshold after a dispatch on ${ticket.internal_ref}.`,
+            data: {
+              ticket_id: ticket.id, ticket_ref: ticket.internal_ref,
+              consumable_id: cons.id, part_no: cons.part_no, current_stock: now,
+              low_stock_threshold: thr, is_metered: cons.is_metered,
+              purchase_url: cons.purchase_url, vendor_part_no: cons.vendor_part_no,
+            },
+          }).catch((nErr) => console.error('low-stock admin notify failed:', nErr.message));
+        }
+      }
+
+      res.json({
+        ok: true,
+        reprint: isReprint,
+        resolved: { requestor, location, ticket_ref: ticket.internal_ref,
+                    consumable: { part_no: cons.part_no, title: cons.title } },
+      });
+    } catch (err) {
+      console.error('ticket print-consumable-label:', err);
+      res.status(500).json({ error: err.message || 'Print failed' });
+    }
+  }
+);
+
+// GET /api/tickets/:id/print-label-resolve — preview the resolved label
+// fields without actually printing. Used by the modal to pre-fill the
+// override inputs.
+router.get('/:id/print-label-resolve', numericId,
+  requireAuth, requireRole('Admin', 'Manager', 'Tech'),
+  async (req, res) => {
+    try {
+      const ticketId = Number(req.params.id);
+      const tr = await pool.query(
+        `SELECT t.id, t.internal_ref, t.submitted_by,
+                u.email AS submitter_email, u.display_name AS submitter_name
+           FROM tickets t
+           LEFT JOIN users u ON u.id = t.submitted_by
+          WHERE t.id = $1`,
+        [ticketId]
+      );
+      const ticket = tr.rows[0];
+      if (!ticket) return res.status(404).json({ error: 'ticket not found' });
+
+      const graphUsers = require('../services/graphUsers');
+      const graphUser = ticket.submitter_email
+        ? await graphUsers.lookupUserByEmail(ticket.submitter_email).catch(() => null)
+        : null;
+
+      const requestor = graphUser?.displayName
+        || ticket.submitter_name
+        || (ticket.submitter_email ? String(ticket.submitter_email).split('@')[0] : '');
+
+      let location = '';
+      const graphLoc = (graphUser?.officeLocation || '').trim();
+      if (graphLoc) {
+        const lr = await pool.query(
+          `SELECT name, location_code FROM locations
+            WHERE is_archived = FALSE
+              AND (name ILIKE $1 OR location_code ILIKE $1)
+            ORDER BY (CASE WHEN location_code ILIKE $1 THEN 0 ELSE 1 END)
+            LIMIT 1`,
+          [graphLoc]
+        );
+        if (lr.rows[0]) {
+          location = lr.rows[0].location_code
+            ? `${lr.rows[0].name} [${lr.rows[0].location_code}]`
+            : lr.rows[0].name;
+        } else {
+          location = graphLoc;
+        }
+      } else if (ticket.submitted_by) {
+        const dbLoc = await pool.query(
+          `SELECT l.name, l.location_code
+             FROM company_members cm
+             JOIN locations l ON l.id = cm.location_id
+            WHERE cm.user_id = $1 AND l.is_archived = FALSE
+            ORDER BY cm.id ASC
+            LIMIT 1`,
+          [ticket.submitted_by]
+        );
+        if (dbLoc.rows[0]) {
+          location = dbLoc.rows[0].location_code
+            ? `${dbLoc.rows[0].name} [${dbLoc.rows[0].location_code}]`
+            : dbLoc.rows[0].name;
+        }
+      }
+
+      // Suggest a consumable when the linked alert carries a part
+      // number tag. Zabbix templates emit tags like
+      // "part.number:106R03539" on Low-cartridge triggers; we parse the
+      // alert's event_tags string (comma-separated key:value pairs) or
+      // the structured tags array, then ILIKE-match consumables.part_no
+      // / vendor_part_no. First active hit wins.
+      let suggestedConsumableId = null;
+      let suggestedFromTag = null;
+      let suggestedFromText = null;
+      let suggestedSource = null; // 'alert_tag' | 'ticket_text' | null
+      try {
+        const ar = await pool.query(
+          `SELECT raw_payload FROM alerts
+            WHERE ticket_id = $1
+            ORDER BY last_seen_at DESC NULLS LAST, id DESC
+            LIMIT 1`,
+          [ticketId]
+        );
+        const payload = ar.rows[0]?.raw_payload || null;
+        const partTag = extractPartNumberFromPayload(payload);
+        if (partTag) {
+          suggestedFromTag = partTag;
+          const cm = await pool.query(
+            `SELECT id, part_no, title
+               FROM consumables
+              WHERE is_archived = FALSE
+                AND (part_no ILIKE $1 OR vendor_part_no ILIKE $1)
+              ORDER BY (CASE WHEN part_no ILIKE $1 THEN 0 ELSE 1 END), id ASC
+              LIMIT 1`,
+            [partTag]
+          );
+          suggestedConsumableId = cm.rows[0]?.id || null;
+          if (suggestedConsumableId) suggestedSource = 'alert_tag';
+        }
+
+        // Fallback: the alert tag was missing/unmatched (e.g. the Zabbix
+        // trigger fired without a part.number, then the description was fixed
+        // by hand). Scan the ticket's title + description for any active
+        // consumable's part_no / vendor_part_no appearing verbatim — this is
+        // what "Rescan" re-evaluates after an edit. Longest part_no wins so a
+        // more specific code beats a prefix.
+        if (!suggestedConsumableId) {
+          const txt = await pool.query(
+            `SELECT title, title_enc, description, description_enc FROM tickets WHERE id = $1`,
+            [ticketId]
+          );
+          const row = txt.rows[0] || {};
+          await decryptRow('tickets', row).catch(() => {});
+          const ticketText = `${row.title || ''}\n${row.description || ''}`.trim();
+          if (ticketText) {
+            const tm = await pool.query(
+              `SELECT id, part_no, title
+                 FROM consumables
+                WHERE is_archived = FALSE
+                  AND (
+                    ($1 ILIKE '%' || part_no || '%')
+                    OR (vendor_part_no IS NOT NULL AND vendor_part_no <> '' AND $1 ILIKE '%' || vendor_part_no || '%')
+                  )
+                ORDER BY length(part_no) DESC, id ASC
+                LIMIT 1`,
+              [ticketText]
+            );
+            if (tm.rows[0]) {
+              suggestedConsumableId = tm.rows[0].id;
+              suggestedFromText = tm.rows[0].part_no;
+              suggestedSource = 'ticket_text';
+            }
+          }
+        }
+      } catch (e) {
+        console.warn('print-label-resolve: consumable suggest failed:', e.message);
+      }
+
+      res.json({
+        ticket_ref: ticket.internal_ref,
+        requestor,
+        location,
+        graph_available: !!graphUser,
+        suggested_consumable_id: suggestedConsumableId,
+        suggested_from_tag: suggestedFromTag,
+        suggested_from_text: suggestedFromText,
+        suggested_source: suggestedSource,
+      });
+    } catch (err) {
+      console.error('print-label-resolve:', err);
+      res.status(500).json({ error: 'Database error' });
+    }
+  }
+);
+
+// Pull a "part.number:<value>" tag out of an alert payload. Zabbix
+// renders {EVENT.TAGS} as a flat comma-separated string; structured
+// integrations may pass tags as an array of {tag, value} objects.
+// Returns the raw part number string or null.
+function extractPartNumberFromPayload(payload) {
+  if (!payload) return null;
+  const tagsRaw = payload.event_tags;
+  if (typeof tagsRaw === 'string' && tagsRaw) {
+    for (const part of tagsRaw.split(',')) {
+      const m = /^\s*part\.number\s*:\s*(.+?)\s*$/i.exec(part);
+      if (m && m[1]) return m[1];
+    }
+  }
+  // Some senders push tags as [{tag:'part.number', value:'106R...'}]
+  if (Array.isArray(payload.tags)) {
+    for (const t of payload.tags) {
+      if (t && /^part\.number$/i.test(String(t.tag || '').trim()) && t.value) {
+        return String(t.value).trim();
+      }
+    }
+  }
+  return null;
+}
 
 module.exports = router;

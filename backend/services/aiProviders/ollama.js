@@ -3,7 +3,6 @@
 // (Ollama is unauthenticated by default, but a reverse-proxy could front
 // it with bearer auth — apiKey is optional).
 
-const fetch = require('node-fetch');
 const { fromResponse, fromFetchError } = require('./errors');
 
 const PROVIDER = 'Ollama';

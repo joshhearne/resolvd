@@ -2,7 +2,6 @@
 // OpenAI: system goes in a top-level field, messages array carries only
 // user/assistant turns, and api key uses x-api-key + anthropic-version.
 
-const fetch = require('node-fetch');
 const { fromResponse, fromFetchError } = require('./errors');
 
 const API_VERSION = '2023-06-01';

@@ -64,12 +64,25 @@ router.get('/methods', async (req, res) => {
 });
 
 // ─── SSO providers (Entra, Google) ───────────────────────────────────────────
+
+// Only allow root-relative in-app paths as a post-login destination. Rejects
+// protocol-relative (//evil.com) and backslash-host (/\evil.com) tricks that
+// browsers resolve to a foreign origin — otherwise ?returnTo= is an open
+// redirect. Anything suspicious falls back to the app root.
+function safeReturnTo(value) {
+  if (typeof value !== 'string' || !value) return '/';
+  if (!value.startsWith('/') || value.startsWith('//') || value.startsWith('/\\')) return '/';
+  return value;
+}
+
 async function handleSsoLogin(providerName, req, res) {
   const provider = PROVIDERS[providerName];
   if (!provider) return res.status(404).json({ error: 'Unknown provider' });
   if (!(await provider.isEnabled())) return res.status(403).json({ error: `${providerName} login disabled` });
   try {
-    const url = await provider.getAuthUrl(req);
+    // The intended destination rides through the OAuth round-trip in the
+    // `state` param; the provider echoes it back on the callback.
+    const url = await provider.getAuthUrl(req, { state: safeReturnTo(req.query.returnTo) });
     res.redirect(url);
   } catch (err) {
     console.error(`${providerName} auth url error:`, err);
@@ -94,7 +107,10 @@ async function handleSsoCallback(providerName, req, res) {
       return res.redirect('/mfa-challenge');
     }
     await loginUser(req, user);
-    res.redirect('/');
+    // Honor the deep-link destination echoed back in `state` (e.g. the ticket
+    // URL from a mention email). safeReturnTo re-validates — never trust the
+    // round-tripped value blindly. Falls back to '/' when absent.
+    res.redirect(safeReturnTo(req.query.state));
   } catch (err) {
     console.error(`${providerName} callback error:`, err);
     const msg = encodeURIComponent(err.message || 'Authentication failed');

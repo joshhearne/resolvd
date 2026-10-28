@@ -288,6 +288,25 @@ export default function ProjectDetail() {
             )}
           </div>
           <div className="flex gap-2">
+            <Link
+              to={`/kb/${project.id}`}
+              className="btn-secondary btn btn-sm inline-flex items-center gap-1.5"
+              title="Knowledge Base for this project"
+            >
+              <svg
+                viewBox="0 0 24 24"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="2"
+                strokeLinecap="round"
+                strokeLinejoin="round"
+                className="w-3.5 h-3.5"
+              >
+                <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
+                <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z" />
+              </svg>
+              KB
+            </Link>
             {!editing && canEditProject && (
               <button
                 onClick={() => setEditing(true)}

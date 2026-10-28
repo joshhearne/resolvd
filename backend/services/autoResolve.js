@@ -12,12 +12,49 @@ let _cache = null;
 let _cachedAt = 0;
 const TTL_MS = 60 * 1000;
 
-async function getGratitudePhrases() {
+// Single cached row so callers don't re-query for every inbound. Refreshed
+// when any setter runs or TTL expires.
+async function loadSettings() {
   if (_cache && Date.now() - _cachedAt < TTL_MS) return _cache;
-  const r = await pool.query('SELECT gratitude_phrases FROM auto_resolve_settings WHERE id = 1');
-  _cache = (r.rows[0]?.gratitude_phrases || []).map(s => String(s).trim().toLowerCase()).filter(Boolean);
+  const r = await pool.query(`
+    SELECT gratitude_phrases, reply_stale_days, suppress_ooo_replies,
+           external_ref_auto_advance
+      FROM auto_resolve_settings WHERE id = 1
+  `);
+  const row = r.rows[0] || {};
+  _cache = {
+    phrases: (row.gratitude_phrases || []).map(s => String(s).trim().toLowerCase()).filter(Boolean),
+    replyStaleDays: Number.isFinite(row.reply_stale_days) ? row.reply_stale_days : 30,
+    suppressOoo: row.suppress_ooo_replies !== false,
+    externalRefAutoAdvance: row.external_ref_auto_advance !== false,
+  };
   _cachedAt = Date.now();
   return _cache;
+}
+
+async function getGratitudePhrases() {
+  return (await loadSettings()).phrases;
+}
+
+async function getReplyRoutingSettings() {
+  const s = await loadSettings();
+  return { stale_days: s.replyStaleDays, suppress_ooo: s.suppressOoo };
+}
+
+async function getWorkflowAutomationSettings() {
+  const s = await loadSettings();
+  return { external_ref_auto_advance: s.externalRefAutoAdvance };
+}
+
+async function setWorkflowAutomationSettings({ external_ref_auto_advance } = {}) {
+  if (external_ref_auto_advance != null) {
+    await pool.query(
+      `UPDATE auto_resolve_settings SET external_ref_auto_advance = $1, updated_at = NOW() WHERE id = 1`,
+      [!!external_ref_auto_advance]
+    );
+    invalidatePhraseCache();
+  }
+  return await getWorkflowAutomationSettings();
 }
 
 function invalidatePhraseCache() {
@@ -35,6 +72,95 @@ async function setGratitudePhrases(phrases) {
   );
   invalidatePhraseCache();
   return cleaned;
+}
+
+async function setReplyRoutingSettings({ stale_days, suppress_ooo } = {}) {
+  const sets = [];
+  const values = [];
+  if (stale_days != null) {
+    const n = Math.max(1, Math.min(3650, Math.floor(Number(stale_days))));
+    if (!Number.isFinite(n)) throw new Error('stale_days must be a positive integer');
+    sets.push(`reply_stale_days = $${values.length + 1}`);
+    values.push(n);
+  }
+  if (suppress_ooo != null) {
+    sets.push(`suppress_ooo_replies = $${values.length + 1}`);
+    values.push(!!suppress_ooo);
+  }
+  if (sets.length === 0) return await getReplyRoutingSettings();
+  sets.push(`updated_at = NOW()`);
+  await pool.query(
+    `UPDATE auto_resolve_settings SET ${sets.join(', ')} WHERE id = 1`,
+    values
+  );
+  invalidatePhraseCache();
+  return await getReplyRoutingSettings();
+}
+
+// Detect an out-of-office auto-reply. Subject signal: any "Automatic
+// reply" / "Out of office" / "OOF" / "Auto-Reply" form (Outlook, Gmail
+// vacation, third-party schedulers). Body signal: at least one phrase
+// strongly indicating absence. Both must match to qualify so a real
+// reply that happens to contain the words "out of office" in passing
+// doesn't get silenced. Used as a fallback when the standard RFC 3834
+// `Auto-Submitted` header path didn't fire (some forwarders strip it).
+const OOO_SUBJECT_RE = /\b(?:automatic\s+reply|automatic[-_ ]?response|auto[-_ ]?reply|out\s+of\s+(?:the\s+)?office|out\s+of\s+office\s+autoreply|OOF|OOO\s+(?:reply|notice)?|vacation\s+(?:reply|response|notice))\b/i;
+const OOO_BODY_RES = [
+  /\bout\s+of\s+(?:the\s+)?office\b/i,
+  /\baway\s+from\s+(?:the\s+|my\s+)?(?:office|desk|email)\b/i,
+  /\bon\s+(?:vacation|holiday|annual\s+leave|leave|PTO|maternity|paternity|parental\s+leave|sabbatical)\b/i,
+  /\bcurrently\s+(?:out|unavailable|away)\b/i,
+  /\bI\s+am\s+(?:currently\s+)?(?:out|away|unavailable|on\s+leave)\b/i,
+  /\bI['’]?ll\s+be\s+(?:out|away|back)\b/i,
+  /\bwill\s+be\s+(?:out\s+of\s+(?:the\s+)?office|away|back)\b/i,
+  /\b(?:limited|no)\s+access\s+to\s+(?:my\s+)?(?:e-?mail|messages)\b/i,
+  /\breturn(?:ing)?\s+(?:to\s+(?:the\s+)?office\s+)?on\b/i,
+  /\bback\s+(?:in\s+(?:the\s+)?office\s+)?on\b/i,
+];
+
+// Resolvd's own notification emails (SLA warnings and breaches, and any
+// other alert the fanout sends) sometimes come back through the inbound
+// mailbox: a follower's mailbox forwards them, or the help desk address
+// is itself a follower. They are not replies. Detected by the subject
+// and body shapes the fanout writes, and by our own sender address, so
+// they land as system notices rather than as a person's comment.
+const SYSTEM_NOTICE_PATTERNS = [
+  /^\s*(?:\[[A-Z0-9]+-\d+\]\s*)?SLA\s+(warning|breach)\s*:/im,          // "[INC-0528] SLA breach: resolve window missed"
+  /^\s*(?:\[[A-Z0-9]+-\d+\]\s*)?(Response|Resolve)\s+SLA\s+breached\b/im,
+  /^\s*(?:\[[A-Z0-9]+-\d+\]\s*)?(Response|Resolve)\s+window\s+closing\b/im,
+  /^\s*(?:\[[A-Z0-9]+-\d+\]\s*)?(No response within target|Resolve target missed)\b/im,
+];
+// Any notification Resolvd itself sent, recognised by the plain-text shape
+// every one of them has: the site name on the first line, "[REF] <event>" on
+// the second, and a "[View Ticket](<our url>/tickets/<id>)" link. A human
+// reply quoting one still has their own words above it, so the first lines
+// are theirs, not ours.
+const NOTIFICATION_SUBJECTS = /^\s*(?:\[[A-Z0-9]+-\d+\]\s*)?(Ticket (closed|resolved|reopened|updated|created|moved|assigned|merged)|Assigned to you|New (comment|reply|ticket)|Mentioned you|Follow-?up due|SLA\b)/i;
+function detectSystemNotice({ subject, body, fromAddress } = {}) {
+  const bodyText = String(body || '').replace(/\r\n?/g, '\n');
+  const text = `${subject || ''}\n${bodyText.slice(0, 600)}`;
+  for (const re of SYSTEM_NOTICE_PATTERNS) if (re.test(text)) return 'sla';
+
+  const site = String(process.env.FRONTEND_URL || '').trim().replace(/\/+$/, '');
+  const lines = bodyText.trim().split('\n').map((l) => l.trim()).filter(Boolean);
+  const refOnSecondLine = lines.length >= 2 && lines[0].length <= 80 && /^\[[A-Z0-9]+-\d+\]\s+\S/.test(lines[1]);
+  const viewLink = site && bodyText.includes(`[View Ticket](${site}/tickets/`);
+  if (refOnSecondLine && (viewLink || NOTIFICATION_SUBJECTS.test(lines[1]))) return 'notification';
+  if (viewLink && NOTIFICATION_SUBJECTS.test(String(subject || ''))) return 'notification';
+
+  const ours = String(process.env.MAIL_FROM || '').trim().toLowerCase();
+  const from = String(fromAddress || '').trim().toLowerCase();
+  if (ours && from && from === ours && /resolvd|\[[A-Z0-9]+-\d+\]/i.test(text)) return 'notification';
+  return null;
+}
+
+function detectOutOfOffice({ subject, body } = {}) {
+  if (!subject && !body) return false;
+  const subj = String(subject || '');
+  if (!OOO_SUBJECT_RE.test(subj)) return false;
+  const text = String(body || '');
+  if (!text.trim()) return true; // subject-only bouncers (Exchange "OOF: ...")
+  return OOO_BODY_RES.some(re => re.test(text));
 }
 
 // Strip whitespace + common punctuation; lower-case. Compares the trimmed
@@ -118,6 +244,44 @@ async function applyReplyToResolvedTicket({ ticketId, replyBody, actorUserId }) 
   return { reopened: true, gratitude: false, fromStatus: row.internal_status, toStatus: target };
 }
 
+async function findInProgressStatusName() {
+  const r = await pool.query(
+    `SELECT name FROM statuses
+      WHERE kind = 'internal' AND semantic_tag = 'in_progress'
+      ORDER BY sort_order ASC LIMIT 1`
+  );
+  return r.rows[0]?.name || 'In Progress';
+}
+
+// Vendor reply lands on an awaiting_input ticket → unblock it.
+// Mirrors applyReplyToResolvedTicket but without the gratitude filter:
+// any inbound reply on awaiting_input is signal that whatever we were
+// waiting for has arrived. Returns { resumed, fromStatus, toStatus } on
+// transition or null when ticket isn't in that state.
+async function applyReplyToWaitingTicket({ ticketId, actorUserId }) {
+  const t = await pool.query(`
+    SELECT t.id, t.internal_status, t.internal_ref, s.semantic_tag
+      FROM tickets t
+ LEFT JOIN statuses s ON s.kind = 'internal' AND s.name = t.internal_status
+     WHERE t.id = $1
+  `, [ticketId]);
+  const row = t.rows[0];
+  if (!row) return null;
+  if (row.semantic_tag !== 'awaiting_input') return null;
+
+  const target = await findInProgressStatusName();
+  await pool.query(
+    `UPDATE tickets SET internal_status = $1, updated_at = NOW() WHERE id = $2`,
+    [target, ticketId]
+  );
+  await pool.query(
+    `INSERT INTO audit_log (ticket_id, user_id, action, old_value, new_value, note)
+     VALUES ($1, $2, 'status_change_auto', $3, $4, $5)`,
+    [ticketId, actorUserId || null, row.internal_status, target, 'Auto-resumed: inbound reply received while awaiting input']
+  );
+  return { resumed: true, fromStatus: row.internal_status, toStatus: target };
+}
+
 // Called when a web UI comment is posted on any terminal ticket.
 // Applies the same gratitude filter — a substantive comment reopens the
 // ticket; a thank-you leaves it closed. Returns null if ticket isn't terminal.
@@ -151,11 +315,100 @@ async function applyCommentToTerminalTicket({ ticketId, commentBody, actorUserId
   return { reopened: true, gratitude: false, fromStatus: row.internal_status, toStatus: target };
 }
 
+// ───────────────────────── Vendor reply status automation ─────────────────
+// When a vendor (external contact) replies to a ticket that's escalated to
+// them, classify the verbiage and move the EXTERNAL status accordingly,
+// keeping the internal status the vendor's court until they report completion.
+//
+//   'acknowledged' (ack / confirming / acknowledgement)
+//        → external In Progress, internal UNCHANGED (still with the vendor)
+//   'completed'    (complete / completed / resolved / finished)
+//        → external Resolved, internal Pending Review (now ours to verify)
+//
+// Completion is checked first: "completed and confirmed" is a completion.
+const VENDOR_COMPLETED_RE = /\b(complet(e|ed|es|ing|ion)|resolv(e|ed|es|ing)|finished)\b/i;
+const VENDOR_ACK_RE = /\b(acknowledg(e|ed|es|ing|ement|ment)|confirm(s|ed|ing|ation)?|ack)\b/i;
+
+function classifyVendorReply(text) {
+  const s = String(text || '');
+  if (!s.trim()) return null;
+  if (VENDOR_COMPLETED_RE.test(s)) return 'completed';
+  if (VENDOR_ACK_RE.test(s)) return 'acknowledged';
+  return null;
+}
+
+// Act on a classified vendor reply. Only runs for tickets that are actually
+// engaged with a vendor (internal status External Escalation OR an external
+// ticket ref is attached). Returns { handled, classification, changed } —
+// handled:true tells the caller to SKIP the generic awaiting/resolved auto
+// helpers (so an ack doesn't get pulled back to In Progress internally).
+async function applyVendorReplyStatus({ ticketId, replyBody, actorUserId }) {
+  const t = await pool.query(
+    `SELECT id, internal_status, external_status, external_ticket_ref FROM tickets WHERE id = $1`,
+    [ticketId]
+  );
+  const row = t.rows[0];
+  if (!row) return { handled: false };
+
+  const engaged = row.internal_status === 'External Escalation' || !!row.external_ticket_ref;
+  if (!engaged) return { handled: false };
+
+  const classification = classifyVendorReply(replyBody);
+  if (!classification) return { handled: false };
+
+  if (classification === 'acknowledged') {
+    // Don't downgrade an already-more-advanced external status.
+    if (row.external_status === 'In Progress' || row.external_status === 'Resolved') {
+      return { handled: true, classification, changed: false };
+    }
+    await pool.query(
+      `UPDATE tickets SET external_status = 'In Progress', external_updated_at = NOW(), updated_at = NOW() WHERE id = $1`,
+      [ticketId]
+    );
+    await pool.query(
+      `INSERT INTO audit_log (ticket_id, user_id, action, old_value, new_value, note)
+       VALUES ($1, $2, 'external_status_change_auto', $3, 'In Progress', $4)`,
+      [ticketId, actorUserId || null, row.external_status, 'Vendor acknowledged — external set In Progress; internal left with vendor']
+    );
+    return { handled: true, classification, changed: true };
+  }
+
+  // classification === 'completed'
+  const internalChanged = row.internal_status !== 'Pending Review';
+  await pool.query(
+    `UPDATE tickets
+        SET external_status = 'Resolved', external_updated_at = NOW(),
+            internal_status = 'Pending Review', flagged_for_review = TRUE, updated_at = NOW()
+      WHERE id = $1`,
+    [ticketId]
+  );
+  await pool.query(
+    `INSERT INTO audit_log (ticket_id, user_id, action, old_value, new_value, note)
+     VALUES ($1, $2, 'external_status_change_auto', $3, 'Resolved', $4)`,
+    [ticketId, actorUserId || null, row.external_status, 'Vendor reported completion']
+  );
+  if (internalChanged) {
+    await pool.query(
+      `INSERT INTO audit_log (ticket_id, user_id, action, old_value, new_value, note)
+       VALUES ($1, $2, 'status_change_auto', $3, 'Pending Review', $4)`,
+      [ticketId, actorUserId || null, row.internal_status, 'Vendor reported work complete — flagged for review']
+    );
+  }
+  return { handled: true, classification, changed: true };
+}
+
 module.exports = {
   getGratitudePhrases,
   setGratitudePhrases,
+  getReplyRoutingSettings,
+  setReplyRoutingSettings,
+  getWorkflowAutomationSettings,
+  setWorkflowAutomationSettings,
   invalidatePhraseCache,
   isGratitudeOnly,
+  detectOutOfOffice,
+  classifyVendorReply,
+  applyVendorReplyStatus,
   applyReplyToResolvedTicket,
-  applyCommentToTerminalTicket,
-};
+  applyReplyToWaitingTicket,
+  applyCommentToTerminalTicket, detectSystemNotice, SYSTEM_NOTICE_PATTERNS };

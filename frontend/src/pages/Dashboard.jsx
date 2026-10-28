@@ -1,10 +1,17 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { Link } from "react-router-dom";
 import { api } from "../utils/api";
 import { useAuth } from "../context/AuthContext";
 import PriorityBadge from "../components/PriorityBadge";
 import HybridTime from "../components/HybridTime";
 import PageShell from "../components/PageShell";
+import {
+  useDashboardFilters,
+  useFilterLookups,
+  DashboardFiltersBar,
+  buildQs,
+} from "../components/DashboardFilters";
 
 const STAT_TONES = {
   blue: "text-sky-500 dark:text-sky-400",
@@ -42,25 +49,23 @@ function StatCard({ label, value, color = "blue", urgent = false, to }) {
   return <div className={base}>{inner}</div>;
 }
 
-function TimeInStatusCard() {
+function TimeInStatusCard({ filters }) {
   const [rows, setRows] = useState(null);
-  const [days, setDays] = useState(30);
 
   useEffect(() => {
-    const since = new Date(Date.now() - days * 86_400_000).toISOString();
-    api.get(`/api/sla/time-in-status?since=${encodeURIComponent(since)}`)
+    // time-in-status takes its own since=, so route through buildQs which
+    // already includes since. Pass project_id too.
+    api
+      .get(`/api/sla/time-in-status${buildQs(filters)}`)
       .then((r) => setRows(r.rows || []))
       .catch(() => setRows([]));
-  }, [days]);
+  }, [filters]);
 
   if (rows == null) return null;
   if (rows.length === 0) {
     return (
       <div className="card p-4">
-        <div className="flex items-center justify-between mb-2">
-          <h2 className="text-sm font-semibold text-fg">Time in status</h2>
-          <DaysPicker days={days} setDays={setDays} />
-        </div>
+        <h2 className="text-sm font-semibold text-fg mb-2">Time in status</h2>
         <div className="text-sm text-fg-muted py-3 text-center">
           No status transitions in the selected window.
         </div>
@@ -69,18 +74,17 @@ function TimeInStatusCard() {
   }
 
   const max = rows.reduce((m, r) => Math.max(m, Number(r.total_seconds) || 0), 0);
+  const rangeLabel =
+    filters.days && filters.days > 0 ? `the last ${filters.days} days` : "all time";
 
   return (
     <div className="card p-4">
-      <div className="flex items-center justify-between mb-3">
-        <h2 className="text-sm font-semibold text-fg">Time in status</h2>
-        <DaysPicker days={days} setDays={setDays} />
-      </div>
+      <h2 className="text-sm font-semibold text-fg mb-3">Time in status</h2>
       <p className="text-xs text-fg-muted mb-3">
-        Total time tickets have spent in each status over the last{" "}
-        {days} days. Derived from status-change history; initial status
-        (before any change) isn't counted. Resolved and Closed are
-        excluded — tickets sit there by design, not as chokepoints.
+        Total time tickets have spent in each status over {rangeLabel}. Derived
+        from status-change history; initial status (before any change) isn't
+        counted. Resolved and Closed are excluded — tickets sit there by
+        design, not as chokepoints.
       </p>
       <table className="w-full text-sm">
         <thead className="text-xs text-fg-muted">
@@ -116,20 +120,6 @@ function TimeInStatusCard() {
   );
 }
 
-function DaysPicker({ days, setDays }) {
-  return (
-    <select
-      value={days}
-      onChange={(e) => setDays(Number(e.target.value))}
-      className="bg-surface-2 border border-border rounded px-2 py-0.5 text-xs"
-    >
-      <option value={7}>Last 7 days</option>
-      <option value={30}>Last 30 days</option>
-      <option value={90}>Last 90 days</option>
-    </select>
-  );
-}
-
 function fmtSeconds(s) {
   const n = Number(s) || 0;
   if (n < 60) return `${n}s`;
@@ -138,16 +128,111 @@ function fmtSeconds(s) {
   return `${(n / 86400).toFixed(1)}d`;
 }
 
-// Read-only Active Alerts widget. Pulls top firing alerts so handlers
-// can see at-a-glance what's noisy without having to leave the
-// dashboard. Click a row -> alert detail; click the header -> /alerts.
-function ActiveAlertsCard() {
+// Tasks coming due. Three buckets, in priority order:
+//   Overdue   — next_due_at < now
+//   Today     — between now and end-of-local-day
+//   Tomorrow  — next calendar day in the user's local tz
+// Pulled from /api/tasks?status=pending (already owner-scoped server
+// side). Each row has an inline complete button so an admin can knock
+// items out without leaving the dashboard.
+function MyTasksCard() {
+  const [rows, setRows] = useState(null);
+  async function load() {
+    try {
+      const r = await api.get(`/api/tasks?status=pending`);
+      setRows(Array.isArray(r) ? r : []);
+    } catch { setRows([]); }
+  }
+  useEffect(() => { load(); }, []);
+  if (rows == null) return null;
+
+  const now = new Date();
+  const endToday = new Date(now); endToday.setHours(23, 59, 59, 999);
+  const endTomorrow = new Date(endToday.getTime() + 24 * 60 * 60 * 1000);
+  const buckets = { overdue: [], today: [], tomorrow: [] };
+  for (const t of rows) {
+    if (!t.next_due_at) continue;
+    const d = new Date(t.next_due_at);
+    if (d < now) buckets.overdue.push(t);
+    else if (d <= endToday) buckets.today.push(t);
+    else if (d <= endTomorrow) buckets.tomorrow.push(t);
+  }
+  const total = buckets.overdue.length + buckets.today.length + buckets.tomorrow.length;
+  if (total === 0) return null;
+
+  async function complete(id) {
+    try {
+      await api.post(`/api/tasks/${id}/complete`, {});
+      load();
+    } catch (e) { /* noop */ void e; }
+  }
+
+  function Section({ label, items, tone }) {
+    if (!items.length) return null;
+    return (
+      <div>
+        <div className={`px-4 py-2 text-[11px] uppercase tracking-wide font-semibold ${tone}`}>
+          {label} ({items.length})
+        </div>
+        <ul className="divide-y divide-border">
+          {items.map((t) => (
+            <li key={t.id} className="flex items-center gap-2 px-4 py-2 hover:bg-surface-2">
+              <button onClick={() => complete(t.id)}
+                aria-label="Mark complete"
+                className="w-4 h-4 rounded border-2 border-fg-muted hover:border-brand hover:bg-brand/10 shrink-0" />
+              <Link to="/tasks" className="text-sm text-fg flex-1 truncate hover:underline" title={t.title || ""}>
+                {t.title || <span className="text-fg-dim italic">(untitled)</span>}
+              </Link>
+              {t.ticket_ref && (
+                <Link to={`/tickets/${t.ticket_id}`}
+                  className="text-[10px] font-mono text-brand hover:underline shrink-0"
+                  title={t.ticket_title || ""}>
+                  {t.ticket_ref}
+                </Link>
+              )}
+              <span className="text-[10px] text-fg-dim shrink-0">
+                {new Date(t.next_due_at).toLocaleString(undefined, { hour: "numeric", minute: "2-digit" })}
+              </span>
+            </li>
+          ))}
+        </ul>
+      </div>
+    );
+  }
+
+  return (
+    <div className="card p-0 overflow-hidden">
+      <Link to="/tasks"
+        className="flex items-center justify-between px-4 py-3 border-b border-border hover:bg-surface-2 transition-colors">
+        <h2 className="text-sm font-semibold text-fg flex items-center gap-2">
+          <span className="inline-block w-2 h-2 rounded-full bg-amber-500" />
+          My tasks <span className="text-fg-muted font-normal">({total})</span>
+        </h2>
+        <span className="text-xs text-fg-muted">All tasks →</span>
+      </Link>
+      <Section label="Overdue" items={buckets.overdue}
+        tone="bg-red-50 dark:bg-red-950/30 text-red-700 dark:text-red-300" />
+      <Section label="Due today" items={buckets.today}
+        tone="bg-amber-50 dark:bg-amber-950/30 text-amber-700 dark:text-amber-300" />
+      <Section label="Tomorrow" items={buckets.tomorrow}
+        tone="bg-sky-50 dark:bg-sky-950/30 text-sky-700 dark:text-sky-300" />
+    </div>
+  );
+}
+
+// Active alerts widget. Filter integration: project_id narrows source-
+// scoped alerts; since/status don't apply (alerts aren't ticket-shaped).
+function ActiveAlertsCard({ filters }) {
   const [rows, setRows] = useState(null);
   useEffect(() => {
-    api.get("/api/alerts?state=firing&limit=8")
+    const projectQs = filters.projectIds?.length
+      ? `&project_id=${filters.projectIds.join(",")}`
+      : "";
+    api
+      .get(`/api/alerts?state=firing&limit=8${projectQs}`)
       .then((r) => setRows(Array.isArray(r) ? r : []))
       .catch(() => setRows([]));
-  }, []);
+  }, [filters]);
   if (rows == null) return null;
   return (
     <div className="card p-0 overflow-hidden">
@@ -163,7 +248,7 @@ function ActiveAlertsCard() {
         <span className="text-xs text-fg-muted">View all →</span>
       </Link>
       {rows.length === 0 ? (
-        <div className="px-4 py-6 text-xs text-fg-dim text-center">No problems firing. 🎉</div>
+        <div className="px-4 py-6 text-xs text-fg-dim text-center">No problems firing.</div>
       ) : (
         <ul className="divide-y divide-border">
           {rows.map((r) => (
@@ -192,11 +277,93 @@ function ActiveAlertsCard() {
   );
 }
 
+// Hover-reveal popover over the "Vendor wait" total. Lists each
+// attributed vendor with their slice of the live wait time. Rows
+// where a ticket is currently paused get a pulsing dot so the
+// admin can tell the wait is still accruing. The popover portals to
+// <body> so the parent "Total SLA pause time" card's overflow-hidden
+// can't clip it.
+function VendorWaitChip({ total, byVendor }) {
+  const [open, setOpen] = useState(false);
+  const [coords, setCoords] = useState({ left: 0, top: 0 });
+  const anchorRef = useRef(null);
+  const safe = Array.isArray(byVendor) ? byVendor : [];
+
+  const recompute = React.useCallback(() => {
+    const el = anchorRef.current;
+    if (!el) return;
+    const r = el.getBoundingClientRect();
+    const vw = window.innerWidth;
+    // Anchor the popover's left edge to the chip; clamp to viewport.
+    let left = r.left;
+    const width = 320; // matches design budget; popover may render narrower
+    if (left + width > vw - 8) left = vw - width - 8;
+    if (left < 8) left = 8;
+    setCoords({ left, top: r.bottom + 4 });
+  }, []);
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    recompute();
+    const onScroll = () => recompute();
+    const onResize = () => recompute();
+    window.addEventListener("scroll", onScroll, true);
+    window.addEventListener("resize", onResize);
+    return () => {
+      window.removeEventListener("scroll", onScroll, true);
+      window.removeEventListener("resize", onResize);
+    };
+  }, [open, recompute]);
+
+  return (
+    <span ref={anchorRef} className="text-fg-muted"
+      onMouseEnter={() => setOpen(true)}
+      onMouseLeave={() => setOpen(false)}
+      onFocus={() => setOpen(true)}
+      onBlur={() => setOpen(false)}
+      tabIndex={0}>
+      <span className="inline-block w-2 h-2 rounded-sm bg-amber-500 mr-1.5 align-middle" />
+      Vendor wait <b className="text-fg ml-1 underline decoration-dotted decoration-fg-muted/60 cursor-help">
+        {fmtSeconds(total)}
+      </b>
+      {open && createPortal(
+        <div role="tooltip"
+          style={{ position: "fixed", left: coords.left, top: coords.top, maxWidth: 320 }}
+          className="z-[9999] min-w-[18rem] rounded-md border border-border bg-surface shadow-lg p-3 text-xs space-y-1.5">
+          <div className="text-[10px] uppercase tracking-wide text-fg-dim mb-1">
+            Vendor wait by vendor
+          </div>
+          {safe.length === 0 ? (
+            <div className="text-fg-dim">No per-vendor breakdown yet.</div>
+          ) : safe.map((v) => (
+            <div key={v.vendor_company_id || "unattributed"} className="flex items-center justify-between gap-3">
+              <span className="text-fg flex items-center gap-1.5 min-w-0">
+                {v.active_paused_tickets > 0 && (
+                  <span className="inline-block w-1.5 h-1.5 rounded-full bg-amber-500 animate-pulse shrink-0"
+                    title={`${v.active_paused_tickets} ticket(s) currently paused`} />
+                )}
+                <span className="truncate">
+                  {v.vendor_name || <span className="text-fg-dim italic">(unattributed)</span>}
+                </span>
+              </span>
+              <span className="font-mono text-fg-muted shrink-0">{fmtSeconds(Number(v.vendor_wait_seconds))}</span>
+            </div>
+          ))}
+        </div>,
+        document.body,
+      )}
+    </span>
+  );
+}
+
 function SlaBreachCard({ sla }) {
   const live = sla.live || {};
   const mtd = sla.mtd_total || { response: 0, resolve: 0 };
   const byProject = sla.mtd_by_project || [];
-  const liveBreached = (live.breached_response || 0) + (live.breached_resolve || 0);
+  const byVendor = sla.vendor_wait_by_vendor || [];
+  // Distinct breached tickets (matches the ?sla=breached list). Falls back to
+  // the response+resolve sum for older API payloads without breached_clock.
+  const liveBreached = live.breached_clock ?? ((live.breached_response || 0) + (live.breached_resolve || 0));
   const mtdTotal = (mtd.response || 0) + (mtd.resolve || 0);
   const vendor = Number(live.vendor_wait_seconds || 0);
   const internal = Number(live.internal_hold_seconds || 0);
@@ -222,20 +389,25 @@ function SlaBreachCard({ sla }) {
         </div>
       ) : (
         <>
-          {/* Top stat row */}
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
-            <div className="rounded-md border border-border bg-surface-2 px-3 py-2">
+            <Link
+              to="/tickets?preset=sla_mtd_response"
+              className="rounded-md border border-border bg-surface-2 px-3 py-2 hover:bg-surface transition-colors"
+            >
               <div className="text-xs text-fg-muted">MTD response breaches</div>
               <div className="text-2xl font-bold text-amber-500 dark:text-amber-400">
                 {mtd.response || 0}
               </div>
-            </div>
-            <div className="rounded-md border border-border bg-surface-2 px-3 py-2">
+            </Link>
+            <Link
+              to="/tickets?preset=sla_mtd_resolve"
+              className="rounded-md border border-border bg-surface-2 px-3 py-2 hover:bg-surface transition-colors"
+            >
               <div className="text-xs text-fg-muted">MTD resolve breaches</div>
               <div className="text-2xl font-bold text-amber-500 dark:text-amber-400">
                 {mtd.resolve || 0}
               </div>
-            </div>
+            </Link>
             <Link
               to="/tickets?preset=sla_breached"
               className="rounded-md border border-border bg-surface-2 px-3 py-2 hover:bg-surface transition-colors"
@@ -251,16 +423,17 @@ function SlaBreachCard({ sla }) {
                 {liveBreached}
               </div>
             </Link>
-            <div className="rounded-md border border-border bg-surface-2 px-3 py-2">
+            <Link
+              to="/tickets?preset=sla_open"
+              className="rounded-md border border-border bg-surface-2 px-3 py-2 hover:bg-surface transition-colors"
+            >
               <div className="text-xs text-fg-muted">Open w/ SLA clock</div>
               <div className="text-2xl font-bold text-fg">
-                {(live.open_response || 0) + (live.open_resolve || 0)}
+                {live.open_clock ?? ((live.open_response || 0) + (live.open_resolve || 0))}
               </div>
-            </div>
+            </Link>
           </div>
 
-          {/* Pause-time breakdown — vendor wait vs internal hold across
-              every in-scope ticket. Bar widths use vendor/internal share. */}
           {pauseTotal > 0 && (
             <div className="border border-border rounded-md overflow-hidden mb-3">
               <div className="bg-surface-2 px-3 py-1.5 text-[11px] uppercase tracking-wider font-semibold text-fg-dim flex items-center justify-between">
@@ -281,10 +454,7 @@ function SlaBreachCard({ sla }) {
                   />
                 </div>
                 <div className="flex justify-between text-xs">
-                  <span className="text-fg-muted">
-                    <span className="inline-block w-2 h-2 rounded-sm bg-amber-500 mr-1.5 align-middle" />
-                    Vendor wait <b className="text-fg ml-1">{fmtSeconds(vendor)}</b>
-                  </span>
+                  <VendorWaitChip total={vendor} byVendor={byVendor} />
                   <span className="text-fg-muted">
                     <span className="inline-block w-2 h-2 rounded-sm bg-sky-500 mr-1.5 align-middle" />
                     Internal hold <b className="text-fg ml-1">{fmtSeconds(internal)}</b>
@@ -294,7 +464,6 @@ function SlaBreachCard({ sla }) {
             </div>
           )}
 
-          {/* Per-project breakdown */}
           {byProject.length > 0 && (
             <div className="border border-border rounded-md overflow-hidden">
               <div className="bg-surface-2 px-3 py-1.5 text-[11px] uppercase tracking-wider font-semibold text-fg-dim">
@@ -353,6 +522,9 @@ function SlaBreachCard({ sla }) {
 export default function Dashboard() {
   const { user } = useAuth();
   const canSeeAlerts = ["Admin", "Manager", "Tech"].includes(user?.role);
+  const { filters, setFilters } = useDashboardFilters();
+  const { projects, statuses } = useFilterLookups();
+
   const [stats, setStats] = useState(null);
   const [activity, setActivity] = useState([]);
   const [pendingTickets, setPendingTickets] = useState([]);
@@ -360,13 +532,22 @@ export default function Dashboard() {
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {
+    setLoading(true);
+    const qs = buildQs(filters);
+    // Pending review intentionally uses the dashboard-wide project filter
+    // but not the status filter — its whole purpose is the Pending Review
+    // status, regardless of what statuses the user has filtered to.
+    const pendingQs = buildQs(filters, {
+      internal_status: "Pending Review",
+      sort_by: "updated_at",
+      sort_dir: "desc",
+      limit: "10",
+    }).replace(/[?&]status=[^&]*/, ""); // drop dashboard status param
     Promise.all([
-      api.get("/api/dashboard/stats"),
-      api.get("/api/dashboard/activity"),
-      api.get(
-        "/api/tickets?internal_status=Pending+Review&sort_by=updated_at&sort_dir=desc&limit=10",
-      ),
-      api.get("/api/sla/dashboard").catch(() => null),
+      api.get(`/api/dashboard/stats${qs}`),
+      api.get(`/api/dashboard/activity${qs}`),
+      api.get(`/api/tickets${pendingQs}`),
+      api.get(`/api/sla/dashboard${qs.replace(/[?&]status=[^&]*/, "")}`).catch(() => null),
     ])
       .then(([s, a, pt, sl]) => {
         setStats(s);
@@ -376,11 +557,22 @@ export default function Dashboard() {
         setLoading(false);
       })
       .catch(() => setLoading(false));
-  }, []);
+  }, [filters]);
 
   if (loading)
     return (
-      <div className="text-fg-muted py-12 text-center">Loading dashboard…</div>
+      <PageShell variant="wide" className="space-y-6">
+        <div className="flex items-start justify-between gap-3 flex-wrap">
+          <h1 className="text-xl font-semibold text-fg tracking-tight">Dashboard</h1>
+          <DashboardFiltersBar
+            filters={filters}
+            setFilters={setFilters}
+            projects={projects}
+            statuses={statuses}
+          />
+        </div>
+        <div className="text-fg-muted py-12 text-center">Loading dashboard…</div>
+      </PageShell>
     );
 
   const priorities = [1, 2, 3, 4, 5];
@@ -395,9 +587,17 @@ export default function Dashboard() {
 
   return (
     <PageShell variant="wide" className="space-y-6">
-      <h1 className="text-xl font-semibold text-fg tracking-tight">
-        Dashboard
-      </h1>
+      <div className="flex items-start justify-between gap-3 flex-wrap">
+        <h1 className="text-xl font-semibold text-fg tracking-tight">
+          Dashboard
+        </h1>
+        <DashboardFiltersBar
+          filters={filters}
+          setFilters={setFilters}
+          projects={projects}
+          statuses={statuses}
+        />
+      </div>
 
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-4">
         <StatCard
@@ -428,9 +628,9 @@ export default function Dashboard() {
         />
         <StatCard
           label="Flagged for Review"
-          value={stats?.flagged_for_review || 0}
+          value={stats?.total_reopened || 0}
           color="red"
-          urgent={stats?.flagged_for_review > 0}
+          urgent={stats?.total_reopened > 0}
           to="/tickets?preset=flagged"
         />
         <StatCard
@@ -458,33 +658,35 @@ export default function Dashboard() {
                 "bg-slate-400",
               ];
               return (
-                <div
+                <Link
                   key={p}
-                  className="flex flex-col items-center gap-1 flex-1"
+                  to={`/tickets?preset=active&priorities=${p}`}
+                  className="flex flex-col items-center gap-1 flex-1 group"
+                  title={`${count} active P${p} ticket${count === 1 ? "" : "s"}`}
                 >
-                  <span className="text-xs font-medium text-fg-muted">
+                  <span className="text-xs font-medium text-fg-muted group-hover:text-fg">
                     {count}
                   </span>
                   <div
-                    className={`w-full ${colors[p - 1]} rounded-t transition-all`}
+                    className={`w-full ${colors[p - 1]} rounded-t transition-all group-hover:opacity-80`}
                     style={{ height: `${Math.max(pct, 4)}%` }}
                   />
-                  <span className="text-xs text-fg-dim">P{p}</span>
-                </div>
+                  <span className="text-xs text-fg-dim group-hover:text-fg-muted">P{p}</span>
+                </Link>
               );
             })}
           </div>
         </div>
       )}
 
-      {sla && (
-        <SlaBreachCard sla={sla} />
-      )}
+      {sla && <SlaBreachCard sla={sla} />}
 
-      {canSeeAlerts && <ActiveAlertsCard />}
+      {canSeeAlerts && <ActiveAlertsCard filters={filters} />}
 
-      <TimeInStatusCard />
+      <MyTasksCard />
 
+
+      <TimeInStatusCard filters={filters} />
 
       <div className="grid lg:grid-cols-2 gap-6">
         {pendingTickets.length > 0 && (

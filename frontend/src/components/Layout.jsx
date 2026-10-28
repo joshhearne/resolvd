@@ -1,11 +1,13 @@
 import React, { useState, useRef, useEffect } from "react";
-import { Outlet, NavLink, Link, useNavigate } from "react-router-dom";
+import { Outlet, NavLink, Link, useNavigate, useLocation, useNavigationType } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
 import { useBranding } from "../context/BrandingContext";
 import { useTheme } from "../context/ThemeContext";
 import { brandingLogoFilter } from "../utils/helpers";
 import Avatar from "./Avatar";
 import NotificationTray from "./NotificationTray";
+import ActiveTimerPill from "./ActiveTimerPill";
+import NewMenu from "./NewMenu";
 
 // Icon set — inline SVGs in the lucide-react visual style (stroke=2,
 // stroke-linecap/linejoin=round, 24x24 viewBox). Keeps bundle small and
@@ -64,6 +66,18 @@ const Icon = {
       <path d="M6 13h2M11 13h2M15 13h2" />
     </svg>
   ),
+  Activity: (p) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <path d="M22 12h-4l-3 9L9 3l-3 9H2" />
+    </svg>
+  ),
+  Wrench: (p) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <path d="M14.7 6.3a1 1 0 0 0 0 1.4l1.6 1.6a1 1 0 0 0 1.4 0l3.77-3.77a6 6 0 0 1-7.94 7.94l-6.91 6.91a2.12 2.12 0 0 1-3-3l6.91-6.91a6 6 0 0 1 7.94-7.94l-3.76 3.76z" />
+    </svg>
+  ),
   AlertTriangle: (p) => (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
       strokeLinecap="round" strokeLinejoin="round" {...p}>
@@ -87,6 +101,15 @@ const Icon = {
       <path d="M17 16.5v5.17" />
     </svg>
   ),
+  Package: (p) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <path d="M16.5 9.4 7.55 4.24" />
+      <path d="M21 16V8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16z" />
+      <path d="m3.3 7 8.7 5 8.7-5" />
+      <path d="M12 22V12" />
+    </svg>
+  ),
   Settings: (p) => (
     <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
       strokeLinecap="round" strokeLinejoin="round" {...p}>
@@ -106,6 +129,20 @@ const Icon = {
       strokeLinecap="round" strokeLinejoin="round" {...p}>
       <path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20" />
       <path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2Z" />
+    </svg>
+  ),
+  CheckSquare: (p) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <polyline points="9 11 12 14 22 4" />
+      <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+    </svg>
+  ),
+  Clock: (p) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <circle cx="12" cy="12" r="10" />
+      <polyline points="12 6 12 12 16 14" />
     </svg>
   ),
   Sun: (p) => (
@@ -310,11 +347,25 @@ function Sidebar({ collapsed, transientOpen, onSetCollapsed, onSetTransient, use
   const items = [
     { to: "/dashboard", label: "Dashboard", icon: Icon.LayoutDashboard, show: true },
     { to: "/tickets", label: "Tickets", icon: Icon.Ticket, show: true },
+    { to: "/tasks", label: "Tasks", icon: Icon.CheckSquare, show: true },
+    {
+      to: "/time",
+      label: "Time",
+      icon: Icon.Clock,
+      show: ["Admin", "Manager", "Tech"].includes(user?.role),
+    },
     {
       to: "/projects",
       label: "Projects",
       icon: Icon.Folder,
       show: ["Admin", "Manager"].includes(user?.role),
+    },
+    { to: "/status", label: "Status", icon: Icon.Activity, show: true },
+    {
+      to: "/maintenance",
+      label: "Maintenance",
+      icon: Icon.Wrench,
+      show: ["Admin", "Manager", "Tech"].includes(user?.role),
     },
     {
       to: "/alerts",
@@ -322,7 +373,18 @@ function Sidebar({ collapsed, transientOpen, onSetCollapsed, onSetTransient, use
       icon: Icon.AlertTriangle,
       show: ["Admin", "Manager", "Tech"].includes(user?.role),
     },
-    { to: "/inventory", label: "Inventory", icon: Icon.Boxes, show: true },
+    {
+      to: "/inventory",
+      label: "Inventory",
+      icon: Icon.Boxes,
+      show: ["Admin", "Manager", "Tech"].includes(user?.role),
+    },
+    {
+      to: "/consumables",
+      label: "Consumables",
+      icon: Icon.Package,
+      show: ["Admin", "Manager", "Tech"].includes(user?.role),
+    },
     { to: "/kb", label: "Knowledge Base", icon: Icon.Book, show: true },
     {
       to: "/admin",
@@ -333,8 +395,12 @@ function Sidebar({ collapsed, transientOpen, onSetCollapsed, onSetTransient, use
     { to: "/help", label: "Help", icon: Icon.HelpCircle, show: true },
   ];
 
+  // Fixed row height + identical padding in both modes so icons hold
+  // their exact position when the rail flies out (no vertical drift
+  // from the label's line-height, no horizontal jump from centering).
+  // px-3 on the w-14 rail already lands the 16px icon dead-center.
   const linkClass = ({ isActive }) =>
-    `relative flex items-center gap-3 ${effectiveCollapsed ? "px-2.5 justify-center" : "px-3"} py-2 rounded-md text-sm font-medium transition-colors ${
+    `relative flex items-center gap-3 h-9 px-3 rounded-md text-sm font-medium whitespace-nowrap transition-colors ${
       isActive
         ? "bg-surface-2 text-fg"
         : "text-fg-muted hover:bg-surface-2 hover:text-fg"
@@ -447,6 +513,14 @@ export default function Layout() {
   // in the user's pinned mode. Only meaningful while collapsed=true.
   const [transientOpen, setTransientOpen] = useState(false);
   const logoFilter = brandingLogoFilter(branding, resolved);
+  const { pathname } = useLocation();
+  const navType = useNavigationType();
+
+  // A new route starts at the top, not wherever the last page was
+  // scrolled. Back/forward (POP) is left alone.
+  useEffect(() => {
+    if (navType !== "POP") window.scrollTo(0, 0);
+  }, [pathname]); // eslint-disable-line react-hooks/exhaustive-deps
 
   // Effective collapsed for layout sizing (main margin). Mirrors the
   // Sidebar's internal computation so the content shifts in lockstep
@@ -514,19 +588,16 @@ export default function Layout() {
               </span>
             </Link>
             {canCreateTicket && (
-              <Link
-                to="/tickets/new"
-                className="ml-1 inline-flex items-center gap-1.5 px-2.5 py-1.5 rounded-md bg-brand text-brand-fg text-sm font-medium hover:bg-brand-hover transition-colors"
-              >
-                <Icon.Plus className="w-4 h-4" />
-                <span className="hidden sm:inline">New ticket</span>
-              </Link>
+              <div className="ml-1">
+                <NewMenu user={user} />
+              </div>
             )}
             <div className="hidden md:block ml-2">
               <SearchBar />
             </div>
           </div>
           <div className="flex items-center gap-1">
+            {user && user.role !== "Viewer" && <ActiveTimerPill />}
             {user && <NotificationTray />}
             <ThemeToggle />
             <UserMenu user={user} logout={logout} />

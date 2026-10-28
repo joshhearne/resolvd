@@ -13,6 +13,11 @@
 //   notify_assignee  — current ticket assignee (NULL-safe)
 //   reassign_user    — set assigned_to to a specific user
 //   reassign_role    — set assigned_to to first active user in that role
+//   notify_oncall    — whoever is on call now for the ticket's project
+//                      (each matching rotation's person; optional
+//                      rotation_id pins one rotation). See oncall.js.
+//   reassign_oncall  — set assigned_to to the on-call person (first
+//                      matching rotation)
 //   reassign_agent   — defer to project's assignment policy
 //                      (round_robin or case_load) when one is set,
 //                      excluding current assignee. Falls back to any
@@ -48,6 +53,8 @@
 const { pool } = require('../db/pool');
 const { getUserById } = require('./notificationFanout');
 const { auditLog } = require('./ticketHelpers');
+const sla = require('./sla');
+const businessHours = require('./businessHours');
 
 const PRIORITY_MIN = 1;
 const PRIORITY_MAX = 5;
@@ -132,6 +139,55 @@ async function fireAction({ action, step, ticket }) {
     const u = await getUserById(ticket.assigned_to);
     if (!u) return { ok: false, reason: 'assignee user not found' };
     await fanout.dispatchPerRecipient({ user: u, ...notifyBody(step, ticket) });
+    return { ok: true };
+  }
+
+  if (kind === 'notify_submitter') {
+    // SLA fanout deliberately excludes the submitter by default; this
+    // action is the explicit opt-in. Looks up the ticket's submitted_by
+    // fresh so a reassignment earlier in the same step still resolves
+    // against the current owner ... wait, submitter not assignee. Pull
+    // submitted_by from the DB.
+    const r = await pool.query(`SELECT submitted_by FROM tickets WHERE id = $1`, [ticket.id]);
+    const submitterId = r.rows[0]?.submitted_by;
+    if (!submitterId) return { ok: false, reason: 'ticket has no submitter' };
+    const u = await getUserById(submitterId);
+    if (!u) return { ok: false, reason: 'submitter user not found' };
+    await fanout.dispatchPerRecipient({ user: u, ...notifyBody(step, ticket) });
+    return { ok: true };
+  }
+
+  if (kind === 'notify_oncall' || kind === 'reassign_oncall') {
+    const oncall = require('./oncall');
+    const picks = await oncall.currentOnCall(null, {
+      projectId: ticket.project_id,
+      rotationId: action.rotation_id || null,
+    });
+    // Nobody on call → the step stays unfired and retries next tick, so
+    // it lands as soon as a shift (or override) covers it.
+    if (!picks.length) return { ok: false, reason: 'nobody on call' };
+    if (kind === 'notify_oncall') {
+      const seen = new Set();
+      for (const p of picks) {
+        if (seen.has(p.user_id)) continue;
+        seen.add(p.user_id);
+        const u = await getUserById(p.user_id);
+        if (!u) continue;
+        await fanout.dispatchPerRecipient({ user: u, ...notifyBody(step, ticket) })
+          .catch((err) => console.error('escalation notify_oncall recipient failed:', err.message));
+      }
+      return { ok: true, recipients: seen.size };
+    }
+    const target = picks[0].user_id;
+    if (target === ticket.assigned_to) return { ok: true, unchanged: true };
+    await pool.query(`UPDATE tickets SET assigned_to = $1 WHERE id = $2`, [target, ticket.id]);
+    await fanout.fanoutAssignment(null, {
+      ticket: { ...ticket, assigned_to: target },
+      assigneeId: target,
+      actorId: null,
+      actorName: `SLA escalation (on call: ${picks[0].rotation.name})`,
+    }).catch((err) => console.error('escalation reassign_oncall fanout failed:', err.message));
+    ticket.assigned_to = target;
     return { ok: true };
   }
 
@@ -298,25 +354,40 @@ async function tickEscalations() {
     // when its operator is <, >, <=, or >=. Combined with project
     // scoping (project row OR org default) the additive semantics from
     // PR 3 are preserved — both can fire on one ticket.
+    // Importance-based operator semantics (P1 = most important).
+    // ">= P3" = "P3 or more important" → ticket priority NUMBER <= 3.
+    // Keep in sync with assignmentPolicies.policyForTicket and the
+    // matchedPriorities() helper in admin UIs.
     const opMatch = (col) => `(
       (s.priority_op = '=' AND s.priority = ${col}) OR
-      (s.priority_op = '<' AND ${col} < s.priority) OR
-      (s.priority_op = '>' AND ${col} > s.priority) OR
-      (s.priority_op = '<=' AND ${col} <= s.priority) OR
-      (s.priority_op = '>=' AND ${col} >= s.priority)
+      (s.priority_op = '<' AND ${col} > s.priority) OR
+      (s.priority_op = '>' AND ${col} < s.priority) OR
+      (s.priority_op = '<=' AND ${col} >= s.priority) OR
+      (s.priority_op = '>=' AND ${col} <= s.priority)
     )`;
     // Chain priority = snapshot if set (locked at first bump_priority),
     // else current effective_priority. Locking prevents a bumped ticket
     // from cascading into the new tier's chain on the next tick.
     const chainPriExpr = 'COALESCE(t.escalation_priority_snapshot, t.effective_priority, 3)';
+    // Defense-in-depth: a ticket in a terminal status (Closed, etc.)
+    // is done — escalation steps must never fire on it even if the
+    // trigger columns (sla_*_breached / sla_*_warned) were left stamped
+    // from before the close. Mirrors the NOT_TERMINAL guard in sla.js.
+    const NOT_TERMINAL = `NOT EXISTS (
+      SELECT 1 FROM statuses st
+       WHERE st.kind = 'internal'
+         AND st.name = t.internal_status
+         AND st.is_terminal = TRUE
+    )`;
     const candidates = await pool.query(
       `SELECT t.id, t.internal_ref, t.title, t.title_enc, t.project_id, t.assigned_to,
-              t.effective_priority, t.escalation_priority_snapshot,
+              t.effective_priority, t.escalation_priority_snapshot, t.location_id,
               ${chainPriExpr} AS chain_priority,
               t.escalation_steps_fired, t.${tsCol} AS triggered_at
          FROM tickets t
         WHERE ${activeCond}
           AND t.${tsCol} IS NOT NULL
+          AND ${NOT_TERMINAL}
           AND EXISTS (
             SELECT 1 FROM escalation_chain_steps s
              WHERE s.trigger = $1
@@ -328,6 +399,17 @@ async function tickEscalations() {
       [trigger]
     );
     for (const ticket of candidates.rows) {
+      // Business-hours gate: when the matching SLA policy pins a
+      // business_hours_id, walk delay_minutes through addBusinessMinutes
+      // so a "30 min after breach" step doesn't fire 30 wall-clock
+      // minutes after a breach that happened at 4:55 PM. Falls back to
+      // wall-clock interval math when no bh policy applies (24/7 SLA).
+      const slaPolicy = await sla.policyForTicket(
+        null, ticket.chain_priority || 3, ticket.project_id
+      ).catch(() => null);
+      const bh = await businessHours.policyForSla(null, slaPolicy, ticket.location_id)
+        .catch(() => null);
+
       const steps = await pool.query(
         `SELECT s.* FROM escalation_chain_steps s
           WHERE s.trigger = $1
@@ -335,11 +417,21 @@ async function tickEscalations() {
             AND ${opMatch('$2')}
             AND (s.project_id = $3 OR s.project_id IS NULL)
             AND s.id <> ALL($4::int[])
-            AND $5::timestamptz + (s.delay_minutes || ' minutes')::interval <= NOW()
           ORDER BY s.step_order, s.id`,
-        [trigger, ticket.chain_priority || 3, ticket.project_id, ticket.escalation_steps_fired, ticket.triggered_at]
+        [trigger, ticket.chain_priority || 3, ticket.project_id, ticket.escalation_steps_fired]
       );
+      const now = new Date();
       for (const step of steps.rows) {
+        const baseDelayMs = (Number(step.delay_minutes) || 0) * 60_000;
+        let fireAt;
+        if (bh && Number(step.delay_minutes) > 0) {
+          fireAt = businessHours.addBusinessMinutes(
+            ticket.triggered_at, Number(step.delay_minutes), bh
+          );
+        } else {
+          fireAt = new Date(new Date(ticket.triggered_at).getTime() + baseDelayMs);
+        }
+        if (fireAt > now) continue;
         const result = await fireStep({ step, ticket }).catch((err) => {
           console.error(`escalation fire step ${step.id} failed:`, err.message);
           return { ok: false, reason: err.message };

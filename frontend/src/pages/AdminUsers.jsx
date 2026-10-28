@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
 import { useAuth } from "../context/AuthContext";
 import HybridTime from "../components/HybridTime";
+import RowMenu from "../components/RowMenu";
 
 const ALL_ROLES = ["Admin", "Manager", "Tech", "Submitter", "Viewer"];
 const MANAGER_ROLES = ["Manager", "Tech", "Submitter", "Viewer"];
@@ -27,6 +28,8 @@ export default function AdminUsers() {
     intended_provider: "local",
     display_name: "",
   });
+  const [selected, setSelected] = useState(() => new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
 
   function refresh() {
     setLoading(true);
@@ -70,6 +73,92 @@ export default function AdminUsers() {
       toast.error(err.message);
     } finally {
       setSaving(null);
+    }
+  }
+
+  async function enrichUser(userId) {
+    setSaving(userId);
+    try {
+      const updated = await api.post(`/api/users/${userId}/enrich`, { force: true });
+      setUsers((prev) =>
+        prev.map((u) => (u.id === userId ? { ...u, ...updated } : u)),
+      );
+      if (updated.display_name) toast.success(`Resolved as ${updated.display_name}`);
+      else toast("Directory did not return a match");
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setSaving(null);
+    }
+  }
+
+  // Bulk-mode helpers. The selection set holds user ids only; we
+  // derive a "selectable" set (exclude self) on the fly when toggling
+  // the header checkbox so a tenant with one admin still sees a
+  // meaningful "select all" affordance.
+  const selectableIds = useMemo(
+    () => users.filter((u) => u.id !== currentUser?.id).map((u) => u.id),
+    [users, currentUser?.id],
+  );
+  const allSelected = selectableIds.length > 0
+    && selectableIds.every((id) => selected.has(id));
+  const someSelected = selected.size > 0 && !allSelected;
+
+  function toggleOne(id) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+  function toggleAll() {
+    setSelected((prev) => {
+      if (allSelected) return new Set();
+      return new Set(selectableIds);
+    });
+  }
+  function clearSelection() { setSelected(new Set()); }
+
+  async function bulkEnrich() {
+    if (!selected.size) return;
+    setBulkBusy(true);
+    try {
+      const ids = Array.from(selected);
+      const res = await api.post(`/api/users/bulk-enrich`, { ids, force: true });
+      // Merge per-id results into the local user list so columns update
+      // in place instead of forcing a full re-fetch.
+      setUsers((prev) =>
+        prev.map((u) => {
+          const hit = (res.results || []).find((r) => r.id === u.id && r.ok);
+          if (!hit) return u;
+          return { ...u, display_name: hit.display_name ?? u.display_name, auth_provider: hit.auth_provider ?? u.auth_provider };
+        }),
+      );
+      const resolved = (res.results || []).filter((r) => r.ok && r.display_name).length;
+      toast.success(`Refreshed ${res.count} user${res.count === 1 ? "" : "s"} (${resolved} resolved)`);
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  async function bulkStatus(status) {
+    if (!selected.size) return;
+    if (status === "disabled" && !confirm(`Disable ${selected.size} user(s)?`)) return;
+    setBulkBusy(true);
+    try {
+      const ids = Array.from(selected);
+      const results = await Promise.allSettled(
+        ids.map((id) => api.patch(`/api/users/${id}/status`, { status })),
+      );
+      const ok = results.filter((r) => r.status === "fulfilled").length;
+      setUsers((prev) => prev.map((u) => (selected.has(u.id) ? { ...u, status } : u)));
+      toast.success(`${status === "active" ? "Enabled" : "Disabled"} ${ok} user${ok === 1 ? "" : "s"}`);
+    } catch (err) {
+      toast.error(err.message);
+    } finally {
+      setBulkBusy(false);
     }
   }
 
@@ -236,10 +325,62 @@ export default function AdminUsers() {
         </div>
       )}
 
-      <div className="bg-surface rounded-lg border border-border shadow-sm overflow-hidden">
+      {selected.size > 0 && (
+        <div className="sticky top-0 z-30 -mt-2 mb-2 flex items-center justify-between bg-brand/10 border border-brand/40 rounded-md px-3 py-2 text-sm">
+          <div className="text-fg">
+            <span className="font-medium">{selected.size}</span> selected
+          </div>
+          <div className="flex items-center gap-2">
+            <button
+              type="button"
+              onClick={bulkEnrich}
+              disabled={bulkBusy}
+              className="px-2.5 py-1 rounded border border-border bg-surface hover:bg-surface-2 disabled:opacity-60"
+              title="Refresh display name + entra_oid + location from Microsoft Graph or Google directory"
+            >
+              Refresh from directory
+            </button>
+            <button
+              type="button"
+              onClick={() => bulkStatus("active")}
+              disabled={bulkBusy}
+              className="px-2.5 py-1 rounded border border-border bg-surface hover:bg-surface-2 disabled:opacity-60"
+            >
+              Enable
+            </button>
+            <button
+              type="button"
+              onClick={() => bulkStatus("disabled")}
+              disabled={bulkBusy}
+              className="px-2.5 py-1 rounded border border-amber-300 dark:border-amber-700 text-amber-700 dark:text-amber-300 bg-surface hover:bg-amber-50 dark:hover:bg-amber-950/30 disabled:opacity-60"
+            >
+              Disable
+            </button>
+            <button
+              type="button"
+              onClick={clearSelection}
+              className="px-2.5 py-1 text-fg-muted hover:text-fg"
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+      )}
+
+      <div className="bg-surface rounded-lg border border-border shadow-sm overflow-x-auto">
         <table className="min-w-full divide-y divide-border">
           <thead className="bg-surface-2">
             <tr>
+              <th className="w-10 px-3 py-3">
+                <input
+                  type="checkbox"
+                  aria-label="Select all users"
+                  checked={allSelected}
+                  ref={(el) => { if (el) el.indeterminate = someSelected; }}
+                  onChange={toggleAll}
+                  disabled={!selectableIds.length}
+                />
+              </th>
               <th className="px-4 py-3 text-left text-xs font-medium text-fg-muted uppercase tracking-wide">
                 Name
               </th>
@@ -267,11 +408,22 @@ export default function AdminUsers() {
           <tbody className="divide-y divide-border">
             {users.map((u) => {
               const isSelf = u.id === currentUser?.id;
+              const isSel = selected.has(u.id);
               return (
                 <tr
                   key={u.id}
-                  className={`hover:bg-surface-2 ${isSelf ? "bg-brand/10" : ""}`}
+                  className={`hover:bg-surface-2 ${isSelf ? "bg-brand/10" : ""} ${isSel ? "bg-brand/5" : ""}`}
                 >
+                  <td className="w-10 px-3 py-3">
+                    {!isSelf && (
+                      <input
+                        type="checkbox"
+                        aria-label={`Select ${u.email}`}
+                        checked={isSel}
+                        onChange={() => toggleOne(u.id)}
+                      />
+                    )}
+                  </td>
                   <td className="px-4 py-3 text-sm font-medium text-fg">
                     {u.display_name || (
                       <span className="text-fg-dim italic">—</span>
@@ -333,32 +485,36 @@ export default function AdminUsers() {
                   <td className="px-4 py-3 text-xs text-fg-dim">
                     <HybridTime dt={u.last_login} />
                   </td>
-                  <td className="px-4 py-3 text-right text-xs space-x-2">
-                    {!isSelf && u.status === "active" && (
-                      <button
-                        onClick={() => changeStatus(u.id, "disabled")}
-                        className="text-amber-600 dark:text-amber-400 hover:underline"
-                      >
-                        Disable
-                      </button>
+                  <td className="px-4 py-3 text-right text-xs whitespace-nowrap w-12">
+                    {!isSelf && (
+                      <RowMenu
+                        buttonAriaLabel={`Actions for ${u.email}`}
+                        items={[
+                          {
+                            label: saving === u.id ? "Refreshing…" : "Refresh from directory",
+                            onClick: () => enrichUser(u.id),
+                            disabled: saving === u.id || u.status !== "active",
+                            hidden: u.status !== "active",
+                          },
+                          {
+                            label: "Disable",
+                            onClick: () => changeStatus(u.id, "disabled"),
+                            hidden: u.status !== "active",
+                          },
+                          {
+                            label: "Enable",
+                            onClick: () => changeStatus(u.id, "active"),
+                            hidden: u.status !== "disabled",
+                          },
+                          {
+                            label: "Delete",
+                            onClick: () => deleteUser(u.id),
+                            danger: true,
+                            hidden: !(u.status === "invited" || u.status === "disabled"),
+                          },
+                        ]}
+                      />
                     )}
-                    {!isSelf && u.status === "disabled" && (
-                      <button
-                        onClick={() => changeStatus(u.id, "active")}
-                        className="text-green-600 dark:text-green-400 hover:underline"
-                      >
-                        Enable
-                      </button>
-                    )}
-                    {!isSelf &&
-                      (u.status === "invited" || u.status === "disabled") && (
-                        <button
-                          onClick={() => deleteUser(u.id)}
-                          className="text-red-600 dark:text-red-400 hover:underline"
-                        >
-                          Delete
-                        </button>
-                      )}
                   </td>
                 </tr>
               );

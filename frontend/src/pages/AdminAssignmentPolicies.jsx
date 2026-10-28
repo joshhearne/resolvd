@@ -24,6 +24,37 @@ const STRATEGIES = [
 
 const PRIORITY_OPS = ["=", "<=", ">=", "<", ">"];
 
+// Mirror of backend `policyForTicket` operator semantics. Importance-
+// based: P1 is the most important priority, so ">= P3" reads as
+// "P3 or more important" → P1, P2, P3. Comparison is inverted vs the
+// raw priority number.
+function matchedPriorities(op, priority) {
+  const p = Number(priority);
+  if (!Number.isInteger(p)) return [];
+  return [1, 2, 3, 4, 5].filter((tp) => {
+    if (op === "=") return tp === p;
+    if (op === "<") return tp > p;   // less important than Pp
+    if (op === ">") return tp < p;   // more important than Pp
+    if (op === "<=") return tp >= p; // Pp or less important
+    if (op === ">=") return tp <= p; // Pp or more important
+    return false;
+  });
+}
+
+function MatchPreview({ op, priority }) {
+  const list = matchedPriorities(op, priority);
+  return (
+    <span className="text-[11px] text-fg-muted">
+      Matches:{" "}
+      {list.length === 0 ? (
+        <span className="text-red-600">nothing</span>
+      ) : (
+        list.map((p) => <code key={p} className="font-mono mr-1">P{p}</code>)
+      )}
+    </span>
+  );
+}
+
 // Eligible assignees are project members with is_agent = TRUE. For
 // project-scoped policies we fetch agents on that specific project;
 // for org-default policies we use the global agent set (anyone who is
@@ -154,6 +185,9 @@ export default function AdminAssignmentPolicies() {
             </select>
             <span className="font-medium">{PRIORITY_LABELS[p.priority]}</span>
           </div>
+          <div className="mt-1">
+            <MatchPreview op={merged.priority_op || "="} priority={merged.priority ?? p.priority} />
+          </div>
         </td>
         <td className="py-2 pr-3">
           <select
@@ -241,10 +275,12 @@ export default function AdminAssignmentPolicies() {
           <li><b>Specific user</b> — always assign to this person.</li>
         </ul>
         <p className="text-xs text-fg-muted mb-3">
-          The priority operator widens a rule across priorities — e.g.{" "}
-          <code>{"<= P2"}</code> covers P1 + P2. When multiple rules match,
-          project-scoped beats org-default, then exact <code>=</code> beats
-          range, then newest beats older.
+          The priority operator widens a rule across priorities by{" "}
+          <b>importance</b> (P1 is most important). E.g.{" "}
+          <code>{">= P3"}</code> covers P1 + P2 + P3 (P3 or more important);{" "}
+          <code>{"<= P4"}</code> covers P4 + P5 (P4 or less important).
+          When multiple rules match, project-scoped beats org-default,
+          then exact <code>=</code> beats range, then newest beats older.
         </p>
 
         <div className="border border-border rounded p-3 mb-4 bg-surface-2/40">
@@ -295,6 +331,9 @@ export default function AdminAssignmentPolicies() {
               </select>
             </label>
             <button onClick={addPolicy} className="px-3 py-1.5 text-sm bg-brand text-white rounded">Add</button>
+          </div>
+          <div className="mt-2">
+            <MatchPreview op={newRow.priority_op} priority={newRow.priority} />
           </div>
         </div>
 

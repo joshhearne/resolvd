@@ -1,11 +1,56 @@
 import React, { useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
+import ViewToggle, { useViewMode } from "../components/ViewToggle";
 
 export default function KbIndex() {
   const [projects, setProjects] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [troveKb, setTroveKb] = useState(null);
+  const [collections, setCollections] = useState([]);
+  const [params, setParams] = useSearchParams();
+  const [q, setQ] = useState(params.get("q") || "");
+  const [collectionId, setCollectionId] = useState(params.get("collection") || "");
+  const [hits, setHits] = useState(null);
+  const [searching, setSearching] = useState(false);
+  const [view, setView] = useViewMode("kb-collections", "cards");
+  const [favorites, setFavorites] = useState(null);
+  useEffect(() => {
+    api.get("/api/trove-kb/favorites").then((r) => setFavorites(r?.available ? r.articles : null)).catch(() => setFavorites(null));
+  }, []);
+
+  useEffect(() => {
+    api.get("/api/trove-kb/status")
+      .then((st) => {
+        setTroveKb(st);
+        if (st?.has_visible) api.get("/api/trove-kb/collections").then(setCollections).catch(() => setCollections([]));
+      })
+      .catch(() => setTroveKb({ enabled: false }));
+  }, []);
+
+  // Search runs from the URL (?q=&collection=) so results are linkable.
+  useEffect(() => {
+    const term = (params.get("q") || "").trim();
+    const cid = params.get("collection") || "";
+    setQ(term); setCollectionId(cid);
+    if (!troveKb?.has_visible || term.length < 2) { setHits(null); return; }
+    let cancelled = false;
+    setSearching(true);
+    api.get(`/api/trove-kb/search?q=${encodeURIComponent(term)}&limit=25${cid ? `&collection_id=${cid}` : ""}`)
+      .then((r) => { if (!cancelled) setHits(r); })
+      .catch((e) => { if (!cancelled) { setHits([]); toast.error(e.message); } })
+      .finally(() => { if (!cancelled) setSearching(false); });
+    return () => { cancelled = true; };
+  }, [params, troveKb?.has_visible]);
+
+  function submitSearch(e) {
+    e.preventDefault();
+    const next = {};
+    if (q.trim()) next.q = q.trim();
+    if (collectionId) next.collection = collectionId;
+    setParams(next);
+  }
 
   useEffect(() => {
     api
@@ -38,11 +83,136 @@ export default function KbIndex() {
       <header>
         <h1 className="text-2xl font-semibold tracking-tight text-fg">Knowledge Base</h1>
         <p className="text-sm text-fg-muted mt-1">
-          Per-project documentation. Pick a project to browse or edit its articles.
+          {troveKb?.has_visible
+            ? "Search the company knowledge base, or browse the per-project articles below."
+            : "Per-project documentation. Pick a project to browse or edit its articles."}
         </p>
       </header>
 
-      {loading ? (
+      {troveKb?.has_visible && (
+        <section className="rounded-lg border border-border bg-surface p-5 space-y-4">
+          <form onSubmit={submitSearch} className="flex flex-col sm:flex-row gap-2">
+            <input
+              type="search"
+              value={q}
+              onChange={(e) => setQ(e.target.value)}
+              placeholder="Search documentation…"
+              className="flex-1 bg-surface-2 border border-border rounded px-3 py-2 text-sm"
+            />
+            {collections.length > 1 && (
+              <select
+                value={collectionId}
+                onChange={(e) => setCollectionId(e.target.value)}
+                className="bg-surface-2 border border-border rounded px-2 py-2 text-sm"
+              >
+                <option value="">All collections</option>
+                {collections.map((c) => (
+                  <option key={c.id} value={c.id}>{c.name}{c.scope === "internal" ? " (internal)" : ""}</option>
+                ))}
+              </select>
+            )}
+            <button type="submit" className="btn btn-primary btn-sm">Search</button>
+          </form>
+
+          {searching && <div className="text-sm text-fg-muted">Searching…</div>}
+
+          {!searching && hits && (
+            hits.length === 0 ? (
+              <div className="text-sm text-fg-dim italic">No articles matched.</div>
+            ) : (
+              <ul className="divide-y divide-border">
+                {hits.map((h) => (
+                  <li key={h.article_id} className="py-3">
+                    <Link to={`/kb/article/${h.article_id}`} className="text-base font-medium text-fg hover:text-accent">
+                      {h.title}
+                    </Link>
+                    <div className="text-[11px] text-fg-dim mt-0.5">
+                      {[h.collection_name, h.category, h.subcategory].filter(Boolean).join(" · ")}
+                      {h.scope === "public" && <span className="ml-2 uppercase text-emerald-600 dark:text-emerald-300">public</span>}
+                    </div>
+                    {h.snippet && <p className="text-sm text-fg-muted mt-1 line-clamp-2">{h.snippet}</p>}
+                  </li>
+                ))}
+              </ul>
+            )
+          )}
+
+          {!hits && (troveKb.base_url || troveKb.public_url) && (
+            <div className="flex flex-wrap gap-3 text-xs">
+              {troveKb.base_url && <a href={`${troveKb.base_url}/kb`} target="_blank" rel="noreferrer" className="text-brand hover:underline">Open Trove KB ↗</a>}
+              {troveKb.public_url && <a href={troveKb.public_url} target="_blank" rel="noreferrer" className="text-brand hover:underline">Public site ↗</a>}
+            </div>
+          )}
+        </section>
+      )}
+
+      {troveKb?.has_visible && !hits && favorites && favorites.length > 0 && (
+        <section className="space-y-2">
+          <h2 className="text-sm font-semibold text-fg-muted uppercase tracking-wide">My favorites</h2>
+          <ul className="rounded-lg border border-border bg-surface divide-y divide-border">
+            {favorites.slice(0, 10).map((a) => (
+              <li key={a.article_id}>
+                <Link to={`/kb/article/${a.article_id}`} className="flex items-center gap-3 px-4 py-2.5 hover:bg-surface-2 group">
+                  <span className="text-amber-400">★</span>
+                  <span className="flex-1 min-w-0 text-sm text-fg group-hover:text-accent truncate">{a.title}</span>
+                  <span className="text-[11px] text-fg-dim truncate max-w-[40%]">{[a.collection_name, a.category].filter(Boolean).join(" · ")}</span>
+                </Link>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
+      {troveKb?.has_visible && !hits && collections.length > 0 && (
+        <section className="space-y-3">
+          <div className="flex items-center justify-between">
+            <h2 className="text-sm font-semibold text-fg-muted uppercase tracking-wide">Collections</h2>
+            <ViewToggle mode={view} onChange={setView} />
+          </div>
+          {view === "list" ? (
+            <ul className="rounded-lg border border-border bg-surface divide-y divide-border">
+              {collections.map((c) => (
+                <li key={c.id}>
+                  <Link to={`/kb/collection/${c.id}`} className="flex items-center gap-3 px-4 py-3 hover:bg-surface-2 group">
+                    <div className="flex-1 min-w-0">
+                      <div className="text-sm font-medium text-fg group-hover:text-accent truncate">{c.name}</div>
+                      {c.description && <div className="text-xs text-fg-muted truncate">{c.description}</div>}
+                    </div>
+                    <span className={`flex-shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded ${c.scope === "public" ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-300" : "bg-brand/10 text-brand"}`}>{c.scope === "public" ? "Public" : "Internal"}</span>
+                    {c.articles != null && <span className="flex-shrink-0 w-16 text-right text-xs font-mono text-fg-muted">{c.articles}</span>}
+                  </Link>
+                </li>
+              ))}
+            </ul>
+          ) : (
+          <div className="grid sm:grid-cols-2 lg:grid-cols-3 gap-4">
+            {collections.map((c) => (
+              <Link
+                key={c.id}
+                to={`/kb/collection/${c.id}`}
+                className="block group rounded-lg border border-border bg-surface hover:bg-surface-2 hover:border-accent/40 transition-colors p-5"
+              >
+                <div className="flex items-start justify-between gap-2">
+                  <div className="text-base font-semibold text-fg group-hover:text-accent">{c.name}</div>
+                  <span className={`flex-shrink-0 text-[10px] uppercase tracking-wide px-1.5 py-0.5 rounded ${c.scope === "public" ? "bg-emerald-500/10 text-emerald-600 dark:text-emerald-300" : "bg-brand/10 text-brand"}`}>{c.scope === "public" ? "Public" : "Internal"}</span>
+                </div>
+                {c.description && <p className="text-sm text-fg-muted mt-1 line-clamp-2">{c.description}</p>}
+                <div className="mt-3 flex items-center gap-2 text-xs text-fg-muted">
+                  {c.articles != null && <span className="px-2 py-0.5 rounded-full font-mono bg-surface-2 text-fg-muted">{c.articles}</span>}
+                  <span>{c.articles == null ? "Browse" : `article${c.articles === 1 ? "" : "s"}`}</span>
+                </div>
+              </Link>
+            ))}
+          </div>
+          )}
+        </section>
+      )}
+
+      {troveKb?.has_visible && troveKb?.local_kb_enabled !== false && (
+        <h2 className="text-sm font-semibold text-fg-muted uppercase tracking-wide pt-2">Project articles</h2>
+      )}
+
+      {troveKb?.local_kb_enabled === false ? null : loading ? (
         <div className="text-fg-muted text-sm">Loading…</div>
       ) : projects.length === 0 ? (
         <div className="rounded-lg border border-border bg-surface p-8 text-center">

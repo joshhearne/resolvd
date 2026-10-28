@@ -6,10 +6,13 @@ import { formatHybrid, formatAbsolute } from "../utils/helpers";
 // date/time style. Inside ~7d the displayed text is relative, so the
 // tooltip surfaces the actual time. Beyond cutoff hybrid == absolute and
 // the tooltip is omitted (would be a duplicate).
-export default function HybridTime({ dt, className }) {
-  if (!dt) return <span className={className}>—</span>;
-  const text = formatHybrid(dt);
-  const abs = formatAbsolute(dt);
+export default function HybridTime({ dt, value, className }) {
+  // Accept either `dt` (legacy / preferred) or `value` (used by several
+  // admin pages). Picking the first defined wins.
+  const t = dt !== undefined ? dt : value;
+  if (!t) return <span className={className}>—</span>;
+  const text = formatHybrid(t);
+  const abs = formatAbsolute(t);
   const tip = text === abs ? undefined : abs;
   return (
     <span className={className} title={tip}>
@@ -17,3 +20,4 @@ export default function HybridTime({ dt, className }) {
     </span>
   );
 }
+

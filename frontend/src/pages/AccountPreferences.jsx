@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import toast from "react-hot-toast";
 import { useAuth } from "../context/AuthContext";
 import { useBranding } from "../context/BrandingContext";
@@ -80,6 +80,181 @@ function Toggle({ label, hint, value, onChange, disabled }) {
   );
 }
 
+// Signature editor. The textarea uses an explicit Save button — debounced
+// auto-save proved annoying because it stole focus / mid-edit state. The
+// other controls (toggle + scope) still save on click since they're
+// single-action and don't take you out of an edit flow.
+//
+// Unsaved-changes guard: a `beforeunload` handler prompts on tab close,
+// reload, and external navigation. Soft-nav inside the SPA (sidebar
+// links) doesn't trigger that — we surface a very obvious amber "Unsaved
+// changes" indicator + Save / Revert buttons inline so the state is hard
+// to miss without leaving the page. (`useBlocker` would catch soft nav
+// too, but it requires a data router; we're on BrowserRouter.)
+function SignatureCard({ prefs, set, busy }) {
+  const SIG_MAX = 2000;
+  const [draft, setDraft] = useState(prefs.signature || "");
+  const [saving, setSaving] = useState(false);
+  const lastSaved = useRef(prefs.signature || "");
+
+  // Sync down when the server-side prefs change underneath us (e.g.
+  // another tab edited the same field). Only overwrite when there's
+  // nothing dirty locally — never clobber user input mid-edit.
+  useEffect(() => {
+    const incoming = prefs.signature || "";
+    if (lastSaved.current === draft) {
+      setDraft(incoming);
+      lastSaved.current = incoming;
+    } else if (incoming !== lastSaved.current) {
+      // Server-side value changed AND we have a local edit. Keep the
+      // local edit; just bump the baseline so a future Save still
+      // POSTs (last-write-wins matches the simple JSON merge anyway).
+      lastSaved.current = incoming;
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [prefs.signature]);
+
+  const dirty = draft !== lastSaved.current;
+
+  async function save() {
+    if (!dirty || saving) return;
+    setSaving(true);
+    try {
+      const next = draft.slice(0, SIG_MAX);
+      await set("signature", next);
+      lastSaved.current = next;
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function revert() {
+    setDraft(lastSaved.current);
+  }
+
+  // beforeunload guard for hard navigations (tab close, refresh, external
+  // link). Modern browsers ignore the custom string and show their own
+  // generic prompt — setting returnValue is what triggers it.
+  useEffect(() => {
+    if (!dirty) return undefined;
+    function onBeforeUnload(e) {
+      e.preventDefault();
+      e.returnValue = "";
+      return "";
+    }
+    window.addEventListener("beforeunload", onBeforeUnload);
+    return () => window.removeEventListener("beforeunload", onBeforeUnload);
+  }, [dirty]);
+
+  const scope = prefs.append_signature_scope || "vendor_only";
+  const enabled = !!prefs.append_signature;
+  const remaining = SIG_MAX - draft.length;
+
+  return (
+    <div className="bg-surface rounded-lg border border-border shadow-sm p-5">
+      <h2 className="text-lg font-semibold text-fg mb-1">Comment signature</h2>
+      <p className="text-sm text-fg-muted mb-3">
+        Optional sign-off automatically appended to comments you post,
+        separated from the body by a single blank line. Markdown is
+        supported. Vendor outbound carries the signature in the email
+        the same way it carries the rest of the comment.
+      </p>
+
+      <div className="mt-3">
+        <Toggle
+          label="Append signature to my comments"
+          hint="Off by default. Toggle on once you've written a signature below."
+          value={enabled}
+          onChange={(v) => set("append_signature", v)}
+          disabled={busy}
+        />
+
+        <label className="flex items-start justify-between gap-4 py-3 border-b border-border">
+          <div className="flex-1">
+            <div className="text-sm font-medium text-fg">When to append</div>
+            <div className="text-xs text-fg-muted mt-0.5">
+              Vendor-only keeps internal threads clean; All comments adds
+              it to every post.
+            </div>
+          </div>
+          <select
+            value={scope}
+            onChange={(e) => set("append_signature_scope", e.target.value)}
+            disabled={busy || !enabled}
+            className="border border-border-strong rounded-md px-2 py-1 text-sm"
+          >
+            <option value="vendor_only">Vendor-visible only</option>
+            <option value="all">All comments</option>
+          </select>
+        </label>
+
+        <div className="pt-3">
+          <div className="flex items-center justify-between mb-1">
+            <label className="block text-sm font-medium text-fg">
+              Signature
+            </label>
+            <span className={`text-xs ${dirty ? "text-amber-500 dark:text-amber-400 font-medium" : "text-fg-muted"}`}>
+              {saving ? "Saving…" : dirty ? "Unsaved changes" : "Saved"}
+            </span>
+          </div>
+          <textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value.slice(0, SIG_MAX))}
+            onKeyDown={(e) => {
+              // Ctrl/Cmd+S saves without leaving the field — same muscle
+              // memory as a doc editor. Plain Enter still adds a newline.
+              if ((e.ctrlKey || e.metaKey) && e.key === "s") {
+                e.preventDefault();
+                save();
+              }
+            }}
+            disabled={busy || saving}
+            rows={5}
+            placeholder={"— Jane Doe\nIT Support · Acme Corp\n555-1234"}
+            className="w-full border border-border-strong rounded-md px-3 py-2 text-sm font-mono bg-surface focus:outline-none focus:ring-2 focus:ring-brand/40"
+          />
+          <div className="flex items-center justify-between gap-3 mt-2">
+            <span className={`text-xs ${remaining < 100 ? "text-amber-500 dark:text-amber-400" : "text-fg-muted"}`}>
+              {draft.length} / {SIG_MAX} chars · markdown supported · Ctrl+S to save
+            </span>
+            <div className="flex items-center gap-2">
+              {dirty && (
+                <button
+                  type="button"
+                  onClick={revert}
+                  disabled={saving}
+                  className="px-3 py-1.5 text-sm rounded-md border border-border-strong text-fg-muted hover:text-fg hover:bg-surface-2 disabled:opacity-50"
+                >
+                  Revert
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={save}
+                disabled={!dirty || saving}
+                className="px-3 py-1.5 text-sm rounded-md bg-brand text-white hover:bg-brand/90 disabled:opacity-50 disabled:cursor-not-allowed"
+              >
+                {saving ? "Saving…" : "Save signature"}
+              </button>
+            </div>
+          </div>
+        </div>
+
+        {enabled && draft.trim() && (
+          <div className="mt-4 pt-3 border-t border-border">
+            <div className="text-xs text-fg-muted mb-1.5">
+              Preview {dirty && <span className="text-amber-500 dark:text-amber-400">(unsaved — comments will use the saved version)</span>}
+            </div>
+            <div className="rounded-md border border-border bg-surface-2 p-3 text-sm whitespace-pre-wrap font-mono">
+              {`Your comment text here.\n\n${draft}`}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
+}
+
 function MatrixSwitch({ checked, onChange, disabled }) {
   return (
     <button
@@ -102,6 +277,7 @@ function MatrixSwitch({ checked, onChange, disabled }) {
 }
 
 const NOTIFICATION_EVENTS = [
+  { key: "new_ticket", label: "New ticket filed", hint: "Any ticket gets created (REST, inbound email, alert promotion). Admin/Manager only." },
   { key: "assignment", label: "Assigned to me", hint: "Someone assigns a ticket to me." },
   { key: "mention", label: "I get @mentioned", hint: "Someone mentions me in a comment." },
   { key: "comment", label: "New comment", hint: "A comment lands on a ticket I follow." },
@@ -111,6 +287,7 @@ const NOTIFICATION_EVENTS = [
 ];
 
 const DEFAULT_MATRIX = {
+  new_ticket: { in_app: true, email: false, push: false },
   assignment: { in_app: true, email: true, push: false },
   mention: { in_app: true, email: true, push: true },
   comment: { in_app: true, email: true, push: false },
@@ -140,7 +317,7 @@ function NotificationMatrix({ value, onChange, disabled, pushAvailable }) {
         </thead>
         <tbody>
           {NOTIFICATION_EVENTS.map((ev) => {
-            const row = matrix[ev.key] || { in_app: false, email: false, push: false };
+            const row = matrix[ev.key] || DEFAULT_MATRIX[ev.key] || { in_app: false, email: false, push: false };
             return (
               <tr key={ev.key} className="border-t border-border">
                 <td className="px-3 py-3">
@@ -203,6 +380,7 @@ function AiAssistCard() {
   const [modelsLoading, setModelsLoading] = useState(false);
   const [modelsError, setModelsError] = useState(null);
   const [liveCount, setLiveCount] = useState(0);
+  const [usage, setUsage] = useState(null);
 
   useEffect(() => {
     Promise.all([
@@ -214,6 +392,10 @@ function AiAssistCard() {
       setVerbosities(provs.verbosities);
       setCfg(c);
     }).catch(e => console.error("ai config load:", e.message));
+    // Lifetime token ledger — best effort, hide the card if it errors.
+    api.get("/api/ai/usage")
+      .then(setUsage)
+      .catch(() => setUsage(null));
   }, []);
 
   // Curated model list refreshes whenever provider changes. Live fetch
@@ -582,6 +764,31 @@ function AiAssistCard() {
           </>
         )}
       </div>
+
+      {usage && usage.calls > 0 && (
+        <div className="mt-4 pt-4 border-t border-border">
+          <h3 className="text-sm font-semibold text-fg mb-1">Lifetime AI usage</h3>
+          <p className="text-xs text-fg-muted mb-2">
+            Cumulative tokens spent through AI Assist on your account, across
+            comments and ticket descriptions. Snapshotted at apply time — edits
+            and deletes don't subtract.
+          </p>
+          <div className="grid grid-cols-3 gap-2 text-sm">
+            <div className="bg-surface-2 rounded-md border border-border px-2 py-1.5">
+              <div className="text-[10px] uppercase tracking-wide text-fg-dim">Calls</div>
+              <div className="font-mono text-fg">{usage.calls.toLocaleString()}</div>
+            </div>
+            <div className="bg-surface-2 rounded-md border border-border px-2 py-1.5">
+              <div className="text-[10px] uppercase tracking-wide text-fg-dim">Input tok.</div>
+              <div className="font-mono text-fg">{usage.input_tokens.toLocaleString()}</div>
+            </div>
+            <div className="bg-surface-2 rounded-md border border-border px-2 py-1.5">
+              <div className="text-[10px] uppercase tracking-wide text-fg-dim">Output tok.</div>
+              <div className="font-mono text-fg">{usage.output_tokens.toLocaleString()}</div>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -695,8 +902,31 @@ export default function AccountPreferences() {
               <option value="internal_ref_asc">Reference (A→Z)</option>
             </select>
           </label>
+          <label className="flex items-start justify-between gap-4 py-3 border-t border-border">
+            <div className="flex-1">
+              <div className="text-sm font-medium text-fg">
+                Clock picker minutes
+              </div>
+              <div className="text-xs text-fg-muted mt-0.5">
+                The tap-to-pick clock used for time entries. Snap lands taps
+                on the nearest 5 minutes (hold your finger on the dial for
+                single minutes); Exact always takes the minute you tap.
+              </div>
+            </div>
+            <select
+              value={prefs.clock_minute_snap === "exact" ? "exact" : "five"}
+              onChange={(e) => set("clock_minute_snap", e.target.value)}
+              disabled={busy}
+              className="border border-border-strong rounded-md px-2 py-1 text-sm"
+            >
+              <option value="five">Snap to 5 (hold for 1)</option>
+              <option value="exact">Exact minute</option>
+            </select>
+          </label>
         </div>
       </div>
+
+      <SignatureCard prefs={prefs} set={set} busy={busy} />
 
       <div className="bg-surface rounded-lg border border-border shadow-sm p-5">
         <h2 className="text-lg font-semibold text-fg mb-1">Notifications</h2>
@@ -750,6 +980,32 @@ export default function AccountPreferences() {
             <option value="off">Off (no notification emails)</option>
           </select>
         </label>
+
+        {prefs.email_digest === "daily" && (
+          <label className="block mb-4 pb-4 border-b border-border">
+            <span className="block text-sm font-medium text-fg mb-1">
+              Daily digest delivery hour
+            </span>
+            <span className="block text-xs text-fg-muted mb-2">
+              Local hour (24-hour clock) when the daily digest is sent.
+              Honors your timezone override if set; otherwise the org default.
+            </span>
+            <select
+              value={Number.isInteger(prefs.notification_digest_local_hour)
+                ? prefs.notification_digest_local_hour
+                : 9}
+              onChange={(e) => set("notification_digest_local_hour", Number(e.target.value))}
+              disabled={busy}
+              className="border border-border-strong rounded-md px-2 py-1 text-sm"
+            >
+              {Array.from({ length: 24 }, (_, h) => (
+                <option key={h} value={h}>
+                  {String(h).padStart(2, "0")}:00
+                </option>
+              ))}
+            </select>
+          </label>
+        )}
 
         <NotificationMatrix
           value={prefs.notification_prefs || DEFAULT_MATRIX}

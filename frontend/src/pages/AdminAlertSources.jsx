@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
 import HybridTime from "../components/HybridTime";
+import { StateDot, stateInfo, fmtUptime } from "../utils/itemState";
 
 const PRESET_LABELS = {
   zabbix: "Zabbix",
@@ -41,7 +42,19 @@ function zabbixSnippet(webhookUrl) {
 //   operational_data     {EVENT.OPDATA}
 //   event_tags      {EVENT.TAGS}
 //   event_url       {\$ZABBIX.URL}/tr_events.php?triggerid={TRIGGER.ID}&eventid={EVENT.ID}
-//   user_email      {INVENTORY.POC.PRIMARY.EMAIL}   // optional — attributes ticket to that user if active in Resolvd
+//
+// Optional contact parameters (any one populates the ticket submitter
+// — first non-empty wins; matching user in Resolvd is attributed and
+// the Graph / Google directory enriches the profile on miss):
+//   user_email             {INVENTORY.POC.PRIMARY.EMAIL}
+//   poc_secondary_email    {INVENTORY.POC.SECONDARY.EMAIL}
+//   host_contact_email     {INVENTORY.CONTACT}            // legacy single-field
+//   host_contact_name      {INVENTORY.POC.PRIMARY.NAME}
+//   inventory_contact      {INVENTORY.NOTES}              // free-text fallback
+//
+// Comma- or semicolon-separated lists are tolerated; the first valid
+// address wins. *UNKNOWN* (Zabbix's literal placeholder for an empty
+// inventory field) is ignored automatically.
 try {
   var p = JSON.parse(value);
   var req = new HttpRequest();
@@ -68,8 +81,8 @@ export default function AdminAlertSources() {
   const [adapters, setAdapters] = useState([]);
   const [newToken, setNewToken] = useState(null);
 
+  // Placeholder on the first load only; later refreshes swap in place.
   async function loadList() {
-    setLoading(true);
     try {
       setSources(await api.get("/api/alert-sources"));
     } catch (e) {
@@ -104,6 +117,12 @@ export default function AdminAlertSources() {
     if (selectedId) loadDetail(selectedId);
     else setDetail(null);
   }, [selectedId]);
+
+  // Switching sources starts the detail at the top.
+  function selectSource(id) {
+    setSelectedId(id);
+    window.scrollTo(0, 0);
+  }
 
   async function createSource(form) {
     try {
@@ -202,11 +221,13 @@ export default function AdminAlertSources() {
         />
       )}
 
-      <div className="flex flex-col lg:flex-row gap-4 items-stretch">
+      {/* Side-by-side only on very wide screens; below that the list
+          gives way to the selected source (switcher in its header). */}
+      <div className="flex flex-col 2xl:flex-row gap-4 items-stretch">
         <aside
           className={`
-            ${selectedId ? "hidden lg:block" : "block"}
-            lg:w-80 lg:flex-shrink-0 bg-surface border border-border rounded-lg overflow-hidden
+            ${selectedId ? "hidden 2xl:block" : "block"}
+            2xl:w-80 2xl:flex-shrink-0 bg-surface border border-border rounded-lg overflow-hidden
           `}
         >
           {loading ? (
@@ -224,7 +245,7 @@ export default function AdminAlertSources() {
                 return (
                 <button
                   key={s.id}
-                  onClick={() => setSelectedId(s.id)}
+                  onClick={() => selectSource(s.id)}
                   className={`w-full text-left px-3 py-2.5 hover:bg-surface-2 transition-colors ${
                     selectedId === s.id ? "bg-brand/5 border-l-2 border-brand" : ""
                   }`}
@@ -263,7 +284,7 @@ export default function AdminAlertSources() {
           )}
         </aside>
 
-        <section className={`flex-1 min-w-0 ${selectedId ? "block" : "hidden lg:block"}`}>
+        <section className={`flex-1 min-w-0 ${selectedId ? "block" : "hidden 2xl:block"}`}>
           {!detail ? (
             <div className="bg-surface border border-border rounded-lg p-8 text-sm text-fg-dim italic text-center">
               Select a source on the left, or create a new one.
@@ -274,7 +295,9 @@ export default function AdminAlertSources() {
               projects={projects}
               presets={presets}
               adapters={adapters}
-              onBack={() => setSelectedId(null)}
+              sources={sources}
+              onSelect={selectSource}
+              onBack={() => selectSource(null)}
               onPatch={(patch) => patchSource(detail.id, patch)}
               onRotate={() => rotateToken(detail.id)}
               onDelete={() => deleteSource(detail.id)}
@@ -287,6 +310,24 @@ export default function AdminAlertSources() {
         </section>
       </div>
     </div>
+  );
+}
+
+// Footnote required by Action1 trademark-use permission. Rendered at
+// the bottom of the Action1 source detail view only (vendor-specific
+// scope), not on the integrations index.
+function Action1Disclaimer() {
+  return (
+    <p className="text-[11px] leading-relaxed text-fg-dim pt-6 border-t border-border">
+      <span aria-hidden="true">* </span>
+      This integration is an independent community project and is not
+      affiliated with, endorsed by, sponsored by, or supported by Action1
+      Corporation. Action1 has not reviewed, tested, certified, or audited
+      this integration for security, performance, or compliance purposes
+      and is not responsible for its operation, availability, or use.
+      &ldquo;Action1&rdquo; is a trademark of Action1 Corporation and is
+      used solely to identify compatibility with the Action1 platform.
+    </p>
   );
 }
 
@@ -513,24 +554,41 @@ function NewTokenBanner({ token, source, onDismiss }) {
         <CopyButton value={token} />
       </div>
       {source && (
-        <div className="text-xs text-amber-800 dark:text-amber-300">
-          Webhook URL:{" "}
-          <code className="font-mono">
-            {window.location.origin}/api/webhooks/{source.preset}/{token}
-          </code>
+        <div className="text-xs text-amber-800 dark:text-amber-300 space-y-1">
+          <div className="flex items-center gap-2">
+            <span>Webhook URL:</span>
+            <code className="font-mono break-all">
+              {window.location.origin}/api/webhooks/in/{token}
+            </code>
+            <CopyButton value={`${window.location.origin}/api/webhooks/in/${token}`} />
+          </div>
+          <div>
+            The token is the last segment of the URL; no header needed.
+            {source.preset === "uptime-kuma" && (
+              <> For Uptime Kuma on the same Docker host, post to{" "}
+                <code className="font-mono break-all">http://resolvd-nginx/api/webhooks/in/{token}</code>{" "}
+                so alerts stay off the tunnel.</>
+            )}
+          </div>
         </div>
       )}
     </div>
   );
 }
 
-function SourceDetail({ source, projects, presets, adapters, onBack, onPatch, onRotate, onDelete, onReload }) {
+function SourceDetail({ source, sources = [], onSelect, projects, presets, adapters, onBack, onPatch, onRotate, onDelete, onReload }) {
   const [name, setName] = useState(source.name);
   const [projectId, setProjectId] = useState(source.default_project_id || "");
   const [autoResolve, setAutoResolve] = useState(!!source.auto_resolve_on_recovery);
   const [enabled, setEnabled] = useState(!!source.enabled);
   const [sevText, setSevText] = useState(JSON.stringify(source.severity_map || {}, null, 2));
   const [apiUrl, setApiUrl] = useState(source.api_url || "");
+  const [webUrl, setWebUrl] = useState(source.web_url || "");
+  // Kuma: the setup box owns the 'status' capability so ticking it and
+  // hitting that box's Save can't silently drop the toggle.
+  const hasStatusCap = (src) => !Array.isArray(src.capabilities) || !src.capabilities.length
+    || src.capabilities.includes("status");
+  const [liveStatus, setLiveStatus] = useState(hasStatusCap(source));
   const [apiTokenInput, setApiTokenInput] = useState("");
   const [apiClientId, setApiClientId] = useState(source.api_client_id || "");
   const [pollInterval, setPollInterval] = useState(
@@ -539,6 +597,13 @@ function SourceDetail({ source, projects, presets, adapters, onBack, onPatch, on
   const [affectInventory, setAffectInventory] = useState(!!source.affect_inventory);
   const [inventoryCompanyId, setInventoryCompanyId] = useState(
     source.inventory_company_id ? String(source.inventory_company_id) : ""
+  );
+  const [dedupEnabled, setDedupEnabled] = useState(source.dedup_alert_enabled !== false);
+  const [dedupDecayDays, setDedupDecayDays] = useState(
+    source.dedup_alert_decay_days != null ? String(source.dedup_alert_decay_days) : "7"
+  );
+  const [defaultDelay, setDefaultDelay] = useState(
+    source.default_delay_minutes != null ? String(source.default_delay_minutes) : "0"
   );
   const [companies, setCompanies] = useState([]);
   useEffect(() => {
@@ -557,6 +622,8 @@ function SourceDetail({ source, projects, presets, adapters, onBack, onPatch, on
     setEnabled(!!source.enabled);
     setSevText(JSON.stringify(source.severity_map || {}, null, 2));
     setApiUrl(source.api_url || "");
+    setWebUrl(source.web_url || "");
+    setLiveStatus(hasStatusCap(source));
     setApiTokenInput("");
     setApiClientId(source.api_client_id || "");
     setPollInterval(
@@ -564,6 +631,9 @@ function SourceDetail({ source, projects, presets, adapters, onBack, onPatch, on
     );
     setAffectInventory(!!source.affect_inventory);
     setInventoryCompanyId(source.inventory_company_id ? String(source.inventory_company_id) : "");
+    setDedupEnabled(source.dedup_alert_enabled !== false);
+    setDedupDecayDays(source.dedup_alert_decay_days != null ? String(source.dedup_alert_decay_days) : "7");
+    setDefaultDelay(source.default_delay_minutes != null ? String(source.default_delay_minutes) : "0");
     setBackfillResult(null);
   }, [source.id]);
 
@@ -585,14 +655,23 @@ function SourceDetail({ source, projects, presets, adapters, onBack, onPatch, on
       enabled,
       severity_map: parsedSev,
       api_url: apiUrl.trim() || null,
+      web_url: webUrl.trim() || null,
       api_client_id: apiClientId.trim() || null,
       poll_interval_minutes: Math.max(0, Math.min(60, Number(pollInterval) || 0)),
       affect_inventory: affectInventory,
       inventory_company_id: inventoryCompanyId ? Number(inventoryCompanyId) : null,
+      dedup_alert_enabled: dedupEnabled,
+      dedup_alert_decay_days: Math.max(0, Math.min(365, Number(dedupDecayDays) || 0)),
+      default_delay_minutes: Math.max(0, Math.min(7 * 24 * 60, Number(defaultDelay) || 0)),
     };
     // Only include api_token if the input has a value — empty string means
     // "leave alone". Set to null explicitly via the Clear button.
     if (apiTokenInput.trim()) patch.api_token = apiTokenInput.trim();
+    if (source.preset === "uptime-kuma") {
+      const caps = (Array.isArray(source.capabilities) && source.capabilities.length
+        ? source.capabilities : ["alerts"]).filter((c) => c !== "status");
+      patch.capabilities = liveStatus ? [...caps, "status"] : caps;
+    }
     await onPatch(patch);
     setApiTokenInput("");
     toast.success("Saved");
@@ -628,9 +707,21 @@ function SourceDetail({ source, projects, presets, adapters, onBack, onPatch, on
 
   return (
     <div className="bg-surface border border-border rounded-lg p-4 space-y-4">
-      <button onClick={onBack} className="lg:hidden text-xs text-fg-muted hover:text-fg">
-        ← Back to list
-      </button>
+      <div className="2xl:hidden flex items-center gap-3 flex-wrap">
+        <button onClick={onBack} className="text-xs text-fg-muted hover:text-fg">
+          ← All integrations
+        </button>
+        {sources.length > 1 && (
+          <select
+            value={source.id}
+            onChange={(e) => onSelect(Number(e.target.value))}
+            aria-label="Switch integration"
+            className="bg-surface-2 border border-border rounded px-2 py-1 text-xs max-w-[16rem]"
+          >
+            {sources.map((s) => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+        )}
+      </div>
 
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
@@ -695,6 +786,23 @@ function SourceDetail({ source, projects, presets, adapters, onBack, onPatch, on
           />
           Enabled (incoming alerts accepted)
         </label>
+        <label className="text-xs text-fg-muted flex flex-col gap-1 sm:col-span-2">
+          Delay ticket creation (minutes)
+          <input
+            type="number"
+            min="0"
+            max="10080"
+            value={defaultDelay}
+            onChange={(e) => setDefaultDelay(e.target.value)}
+            className="bg-surface-2 border border-border rounded px-2 py-1 text-sm font-mono w-24"
+          />
+          <span className="text-[11px] text-fg-dim">
+            0 = fire immediately. Applies to every promotion rule on this
+            source that doesn't set its own delay. If the alert recovers
+            before the window elapses, no ticket is created. A rule's own
+            Delay (below) overrides this baseline upward.
+          </span>
+        </label>
       </div>
 
       <div className="space-y-1.5 pt-3 border-t border-border">
@@ -746,6 +854,73 @@ function SourceDetail({ source, projects, presets, adapters, onBack, onPatch, on
             </code>
             <CopyButton value={`${window.location.origin}/api/webhooks/in/<your-token>`} />
           </div>
+        </div>
+      )}
+
+      {source.preset === "uptime-kuma" && (
+        <div className="space-y-2 pt-3 border-t border-border">
+          <div className="text-sm font-medium text-fg">Uptime Kuma setup</div>
+          <p className="text-xs text-fg-muted">
+            In Kuma: Settings → Notifications → Setup Notification → type{" "}
+            <b>Webhook</b>, Request Body <b>application/json</b>, Post URL = the
+            generic intake URL above with this source's token. Attach it to
+            individual monitors, not to groups, or a group and its child will
+            each open a ticket. DOWN opens a ticket, UP resolves it; Kuma sends
+            nothing during its maintenance windows.
+          </p>
+          <p className="text-xs text-fg-muted">
+            <b>Live status</b> (status pages, uptime, monitored-item discovery):
+            create a key in Kuma under Settings → API Keys, paste it below,
+            tick “Poll live status”, and Save. Resolvd reads Kuma's{" "}
+            <code>/metrics</code> about once a minute.
+            {source.api_last_error && (
+              <span className="block text-red-600 mt-1">Last poll error: {source.api_last_error}</span>
+            )}
+            {source.last_status_poll_at && !source.api_last_error && (
+              <span className="block mt-1">Last poll: <HybridTime value={source.last_status_poll_at} /></span>
+            )}
+          </p>
+          <label className="flex items-center gap-2 text-sm text-fg">
+            <input type="checkbox" checked={liveStatus} onChange={(e) => setLiveStatus(e.target.checked)} />
+            Poll live status from Kuma
+          </label>
+          <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <label className="text-xs text-fg-muted flex flex-col gap-1">
+              Kuma API base (polled from the Resolvd server)
+              <input
+                value={apiUrl}
+                onChange={(e) => setApiUrl(e.target.value)}
+                placeholder="http://uptime-kuma:3001"
+                className="bg-surface-2 border border-border rounded px-2 py-1 text-sm font-mono"
+              />
+            </label>
+            <label className="text-xs text-fg-muted flex flex-col gap-1">
+              Kuma web URL (for "Open in Uptime Kuma" links)
+              <input
+                value={webUrl}
+                onChange={(e) => setWebUrl(e.target.value)}
+                placeholder="https://uptime-kuma.example.com"
+                className="bg-surface-2 border border-border rounded px-2 py-1 text-sm font-mono"
+              />
+            </label>
+            <label className="text-xs text-fg-muted flex flex-col gap-1">
+              Kuma API key
+              <div className="flex items-center gap-1.5">
+                <input
+                  type="password"
+                  value={apiTokenInput}
+                  onChange={(e) => setApiTokenInput(e.target.value)}
+                  placeholder={source.api_token_set ? "•••••• (set)" : "paste key"}
+                  className="flex-1 bg-surface-2 border border-border rounded px-2 py-1 text-sm font-mono"
+                />
+                {source.api_token_set && (
+                  <button type="button" onClick={clearApiToken}
+                    className="text-xs text-red-600 hover:underline whitespace-nowrap">Clear</button>
+                )}
+              </div>
+            </label>
+          </div>
+          <button onClick={saveCore} className="btn btn-primary btn-sm">Save</button>
         </div>
       )}
 
@@ -833,6 +1008,29 @@ function SourceDetail({ source, projects, presets, adapters, onBack, onPatch, on
               Feed inventory module (sync managed endpoints as assets on each poll)
             </label>
           )}
+
+          <div className="bg-surface-2/40 border border-border rounded p-3 space-y-2">
+            <label className="text-xs text-fg-muted inline-flex items-center gap-2">
+              <input type="checkbox"
+                checked={dedupEnabled}
+                onChange={(e) => setDedupEnabled(e.target.checked)} />
+              <span>Post a dedup note on newly created tickets</span>
+            </label>
+            <label className="text-xs text-fg-muted flex items-center gap-2">
+              <span>Ignore tickets older than</span>
+              <input type="number" min="0" max="365" value={dedupDecayDays}
+                onChange={(e) => setDedupDecayDays(e.target.value)}
+                disabled={!dedupEnabled}
+                className="bg-surface-2 border border-border rounded px-2 py-1 text-sm font-mono w-20 disabled:opacity-50" />
+              <span>day(s) (0 = disable)</span>
+            </label>
+            <p className="text-[11px] text-fg-dim">
+              When the ingest path creates a ticket from an alert, it checks for recent tickets
+              from the same submitter in the same project. Recent consumable dispatches for the
+              same part are flagged with a 📦 marker. The comment is informational — no
+              auto-merge happens.
+            </p>
+          </div>
 
           {source.preset === "action1" && affectInventory && (
             <label className="text-xs text-fg-muted flex flex-col gap-1 max-w-md">
@@ -1055,6 +1253,8 @@ function SourceDetail({ source, projects, presets, adapters, onBack, onPatch, on
 
       <AlertRulesSection source={source} />
 
+      <MonitoredItemsSection source={source} projects={projects} />
+
       <InboundEventsSection source={source} />
 
       <div className="space-y-2 pt-3 border-t border-border">
@@ -1096,6 +1296,8 @@ function SourceDetail({ source, projects, presets, adapters, onBack, onPatch, on
           </div>
         )}
       </div>
+
+      {source.preset === "action1" && <Action1Disclaimer />}
     </div>
   );
 }
@@ -1105,7 +1307,7 @@ function SourceDetail({ source, projects, presets, adapters, onBack, onPatch, on
 // inventory-enabled — otherwise the data path doesn't exist.
 const MAPPABLE_COLUMNS = [
   "hostname", "serial", "mac", "manufacturer", "model",
-  "os", "os_version", "cpu", "ip_address",
+  "os", "os_version", "cpu", "ip_address", "asset_tag",
 ];
 
 function AttributeMappingSection({ source, onReload }) {
@@ -1371,6 +1573,7 @@ const ALL_CAPABILITIES = [
   { value: "software",        label: "Software",         hint: "Per-device installed software inventory." },
   { value: "vulnerabilities", label: "Vulnerabilities",  hint: "Per-CVE rows where the vendor exposes them." },
   { value: "companies",       label: "Companies",        hint: "Map vendor orgs / customers to Resolvd companies." },
+  { value: "status",          label: "Live status",      hint: "Poll monitor state + uptime for status pages." },
 ];
 
 function CapabilitiesSection({ source, adapters, onPatch, onReload }) {
@@ -1985,6 +2188,207 @@ function AlertRulesSection({ source }) {
   );
 }
 
+// Things this integration watches, discovered as alerts arrive. Pinning
+// an item to a project routes its tickets there, overriding rule
+// overrides and the source's default project.
+function MonitoredItemsSection({ source, projects }) {
+  const [items, setItems] = useState([]);
+  const [loading, setLoading] = useState(true);
+  const [busyId, setBusyId] = useState(null);
+  const [query, setQuery] = useState("");
+  const [show, setShow] = useState("all");
+
+  // Only the first load shows the placeholder; refreshes after an edit
+  // swap rows in place so the table (and the scroll position) holds.
+  async function load({ quiet = false } = {}) {
+    if (!quiet) setLoading(true);
+    try {
+      const r = await api.get(`/api/alert-sources/${source.id}/items`);
+      setItems(Array.isArray(r) ? r : []);
+    } catch (e) { if (quiet) toast.error(e.message); else setItems([]); }
+    finally { if (!quiet) setLoading(false); }
+  }
+  useEffect(() => { load(); /* eslint-disable-next-line react-hooks/exhaustive-deps */ }, [source.id]);
+
+  const defaultProject = projects.find((p) => p.id === source.default_project_id);
+
+  async function patchItem(item, body, msg) {
+    setBusyId(item.id);
+    try {
+      await api.patch(`/api/alert-sources/${source.id}/items/${item.id}`, body);
+      toast.success(msg);
+      await load({ quiet: true });
+    } catch (e) { toast.error(e.message); }
+    finally { setBusyId(null); }
+  }
+  function pin(item, projectId) {
+    return patchItem(item, { project_id: projectId ? Number(projectId) : null }, projectId ? "Item pinned" : "Pin cleared");
+  }
+  const services = items.filter((i) => i.item_type === "group" || items.some((c) => c.parent_item_id === i.id));
+  const labelById = Object.fromEntries(items.map((i) => [i.id, i.label || i.item_key]));
+  const isService = (i) => services.some((sv) => sv.id === i.id);
+
+  // Text matches the item's own name/key/detail or its service's name,
+  // so typing a service name shows the service with its components.
+  const q = query.trim().toLowerCase();
+  const visible = items.filter((it) => {
+    if (show === "services" && !isService(it)) return false;
+    if (show === "unassigned" && (isService(it) || it.parent_item_id)) return false;
+    if (show === "components" && !it.parent_item_id) return false;
+    if (show === "problems" && (!it.active || it.last_state === "up")) return false;
+    if (!q) return true;
+    return [it.label, it.item_key, it.detail, it.parent_item_id ? labelById[it.parent_item_id] : null]
+      .some((v) => v && String(v).toLowerCase().includes(q));
+  });
+
+  async function remove(item) {
+    if (!window.confirm(`Forget "${item.label || item.item_key}"? It reappears (unpinned) on its next alert.`)) return;
+    try {
+      await api.delete(`/api/alert-sources/${source.id}/items/${item.id}`);
+      toast.success("Item removed");
+      await load({ quiet: true });
+    } catch (e) { toast.error(e.message); }
+  }
+
+  return (
+    <div className="space-y-2 pt-3 border-t border-border">
+      <div className="text-sm font-medium text-fg">Monitored items</div>
+      <p className="text-xs text-fg-muted">
+        Discovered automatically the first time an alert arrives for them.
+        Pin an item to a project to send its tickets there instead of the
+        default ({defaultProject ? `${defaultProject.prefix} · ${defaultProject.name}` : "source default"}).
+        A pin beats any rule's project override; a service's pin covers its
+        components unless they have their own. Components roll up into their
+        service on status pages: a <b>primary</b> component down takes the
+        service down, any other component down is a partial outage. Uptime
+        Kuma groups are services; components join them automatically on
+        their first alert, or set them here.
+      </p>
+      {loading ? (
+        <div className="text-xs text-fg-dim italic">Loading items…</div>
+      ) : items.length === 0 ? (
+        <div className="text-xs text-fg-dim italic">No items discovered yet.</div>
+      ) : (
+        <>
+        <div className="flex items-center gap-2 flex-wrap">
+          <input
+            type="search"
+            value={query}
+            onChange={(e) => setQuery(e.target.value)}
+            placeholder="Filter items…"
+            aria-label="Filter monitored items"
+            className="flex-1 min-w-[12rem] max-w-sm bg-surface-2 border border-border rounded px-2 py-1 text-xs"
+          />
+          <select
+            value={show}
+            onChange={(e) => setShow(e.target.value)}
+            aria-label="Show"
+            className="bg-surface-2 border border-border rounded px-2 py-1 text-xs"
+          >
+            <option value="all">All items</option>
+            <option value="unassigned">Not in a service</option>
+            <option value="services">Services</option>
+            <option value="components">Components</option>
+            <option value="problems">Not up</option>
+          </select>
+          <span className="text-xs text-fg-dim">
+            {visible.length === items.length ? `${items.length} items` : `${visible.length} of ${items.length}`}
+          </span>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full text-xs">
+            <thead className="text-fg-muted">
+              <tr>
+                <th className="text-left py-1 px-2">Item</th>
+                <th className="text-left py-1 px-2">State</th>
+                <th className="text-left py-1 px-2">Last seen</th>
+                <th className="text-left py-1 px-2">Uptime 24h</th>
+                <th className="text-left py-1 px-2">Alerts</th>
+                <th className="text-left py-1 px-2">Service</th>
+                <th className="text-left py-1 px-2">Project</th>
+                <th className="text-right py-1 px-2"></th>
+              </tr>
+            </thead>
+            <tbody>
+              {visible.length === 0 && (
+                <tr><td colSpan={8} className="py-3 px-2 text-fg-dim italic">No items match.</td></tr>
+              )}
+              {visible.map((it) => (
+                <tr key={it.id}>
+                  <td className={`py-1 px-2 ${it.parent_item_id ? "pl-6" : ""}`}>
+                    <div className="text-fg">
+                      {it.parent_item_id ? "↳ " : ""}{it.label || it.item_key}
+                      {it.item_type === "group" && (
+                        <span className="ml-1.5 text-[10px] uppercase tracking-wide text-fg-dim">service</span>
+                      )}
+                    </div>
+                    {it.detail && <div className="text-fg-dim font-mono">{it.detail}</div>}
+                  </td>
+                  <td className="py-1 px-2">
+                    <span className={`inline-flex items-center gap-1.5 ${stateInfo(it.last_state).text}`}>
+                      <StateDot state={it.active ? (it.last_state || "unknown") : "unknown"} />
+                      {it.active ? (it.last_state || "—") : "not reported"}
+                    </span>
+                  </td>
+                  <td className="py-1 px-2 whitespace-nowrap"><HybridTime value={it.polled_at || it.last_seen_at} /></td>
+                  <td className="py-1 px-2 font-mono">{fmtUptime(it.uptime_1d)}</td>
+                  <td className="py-1 px-2 font-mono">{it.alert_count}</td>
+                  <td className="py-1 px-2 whitespace-nowrap">
+                    {it.item_type === "group" ? (
+                      <span className="text-fg-dim">—</span>
+                    ) : (
+                      <div className="flex items-center gap-2">
+                        <select
+                          value={it.parent_item_id || ""}
+                          disabled={busyId === it.id}
+                          onChange={(e) => patchItem(it,
+                            { parent_item_id: e.target.value ? Number(e.target.value) : null },
+                            e.target.value ? "Added to service" : "Removed from service")}
+                          className="bg-surface-2 border border-border rounded px-2 py-1 text-xs max-w-[12rem]"
+                        >
+                          <option value="">None</option>
+                          {services.filter((sv) => sv.id !== it.id).map((sv) => (
+                            <option key={sv.id} value={sv.id}>{labelById[sv.id]}</option>
+                          ))}
+                        </select>
+                        {it.parent_item_id && (
+                          <label className="flex items-center gap-1 text-fg-muted" title="Service is down when this is down">
+                            <input type="checkbox" checked={!!it.is_primary} disabled={busyId === it.id}
+                              onChange={(e) => patchItem(it, { is_primary: e.target.checked },
+                                e.target.checked ? "Marked primary" : "Primary cleared")} />
+                            Primary
+                          </label>
+                        )}
+                      </div>
+                    )}
+                  </td>
+                  <td className="py-1 px-2">
+                    <select
+                      value={it.project_id || ""}
+                      disabled={busyId === it.id}
+                      onChange={(e) => pin(it, e.target.value)}
+                      className="bg-surface-2 border border-border rounded px-2 py-1 text-xs"
+                    >
+                      <option value="">Default{defaultProject ? ` (${defaultProject.prefix})` : ""}</option>
+                      {projects.map((p) => (
+                        <option key={p.id} value={p.id}>{p.prefix} · {p.name}</option>
+                      ))}
+                    </select>
+                  </td>
+                  <td className="py-1 px-2 text-right">
+                    <button onClick={() => remove(it)} className="text-red-500 hover:underline">Forget</button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function summarizeMatch(c) {
   if (!c) return "(any)";
   const bits = [];
@@ -2019,7 +2423,10 @@ function RuleEditor({ draft, setDraft, onSave, onCancel, saving }) {
         <span className="block text-[11px] text-fg-muted">{label}</span>
         <input
           value={Array.isArray(m[key]) ? m[key].join(", ") : (m[key] || "")}
-          onChange={(e) => setM({ [key]: e.target.value.split(",").map((s) => s.trim()).filter(Boolean) })}
+          // Keep the raw text while typing; splitting here ate trailing
+          // commas before the next term could be typed. normalizeMatch
+          // splits on save.
+          onChange={(e) => setM({ [key]: e.target.value })}
           placeholder={placeholder}
           className="w-full bg-surface-2 border border-border rounded px-2 py-1 text-xs"
         />

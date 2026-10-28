@@ -400,7 +400,27 @@ async function initSchema() {
     // Used together with semantic_tag='resolved_pending_close' to
     // auto-promote tickets to Closed after N days in that state.
     await client.query(`ALTER TABLE statuses ADD COLUMN IF NOT EXISTS auto_close_after_days INTEGER`);
+    // Per-status toggle: include in the comment composer "Post & …"
+    // dropdown. Default TRUE so existing deployments keep showing
+    // everything. Admin can uncheck statuses that shouldn't be reachable
+    // via the comment shortcut (e.g. Open, Reopened, internal-only
+    // workflow stops).
+    await client.query(`ALTER TABLE statuses ADD COLUMN IF NOT EXISTS show_in_post_actions BOOLEAN NOT NULL DEFAULT TRUE`);
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS resolved_at TIMESTAMPTZ`);
+    // One-shot backfill: any ticket in a terminal status (Closed, etc.)
+    // with resolved_at IS NULL gets stamped to updated_at. Without this,
+    // SLA tickWarnings / tickBreaches keep matching closed tickets
+    // (their filter is `resolved_at IS NULL`) and re-fire on every tick
+    // after a rebuild. Idempotent — re-runs hit zero rows.
+    await client.query(`
+      UPDATE tickets t
+         SET resolved_at = COALESCE(t.updated_at, NOW())
+        FROM statuses s
+       WHERE s.kind = 'internal'
+         AND s.name = t.internal_status
+         AND s.is_terminal = TRUE
+         AND t.resolved_at IS NULL
+    `).catch((err) => console.error('resolved_at backfill failed:', err.message));
     // Optional follow-up reminder set by an admin while a ticket sits in
     // a resolved_pending_close state. Cleared on status change away from
     // that state and when the reminder has fired.
@@ -432,6 +452,17 @@ async function initSchema() {
     await client.query(`
       INSERT INTO statuses (kind, name, color, sort_order, is_initial, is_terminal, is_blocker, semantic_tag)
       VALUES ('internal', 'On Hold', '#f59e0b', 33, FALSE, FALSE, TRUE, 'on_hold')
+      ON CONFLICT (kind, name) DO NOTHING
+    `);
+    // Acknowledged: the status alert-sourced tickets land in when an
+    // admin tries to Close them while the underlying alert is still
+    // firing. Distinct from Suppressed (which hides) — the ticket
+    // stays visible on boards but signals "we see it, working on it
+    // or accepting it as known". A subsequent refire of the same alert
+    // event id will reopen the ticket out of this state.
+    await client.query(`
+      INSERT INTO statuses (kind, name, color, sort_order, is_initial, is_terminal, is_blocker, semantic_tag)
+      VALUES ('internal', 'Acknowledged', '#0ea5e9', 25, FALSE, FALSE, FALSE, 'acknowledged')
       ON CONFLICT (kind, name) DO NOTHING
     `);
 
@@ -723,6 +754,24 @@ async function initSchema() {
     // adding vendor contacts. Comma-separated local-parts (e.g. "ops,it").
     await client.query(`ALTER TABLE auth_settings ADD COLUMN IF NOT EXISTS email_blocklist TEXT NOT NULL DEFAULT ''`);
 
+    // Gate: should auto-provision mint a local-only Submitter account
+    // when an inbound email comes from an address that no configured
+    // directory (Graph / Google) recognises? Default FALSE so the
+    // ingestion mailbox isn't a spam vector — admins flip this on only
+    // when they genuinely accept submissions from arbitrary senders.
+    await client.query(`ALTER TABLE auth_settings ADD COLUMN IF NOT EXISTS allow_email_unknown_users BOOLEAN NOT NULL DEFAULT FALSE`);
+
+    // SLA breach / warning recipient policy. Submitters were getting
+    // looped into every breach email because they auto-follow their own
+    // ticket; the messages were confusing ("your ticket missed its
+    // resolve SLA" reads like a customer-side action item). Default
+    // FALSE excludes them from the flat fanout — admins who want them
+    // looped in route it through an escalation chain `notify_submitter`
+    // action instead, which makes the contract explicit per priority /
+    // project. Flip this to TRUE on tenants who genuinely want every
+    // SLA breach to reach the submitter directly.
+    await client.query(`ALTER TABLE auth_settings ADD COLUMN IF NOT EXISTS sla_notify_submitter_default BOOLEAN NOT NULL DEFAULT FALSE`);
+
     // Per-comment "share with vendor" toggle. Default FALSE keeps internal
     // discussion internal even when ticket has external contacts attached.
     // The template renderer (services/emailTemplate.js) filters
@@ -782,6 +831,25 @@ async function initSchema() {
     // comment never appears in two days' worth of summaries.
     await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS digested_at TIMESTAMPTZ`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_comments_pending_digest ON comments(created_at) WHERE is_muted = TRUE AND digested_at IS NULL`);
+    // OOO bounceback comments are noise in the muted-digest — the digest
+    // exists to surface vendor replies a follower might want to unmute,
+    // and an out-of-office auto-responder never qualifies. New OOO
+    // inserts pre-stamp digested_at at create time (inboundProcessor),
+    // but anything that landed before that change is still un-digested.
+    // Backfill by matching muted comments to their ooo_reply_suppressed
+    // audit row (audit fires immediately after the comment insert, so a
+    // 10-second window comfortably covers the gap without false matches
+    // from other ooo events on the same ticket).
+    await client.query(`
+      UPDATE comments c
+         SET digested_at = NOW()
+        FROM audit_log al
+       WHERE c.is_muted = TRUE
+         AND c.digested_at IS NULL
+         AND al.ticket_id = c.ticket_id
+         AND al.action = 'ooo_reply_suppressed'
+         AND al.created_at BETWEEN c.created_at AND c.created_at + INTERVAL '10 seconds'
+    `);
 
     // Workspace-level scheduling for the muted-digest job. The scheduler
     // checks every 5 minutes and runs once the wall-clock has crossed
@@ -861,6 +929,11 @@ async function initSchema() {
     await client.query(`ALTER TABLE email_backend_accounts ADD COLUMN IF NOT EXISTS inbox_subscription_state TEXT`);
     await client.query(`ALTER TABLE email_backend_accounts ADD COLUMN IF NOT EXISTS inbox_subscription_expires_at TIMESTAMPTZ`);
     await client.query(`ALTER TABLE email_backend_accounts ADD COLUMN IF NOT EXISTS inbox_last_renewed_at TIMESTAMPTZ`);
+    // High-water mark of the last successful Inbox catch-up sweep. Lets the
+    // hourly polling fallback (used while a subscription can't be
+    // recreated, e.g. edge 403 on Graph validation) resume from where it
+    // left off instead of rescanning the full lookback window every tick.
+    await client.query(`ALTER TABLE email_backend_accounts ADD COLUMN IF NOT EXISTS inbox_last_swept_at TIMESTAMPTZ`);
 
     await client.query(`
       INSERT INTO system_jobs (name) VALUES ('inbox_subscription_renewal')
@@ -928,6 +1001,29 @@ async function initSchema() {
     // are linked — avoids the race where vendor email leaves before the
     // attachments land. NULL when the comment fired vendor email inline.
     await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS vendor_actor_id INTEGER REFERENCES users(id) ON DELETE SET NULL`);
+    // Per-attachment "delivered to vendor" stamp. Vendor-bound outbound
+    // checks this so a file uploaded during an internal back-and-forth
+    // gets included the first time someone escalates the ticket to the
+    // vendor — instead of being filtered out because it wasn't linked to
+    // the specific vendor-visible comment that triggered the send.
+    // Stamped after a successful send (sent>0). Existing rows backfill
+    // to NULL = unsent.
+    await client.query(`ALTER TABLE attachments ADD COLUMN IF NOT EXISTS sent_to_vendor_at TIMESTAMPTZ`);
+    // Pre-stamp historical files so the first vendor send after this
+    // migration doesn't dump every old internal-only file at the vendor.
+    // We mark anything already on the ticket as "already sent" when the
+    // ticket has vendor_notified_at set (vendor has been engaged). Tickets
+    // with no prior vendor contact leave attachments unsent — the next
+    // vendor escalation will then include them all, which is the desired
+    // behavior for a brand-new vendor handoff.
+    await client.query(`
+      UPDATE attachments a
+         SET sent_to_vendor_at = t.vendor_notified_at
+        FROM tickets t
+       WHERE a.ticket_id = t.id
+         AND a.sent_to_vendor_at IS NULL
+         AND t.vendor_notified_at IS NOT NULL
+    `);
     await client.query(`ALTER TABLE companies ADD COLUMN IF NOT EXISTS notification_prefs JSONB NOT NULL DEFAULT '{}'`);
 
     // Seed default templates the first time the table is created.
@@ -985,11 +1081,21 @@ async function initSchema() {
 
     // Per-account regex patterns applied to inbound mail bodies before
     // ingestion. Lets admins strip recipient banners injected by mail
-    // security gateways (Inky, Mimecast, Proofpoint, Avanan) when they
+    // security gateways (Mimecast, Proofpoint, Avanan) when they
     // can't suppress the banner upstream. Patterns are POSIX-style and
     // applied with case-insensitive multi-line flags. Empty array =
     // no per-account stripping.
     await client.query(`ALTER TABLE email_backend_accounts ADD COLUMN IF NOT EXISTS inbound_banner_strip_patterns TEXT[] NOT NULL DEFAULT '{}'`);
+
+    // v0.8.0 — default landing project for multi-scoped inboxes. When
+    // an inbox is scoped to >1 project, a #PREFIX-less email currently
+    // falls to the manual queue. Admins can pin a default landing
+    // project here; the inbound processor uses it as the implicit
+    // route when no prefix is given. Must be among the account's
+    // approved + recv_enabled scopes — enforced when the column is
+    // set, not at lookup time, so a later scope removal degrades
+    // gracefully to "no route".
+    await client.query(`ALTER TABLE email_backend_accounts ADD COLUMN IF NOT EXISTS default_inbound_project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL`);
 
     // Many-to-many scope between email accounts and projects. An account
     // can serve N projects; a project can be served by N accounts.
@@ -1092,6 +1198,19 @@ async function initSchema() {
     // ticks. last_poll_at marks the most recent attempt (success or fail).
     await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS poll_interval_minutes INTEGER NOT NULL DEFAULT 0`);
     await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS last_poll_at TIMESTAMPTZ`);
+    // Dedup note on alert-sourced ticket creation. When enabled, the
+    // ingest path posts a system comment on the new ticket listing
+    // recent tickets from the same submitter / same consumable that
+    // could be the same physical problem. decay_days bounds the lookup
+    // window — set to 0 to disable independently of the toggle.
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS dedup_alert_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS dedup_alert_decay_days INTEGER NOT NULL DEFAULT 7`);
+    // Integration-wide promotion delay. Applies to every create_ticket
+    // rule on this source that doesn't set its own delay_minutes (a
+    // rule's own delay overrides this baseline upward). 0 = promote
+    // immediately. Lets a whole noisy source defer ticket creation so
+    // alerts that self-heal within the window never spawn a ticket.
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS default_delay_minutes INTEGER NOT NULL DEFAULT 0`);
     // When enabled, the source also feeds the inventory module. Multiple
     // sources can feed inventory simultaneously; phase 2 adds a priority
     // list for dedup. For now the latest write wins per (source_system,
@@ -1242,15 +1361,9 @@ async function initSchema() {
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_software_aliases_priority ON software_aliases(priority, id)`);
 
-    // asset_software gains canonical_name + canonical_vendor. Nullable
-    // by design — when no alias matches, the raw name IS the canonical
-    // (the UI handles the fallback). last_alias_id back-references the
-    // row that won the match so the admin can audit and a deleted /
-    // edited alias can trigger a resync.
-    await client.query(`ALTER TABLE asset_software ADD COLUMN IF NOT EXISTS canonical_name TEXT`);
-    await client.query(`ALTER TABLE asset_software ADD COLUMN IF NOT EXISTS canonical_vendor TEXT`);
-    await client.query(`ALTER TABLE asset_software ADD COLUMN IF NOT EXISTS last_alias_id INTEGER REFERENCES software_aliases(id) ON DELETE SET NULL`);
-    await client.query(`CREATE INDEX IF NOT EXISTS idx_asset_software_canonical ON asset_software(LOWER(canonical_name)) WHERE canonical_name IS NOT NULL`);
+    // The canonical_* ALTERs on asset_software live further down — after
+    // the CREATE TABLE IF NOT EXISTS asset_software statement — so a
+    // fresh DB doesn't hit "relation asset_software does not exist".
 
     // pg_trgm is needed for the "near-duplicates" suggestion endpoint
     // (similarity() function). Enabling it is cheap and idempotent.
@@ -1298,6 +1411,8 @@ async function initSchema() {
     // from the source system's organization label when names match).
     // Both nullable; matcher leaves them NULL when ambiguous so the
     // admin can correct manually later.
+    await client.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS asset_tag TEXT`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_assets_asset_tag ON assets(asset_tag) WHERE asset_tag IS NOT NULL`);
     await client.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS linked_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL`);
     await client.query(`ALTER TABLE assets ADD COLUMN IF NOT EXISTS company_id INTEGER REFERENCES companies(id) ON DELETE SET NULL`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_assets_linked_user ON assets(linked_user_id) WHERE linked_user_id IS NOT NULL`);
@@ -1376,6 +1491,17 @@ async function initSchema() {
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_asset_software_asset ON asset_software(asset_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_asset_software_name ON asset_software(LOWER(name))`);
+
+    // asset_software gains canonical_name + canonical_vendor. Nullable
+    // by design — when no alias matches, the raw name IS the canonical
+    // (the UI handles the fallback). last_alias_id back-references the
+    // row that won the match so the admin can audit and a deleted /
+    // edited alias can trigger a resync. Lives here (after the CREATE
+    // TABLE above) so a fresh DB doesn't trip on a missing table.
+    await client.query(`ALTER TABLE asset_software ADD COLUMN IF NOT EXISTS canonical_name TEXT`);
+    await client.query(`ALTER TABLE asset_software ADD COLUMN IF NOT EXISTS canonical_vendor TEXT`);
+    await client.query(`ALTER TABLE asset_software ADD COLUMN IF NOT EXISTS last_alias_id INTEGER REFERENCES software_aliases(id) ON DELETE SET NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_asset_software_canonical ON asset_software(LOWER(canonical_name)) WHERE canonical_name IS NOT NULL`);
     // One-time backfill from raw_data for existing Action1 rows. Cheap
     // — single UPDATE, only touches rows where the columns are still
     // null. Subsequent syncs keep these fresh.
@@ -1497,10 +1623,10 @@ async function initSchema() {
     await client.query(`
       CREATE TABLE IF NOT EXISTS custom_field_defs (
         id SERIAL PRIMARY KEY,
-        entity_type TEXT NOT NULL CHECK (entity_type IN ('asset', 'ticket')),
+        entity_type TEXT NOT NULL CHECK (entity_type IN ('asset', 'ticket', 'consumable')),
         slug TEXT NOT NULL,
         label TEXT NOT NULL,
-        type TEXT NOT NULL CHECK (type IN ('text', 'number', 'date', 'bool', 'select')),
+        type TEXT NOT NULL CHECK (type IN ('text', 'number', 'date', 'bool', 'select', 'multiselect')),
         options JSONB NOT NULL DEFAULT '[]'::jsonb,
         required BOOLEAN NOT NULL DEFAULT FALSE,
         sort_order INTEGER NOT NULL DEFAULT 0,
@@ -1534,6 +1660,123 @@ async function initSchema() {
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_custom_field_values_asset
       ON custom_field_values(asset_id) WHERE asset_id IS NOT NULL`);
+
+    // ───── Project-scoped custom forms (Phase 1) ─────
+    // Custom fields become optionally project-local: project_id NULL = the
+    // shared global library (legacy + cross-project), project_id set = local
+    // to one project with its slug auto-prefixed by project tag (e.g.
+    // "hr-username") to cut cross-project name collisions. `sensitive` marks
+    // values to encrypt-at-rest + mask in UI. `archived` soft-deletes a def
+    // so historical ticket values survive (we never hard-drop defs in use).
+    await client.query(`ALTER TABLE custom_field_defs ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE`);
+    await client.query(`ALTER TABLE custom_field_defs ADD COLUMN IF NOT EXISTS sensitive BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`ALTER TABLE custom_field_defs ADD COLUMN IF NOT EXISTS archived BOOLEAN NOT NULL DEFAULT FALSE`);
+    // agent_only: hide from the submitter-facing new-ticket form (the field
+    // never renders for non-handlers and is never required of them). Agents
+    // fill it on the ticket detail page; canned responses can still pull the
+    // value via {field.<slug>}.
+    await client.query(`ALTER TABLE custom_field_defs ADD COLUMN IF NOT EXISTS agent_only BOOLEAN NOT NULL DEFAULT FALSE`);
+    // computed: the field's value is derived by evaluating `formula` (a
+    // safe expression over the ticket context — form inputs via
+    // {field.<slug>}, plus {ticket.*}/{submitter.*}/{assignee.*}/{actor.*})
+    // rather than entered by a human. Computed defs are always treated as
+    // agent_only (never on the submitter form) and stored as text. Evaluated
+    // automatically at ticket-create after form values land, and on demand
+    // via POST /api/tickets/:id/recompute-fields. See services/formula.js.
+    await client.query(`ALTER TABLE custom_field_defs ADD COLUMN IF NOT EXISTS computed BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`ALTER TABLE custom_field_defs ADD COLUMN IF NOT EXISTS formula TEXT`);
+    // Widen entity_type on existing installs to allow consumable custom fields
+    // (the inline CHECK above only applies to fresh CREATE TABLE).
+    await client.query(`ALTER TABLE custom_field_defs DROP CONSTRAINT IF EXISTS custom_field_defs_entity_type_check`);
+    await client.query(`ALTER TABLE custom_field_defs ADD CONSTRAINT custom_field_defs_entity_type_check CHECK (entity_type IN ('asset', 'ticket', 'consumable'))`);
+    // Allow the multiselect type on pre-existing installs (CHECK was created
+    // before multiselect existed). Multiselect values are stored as a JSON
+    // array of option values in value_text.
+    await client.query(`ALTER TABLE custom_field_defs DROP CONSTRAINT IF EXISTS custom_field_defs_type_check`);
+    await client.query(`ALTER TABLE custom_field_defs ADD CONSTRAINT custom_field_defs_type_check CHECK (type IN ('text','number','date','bool','select','multiselect'))`);
+    // Replace the global UNIQUE(entity_type, slug) with two partial uniques so
+    // a slug can repeat across projects but stays unique within a scope.
+    await client.query(`ALTER TABLE custom_field_defs DROP CONSTRAINT IF EXISTS custom_field_defs_entity_type_slug_key`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_cfd_global ON custom_field_defs(entity_type, slug) WHERE project_id IS NULL`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_cfd_project ON custom_field_defs(entity_type, slug, project_id) WHERE project_id IS NOT NULL`);
+
+    // Custom field values gain a ticket_id parallel to asset_id (exactly one
+    // set per row). value_text_enc holds the ciphertext for sensitive defs.
+    await client.query(`ALTER TABLE custom_field_values ADD COLUMN IF NOT EXISTS ticket_id INTEGER REFERENCES tickets(id) ON DELETE CASCADE`);
+    await client.query(`ALTER TABLE custom_field_values ADD COLUMN IF NOT EXISTS value_text_enc BYTEA`);
+    // The original inline UNIQUE(def_id, asset_id) can't express "one of
+    // asset/ticket"; swap it for two partial uniques.
+    await client.query(`ALTER TABLE custom_field_values DROP CONSTRAINT IF EXISTS custom_field_values_def_id_asset_id_key`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_cfv_asset ON custom_field_values(def_id, asset_id) WHERE asset_id IS NOT NULL`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_cfv_ticket ON custom_field_values(def_id, ticket_id) WHERE ticket_id IS NOT NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_cfv_ticket ON custom_field_values(ticket_id) WHERE ticket_id IS NOT NULL`);
+    // (custom_field_values.consumable_id is added later — after the consumables
+    // table is created — so its FK target exists.)
+
+    // Category → form → field-binding. A category is a project sub-grouping
+    // ("Service Request", "HR"); a form is a request type ("Onboarding") that
+    // pulls in fields; the binding row carries the per-form `required` flag —
+    // required-ness lives HERE, never on the def, so a field is only mandatory
+    // on the forms that opt in (the anti-bleed guarantee).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ticket_categories (
+        id SERIAL PRIMARY KEY,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(project_id, name)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_categories_project ON ticket_categories(project_id, sort_order, id)`);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ticket_forms (
+        id SERIAL PRIMARY KEY,
+        category_id INTEGER NOT NULL REFERENCES ticket_categories(id) ON DELETE CASCADE,
+        name TEXT NOT NULL,
+        description TEXT,
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(category_id, name)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_forms_category ON ticket_forms(category_id, sort_order, id)`);
+    // Boilerplate that pre-fills the new-ticket Title/Description when this
+    // form is chosen — the structured fields carry the actual request data.
+    await client.query(`ALTER TABLE ticket_forms ADD COLUMN IF NOT EXISTS default_title TEXT`);
+    await client.query(`ALTER TABLE ticket_forms ADD COLUMN IF NOT EXISTS default_description TEXT`);
+    // Optional default form for a category — pre-selected on the new-ticket
+    // form when the category is chosen. Added here (not in the categories
+    // block) because it FKs ticket_forms, which is created just above.
+    await client.query(`ALTER TABLE ticket_categories ADD COLUMN IF NOT EXISTS default_form_id INTEGER REFERENCES ticket_forms(id) ON DELETE SET NULL`);
+    // URL slugs for deep-linkable new-ticket URLs:
+    //   /tickets/new/<project-prefix>/<category-slug>/<form-slug>
+    // Editable; backfilled from the name as kebab-case. Uniqueness is enforced
+    // in the API (within project / within category), not at the DB level, so a
+    // messy backfill can't block boot.
+    await client.query(`ALTER TABLE ticket_categories ADD COLUMN IF NOT EXISTS slug TEXT`);
+    await client.query(`ALTER TABLE ticket_forms ADD COLUMN IF NOT EXISTS slug TEXT`);
+    await client.query(`UPDATE ticket_categories SET slug = NULLIF(trim(both '-' from regexp_replace(lower(name), '[^a-z0-9]+', '-', 'g')), '') WHERE slug IS NULL`);
+    await client.query(`UPDATE ticket_forms SET slug = NULLIF(trim(both '-' from regexp_replace(lower(name), '[^a-z0-9]+', '-', 'g')), '') WHERE slug IS NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_categories_slug ON ticket_categories(project_id, slug)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_forms_slug ON ticket_forms(category_id, slug)`);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ticket_form_fields (
+        id SERIAL PRIMARY KEY,
+        form_id INTEGER NOT NULL REFERENCES ticket_forms(id) ON DELETE CASCADE,
+        field_def_id INTEGER NOT NULL REFERENCES custom_field_defs(id) ON DELETE CASCADE,
+        required BOOLEAN NOT NULL DEFAULT FALSE,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        UNIQUE(form_id, field_def_id)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_form_fields_form ON ticket_form_fields(form_id, sort_order, id)`);
+    // Which form filed a ticket (for display + reporting). NULL for legacy /
+    // alert / email-ingested tickets that never went through a form.
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS form_id INTEGER REFERENCES ticket_forms(id) ON DELETE SET NULL`);
 
     // Audit + dedup log. UNIQUE(source_id, external_event_id) blocks Zabbix
     // resends from spawning duplicate tickets even if the mapper logic
@@ -1770,8 +2013,6 @@ async function initSchema() {
         updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
       )
     `);
-    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_business_hours_org_default
-      ON business_hours_policies((project_id IS NULL)) WHERE project_id IS NULL`);
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_business_hours_project
       ON business_hours_policies(project_id) WHERE project_id IS NOT NULL`);
     // SLA policy can pin a business-hours policy. NULL = clock runs
@@ -1785,6 +2026,63 @@ async function initSchema() {
       SELECT 'Org default — Mon–Fri 9–5 CT', NULL, 'America/Chicago', ARRAY[1,2,3,4,5], '09:00', '17:00', TRUE
       WHERE NOT EXISTS (SELECT 1 FROM business_hours_policies WHERE project_id IS NULL)
     `);
+
+    // Holiday / exception dates: closed days overlaid on a business-hours
+    // policy. The SLA clock and escalation delays skip them like a
+    // weekend; billing prices them at the weekend multiplier. recurring
+    // repeats the month/day every year (fixed-date holidays only —
+    // "4th Thursday" style dates are entered per year).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS business_hours_holidays (
+        id SERIAL PRIMARY KEY,
+        business_hours_id INTEGER NOT NULL REFERENCES business_hours_policies(id) ON DELETE CASCADE,
+        holiday_date DATE NOT NULL,
+        name TEXT,
+        recurring BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE (business_hours_id, holiday_date)
+      )
+    `);
+    // Rule-based holidays: kind 'nth_weekday' = "the nth (1-5, or -1 =
+    // last) <weekday> of <month>" every year, e.g. the 4th Thursday of
+    // November. observed moves a Saturday holiday to Friday and a Sunday
+    // one to Monday. Rule rows leave holiday_date NULL. No holiday set is
+    // seeded — each organisation enters its own. See services/holidays.js.
+    await client.query(`ALTER TABLE business_hours_holidays ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'date'`);
+    await client.query(`ALTER TABLE business_hours_holidays ADD COLUMN IF NOT EXISTS month INTEGER`);
+    await client.query(`ALTER TABLE business_hours_holidays ADD COLUMN IF NOT EXISTS weekday INTEGER`);
+    await client.query(`ALTER TABLE business_hours_holidays ADD COLUMN IF NOT EXISTS nth INTEGER`);
+    await client.query(`ALTER TABLE business_hours_holidays ADD COLUMN IF NOT EXISTS observed BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`ALTER TABLE business_hours_holidays ALTER COLUMN holiday_date DROP NOT NULL`);
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'business_hours_holidays_shape') THEN
+          ALTER TABLE business_hours_holidays ADD CONSTRAINT business_hours_holidays_shape CHECK (
+            (kind = 'date' AND holiday_date IS NOT NULL)
+            OR (kind = 'nth_weekday' AND month BETWEEN 1 AND 12 AND weekday BETWEEN 0 AND 6
+                AND nth IN (1, 2, 3, 4, 5, -1))
+          );
+        END IF;
+      END $$
+    `);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_business_hours_holidays_rule
+      ON business_hours_holidays(business_hours_id, month, weekday, nth) WHERE kind = 'nth_weekday'`);
+
+    // Per-location business hours. A location-scoped row (location_id
+    // set, project_id NULL) replaces the SLA policy's pinned window for
+    // tickets at that location — see businessHours.policyForSla.
+    // One org default: project_id AND location_id both NULL. (The
+    // pre-location index keyed on project_id IS NULL alone.)
+    await client.query(`ALTER TABLE business_hours_policies ADD COLUMN IF NOT EXISTS location_id INTEGER REFERENCES locations(id) ON DELETE CASCADE`);
+    await client.query(`DROP INDEX IF EXISTS idx_business_hours_org_default`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_business_hours_org_default_v2
+      ON business_hours_policies((project_id IS NULL)) WHERE project_id IS NULL AND location_id IS NULL`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_business_hours_location
+      ON business_hours_policies(location_id) WHERE location_id IS NOT NULL`);
+    // Ticket's site. Stamped on create from the submitter's company
+    // membership (company_members.location_id); editable on the ticket.
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL`);
 
     // Backfill warn_at on existing tickets: warn_at = created_at +
     // ((due_at - created_at) * threshold / 100). Idempotent — only
@@ -1803,6 +2101,51 @@ async function initSchema() {
     `);
 
     await client.query(`INSERT INTO system_jobs (name) VALUES ('sla_breach_check') ON CONFLICT DO NOTHING`);
+
+    // Outbound SLA webhooks (Slack / Teams / PagerDuty / generic) fired on
+    // warn + breach next to the in-app/email fanout — services/slaWebhooks.js.
+    // target_enc holds the URL or PagerDuty routing key, secret_enc the
+    // generic signing secret; both encrypted, never returned to clients
+    // (target_hint is the masked display). project_id NULL = every
+    // project; max_priority N fires for P1..PN.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS sla_webhooks (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('slack', 'teams', 'pagerduty', 'generic')),
+        target_enc BYTEA NOT NULL,
+        target_hint TEXT,
+        secret_enc BYTEA,
+        project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+        events TEXT[] NOT NULL DEFAULT ARRAY['breach_response', 'breach_resolve']::TEXT[],
+        max_priority INTEGER NOT NULL DEFAULT 5 CHECK (max_priority BETWEEN 1 AND 5),
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        last_sent_at TIMESTAMPTZ,
+        last_ok BOOLEAN,
+        last_error TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    // Delivery log. dedup_key + resolved_at track open PagerDuty
+    // incidents so the sweep can resolve them when the ticket resolves.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS sla_webhook_deliveries (
+        id SERIAL PRIMARY KEY,
+        webhook_id INTEGER NOT NULL REFERENCES sla_webhooks(id) ON DELETE CASCADE,
+        ticket_id INTEGER REFERENCES tickets(id) ON DELETE CASCADE,
+        event TEXT NOT NULL,
+        ok BOOLEAN NOT NULL,
+        http_status INTEGER,
+        error TEXT,
+        dedup_key TEXT,
+        resolved_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_sla_webhook_deliveries_hook ON sla_webhook_deliveries(webhook_id, created_at DESC)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_sla_webhook_deliveries_open
+      ON sla_webhook_deliveries(ticket_id) WHERE dedup_key IS NOT NULL AND resolved_at IS NULL AND ok = TRUE`);
 
     // Auto-assignment policies. Same (priority, project_id) scoping as
     // sla_policies — project-specific row beats org default. Strategy
@@ -1838,6 +2181,30 @@ async function initSchema() {
     await client.query(`DROP INDEX IF EXISTS idx_assignment_policies_project`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_assignment_policies_lookup
       ON assignment_policies(project_id, priority, priority_op) WHERE enabled = TRUE`);
+
+    // Dedup-omit rules. Automated/reporter mail (e.g. monitoring alerts)
+    // reuses an identical subject on every message, which collides with
+    // the inbound auto-create dedup heuristics (same-title → comment-append,
+    // strong-overlap → defer to manual queue). A matching enabled rule
+    // tells tryAutoCreate to SKIP dedup entirely so each report spins up
+    // its own ticket. `pattern` is a JS-regex source compiled with `flags`
+    // (validated on write). `scope` decides which inbound field(s) the
+    // pattern is tested against. See services/dedupOmit.js.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS dedup_omit_rules (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        pattern TEXT NOT NULL,
+        flags TEXT NOT NULL DEFAULT 'i',
+        scope TEXT NOT NULL DEFAULT 'title'
+          CHECK (scope IN ('title', 'body', 'title_body')),
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_dedup_omit_enabled
+      ON dedup_omit_rules(enabled) WHERE enabled = TRUE`);
 
     // Escalation chains. One row = one step. Steps grouped by
     // (priority, project_id, trigger); step_order drives execution.
@@ -1922,6 +2289,41 @@ async function initSchema() {
     // shouldn't re-arm the chain at a different tier).
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS escalation_priority_snapshot INTEGER CHECK (escalation_priority_snapshot BETWEEN 1 AND 5)`);
 
+    // On-call rotations for notify_oncall / reassign_oncall escalation
+    // actions. A rotation cycles member_ids in order, shift_hours each,
+    // starting at handoff_at — who is on call is computed, not stored
+    // (services/oncall.js). project_id NULL = org-wide; a project's own
+    // rotations beat org-wide ones. Overrides put a user on call for a
+    // window (swaps, leave cover) and beat the rotation.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS oncall_rotations (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+        member_ids INTEGER[] NOT NULL DEFAULT '{}'::int[],
+        shift_hours INTEGER NOT NULL DEFAULT 168 CHECK (shift_hours BETWEEN 1 AND 8760),
+        handoff_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_oncall_rotations_project ON oncall_rotations(project_id) WHERE enabled = TRUE`);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS oncall_overrides (
+        id SERIAL PRIMARY KEY,
+        rotation_id INTEGER NOT NULL REFERENCES oncall_rotations(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        starts_at TIMESTAMPTZ NOT NULL,
+        ends_at TIMESTAMPTZ NOT NULL,
+        note TEXT,
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CHECK (ends_at > starts_at)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_oncall_overrides_rotation ON oncall_overrides(rotation_id, ends_at)`);
+
     // Sensible org-default targets per priority. Idempotent: only inserts
     // when the row doesn't already exist. Customers tune these in the
     // admin UI; these are starting values.
@@ -1946,6 +2348,13 @@ async function initSchema() {
     // target. Tickets already past due will be flagged on the next
     // breach tick. Updates only rows where the column is currently null
     // — re-running the migration is a no-op once stamped.
+    //
+    // WARNING: this stamps WALL-CLOCK (no business-hours math). It is a
+    // safety net for pre-A3 rows only; create paths (POST /api/tickets,
+    // inboundProcessor) must call sla.applyPolicyOnCreate so new tickets
+    // never reach this backfill with NULL columns. If you see a recent
+    // ticket getting wall-clock timers, fix the create path — do not
+    // teach this backfill about business hours.
     await client.query(`
       UPDATE tickets t
          SET sla_response_due_at = t.created_at + (sp.response_target_minutes || ' minutes')::interval,
@@ -2029,6 +2438,30 @@ async function initSchema() {
     await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS ai_eli5 BOOLEAN`);
     await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS ai_publish_consent BOOLEAN`);
     await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS ai_project_context_used BOOLEAN`);
+
+    // v0.8.0 — author / handler can edit a posted comment. edited_at NULL
+    // means "never edited". Editing clears the ai_* snapshot above because
+    // the comment is no longer purely AI output once a human revises it.
+    await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ`);
+
+    // v0.8.0 — distributed_at marks the first moment the comment was
+    // exposed to a non-author user via either internal fanout (follower /
+    // mention notification) or a non-author UI read. Used to suppress
+    // the "(edited)" badge when nobody but the author saw the original.
+    // Vendor outbound (sendVendorEmail) does NOT stamp this — vendors are
+    // out of band and the user-facing badge is for internal recipients.
+    await client.query(`ALTER TABLE comments ADD COLUMN IF NOT EXISTS distributed_at TIMESTAMPTZ`);
+    // Backfill: pre-existing comments were all visible to everyone before
+    // the column existed, so an edit on an old comment must surface
+    // "(edited)". The 1-minute floor avoids stamping rows that landed
+    // moments before startup — those genuinely may not have been seen
+    // yet and the live read/fanout paths will stamp them organically.
+    await client.query(`
+      UPDATE comments
+         SET distributed_at = created_at
+       WHERE distributed_at IS NULL
+         AND created_at < NOW() - INTERVAL '1 minute'
+    `);
 
     // Same metadata for tickets (description / title rewrites).
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS ai_provider TEXT`);
@@ -2142,6 +2575,47 @@ async function initSchema() {
     // rules without a migration.
     await client.query(`ALTER TABLE kb_articles ADD COLUMN IF NOT EXISTS tags TEXT[] NOT NULL DEFAULT '{}'::text[]`);
     await client.query(`ALTER TABLE kb_articles ADD COLUMN IF NOT EXISTS keywords TEXT[] NOT NULL DEFAULT '{}'::text[]`);
+    // v0.8.x — agent_only restricts both read AND write of the article
+    // to "handlers" on the article's project — same gate as Notes
+    // (global Admin/Manager/Tech, OR a project member with a handler
+    // role_override / is_agent=TRUE on that project). Submitters /
+    // Viewers / non-agent project members can't see the row at all.
+    // Delete on an agent_only article is further restricted to global
+    // Admin.
+    await client.query(`ALTER TABLE kb_articles ADD COLUMN IF NOT EXISTS agent_only BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_kb_articles_agent_only ON kb_articles(project_id) WHERE agent_only = TRUE`);
+
+    // v0.8.x — runbook variant of KB articles. kind='runbook' marks an
+    // article whose content is a step-by-step checklist (BlockNote
+    // checkListItem blocks) with optional @canned:<slug> pill insertions
+    // that prefill the comment composer when clicked from a ticket.
+    // Editing / version history / agent_only / suggestion ranker all
+    // ride existing kb_articles plumbing — kind is just a flag the
+    // ticket-side runbook panel uses to filter the picker.
+    await client.query(`ALTER TABLE kb_articles ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'article'
+      CHECK (kind IN ('article','runbook'))`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_kb_articles_runbooks ON kb_articles(project_id) WHERE kind = 'runbook'`);
+
+    // Per-ticket runbook execution state. One row per (ticket, runbook)
+    // — opening the same runbook on two tickets has independent
+    // checkbox state. step_states is { "<blockId>": { checked: bool,
+    // checked_by: int, checked_at: tsISO } } so we don't have to
+    // schema-up every block id. started_by/_at stamp the first
+    // toggle; completed_at flips when all known steps are checked
+    // (computed client-side, server stamps when caller POSTs complete).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ticket_runbook_runs (
+        id SERIAL PRIMARY KEY,
+        ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+        article_id INTEGER NOT NULL REFERENCES kb_articles(id) ON DELETE CASCADE,
+        step_states JSONB NOT NULL DEFAULT '{}'::jsonb,
+        started_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        completed_at TIMESTAMPTZ,
+        UNIQUE(ticket_id, article_id)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_runbook_runs_ticket ON ticket_runbook_runs(ticket_id)`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_kb_articles_tags ON kb_articles USING GIN(tags)`);
     // Trigram index on plain title for the suggestion ranker. Postgres
     // refuses to index expressions containing array_to_string (STABLE,
@@ -2205,7 +2679,7 @@ async function initSchema() {
         source_id INTEGER NOT NULL REFERENCES external_alert_source(id) ON DELETE CASCADE,
         external_event_id TEXT NOT NULL,
         external_ref TEXT NOT NULL,
-        state TEXT NOT NULL DEFAULT 'firing' CHECK (state IN ('firing','recovered','suppressed')),
+        state TEXT NOT NULL DEFAULT 'firing' CHECK (state IN ('firing','acknowledged','recovered','suppressed')),
         severity TEXT,
         severity_rank SMALLINT,
         title TEXT,
@@ -2230,6 +2704,14 @@ async function initSchema() {
       )
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_alerts_state_source ON alerts(state, source_id)`);
+    // Widen the state enum: 'acknowledged' was added so an alert-driven
+    // ticket leaving Open can flip its linked alert off the default
+    // Problems board without losing the link. New deployments inherit
+    // the new CHECK via the CREATE TABLE above; existing tenants get
+    // the rebuilt constraint here. Idempotent.
+    await client.query(`ALTER TABLE alerts DROP CONSTRAINT IF EXISTS alerts_state_check`);
+    await client.query(`ALTER TABLE alerts ADD CONSTRAINT alerts_state_check
+      CHECK (state IN ('firing','acknowledged','recovered','suppressed'))`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_alerts_ticket ON alerts(ticket_id) WHERE ticket_id IS NOT NULL`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_alerts_next_eval ON alerts(next_evaluation_at) WHERE next_evaluation_at IS NOT NULL`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_alerts_last_seen ON alerts(last_seen_at DESC)`);
@@ -2262,6 +2744,156 @@ async function initSchema() {
       )
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_alert_rules_integration ON alert_rules(integration_id, enabled, priority)`);
+
+    // Monitored items: one row per thing an integration watches (an
+    // Uptime Kuma monitor, a host, a container), discovered the first
+    // time an alert for it arrives. Admins can pin an item to a project;
+    // the pin wins over rule overrides and the source default when the
+    // alert is promoted to a ticket.
+    //
+    // alerts.item_key ties alert rows to their item and lets adapters
+    // whose vendors don't send a per-outage id (Kuma sends only a
+    // monitor id) correlate a recovery with the open outage.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS alert_monitored_items (
+        id SERIAL PRIMARY KEY,
+        source_id INTEGER NOT NULL REFERENCES external_alert_source(id) ON DELETE CASCADE,
+        item_key TEXT NOT NULL,
+        label TEXT,
+        detail TEXT,
+        project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+        pinned_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        pinned_at TIMESTAMPTZ,
+        last_state TEXT,
+        first_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_seen_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(source_id, item_key)
+      )
+    `);
+    await client.query(`ALTER TABLE alerts ADD COLUMN IF NOT EXISTS item_key TEXT`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_alerts_item ON alerts(source_id, item_key) WHERE item_key IS NOT NULL`);
+
+    // Live status for monitored items, filled by adapters that expose a
+    // pullStatus() (Uptime Kuma /metrics). last_state is shared with the
+    // webhook path; state_since marks the last change. active = FALSE
+    // when the item stopped appearing in its source's poll.
+    await client.query(`ALTER TABLE alert_monitored_items ADD COLUMN IF NOT EXISTS external_id TEXT`);
+    await client.query(`ALTER TABLE alert_monitored_items ADD COLUMN IF NOT EXISTS item_type TEXT`);
+    await client.query(`ALTER TABLE alert_monitored_items ADD COLUMN IF NOT EXISTS uptime_1d NUMERIC(7,6)`);
+    await client.query(`ALTER TABLE alert_monitored_items ADD COLUMN IF NOT EXISTS uptime_30d NUMERIC(7,6)`);
+    await client.query(`ALTER TABLE alert_monitored_items ADD COLUMN IF NOT EXISTS response_ms INTEGER`);
+    await client.query(`ALTER TABLE alert_monitored_items ADD COLUMN IF NOT EXISTS cert_days INTEGER`);
+    await client.query(`ALTER TABLE alert_monitored_items ADD COLUMN IF NOT EXISTS polled_at TIMESTAMPTZ`);
+    await client.query(`ALTER TABLE alert_monitored_items ADD COLUMN IF NOT EXISTS state_since TIMESTAMPTZ`);
+    await client.query(`ALTER TABLE alert_monitored_items ADD COLUMN IF NOT EXISTS active BOOLEAN NOT NULL DEFAULT TRUE`);
+    // Services: an item can belong to a parent item (Uptime Kuma group
+    // monitor = service, its monitors = components). is_primary marks
+    // the component the service can't run without; when it is down the
+    // service is down, when only supporting components are down the
+    // service is a partial outage.
+    await client.query(`ALTER TABLE alert_monitored_items ADD COLUMN IF NOT EXISTS parent_item_id INTEGER REFERENCES alert_monitored_items(id) ON DELETE SET NULL`);
+    await client.query(`ALTER TABLE alert_monitored_items ADD COLUMN IF NOT EXISTS is_primary BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_monitored_items_parent ON alert_monitored_items(parent_item_id) WHERE parent_item_id IS NOT NULL`);
+    // Separate API base (polled, often an internal Docker URL) from the
+    // human-facing web URL used for links in tickets.
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS web_url TEXT`);
+    await client.query(`ALTER TABLE external_alert_source ADD COLUMN IF NOT EXISTS last_status_poll_at TIMESTAMPTZ`);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS alert_item_state_changes (
+        id BIGSERIAL PRIMARY KEY,
+        item_id INTEGER NOT NULL REFERENCES alert_monitored_items(id) ON DELETE CASCADE,
+        from_state TEXT,
+        to_state TEXT NOT NULL,
+        via TEXT,
+        changed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_item_state_changes ON alert_item_state_changes(item_id, changed_at DESC)`);
+
+    // Status pages: admin-curated views over monitored items, visible
+    // to every logged-in user. section is free text; items render
+    // grouped by section in sort_order.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS status_pages (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        slug TEXT NOT NULL UNIQUE,
+        description TEXT,
+        sort_order INTEGER NOT NULL DEFAULT 100,
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS status_page_items (
+        id SERIAL PRIMARY KEY,
+        page_id INTEGER NOT NULL REFERENCES status_pages(id) ON DELETE CASCADE,
+        item_id INTEGER NOT NULL REFERENCES alert_monitored_items(id) ON DELETE CASCADE,
+        section TEXT,
+        display_name TEXT,
+        sort_order INTEGER NOT NULL DEFAULT 100,
+        UNIQUE(page_id, item_id)
+      )
+    `);
+
+    // Maintenance windows. While a window covering an item is active,
+    // alerts for that item are recorded but not promoted to tickets;
+    // promotion is re-checked when the window ends. work_notes is the
+    // "what was done" write-up shown on status pages.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS maintenance_windows (
+        id SERIAL PRIMARY KEY,
+        title TEXT NOT NULL,
+        description TEXT,
+        work_notes TEXT,
+        starts_at TIMESTAMPTZ NOT NULL,
+        ends_at TIMESTAMPTZ NOT NULL,
+        ticket_id INTEGER REFERENCES tickets(id) ON DELETE SET NULL,
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        updated_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CHECK (ends_at > starts_at)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_maintenance_windows_time ON maintenance_windows(starts_at, ends_at)`);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS maintenance_window_items (
+        window_id INTEGER NOT NULL REFERENCES maintenance_windows(id) ON DELETE CASCADE,
+        item_id INTEGER NOT NULL REFERENCES alert_monitored_items(id) ON DELETE CASCADE,
+        PRIMARY KEY (window_id, item_id)
+      )
+    `);
+
+    // Scheduled work calendars. A maintenance window belongs to a
+    // project (its project feed) and is assigned to the techs doing the
+    // work (their personal feeds).
+    await client.query(`
+      ALTER TABLE maintenance_windows
+        ADD COLUMN IF NOT EXISTS project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS maintenance_window_assignees (
+        window_id INTEGER NOT NULL REFERENCES maintenance_windows(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        PRIMARY KEY (window_id, user_id)
+      )
+    `);
+    // One subscribable .ics token per user. Calendar apps can't log in,
+    // so the token in the URL is the credential: looked up by hash,
+    // kept encrypted so the user can copy their links again, revoked by
+    // regenerating.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS calendar_feeds (
+        user_id INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+        token_hash TEXT NOT NULL UNIQUE,
+        token_enc BYTEA NOT NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        last_used_at TIMESTAMPTZ
+      )
+    `);
 
     // Seed a default "create ticket for anything" rule per existing
     // integration so existing deployments keep producing tickets out of
@@ -2306,6 +2938,725 @@ async function initSchema() {
       )
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_notes_ticket ON ticket_notes(ticket_id, created_at)`);
+    // v0.8.0 — author / handler can edit a note in place. No distribution
+    // gating: notes never fan out outbound and are only seen by handlers,
+    // so the "(edited)" badge always reflects something useful.
+    await client.query(`ALTER TABLE ticket_notes ADD COLUMN IF NOT EXISTS edited_at TIMESTAMPTZ`);
+
+    // Label printer config — single row, admin-edited. Used by the
+    // asset/consumable label print flow over raw TCP :9100 to a Zebra
+    // (or compatible) ZPL printer. media_*_dots match the calibrated
+    // label size in dots at the configured DPI; top_offset_dots nudges
+    // every render down so the printhead's natural high-bias is
+    // corrected without rewriting every template.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS label_printer_config (
+        id INTEGER PRIMARY KEY DEFAULT 1,
+        enabled BOOLEAN NOT NULL DEFAULT FALSE,
+        host TEXT,
+        port INTEGER NOT NULL DEFAULT 9100,
+        dpi INTEGER NOT NULL DEFAULT 203,
+        media_w_dots INTEGER NOT NULL DEFAULT 406,
+        media_h_dots INTEGER NOT NULL DEFAULT 152,
+        top_offset_dots INTEGER NOT NULL DEFAULT 15,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CHECK (id = 1)
+      )
+    `);
+    await client.query(`INSERT INTO label_printer_config (id) VALUES (1) ON CONFLICT DO NOTHING`);
+    await client.query(`ALTER TABLE label_printer_config ADD COLUMN IF NOT EXISTS property_line TEXT`);
+
+    // Asset checkouts — lightweight custody log. One row per
+    // checkout/checkin pair. Holder is users.id; admin/tech who recorded
+    // the action is captured separately in out_by / in_by so we can
+    // tell "I handed the laptop to Jane" apart from "Jane took it from
+    // the closet". Partial unique index keeps only one active row per
+    // asset — re-checking out an already-out asset 4xx's at the route
+    // layer.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS asset_checkouts (
+        id SERIAL PRIMARY KEY,
+        asset_id INTEGER NOT NULL REFERENCES assets(id) ON DELETE CASCADE,
+        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        out_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        out_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        out_note TEXT,
+        in_at TIMESTAMPTZ,
+        in_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        in_note TEXT
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_asset_checkouts_asset ON asset_checkouts(asset_id, out_at DESC)`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_asset_checkouts_active ON asset_checkouts(asset_id) WHERE in_at IS NULL`);
+
+    // Consumables — inventory of supplies (toner, drums, batteries, etc.)
+    // separate from durable assets so the navbar surfaces are distinct
+    // and the stock-movement model doesn't pollute the assets table.
+    // Stock is materialised on the row (current_stock) for fast list
+    // queries; consumable_movements is the ledger of every adjustment
+    // so the trail is reconstructable. Movements always run in the same
+    // transaction as the row UPDATE — no drift.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS consumables (
+        id SERIAL PRIMARY KEY,
+        part_no TEXT NOT NULL,
+        title TEXT,
+        category TEXT,
+        vendor_company_id INTEGER REFERENCES companies(id) ON DELETE SET NULL,
+        current_stock INTEGER NOT NULL DEFAULT 0,
+        low_stock_threshold INTEGER NOT NULL DEFAULT 0,
+        notes TEXT,
+        is_archived BOOLEAN NOT NULL DEFAULT FALSE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(part_no)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_consumables_category ON consumables(category) WHERE category IS NOT NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_consumables_vendor ON consumables(vendor_company_id) WHERE vendor_company_id IS NOT NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_consumables_active ON consumables(is_archived) WHERE is_archived = FALSE`);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS consumable_movements (
+        id SERIAL PRIMARY KEY,
+        consumable_id INTEGER NOT NULL REFERENCES consumables(id) ON DELETE CASCADE,
+        delta INTEGER NOT NULL,
+        reason TEXT,
+        ticket_id INTEGER REFERENCES tickets(id) ON DELETE SET NULL,
+        by_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        note TEXT
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_consumable_movements_consumable ON consumable_movements(consumable_id, at DESC)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_consumable_movements_ticket ON consumable_movements(ticket_id) WHERE ticket_id IS NOT NULL`);
+
+    // custom_field_values.consumable_id parallels asset_id/ticket_id so
+    // consumable custom-field values store the same way (one of the *_id set
+    // per row). Defined here, after the consumables table exists, so the FK
+    // target is present. Value read/write UI on the consumable page is future.
+    await client.query(`ALTER TABLE custom_field_values ADD COLUMN IF NOT EXISTS consumable_id INTEGER REFERENCES consumables(id) ON DELETE CASCADE`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS uq_cfv_consumable ON custom_field_values(def_id, consumable_id) WHERE consumable_id IS NOT NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_cfv_consumable ON custom_field_values(consumable_id) WHERE consumable_id IS NOT NULL`);
+
+    // Restock + sourcing fields:
+    //   purchase_url     — self-serve order URL surfaced in OOS / low-stock
+    //                      alerts and the canned vendor RFQ template.
+    //   vendor_part_no   — vendor-branded part number (their SKU, often
+    //                      different from our internal part_no). Embedded
+    //                      in the canned RFQ so the vendor can fulfil
+    //                      without translation.
+    //   is_metered       — printer-leased / contract-supplied consumable
+    //                      that we can't buy on the open market. Toggles
+    //                      the UI between "self-serve" (purchase URL +
+    //                      RFQ template) and "metered" (no URL; restock
+    //                      template pages local/regional support).
+    await client.query(`ALTER TABLE consumables ADD COLUMN IF NOT EXISTS purchase_url TEXT`);
+    await client.query(`ALTER TABLE consumables ADD COLUMN IF NOT EXISTS vendor_part_no TEXT`);
+    await client.query(`ALTER TABLE consumables ADD COLUMN IF NOT EXISTS is_metered BOOLEAN NOT NULL DEFAULT FALSE`);
+    // reorder_qty — how many units we order at a time. Surfaced in the
+    // canned RFQ template as {consumable.reorder_qty} so admins can fire
+    // the vendor email without retyping the quantity on every restock.
+    await client.query(`ALTER TABLE consumables ADD COLUMN IF NOT EXISTS reorder_qty INTEGER NOT NULL DEFAULT 0`);
+    // location — free-text bin/shelf/room where this stock lives. Printed
+    // on the standalone consumable shelf label (renderConsumableShelfLabel).
+    await client.query(`ALTER TABLE consumables ADD COLUMN IF NOT EXISTS location TEXT`);
+
+    // Seed two global canned responses for consumable restock workflows.
+    // Idempotent: inserts only when no global response already carries
+    // the same category tag. Admins can edit the body freely after seed.
+    // Placeholders use the existing canned-render syntax expected by
+    // services/cannedRender.js — {ticket.ref}, {ticket.url}, etc., plus
+    // consumable-specific tokens resolved at send time.
+    await client.query(`
+      INSERT INTO canned_responses (scope, title, body, category)
+      SELECT 'global',
+             'Consumable restock — self-serve RFQ',
+             $$Hi {vendor.name},
+
+We need to restock the following consumable:
+
+- **Part:** {consumable.part_no} ({consumable.title})
+- **Vendor P/N:** {consumable.vendor_part_no}
+- **Qty:** {consumable.reorder_qty}
+- **Direct order link:** {consumable.purchase_url}
+
+Triggering ticket: {ticket.ref} — {ticket.url}
+
+Please confirm availability and ETA when you can.
+
+Thanks,
+{user.display_name}$$,
+             'consumable_restock'
+       WHERE NOT EXISTS (
+         SELECT 1 FROM canned_responses
+          WHERE scope = 'global'
+            AND category = 'consumable_restock'
+            AND title = 'Consumable restock — self-serve RFQ'
+       )
+    `);
+    await client.query(`
+      INSERT INTO canned_responses (scope, title, body, category)
+      SELECT 'global',
+             'Consumable restock — metered / leased printer',
+             $$Hi {vendor.name},
+
+We're out of the following metered consumable and need it dispatched as soon as possible:
+
+- **Printer-branded P/N:** {consumable.vendor_part_no}
+- **Internal part:** {consumable.part_no} ({consumable.title})
+- **Affected device:** {ticket.host}
+- **Urgency:** end-user is blocked
+
+Triggering ticket: {ticket.ref} — {ticket.url}
+
+Please ship a replacement under the existing service agreement.
+
+Thanks,
+{user.display_name}$$,
+             'consumable_restock'
+       WHERE NOT EXISTS (
+         SELECT 1 FROM canned_responses
+          WHERE scope = 'global'
+            AND category = 'consumable_restock'
+            AND title = 'Consumable restock — metered / leased printer'
+       )
+    `);
+
+    // ── Scheduled (recurring) tickets ─────────────────────────────────
+    // Cron-driven template that materialises a real ticket every time
+    // its next_fire_at lands. Tracks one schedule -> many fired tickets
+    // via ticket_schedule_runs for an audit trail. Schema:
+    //   recurrence_kind  'preset' | 'cron'
+    //   cron_expr        always populated (presets compile to cron)
+    //   preset_kind      labels the preset family for the UI when
+    //                    recurrence_kind='preset' (daily/weekly/etc).
+    //                    NULL for raw cron.
+    //   preset_config    jsonb shape varies per preset_kind. Stored so
+    //                    the UI can round-trip without re-deriving from
+    //                    the cron expression (which loses preset intent
+    //                    after "every 2nd Wednesday" round-trips).
+    //   timezone         IANA tz the cron is evaluated in. Defaults to
+    //                    the cluster's TZ. Lets a single tenant span
+    //                    timezones without each schedule drifting on DST.
+    //   end_kind         'never' | 'count' | 'date'
+    //   end_count        positive int when end_kind='count'
+    //   end_date         timestamptz when end_kind='date'
+    //   fires_count      monotonically increasing; compared to end_count
+    //   next_fire_at     scheduler poll uses <= NOW() to fire; advanced
+    //                    after each successful materialisation. NULL =
+    //                    paused / exhausted; scheduler ignores.
+    //   contact_ids      pre-pinned external contacts; copied to the
+    //                    fired ticket via ticket_contacts.
+    //   title_enc /
+    //   description_enc  matched to the existing fields encryption shape
+    //                    so PII-bearing templates respect standard mode.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ticket_schedules (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        title TEXT,
+        title_enc BYTEA,
+        description TEXT,
+        description_enc BYTEA,
+        impact INTEGER NOT NULL DEFAULT 2,
+        urgency INTEGER NOT NULL DEFAULT 2,
+        assigned_to INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        contact_ids INTEGER[] NOT NULL DEFAULT '{}'::int[],
+        recurrence_kind TEXT NOT NULL CHECK (recurrence_kind IN ('preset','cron')),
+        cron_expr TEXT NOT NULL,
+        preset_kind TEXT,
+        preset_config JSONB,
+        timezone TEXT NOT NULL DEFAULT 'UTC',
+        end_kind TEXT NOT NULL DEFAULT 'never' CHECK (end_kind IN ('never','count','date')),
+        end_count INTEGER,
+        end_date TIMESTAMPTZ,
+        fires_count INTEGER NOT NULL DEFAULT 0,
+        last_fired_at TIMESTAMPTZ,
+        next_fire_at TIMESTAMPTZ,
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_schedules_next_fire
+      ON ticket_schedules(next_fire_at) WHERE enabled = TRUE AND next_fire_at IS NOT NULL`);
+    // Pre-pinned followers (typically project members). Optional. Each
+    // fired ticket gets the listed users inserted into ticket_followers
+    // so they receive the standard fanout without re-adding them
+    // manually per occurrence.
+    await client.query(`ALTER TABLE ticket_schedules ADD COLUMN IF NOT EXISTS follower_ids INTEGER[] NOT NULL DEFAULT '{}'::int[]`);
+    // Requestor / submitted_by override. NULL = fall back to created_by
+    // (the admin who authored the schedule), preserving prior behavior.
+    // When set, every fired ticket is attributed to this user as the
+    // submitter so SLA + assignment + label resolution treat it as if
+    // they filed it themselves.
+    await client.query(`ALTER TABLE ticket_schedules ADD COLUMN IF NOT EXISTS requestor_user_id INTEGER REFERENCES users(id) ON DELETE SET NULL`);
+
+    // Optional runbook to attach (auto-start a ticket_runbook_runs row)
+    // on every fire. Audit trail: per-fire row in ticket_runbook_runs
+    // proves the runbook was attached even if no one toggled steps.
+    // ON DELETE SET NULL so deleting the source runbook just detaches
+    // future fires without killing the schedule.
+    await client.query(`ALTER TABLE ticket_schedules ADD COLUMN IF NOT EXISTS runbook_article_id INTEGER REFERENCES kb_articles(id) ON DELETE SET NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_schedules_project
+      ON ticket_schedules(project_id)`);
+
+    // Per-fire ledger. ticket_id may be NULL when materialisation
+    // failed (project archived, encryption issue, etc.); error_message
+    // carries the reason for the admin UI's "Last 10 runs" pane.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ticket_schedule_runs (
+        id SERIAL PRIMARY KEY,
+        schedule_id INTEGER NOT NULL REFERENCES ticket_schedules(id) ON DELETE CASCADE,
+        fired_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        ticket_id INTEGER REFERENCES tickets(id) ON DELETE SET NULL,
+        status TEXT NOT NULL CHECK (status IN ('ok','error')),
+        error_message TEXT
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_schedule_runs_schedule
+      ON ticket_schedule_runs(schedule_id, fired_at DESC)`);
+    await client.query(`INSERT INTO system_jobs (name) VALUES ('ticket_schedule_tick') ON CONFLICT DO NOTHING`);
+
+    // ── Personal tasks ────────────────────────────────────────────────
+    // Lightweight todo list with optional recurrence. Each row is
+    // owned by one user — no ticket fanout, no SLA, no notifications
+    // yet. Used for personal nudges ("re-check this thing on Friday")
+    // and admin-only recurring chores ("monthly cert review").
+    //
+    // recurrence_kind:
+    //   'once'   — single-shot. next_due_at is the only relevant time.
+    //              status flips to 'completed' when done.
+    //   'preset' — preset_kind + preset_config drive a cron expression
+    //              (same shape as ticket_schedules).
+    //   'cron'   — raw cron expression.
+    //
+    // status: 'pending' | 'completed' | 'cancelled'. Recurring tasks
+    // stay 'pending' between completions; per-occurrence completions
+    // live in task_completions for an audit trail.
+    //
+    // body holds markdown so admins can drop checklists / links into
+    // the note. Encrypted via FIELD_MAP (mirrors tickets).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS tasks (
+        id SERIAL PRIMARY KEY,
+        owner_user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL,
+        title TEXT,
+        title_enc BYTEA,
+        body TEXT,
+        body_enc BYTEA,
+        status TEXT NOT NULL DEFAULT 'pending'
+          CHECK (status IN ('pending','completed','cancelled')),
+        recurrence_kind TEXT NOT NULL DEFAULT 'once'
+          CHECK (recurrence_kind IN ('once','preset','cron')),
+        cron_expr TEXT,
+        preset_kind TEXT,
+        preset_config JSONB,
+        timezone TEXT NOT NULL DEFAULT 'UTC',
+        end_kind TEXT NOT NULL DEFAULT 'never'
+          CHECK (end_kind IN ('never','count','date')),
+        end_count INTEGER,
+        end_date TIMESTAMPTZ,
+        fires_count INTEGER NOT NULL DEFAULT 0,
+        next_due_at TIMESTAMPTZ,
+        last_completed_at TIMESTAMPTZ,
+        completed_at TIMESTAMPTZ,
+        cancelled_at TIMESTAMPTZ,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_tasks_owner_due
+      ON tasks(owner_user_id, next_due_at) WHERE status = 'pending'`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_tasks_project
+      ON tasks(project_id) WHERE project_id IS NOT NULL`);
+
+    // Per-completion ledger. Recurring tasks complete many times; the
+    // detail page shows the run history. One-shot tasks usually have
+    // exactly one row here (the completion event).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS task_completions (
+        id SERIAL PRIMARY KEY,
+        task_id INTEGER NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+        completed_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        completed_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        note TEXT
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_task_completions_task
+      ON task_completions(task_id, completed_at DESC)`);
+    // Optional ticket linkage — set when the task is created from a
+    // ticket's "follow up" affordance so the row carries the context
+    // (and the detail page can deep-link back). ON DELETE SET NULL
+    // keeps the personal task alive when the source ticket is hard
+    // deleted; admins almost always want the reminder preserved.
+    await client.query(`ALTER TABLE tasks ADD COLUMN IF NOT EXISTS ticket_id INTEGER REFERENCES tickets(id) ON DELETE SET NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_tasks_ticket ON tasks(ticket_id) WHERE ticket_id IS NOT NULL`);
+
+    // Inbound reply routing tunables. reply_stale_days caps how old a
+    // referenced ticket can be before an inbound [PREFIX-N] reply is
+    // refused and falls through to the auto-create path (otherwise a
+    // year-old closed ticket can be resurrected by a stray reply).
+    // suppress_ooo_replies toggles passive handling of "Automatic Reply"
+    // / out-of-office bouncebacks: comment lands muted, no status change,
+    // no follower fanout. Both defaults match prior conservative behavior
+    // for a fresh install.
+    await client.query(`ALTER TABLE auto_resolve_settings ADD COLUMN IF NOT EXISTS reply_stale_days INTEGER NOT NULL DEFAULT 30`);
+    await client.query(`ALTER TABLE auto_resolve_settings ADD COLUMN IF NOT EXISTS suppress_ooo_replies BOOLEAN NOT NULL DEFAULT TRUE`);
+    // External-escalation auto-advance: the first time a vendor ref is
+    // written onto a ticket still in the initial external status, move
+    // external forward (Unacknowledged → Acknowledged by default) and let
+    // 'mirror' status mappings carry the internal status along.
+    await client.query(`ALTER TABLE auto_resolve_settings ADD COLUMN IF NOT EXISTS external_ref_auto_advance BOOLEAN NOT NULL DEFAULT TRUE`);
+
+    // ── Trove KB (external knowledge base) ──────────────────────────────────
+    // Trove KB (trove-kb.gomotx.com) is the company documentation platform.
+    // Resolvd reads articles from it with ONE API key and enforces who
+    // sees what on its own side: handlers (Admin/Manager/Tech or project
+    // handlers) see internal + public collections, everyone else public
+    // only. Collection ids are Trove KB UUIDs; names are a display snapshot
+    // refreshed on every successful "test connection". Key is encrypted
+    // under RESOLVD_MASTER_KEY like ai_settings.org_api_key_enc.
+    // Renamed from "Bothy" (the product's old name) on 2026-10-07. Rename in
+    // place so a deployment that still has the old tables keeps its rows;
+    // a fresh install never sees the old names. Idempotent.
+    await client.query(`
+      DO $$
+      BEGIN
+        IF to_regclass('public.bothy_settings') IS NOT NULL AND to_regclass('public.trove_kb_settings') IS NULL THEN
+          ALTER TABLE bothy_settings RENAME TO trove_kb_settings;
+        END IF;
+        IF to_regclass('public.ticket_bothy_links') IS NOT NULL AND to_regclass('public.ticket_trove_kb_links') IS NULL THEN
+          ALTER TABLE ticket_bothy_links RENAME TO ticket_trove_kb_links;
+        END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'ticket_runbook_runs' AND column_name = 'bothy_article_id') THEN
+          ALTER TABLE ticket_runbook_runs RENAME COLUMN bothy_article_id TO trove_kb_article_id;
+        END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'ticket_runbook_runs' AND column_name = 'bothy_title') THEN
+          ALTER TABLE ticket_runbook_runs RENAME COLUMN bothy_title TO trove_kb_title;
+        END IF;
+        IF EXISTS (SELECT 1 FROM information_schema.columns WHERE table_name = 'projects' AND column_name = 'bothy_collection_id') THEN
+          ALTER TABLE projects RENAME COLUMN bothy_collection_id TO trove_kb_collection_id;
+        END IF;
+        ALTER INDEX IF EXISTS idx_ticket_bothy_links_article RENAME TO idx_ticket_trove_kb_links_article;
+        ALTER INDEX IF EXISTS idx_ticket_runbook_runs_bothy RENAME TO idx_ticket_runbook_runs_trove_kb;
+      END $$
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS trove_kb_settings (
+        id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+        enabled BOOLEAN NOT NULL DEFAULT FALSE,
+        base_url TEXT,
+        public_url TEXT,
+        api_key_enc BYTEA,
+        internal_collection_ids TEXT[] NOT NULL DEFAULT '{}'::text[],
+        public_collection_ids TEXT[] NOT NULL DEFAULT '{}'::text[],
+        collection_names JSONB NOT NULL DEFAULT '{}'::jsonb,
+        suggestions_enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        last_ok_at TIMESTAMPTZ,
+        last_error TEXT,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`INSERT INTO trove_kb_settings (id) VALUES (1) ON CONFLICT DO NOTHING`);
+    // Non-handlers only see articles Trove KB marks public (held-back articles stay hidden).
+    await client.query(`ALTER TABLE trove_kb_settings ADD COLUMN IF NOT EXISTS public_strict BOOLEAN NOT NULL DEFAULT TRUE`);
+    // The built-in per-project KB stays on until "Replace local knowledge base" runs.
+    await client.query(`ALTER TABLE trove_kb_settings ADD COLUMN IF NOT EXISTS local_kb_enabled BOOLEAN NOT NULL DEFAULT TRUE`);
+    // Signed webhooks from Trove KB (kb.article.upserted|archived) drop our
+    // read cache. Secret encrypted like the key; never returned to a client.
+    await client.query(`ALTER TABLE trove_kb_settings ADD COLUMN IF NOT EXISTS webhook_secret_enc BYTEA`);
+    await client.query(`ALTER TABLE trove_kb_settings ADD COLUMN IF NOT EXISTS last_webhook_at TIMESTAMPTZ`);
+    await client.query(`ALTER TABLE trove_kb_settings ADD COLUMN IF NOT EXISTS last_webhook_event TEXT`);
+    await client.query(`ALTER TABLE trove_kb_settings ADD COLUMN IF NOT EXISTS snapshots_refreshed_at TIMESTAMPTZ`);
+    // New collections Trove KB gains are picked up automatically: a public
+    // one is mapped Public, anything else is left for an admin. known_* keeps
+    // an admin's "Hidden" choice from being undone by the next sync.
+    await client.query(`ALTER TABLE trove_kb_settings ADD COLUMN IF NOT EXISTS auto_map_public BOOLEAN NOT NULL DEFAULT TRUE`);
+    await client.query(`ALTER TABLE trove_kb_settings ADD COLUMN IF NOT EXISTS known_collection_ids TEXT[] NOT NULL DEFAULT '{}'::text[]`);
+    await client.query(`ALTER TABLE trove_kb_settings ADD COLUMN IF NOT EXISTS collections_synced_at TIMESTAMPTZ`);
+    // Where "Promote to KB" writes: our own write-ups go to one private
+    // collection, kept apart from the vendor / scraped collections that
+    // projects are mapped to for reading. NULL = the project's collection.
+    await client.query(`ALTER TABLE trove_kb_settings ADD COLUMN IF NOT EXISTS promote_collection_id TEXT`);
+
+    // Noise filter for knowledge briefs: comments that must never be fed to
+    // a brief, by regex, literal text, or author. Built-in rules are seeded
+    // as rows so an admin can disable or edit them without a redeploy.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS trove_kb_noise_rules (
+        id SERIAL PRIMARY KEY,
+        kind TEXT NOT NULL CHECK (kind IN ('regex', 'literal', 'user')),
+        pattern TEXT,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        note TEXT,
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        builtin BOOLEAN NOT NULL DEFAULT FALSE,
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        CHECK ((kind = 'user' AND user_id IS NOT NULL) OR (kind <> 'user' AND pattern IS NOT NULL AND length(pattern) > 0))
+      )
+    `);
+    // Runbook runs can point at a Trove KB runbook (uuid) instead of a local
+    // article. step_states is then keyed by Trove KB step id.
+    await client.query(`ALTER TABLE ticket_runbook_runs ADD COLUMN IF NOT EXISTS trove_kb_article_id UUID`);
+    await client.query(`ALTER TABLE ticket_runbook_runs ALTER COLUMN article_id DROP NOT NULL`);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_ticket_runbook_runs_trove_kb ON ticket_runbook_runs(ticket_id, trove_kb_article_id) WHERE trove_kb_article_id IS NOT NULL`);
+    await client.query(`ALTER TABLE ticket_runbook_runs ADD COLUMN IF NOT EXISTS trove_kb_title TEXT`);
+
+    // Ticket -> Trove KB article junction. Separate from ticket_kb_links
+    // (local articles, integer ids) so the local KB keeps working until
+    // its content has moved. title/collection_name are snapshots so a
+    // ticket still shows what it was linked to when Trove KB is unreachable.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ticket_trove_kb_links (
+        ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+        article_id UUID NOT NULL,
+        title TEXT NOT NULL,
+        collection_id UUID,
+        collection_name TEXT,
+        kind TEXT NOT NULL DEFAULT 'manual'
+             CHECK (kind IN ('manual', 'suggested_accepted', 'system')),
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (ticket_id, article_id)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_trove_kb_links_article ON ticket_trove_kb_links(article_id)`);
+    // A project's home collection in Trove KB: suggestions search it first,
+    // resolution drafts prefer it, and (later) promote-to-KB writes to it.
+    await client.query(`ALTER TABLE projects ADD COLUMN IF NOT EXISTS trove_kb_collection_id UUID`);
+
+    // Knowledge briefs: the audited inputs behind an assisted response.
+    // One row per "scope with knowledge" run on a ticket: what the user
+    // reported (trusted), the tech's draft (trusted), corrections the
+    // tech added (the tribal knowledge the user left out), the project
+    // context in force, the Trove KB articles included/excluded, and what
+    // was produced (extractive or AI). This is where a poorly scoped
+    // prompt gets fixed and where that fix is reviewable afterwards.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ticket_assist_briefs (
+        id SERIAL PRIMARY KEY,
+        ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        inputs JSONB NOT NULL DEFAULT '{}'::jsonb,
+        output JSONB,
+        mode TEXT NOT NULL DEFAULT 'extractive' CHECK (mode IN ('extractive', 'ai')),
+        ai_log_id INTEGER REFERENCES ai_rewrite_logs(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_assist_briefs_ticket ON ticket_assist_briefs(ticket_id, created_at DESC)`);
+
+    // Technician time tracking. Org-wide policy lives in a singleton
+    // settings row; per-user running/paused timers in ticket_timers;
+    // logged work in time_entries.
+    //
+    // Visibility and billing are deliberately separate axes. A work note
+    // is private (handler-only, stored as a ticket_notes row) unless the
+    // admin lets it be public (a regular thread comment). `billable` is
+    // its own flag, default FALSE, and is the ONLY thing a future
+    // Xero / QuickBooks export should key off — never visibility. A
+    // public note is not billable work and vice versa.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS time_tracking_settings (
+        id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        auto_start_on_take BOOLEAN NOT NULL DEFAULT TRUE,
+        auto_start_on_open BOOLEAN NOT NULL DEFAULT FALSE,
+        discard_untouched TEXT NOT NULL DEFAULT 'auto_started'
+          CHECK (discard_untouched IN ('off', 'auto_started', 'all')),
+        warn_after_minutes INTEGER NOT NULL DEFAULT 30,
+        default_visibility TEXT NOT NULL DEFAULT 'private'
+          CHECK (default_visibility IN ('private', 'public')),
+        visibility_choice TEXT NOT NULL DEFAULT 'admins'
+          CHECK (visibility_choice IN ('admins', 'handlers')),
+        min_note_chars INTEGER NOT NULL DEFAULT 10,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`INSERT INTO time_tracking_settings (id) VALUES (1) ON CONFLICT (id) DO NOTHING`);
+    // Billable-hours rules (Admin → Time tracking → Billable hours). Applied
+    // on read to entries flagged billable; logged minutes never change.
+    await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS billable_by_default BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS billing_round_increment INTEGER NOT NULL DEFAULT 1`);
+    await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS billing_round_mode TEXT NOT NULL DEFAULT 'up'`);
+    await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS billing_session_minimum INTEGER NOT NULL DEFAULT 0`);
+    await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS billing_ticket_minimum INTEGER NOT NULL DEFAULT 0`);
+    // Integrity: overlapping sessions (allow / warn → confirm / block) and
+    // the timesheet lock (techs can't edit entries older than N days).
+    await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS overlap_policy TEXT NOT NULL DEFAULT 'warn'`);
+    await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS edit_lock_days INTEGER NOT NULL DEFAULT 0`);
+    // Billing rule changes: 'uninvoiced' re-prices everything not yet
+    // invoiced (default); 'at_log' keeps each entry at the rules stored
+    // with it when it was logged (time_entries.billing_rules).
+    await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS billing_reprice TEXT NOT NULL DEFAULT 'uninvoiced'`);
+
+    // Admin-managed work types (Remote, Onsite, Travel, Internal…). The
+    // type's `billable` seeds a new entry's billable flag, so internal /
+    // admin time never lands billable by accident.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS time_work_types (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        billable BOOLEAN NOT NULL DEFAULT FALSE,
+        active BOOLEAN NOT NULL DEFAULT TRUE,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    // One row per (user, ticket). running_since NULL = paused. Elapsed =
+    // accumulated_seconds + (NOW() - running_since). status_at_start lets
+    // the discard-untouched rule tell whether the tech moved the ticket.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ticket_timers (
+        id SERIAL PRIMARY KEY,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+        started_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        running_since TIMESTAMPTZ,
+        accumulated_seconds INTEGER NOT NULL DEFAULT 0,
+        auto_started BOOLEAN NOT NULL DEFAULT FALSE,
+        start_trigger TEXT NOT NULL DEFAULT 'manual',
+        status_at_start TEXT,
+        warned_at TIMESTAMPTZ,
+        UNIQUE (user_id, ticket_id)
+      )
+    `);
+    // Why a paused timer stopped: NULL = the tech paused it, 'switched' =
+    // they started another timer, 'status:<name>' = the ticket moved into
+    // a hold / resolved / terminal status. Cleared on resume.
+    await client.query(`ALTER TABLE ticket_timers ADD COLUMN IF NOT EXISTS pause_reason TEXT`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_timers_running ON ticket_timers(running_since) WHERE running_since IS NOT NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_timers_ticket ON ticket_timers(ticket_id)`);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS time_entries (
+        id SERIAL PRIMARY KEY,
+        ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+        user_id INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        started_at TIMESTAMPTZ,
+        ended_at TIMESTAMPTZ,
+        duration_minutes INTEGER NOT NULL CHECK (duration_minutes > 0),
+        note TEXT,
+        note_enc BYTEA,
+        visibility TEXT NOT NULL DEFAULT 'private' CHECK (visibility IN ('private', 'public')),
+        billable BOOLEAN NOT NULL DEFAULT FALSE,
+        source TEXT NOT NULL DEFAULT 'timer' CHECK (source IN ('timer', 'manual')),
+        ticket_note_id INTEGER REFERENCES ticket_notes(id) ON DELETE SET NULL,
+        comment_id INTEGER REFERENCES comments(id) ON DELETE SET NULL,
+        -- Reserved for a future accounting export: stamped when the entry
+        -- lands on an invoice so it is never exported twice.
+        invoiced_at TIMESTAMPTZ,
+        invoice_ref TEXT,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        edited_at TIMESTAMPTZ
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_time_entries_ticket ON time_entries(ticket_id, created_at)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_time_entries_user ON time_entries(user_id, created_at)`);
+    await client.query(`ALTER TABLE time_entries ADD COLUMN IF NOT EXISTS work_type_id INTEGER REFERENCES time_work_types(id) ON DELETE SET NULL`);
+    // Billing rules in force when the entry was logged; used when
+    // billing_reprice = 'at_log'. NULL on entries logged before this column.
+    await client.query(`ALTER TABLE time_entries ADD COLUMN IF NOT EXISTS billing_rules JSONB`);
+
+    // --- MSP billing (only surfaced when customer companies / MSP mode
+    // is on). Rate cards price billable minutes; contracts tie a customer
+    // to a bill type + rate card; bill types carry the external code an
+    // accounting integration passes through. No products / line items.
+    await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS billing_ticket_minimum_scope TEXT NOT NULL DEFAULT 'ticket'`);
+    await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS billing_require_approval BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS billing_currency TEXT NOT NULL DEFAULT 'USD'`);
+    // Prepaid block alerts: warn at this % used (0 = only when used up).
+    await client.query(`ALTER TABLE time_tracking_settings ADD COLUMN IF NOT EXISTS billing_block_alert_percent INTEGER NOT NULL DEFAULT 80`);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS rate_cards (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        hourly_rate NUMERIC(10,2) NOT NULL DEFAULT 0,
+        after_hours_multiplier NUMERIC(4,2) NOT NULL DEFAULT 1,
+        weekend_multiplier NUMERIC(4,2) NOT NULL DEFAULT 1,
+        is_default BOOLEAN NOT NULL DEFAULT FALSE,
+        active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_rate_cards_one_default ON rate_cards(is_default) WHERE is_default`);
+    // Overrides on a card: by work type, by tech, or both. Most specific wins.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS rate_card_rates (
+        id SERIAL PRIMARY KEY,
+        rate_card_id INTEGER NOT NULL REFERENCES rate_cards(id) ON DELETE CASCADE,
+        work_type_id INTEGER REFERENCES time_work_types(id) ON DELETE CASCADE,
+        user_id INTEGER REFERENCES users(id) ON DELETE CASCADE,
+        hourly_rate NUMERIC(10,2) NOT NULL,
+        CHECK (work_type_id IS NOT NULL OR user_id IS NOT NULL)
+      )
+    `);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_rate_card_rates_key
+      ON rate_card_rates(rate_card_id, work_type_id, user_id) NULLS NOT DISTINCT`);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS billing_types (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        behavior TEXT NOT NULL CHECK (behavior IN ('hourly', 'prepaid_block', 'covered', 'non_billable')),
+        external_code TEXT,
+        description TEXT,
+        active BOOLEAN NOT NULL DEFAULT TRUE,
+        sort_order INTEGER NOT NULL DEFAULT 0,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS contracts (
+        id SERIAL PRIMARY KEY,
+        company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        billing_type_id INTEGER NOT NULL REFERENCES billing_types(id),
+        rate_card_id INTEGER REFERENCES rate_cards(id) ON DELETE SET NULL,
+        name TEXT NOT NULL,
+        starts_on DATE NOT NULL DEFAULT CURRENT_DATE,
+        ends_on DATE,
+        block_hours NUMERIC(8,2),
+        block_period TEXT NOT NULL DEFAULT 'term' CHECK (block_period IN ('term', 'monthly')),
+        external_ref TEXT,
+        notes TEXT,
+        active BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_contracts_company ON contracts(company_id)`);
+    // One row per alert sent, so each contract warns once per block period
+    // per level ('threshold', 'exhausted').
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS contract_block_alerts (
+        contract_id INTEGER NOT NULL REFERENCES contracts(id) ON DELETE CASCADE,
+        period TEXT NOT NULL,
+        level TEXT NOT NULL CHECK (level IN ('threshold', 'exhausted')),
+        used_minutes INTEGER NOT NULL,
+        sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (contract_id, period, level)
+      )
+    `);
+
+    // Which customer a ticket bills to. NULL → the customer its project is
+    // linked to (when exactly one is).
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS billing_company_id INTEGER REFERENCES companies(id) ON DELETE SET NULL`);
+
+    // Approval of billable time before it's exported / invoiced.
+    await client.query(`ALTER TABLE time_entries ADD COLUMN IF NOT EXISTS approved_at TIMESTAMPTZ`);
+    await client.query(`ALTER TABLE time_entries ADD COLUMN IF NOT EXISTS approved_by INTEGER REFERENCES users(id) ON DELETE SET NULL`);
+    // Overlap checks scan a tech's entries by time range.
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_time_entries_user_span ON time_entries(user_id, started_at, ended_at)`);
 
     await client.query('COMMIT');
   } catch (err) {

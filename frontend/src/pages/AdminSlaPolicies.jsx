@@ -1,4 +1,4 @@
-import { useEffect, useState } from "react";
+import { Fragment, useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
 
@@ -57,6 +57,7 @@ export default function AdminSlaPolicies() {
   const [policies, setPolicies] = useState([]);
   const [projects, setProjects] = useState([]);
   const [bhList, setBhList] = useState([]);
+  const [locations, setLocations] = useState([]);
   const [loading, setLoading] = useState(true);
   const [savingId, setSavingId] = useState(null);
   const [edits, setEdits] = useState({});
@@ -65,14 +66,16 @@ export default function AdminSlaPolicies() {
   async function load() {
     setLoading(true);
     try {
-      const [pList, pjList, bh] = await Promise.all([
+      const [pList, pjList, bh, locs] = await Promise.all([
         api.get("/api/sla/policies"),
         api.get("/api/projects"),
         api.get("/api/sla/business-hours"),
+        api.get("/api/companies/locations").catch(() => []),
       ]);
       setPolicies(pList);
       setProjects(pjList);
       setBhList(bh);
+      setLocations(locs);
     } catch (e) {
       toast.error(e.message || "Failed to load");
     } finally {
@@ -214,7 +217,8 @@ export default function AdminSlaPolicies() {
 
   return (
     <div className="space-y-5">
-      <BusinessHoursSection bhList={bhList} projects={projects} onChange={load} />
+      <BusinessHoursSection bhList={bhList} projects={projects} locations={locations} onChange={load} />
+      <SlaWebhooksSection projects={projects} />
 
       <div className="bg-surface border border-border rounded-lg p-4">
         <h2 className="text-base font-semibold text-fg mb-1">Org-default targets</h2>
@@ -328,12 +332,143 @@ export default function AdminSlaPolicies() {
   );
 }
 
-function BusinessHoursSection({ bhList, projects, onChange }) {
+// Scope select value: "" = org default, "p:<id>" = project, "l:<id>" = location.
+function scopeToBody(scope) {
+  if (scope.startsWith("p:")) return { project_id: Number(scope.slice(2)), location_id: null };
+  if (scope.startsWith("l:")) return { project_id: null, location_id: Number(scope.slice(2)) };
+  return { project_id: null, location_id: null };
+}
+
+function scopeLabel(b) {
+  if (b.location_id != null) return `Location · ${b.location_name || `#${b.location_id}`}`;
+  if (b.project_id != null) return `${b.project_prefix} · ${b.project_name}`;
+  return null;
+}
+
+const MONTH_NAMES = ["January", "February", "March", "April", "May", "June", "July",
+  "August", "September", "October", "November", "December"];
+const WEEKDAY_NAMES = ["Sunday", "Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday"];
+const NTH_OPTIONS = [
+  { value: 1, label: "1st" }, { value: 2, label: "2nd" }, { value: 3, label: "3rd" },
+  { value: 4, label: "4th" }, { value: 5, label: "5th" }, { value: -1, label: "Last" },
+];
+
+function emptyHoliday() {
+  return { kind: "date", date: "", recurring: false, nth: 1, weekday: 1, month: 1, observed: false, name: "" };
+}
+
+function HolidaysEditor({ bh, onChange }) {
+  const [draft, setDraft] = useState(emptyHoliday);
+  const [saving, setSaving] = useState(false);
+  const set = (patch) => setDraft((d) => ({ ...d, ...patch }));
+
+  async function add() {
+    if (draft.kind === "date" && !draft.date) { toast.error("Pick a date"); return; }
+    const body = draft.kind === "date"
+      ? { kind: "date", date: draft.date, recurring: draft.recurring }
+      : { kind: "nth_weekday", nth: Number(draft.nth), weekday: Number(draft.weekday), month: Number(draft.month) };
+    setSaving(true);
+    try {
+      await api.post(`/api/sla/business-hours/${bh.id}/holidays`, {
+        ...body,
+        observed: draft.observed,
+        name: draft.name || undefined,
+      });
+      setDraft(emptyHoliday());
+      await onChange();
+    } catch (err) {
+      toast.error(err.message || "Failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function remove(id) {
+    try {
+      await api.delete(`/api/sla/business-hours/${bh.id}/holidays/${id}`);
+      await onChange();
+    } catch (err) {
+      toast.error(err.message || "Failed");
+    }
+  }
+
+  const holidays = bh.holidays || [];
+  const select = "border border-border-strong rounded px-2 py-1 text-sm";
+  return (
+    <div className="space-y-2">
+      <p className="text-xs text-fg-muted">
+        Closed all day in {bh.tz}. SLA clocks and escalation delays skip
+        these like a weekend. Use a <b>date</b> (optionally every year) or a{" "}
+        <b>weekday rule</b> for holidays that move, like "the last Monday of
+        May". <b>Observed</b> takes a Saturday holiday on the Friday before
+        and a Sunday one on the Monday after. Staff can subscribe to this
+        list from <b>Account settings → Calendar</b>.
+      </p>
+      {holidays.length === 0 ? (
+        <div className="text-xs text-fg-dim italic">No holidays yet.</div>
+      ) : (
+        <ul className="divide-y divide-border border border-border rounded">
+          {holidays.map((h) => (
+            <li key={h.id} className="flex flex-wrap items-center gap-3 px-2 py-1 text-sm">
+              <span className="flex-1 min-w-[10rem] truncate">{h.name || <span className="text-fg-dim">—</span>}</span>
+              <span className="text-xs text-fg-muted">{h.rule}{h.observed && " · observed"}</span>
+              <span className="text-xs text-fg-dim font-mono w-28">{h.next ? `next ${h.next}` : "past"}</span>
+              <button onClick={() => remove(h.id)} className="text-xs text-red-600 hover:underline">Remove</button>
+            </li>
+          ))}
+        </ul>
+      )}
+      <div className="flex flex-wrap items-center gap-2">
+        <input value={draft.name} placeholder="Name, e.g. Thanksgiving"
+          onChange={(e) => set({ name: e.target.value })}
+          className="border border-border-strong rounded px-2 py-1 text-sm w-48" />
+        <select value={draft.kind} onChange={(e) => set({ kind: e.target.value })} className={select}>
+          <option value="date">On a date</option>
+          <option value="nth_weekday">Weekday rule</option>
+        </select>
+        {draft.kind === "date" ? (
+          <>
+            <input type="date" value={draft.date} onChange={(e) => set({ date: e.target.value })}
+              className={`${select} font-mono`} />
+            <label className="flex items-center gap-1 text-xs text-fg-muted">
+              <input type="checkbox" checked={draft.recurring} onChange={(e) => set({ recurring: e.target.checked })} />
+              Every year
+            </label>
+          </>
+        ) : (
+          <>
+            <select value={draft.nth} onChange={(e) => set({ nth: e.target.value })} className={select} aria-label="Which">
+              {NTH_OPTIONS.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+            </select>
+            <select value={draft.weekday} onChange={(e) => set({ weekday: e.target.value })} className={select} aria-label="Weekday">
+              {WEEKDAY_NAMES.map((w, i) => <option key={w} value={i}>{w}</option>)}
+            </select>
+            <span className="text-xs text-fg-muted">of</span>
+            <select value={draft.month} onChange={(e) => set({ month: e.target.value })} className={select} aria-label="Month">
+              {MONTH_NAMES.map((m, i) => <option key={m} value={i + 1}>{m}</option>)}
+            </select>
+          </>
+        )}
+        <label className="flex items-center gap-1 text-xs text-fg-muted">
+          <input type="checkbox" checked={draft.observed} onChange={(e) => set({ observed: e.target.checked })} />
+          Observed
+        </label>
+        <button onClick={add} disabled={saving}
+          className="text-xs px-2 py-1 bg-brand text-white rounded disabled:opacity-50">
+          Add holiday
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function BusinessHoursSection({ bhList, projects, locations, onChange }) {
   const [edits, setEdits] = useState({});
   const [addOpen, setAddOpen] = useState(false);
+  const [holidaysOpen, setHolidaysOpen] = useState(null);
   const [newBh, setNewBh] = useState({
     name: "",
-    project_id: "",
+    scope: "",
     tz: "America/Chicago",
     days: [1, 2, 3, 4, 5],
     start_time: "09:00",
@@ -376,13 +511,11 @@ function BusinessHoursSection({ bhList, projects, onChange }) {
     if (!newBh.tz.trim()) { toast.error("Timezone required"); return; }
     if (!newBh.days.length) { toast.error("Pick at least one day"); return; }
     try {
-      await api.post("/api/sla/business-hours", {
-        ...newBh,
-        project_id: newBh.project_id ? Number(newBh.project_id) : null,
-      });
+      const { scope, ...rest } = newBh;
+      await api.post("/api/sla/business-hours", { ...rest, ...scopeToBody(scope) });
       toast.success("Added");
       setNewBh({
-        name: "", project_id: "", tz: "America/Chicago",
+        name: "", scope: "", tz: "America/Chicago",
         days: [1, 2, 3, 4, 5], start_time: "09:00", end_time: "17:00",
       });
       setAddOpen(false);
@@ -402,9 +535,11 @@ function BusinessHoursSection({ bhList, projects, onChange }) {
       </div>
       <p className="text-xs text-fg-muted mb-3">
         Pinned by SLA policies. Clock skips outside the configured days &
-        times. The org default is seeded Mon–Fri 9–5 CT; edit or disable
-        it, or add per-project rows. Pin a policy to an SLA via the{" "}
-        <b>Business hours</b> column below.
+        times and on each policy's holidays. The org default is seeded
+        Mon–Fri 9–5 CT; edit or disable it, or add per-project rows. Pin a
+        policy to an SLA via the <b>Business hours</b> column below. A{" "}
+        <b>location</b> row overrides the pinned hours for tickets at that
+        site (24/7 SLA policies stay 24/7).
       </p>
 
       {addOpen && (
@@ -416,13 +551,24 @@ function BusinessHoursSection({ bhList, projects, onChange }) {
                 placeholder="e.g. MOT Tier-1 9–5" className="border border-border-strong rounded px-2 py-1 text-sm w-56" />
             </label>
             <label className="flex flex-col gap-1">
-              <span className="text-xs text-fg-muted">Project (blank = org default)</span>
-              <select value={newBh.project_id} onChange={e => setNewBh(p => ({ ...p, project_id: e.target.value }))}
+              <span className="text-xs text-fg-muted">Scope</span>
+              <select value={newBh.scope} onChange={e => setNewBh(p => ({ ...p, scope: e.target.value }))}
                 className="border border-border-strong rounded px-2 py-1 text-sm">
                 <option value="">— org default —</option>
-                {projects.filter(pj => pj.status === "active").map(pj => (
-                  <option key={pj.id} value={pj.id}>{pj.prefix} · {pj.name}</option>
-                ))}
+                <optgroup label="Project">
+                  {projects.filter(pj => pj.status === "active").map(pj => (
+                    <option key={pj.id} value={`p:${pj.id}`}>{pj.prefix} · {pj.name}</option>
+                  ))}
+                </optgroup>
+                {locations.length > 0 && (
+                  <optgroup label="Location">
+                    {locations.map(l => (
+                      <option key={l.id} value={`l:${l.id}`}>
+                        {l.company_name ? `${l.company_name} · ` : ""}{l.name}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
               </select>
             </label>
             <label className="flex flex-col gap-1">
@@ -477,15 +623,17 @@ function BusinessHoursSection({ bhList, projects, onChange }) {
               const e = edits[b.id] || {};
               const merged = { ...b, ...e };
               const dirty = !!Object.keys(e).length;
+              const scoped = b.project_id != null || b.location_id != null;
               return (
-                <tr key={b.id} className="border-t border-border">
+                <Fragment key={b.id}>
+                <tr className="border-t border-border">
                   <td className="py-2 pr-3">
                     <input value={merged.name || ""}
                       onChange={ev => setEdits(prev => ({ ...prev, [b.id]: { ...prev[b.id], name: ev.target.value } }))}
                       className="border border-border-strong rounded px-2 py-1 text-sm w-44" />
                   </td>
                   <td className="py-2 pr-3 text-fg-muted">
-                    {b.project_id == null ? <span className="text-fg-dim">org default</span> : `${b.project_prefix} · ${b.project_name}`}
+                    {scopeLabel(b) || <span className="text-fg-dim">org default</span>}
                   </td>
                   <td className="py-2 pr-3">
                     <input value={merged.tz}
@@ -528,15 +676,319 @@ function BusinessHoursSection({ bhList, projects, onChange }) {
                   </td>
                   <td className="py-2 flex gap-2">
                     {dirty && <button onClick={() => saveBh(b)} className="text-xs px-2 py-1 bg-brand text-white rounded">Save</button>}
-                    {b.project_id != null && (
+                    <button onClick={() => setHolidaysOpen(o => (o === b.id ? null : b.id))}
+                      className="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2 whitespace-nowrap">
+                      Holidays ({(b.holidays || []).length})
+                    </button>
+                    {scoped && (
                       <button onClick={() => deleteBh(b.id)} className="text-xs px-2 py-1 text-red-600 hover:underline">Delete</button>
                     )}
                   </td>
                 </tr>
+                {holidaysOpen === b.id && (
+                  <tr className="bg-surface-2/40">
+                    <td colSpan={7} className="px-3 py-3">
+                      <HolidaysEditor bh={b} onChange={onChange} />
+                    </td>
+                  </tr>
+                )}
+                </Fragment>
               );
             })}
           </tbody>
         </table>
+      )}
+    </div>
+  );
+}
+
+const WEBHOOK_KINDS = [
+  { value: "slack", label: "Slack", target: "Incoming webhook URL", placeholder: "https://hooks.slack.com/services/…" },
+  { value: "teams", label: "Microsoft Teams", target: "Workflows webhook URL", placeholder: "https://…logic.azure.com/…" },
+  { value: "pagerduty", label: "PagerDuty", target: "Integration key (Events API v2)", placeholder: "32-character routing key" },
+  { value: "generic", label: "Generic JSON", target: "URL", placeholder: "https://example.com/hooks/resolvd" },
+];
+const WEBHOOK_EVENTS = [
+  { value: "breach_response", label: "Response breached" },
+  { value: "breach_resolve", label: "Resolve breached" },
+  { value: "warning_response", label: "Response at risk" },
+  { value: "warning_resolve", label: "Resolve at risk" },
+];
+const kindMeta = (k) => WEBHOOK_KINDS.find((x) => x.value === k) || WEBHOOK_KINDS[0];
+
+function emptyWebhook() {
+  return { name: "", kind: "slack", target: "", secret: "", project_id: "", events: ["breach_response", "breach_resolve"], max_priority: 5 };
+}
+
+function WebhookForm({ value, onChange, projects, isNew }) {
+  const set = (patch) => onChange({ ...value, ...patch });
+  const meta = kindMeta(value.kind);
+  return (
+    <div className="space-y-2">
+      <div className="flex flex-wrap gap-2">
+        <label className="flex flex-col gap-1">
+          <span className="text-xs text-fg-muted">Name</span>
+          <input value={value.name} onChange={(e) => set({ name: e.target.value })}
+            placeholder="e.g. #support-alerts" className="border border-border-strong rounded px-2 py-1 text-sm w-48" />
+        </label>
+        {isNew && (
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-fg-muted">Destination</span>
+            <select value={value.kind} onChange={(e) => set({ kind: e.target.value })}
+              className="border border-border-strong rounded px-2 py-1 text-sm">
+              {WEBHOOK_KINDS.map((k) => <option key={k.value} value={k.value}>{k.label}</option>)}
+            </select>
+          </label>
+        )}
+        <label className="flex flex-col gap-1 flex-1 min-w-[16rem]">
+          <span className="text-xs text-fg-muted">
+            {meta.target}{!isNew && " (leave blank to keep)"}
+          </span>
+          <input value={value.target} onChange={(e) => set({ target: e.target.value })}
+            placeholder={isNew ? meta.placeholder : value.target_hint || meta.placeholder}
+            autoComplete="off" className="border border-border-strong rounded px-2 py-1 text-sm font-mono" />
+        </label>
+        {value.kind === "generic" && (
+          <label className="flex flex-col gap-1">
+            <span className="text-xs text-fg-muted">
+              Signing secret (optional{!isNew && value.has_secret ? "; set — type to replace" : ""})
+            </span>
+            <input value={value.secret} onChange={(e) => set({ secret: e.target.value })}
+              autoComplete="off" type="password" className="border border-border-strong rounded px-2 py-1 text-sm font-mono w-48" />
+          </label>
+        )}
+      </div>
+      <div className="flex flex-wrap items-end gap-3">
+        <label className="flex flex-col gap-1">
+          <span className="text-xs text-fg-muted">Project</span>
+          <select value={value.project_id ?? ""} onChange={(e) => set({ project_id: e.target.value })}
+            className="border border-border-strong rounded px-2 py-1 text-sm">
+            <option value="">All projects</option>
+            {projects.filter((p) => p.status === "active").map((p) => (
+              <option key={p.id} value={p.id}>{p.prefix} · {p.name}</option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-1">
+          <span className="text-xs text-fg-muted">Priorities</span>
+          <select value={value.max_priority} onChange={(e) => set({ max_priority: Number(e.target.value) })}
+            className="border border-border-strong rounded px-2 py-1 text-sm">
+            {[1, 2, 3, 4, 5].map((p) => <option key={p} value={p}>{p === 1 ? "P1 only" : p === 5 ? "All (P1–P5)" : `P1–P${p}`}</option>)}
+          </select>
+        </label>
+        <div className="flex flex-wrap gap-2">
+          {WEBHOOK_EVENTS.map((ev) => (
+            <label key={ev.value} className="flex items-center gap-1 text-xs text-fg-muted">
+              <input type="checkbox" checked={value.events.includes(ev.value)}
+                onChange={(e) => set({
+                  events: e.target.checked
+                    ? [...value.events, ev.value]
+                    : value.events.filter((x) => x !== ev.value),
+                })} />
+              {ev.label}
+            </label>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function webhookBody(v, isNew) {
+  const body = {
+    name: v.name,
+    project_id: v.project_id ? Number(v.project_id) : null,
+    events: v.events,
+    max_priority: Number(v.max_priority),
+  };
+  if (isNew) body.kind = v.kind;
+  if (isNew || v.target.trim()) body.target = v.target.trim();
+  if (v.kind === "generic" && (isNew ? v.secret : v.secret !== "")) body.secret = v.secret;
+  return body;
+}
+
+function WebhookDeliveries({ hookId }) {
+  const [rows, setRows] = useState(null);
+  useEffect(() => {
+    api.get(`/api/sla/webhooks/${hookId}/deliveries`).then(setRows).catch(() => setRows([]));
+  }, [hookId]);
+  if (!rows) return <div className="text-xs text-fg-dim">Loading…</div>;
+  if (!rows.length) return <div className="text-xs text-fg-dim italic">Nothing sent yet.</div>;
+  return (
+    <ul className="text-xs divide-y divide-border border border-border rounded">
+      {rows.map((d) => (
+        <li key={d.id} className="flex flex-wrap gap-2 px-2 py-1">
+          <span className={d.ok ? "text-green-700 dark:text-green-400" : "text-red-600"}>{d.ok ? "sent" : "failed"}</span>
+          <span className="text-fg-muted">{new Date(d.created_at).toLocaleString()}</span>
+          <span>{WEBHOOK_EVENTS.find((e) => e.value === d.event)?.label || d.event}</span>
+          {d.ticket_ref && <span className="font-mono">{d.ticket_ref}</span>}
+          {d.resolved_at && <span className="text-fg-muted">· resolved in PagerDuty</span>}
+          {d.error && <span className="text-red-600 truncate max-w-full">{d.error}</span>}
+        </li>
+      ))}
+    </ul>
+  );
+}
+
+function SlaWebhooksSection({ projects }) {
+  const [hooks, setHooks] = useState([]);
+  const [draft, setDraft] = useState(null);
+  const [editing, setEditing] = useState({});
+  const [logOpen, setLogOpen] = useState(null);
+  const [busy, setBusy] = useState(null);
+
+  async function load() {
+    try {
+      setHooks(await api.get("/api/sla/webhooks"));
+    } catch (err) {
+      toast.error(err.message || "Failed to load webhooks");
+    }
+  }
+  useEffect(() => { load(); }, []);
+
+  async function create() {
+    if (!draft.name.trim() || !draft.target.trim()) { toast.error("Name and destination required"); return; }
+    if (!draft.events.length) { toast.error("Pick at least one event"); return; }
+    try {
+      await api.post("/api/sla/webhooks", webhookBody(draft, true));
+      toast.success("Webhook added");
+      setDraft(null);
+      await load();
+    } catch (err) {
+      toast.error(err.message || "Failed");
+    }
+  }
+
+  async function save(h) {
+    const v = editing[h.id];
+    if (!v.events.length) { toast.error("Pick at least one event"); return; }
+    try {
+      await api.patch(`/api/sla/webhooks/${h.id}`, webhookBody(v, false));
+      toast.success("Saved");
+      setEditing((p) => { const n = { ...p }; delete n[h.id]; return n; });
+      await load();
+    } catch (err) {
+      toast.error(err.message || "Failed");
+    }
+  }
+
+  async function toggle(h) {
+    try {
+      await api.patch(`/api/sla/webhooks/${h.id}`, { enabled: !h.enabled });
+      await load();
+    } catch (err) {
+      toast.error(err.message || "Failed");
+    }
+  }
+
+  async function remove(h) {
+    if (!confirm(`Delete webhook "${h.name}"?`)) return;
+    try {
+      await api.delete(`/api/sla/webhooks/${h.id}`);
+      await load();
+    } catch (err) {
+      toast.error(err.message || "Failed");
+    }
+  }
+
+  async function test(h) {
+    setBusy(h.id);
+    try {
+      const r = await api.post(`/api/sla/webhooks/${h.id}/test`, {});
+      if (r.ok) toast.success("Test delivered");
+      else toast.error(`Test failed: ${r.error}`);
+      await load();
+    } catch (err) {
+      toast.error(err.message || "Failed");
+    } finally {
+      setBusy(null);
+    }
+  }
+
+  return (
+    <div className="bg-surface border border-border rounded-lg p-4">
+      <div className="flex items-center justify-between mb-1">
+        <h2 className="text-base font-semibold text-fg">Breach notifications</h2>
+        {!draft && (
+          <button onClick={() => setDraft(emptyWebhook())}
+            className="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2">+ Add webhook</button>
+        )}
+      </div>
+      <p className="text-xs text-fg-muted mb-3">
+        Post to Slack, Microsoft Teams, PagerDuty or any JSON endpoint when a
+        ticket breaches (or is about to breach) its SLA, alongside the
+        in-app and email alerts. PagerDuty incidents resolve automatically
+        once the ticket is resolved. Generic webhooks are signed with
+        HMAC-SHA256 over <code>timestamp.body</code> in{" "}
+        <code>X-Resolvd-Signature</code> when a secret is set. URLs and keys
+        are stored encrypted and need the master key (Admin → Encryption).
+      </p>
+
+      {draft && (
+        <div className="border border-border rounded p-3 mb-3 space-y-2 bg-surface-2/40">
+          <WebhookForm value={draft} onChange={setDraft} projects={projects} isNew />
+          <div className="flex gap-2">
+            <button onClick={create} className="text-sm px-3 py-1.5 bg-brand text-white rounded">Save webhook</button>
+            <button onClick={() => setDraft(null)} className="text-sm px-3 py-1.5 border border-border rounded">Cancel</button>
+          </div>
+        </div>
+      )}
+
+      {hooks.length === 0 && !draft ? (
+        <div className="text-sm text-fg-muted">No webhooks yet.</div>
+      ) : (
+        <div className="divide-y divide-border">
+          {hooks.map((h) => (
+            <div key={h.id} className="py-3 space-y-2">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-sm font-medium text-fg">{h.name}</span>
+                <span className="text-xs px-1.5 py-0.5 rounded bg-surface-2 text-fg-muted">{kindMeta(h.kind).label}</span>
+                <span className="text-xs font-mono text-fg-dim">{h.target_hint}</span>
+                <span className="text-xs text-fg-muted">
+                  · {h.project_id ? `${h.project_prefix}` : "all projects"}
+                  {" · "}{h.max_priority === 5 ? "all priorities" : `P1–P${h.max_priority}`}
+                  {" · "}{h.events.map((e) => WEBHOOK_EVENTS.find((x) => x.value === e)?.label || e).join(", ")}
+                </span>
+                {h.last_sent_at && (
+                  <span className={`text-xs ${h.last_ok ? "text-green-700 dark:text-green-400" : "text-red-600"}`}
+                    title={h.last_error || ""}>
+                    · last {h.last_ok ? "sent" : "failed"} {new Date(h.last_sent_at).toLocaleString()}
+                  </span>
+                )}
+                <div className="ml-auto flex items-center gap-2">
+                  <label className="flex items-center gap-1 text-xs text-fg-muted">
+                    <input type="checkbox" checked={h.enabled} onChange={() => toggle(h)} /> Enabled
+                  </label>
+                  <button onClick={() => test(h)} disabled={busy === h.id}
+                    className="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2 disabled:opacity-50">
+                    {busy === h.id ? "Sending…" : "Send test"}
+                  </button>
+                  <button onClick={() => setLogOpen((o) => (o === h.id ? null : h.id))}
+                    className="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2">Log</button>
+                  {!editing[h.id] && (
+                    <button onClick={() => setEditing((p) => ({
+                      ...p,
+                      [h.id]: { ...h, target: "", secret: "", project_id: h.project_id ?? "" },
+                    }))} className="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2">Edit</button>
+                  )}
+                  <button onClick={() => remove(h)} className="text-xs px-2 py-1 text-red-600 hover:underline">Delete</button>
+                </div>
+              </div>
+              {editing[h.id] && (
+                <div className="border border-border rounded p-3 space-y-2 bg-surface-2/40">
+                  <WebhookForm value={editing[h.id]} projects={projects}
+                    onChange={(v) => setEditing((p) => ({ ...p, [h.id]: v }))} />
+                  <div className="flex gap-2">
+                    <button onClick={() => save(h)} className="text-sm px-3 py-1.5 bg-brand text-white rounded">Save</button>
+                    <button onClick={() => setEditing((p) => { const n = { ...p }; delete n[h.id]; return n; })}
+                      className="text-sm px-3 py-1.5 border border-border rounded">Cancel</button>
+                  </div>
+                </div>
+              )}
+              {logOpen === h.id && <WebhookDeliveries hookId={h.id} />}
+            </div>
+          ))}
+        </div>
       )}
     </div>
   );

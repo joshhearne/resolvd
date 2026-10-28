@@ -7,7 +7,6 @@
 // Gmail (gmail_user): refresh via google-auth-library OAuth2Client.
 // SMTP: no token refresh.
 
-const fetch = require('node-fetch');
 const { OAuth2Client } = require('google-auth-library');
 const { pool } = require('../db/pool');
 const { buildWritePatch, decryptRow, decryptRows } = require('./fields');
@@ -174,6 +173,7 @@ async function listAccounts() {
            inbox_monitor_enabled, inbox_subscription_expires_at,
            inbox_last_renewed_at, send_as_submitter,
            inbound_banner_strip_patterns,
+           default_inbound_project_id,
            created_at, updated_at
       FROM email_backend_accounts
      ORDER BY is_active DESC, updated_at DESC

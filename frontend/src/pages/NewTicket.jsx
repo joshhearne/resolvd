@@ -1,5 +1,5 @@
 import React, { useState, useEffect } from "react";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate, useSearchParams, useParams } from "react-router-dom";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
 import {
@@ -21,6 +21,9 @@ export default function NewTicket() {
     ? Number(searchParams.get("project_id"))
     : null;
   const fromFilter = searchParams.get("from_filter") === "1";
+  // Deep-link path: /tickets/new/<project-prefix>/<category-slug>/<form-slug>
+  const splat = (useParams()["*"] || "").split("/").filter(Boolean);
+  const [pathProject, pathCategory, pathForm] = splat;
   const { user } = useAuth();
   const [projects, setProjects] = useState([]);
   const [form, setForm] = useState({
@@ -42,6 +45,13 @@ export default function NewTicket() {
   const [users, setUsers] = useState([]);
   const [onBehalfOfId, setOnBehalfOfId] = useState("");
   const canFileOnBehalf = ["Admin", "Manager"].includes(user?.role);
+  // Project-scoped custom forms: category → request-type form → custom fields.
+  const [categories, setCategories] = useState([]);
+  const [projectForms, setProjectForms] = useState([]);
+  const [categoryId, setCategoryId] = useState("");
+  const [formId, setFormId] = useState("");
+  const [formFields, setFormFields] = useState([]);
+  const [cfValues, setCfValues] = useState({}); // def_id -> value
 
   useEffect(() => {
     if (!canFileOnBehalf) return;
@@ -54,9 +64,12 @@ export default function NewTicket() {
       .then((all) => {
         const active = all.filter((p) => p.status === "active");
         setProjects(active);
-        // Precedence: ?project_id query (filter scope) > user default > only-one fallback.
+        // Precedence: deep-link path prefix > ?project_id query > user default > only-one.
         const defaultId = user?.defaultProjectId;
-        if (queryProjectId && active.find((p) => p.id === queryProjectId)) {
+        const pathProj = pathProject && active.find((p) => String(p.prefix).toLowerCase() === pathProject.toLowerCase());
+        if (pathProj) {
+          setForm((f) => ({ ...f, project_id: pathProj.id }));
+        } else if (queryProjectId && active.find((p) => p.id === queryProjectId)) {
           setForm((f) => ({ ...f, project_id: queryProjectId }));
           if (
             fromFilter &&
@@ -96,6 +109,134 @@ export default function NewTicket() {
       .catch(() => setProjectContacts([]));
     setSelectedContactIds([]);
   }, [form.project_id, projects]);
+
+  // Load this project's categories + forms for the request-type picker.
+  // Reset any prior selection when the project changes.
+  useEffect(() => {
+    setCategoryId(""); setFormId(""); setFormFields([]); setCfValues({});
+    setCategories([]); setProjectForms([]);
+    if (!form.project_id) return;
+    let alive = true;
+    Promise.all([
+      api.get(`/api/forms/categories?project_id=${form.project_id}`).catch(() => []),
+      api.get(`/api/forms?project_id=${form.project_id}`).catch(() => []),
+    ]).then(([cats, fms]) => {
+      if (!alive) return;
+      setCategories(cats); setProjectForms(fms);
+      // Deep-link: resolve category + form by slug from the URL path.
+      if (!pathCategory) return;
+      const cat = cats.find((c) => c.slug === pathCategory);
+      if (!cat) return;
+      setCategoryId(String(cat.id));
+      const inCat = fms.filter((x) => String(x.category_id) === String(cat.id));
+      if (pathForm) {
+        const f = inCat.find((x) => x.slug === pathForm);
+        if (f) setFormId(String(f.id));
+      } else if (cat.default_form_id && inCat.some((x) => x.id === cat.default_form_id)) {
+        setFormId(String(cat.default_form_id));
+      } else if (inCat.length === 1) {
+        setFormId(String(inCat[0].id));
+      }
+    });
+    return () => { alive = false; };
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [form.project_id]);
+
+  // When a form is chosen, fetch its bound fields + seed default values.
+  useEffect(() => {
+    if (!formId) { setFormFields([]); setCfValues({}); return; }
+    api.get(`/api/forms/${formId}`).then((r) => {
+      // Agent-only fields never render on the submitter form; agents filing
+      // can still fill them here. Backend re-enforces this on create.
+      const isAgent = ["Admin", "Manager", "Tech"].includes(user?.role);
+      // Computed fields are derived by their formula after submit — never an
+      // input on the create form, for agents or submitters.
+      const fields = (r.fields || []).filter((f) => !f.computed && (isAgent || !f.agent_only));
+      setFormFields(fields);
+      const seed = {};
+      fields.forEach((f) => { seed[f.def_id] = f.type === "bool" ? false : f.type === "multiselect" ? [] : ""; });
+      // Deep-link prefills: ?<field-slug>=<value>. Selects take a 1-based
+      // option number; multi-selects take a comma list of numbers; bools take
+      // 1/true; others take the literal value.
+      fields.forEach((f) => {
+        const raw = searchParams.get(f.slug);
+        if (raw == null) return;
+        if (f.type === "select") {
+          const opt = (f.options || [])[parseInt(raw, 10) - 1];
+          if (opt) seed[f.def_id] = opt.value;
+        } else if (f.type === "multiselect") {
+          const vals = raw.split(",").map((s) => (f.options || [])[parseInt(s.trim(), 10) - 1]?.value).filter(Boolean);
+          if (vals.length) seed[f.def_id] = vals;
+        } else if (f.type === "bool") {
+          seed[f.def_id] = raw === "1" || raw.toLowerCase() === "true";
+        } else {
+          seed[f.def_id] = raw;
+        }
+      });
+      setCfValues(seed);
+      // Pre-fill Title/Description from the form's boilerplate, but never
+      // clobber what the user already typed.
+      const meta = r.form || {};
+      setForm((prev) => ({
+        ...prev,
+        title: prev.title?.trim() ? prev.title : (meta.default_title || ""),
+        description: prev.description?.trim() ? prev.description : (meta.default_description || ""),
+      }));
+    }).catch(() => { setFormFields([]); setCfValues({}); });
+  }, [formId]);
+
+  function renderField(f) {
+    const v = cfValues[f.def_id];
+    const setV = (val) => setCfValues((p) => ({ ...p, [f.def_id]: val }));
+    const cls = "w-full border border-border-strong rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40";
+    if (f.type === "bool") {
+      return (
+        <label className="inline-flex items-center gap-2 text-sm text-fg">
+          <input type="checkbox" checked={!!v} onChange={(e) => setV(e.target.checked)} />
+          {f.label}{f.required && <span className="text-red-500">*</span>}
+        </label>
+      );
+    }
+    if (f.type === "multiselect") {
+      const arr = Array.isArray(v) ? v : [];
+      const toggle = (val) => setV(arr.includes(val) ? arr.filter((x) => x !== val) : [...arr, val]);
+      return (
+        <div>
+          <label className="block text-sm font-medium text-fg mb-1">
+            {f.label}{f.required && <span className="text-red-500"> *</span>}
+          </label>
+          <div className="space-y-1">
+            {(f.options || []).map((o) => (
+              <label key={o.value} className="flex items-center gap-2 text-sm text-fg">
+                <input type="checkbox" checked={arr.includes(o.value)} onChange={() => toggle(o.value)} /> {o.label}
+              </label>
+            ))}
+          </div>
+          {f.help_text && <p className="text-xs text-fg-muted mt-1">{f.help_text}</p>}
+        </div>
+      );
+    }
+    const inputType = f.sensitive && f.type === "text" ? "password"
+      : f.type === "number" ? "number" : f.type === "date" ? "date" : "text";
+    return (
+      <div>
+        <label className="block text-sm font-medium text-fg mb-1">
+          {f.label}{f.required && <span className="text-red-500"> *</span>}
+          {f.sensitive && <span className="ml-1 text-xs text-fg-muted">(sensitive)</span>}
+        </label>
+        {f.type === "select" ? (
+          <select value={v ?? ""} onChange={(e) => setV(e.target.value)} className={cls}>
+            <option value="">Select…</option>
+            {(f.options || []).map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+          </select>
+        ) : (
+          <input type={inputType} value={v ?? ""} onChange={(e) => setV(e.target.value)}
+            className={cls} placeholder={f.help_text || ""} autoComplete={f.sensitive ? "new-password" : "off"} />
+        )}
+        {f.help_text && f.type !== "select" && <p className="text-xs text-fg-muted mt-1">{f.help_text}</p>}
+      </div>
+    );
+  }
 
   function toggleContact(id) {
     setSelectedContactIds(prev =>
@@ -150,6 +291,13 @@ export default function NewTicket() {
   }
 
   async function doCreate() {
+    // Client-side required-field guard (server re-validates against the form).
+    for (const f of formFields) {
+      if (!f.required) continue;
+      const v = cfValues[f.def_id];
+      const empty = v == null || v === "" || (f.type === "bool" && !v) || (Array.isArray(v) && v.length === 0);
+      if (empty) { toast.error(`"${f.label}" is required`); return; }
+    }
     setSubmitting(true);
     try {
       const ticket = await api.post("/api/tickets", {
@@ -162,6 +310,8 @@ export default function NewTicket() {
         contact_ids: selectedContactIds,
         submitted_by: onBehalfOfId ? Number(onBehalfOfId) : undefined,
         ...(aiLogId ? { ai_rewrite_log_id: aiLogId } : {}),
+        ...(formId ? { form_id: Number(formId) } : {}),
+        ...(formFields.length ? { custom_fields: formFields.map((f) => ({ def_id: f.def_id, value: cfValues[f.def_id] })) } : {}),
       });
 
       if (pendingFiles.length > 0) {
@@ -173,10 +323,13 @@ export default function NewTicket() {
             credentials: "include",
             body: fd,
           });
-          if (!res.ok) throw new Error("attachment upload failed");
+          if (!res.ok) {
+            const e = await res.json().catch(() => ({}));
+            throw new Error(e.error || "attachment upload failed");
+          }
         } catch (err) {
           toast.error(
-            "Ticket created, but some attachments failed to upload. Add them from the ticket page.",
+            `Ticket created, but attachments failed to upload (${err.message}). Add them from the ticket page.`,
           );
         }
       }
@@ -258,6 +411,54 @@ export default function NewTicket() {
             </div>
           )}
         </div>
+
+        {categories.length > 0 && (
+          <div className="space-y-4 border border-border rounded-md p-4 bg-surface-2/30">
+            <div>
+              <label className="block text-sm font-medium text-fg mb-1">
+                Category{" "}
+                <span className="text-fg-muted font-normal">(optional)</span>
+              </label>
+              <select
+                value={categoryId}
+                onChange={(e) => {
+                  const cid = e.target.value;
+                  setCategoryId(cid);
+                  // Pre-select the category's default form, or the only form if
+                  // there's just one; otherwise leave it to the user.
+                  const cat = categories.find((c) => String(c.id) === String(cid));
+                  const inCat = projectForms.filter((f) => String(f.category_id) === String(cid));
+                  const def = cat?.default_form_id && inCat.some((f) => f.id === cat.default_form_id)
+                    ? String(cat.default_form_id)
+                    : (inCat.length === 1 ? String(inCat[0].id) : "");
+                  setFormId(def);
+                }}
+                className="w-full border border-border-strong rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40"
+              >
+                <option value="">No category</option>
+                {categories.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              </select>
+            </div>
+            {categoryId && (
+              <div>
+                <label className="block text-sm font-medium text-fg mb-1">Request type</label>
+                <select
+                  value={formId}
+                  onChange={(e) => setFormId(e.target.value)}
+                  className="w-full border border-border-strong rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40"
+                >
+                  <option value="">Select form…</option>
+                  {projectForms
+                    .filter((f) => String(f.category_id) === String(categoryId))
+                    .map((f) => <option key={f.id} value={f.id}>{f.name}</option>)}
+                </select>
+              </div>
+            )}
+            {formFields.map((f) => (
+              <React.Fragment key={f.def_id}>{renderField(f)}</React.Fragment>
+            ))}
+          </div>
+        )}
 
         <div>
           <div className="flex items-center justify-between mb-1">

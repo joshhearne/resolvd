@@ -1,7 +1,11 @@
 const express = require('express');
 const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
-const { getGratitudePhrases, setGratitudePhrases } = require('../services/autoResolve');
+const {
+  getGratitudePhrases, setGratitudePhrases,
+  getReplyRoutingSettings, setReplyRoutingSettings,
+  getWorkflowAutomationSettings, setWorkflowAutomationSettings,
+} = require('../services/autoResolve');
 
 const router = express.Router();
 const VALID_KINDS = ['internal', 'external'];
@@ -31,7 +35,7 @@ router.get('/', requireAuth, async (req, res) => {
 // POST /api/statuses — create (Admin)
 router.post('/', requireAuth, requireRole('Admin'), async (req, res) => {
   try {
-    const { kind, name, color, sort_order, is_initial, is_terminal, is_blocker, semantic_tag, auto_close_after_days } = req.body || {};
+    const { kind, name, color, sort_order, is_initial, is_terminal, is_blocker, semantic_tag, auto_close_after_days, show_in_post_actions } = req.body || {};
     if (!VALID_KINDS.includes(kind)) return res.status(400).json({ error: 'Invalid kind' });
     if (!name || !name.trim()) return res.status(400).json({ error: 'Name required' });
     const finalColor = /^#[0-9a-fA-F]{6}$/.test(color || '') ? color : '#6b7280';
@@ -44,8 +48,8 @@ router.post('/', requireAuth, requireRole('Admin'), async (req, res) => {
       ? null
       : Math.max(0, Math.floor(Number(auto_close_after_days)));
     const r = await pool.query(
-      `INSERT INTO statuses (kind, name, color, sort_order, is_initial, is_terminal, is_blocker, semantic_tag, auto_close_after_days)
-         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
+      `INSERT INTO statuses (kind, name, color, sort_order, is_initial, is_terminal, is_blocker, semantic_tag, auto_close_after_days, show_in_post_actions)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10) RETURNING *`,
       [
         kind,
         name.trim(),
@@ -56,6 +60,7 @@ router.post('/', requireAuth, requireRole('Admin'), async (req, res) => {
         !!is_blocker,
         semantic_tag || null,
         Number.isFinite(acDays) ? acDays : null,
+        show_in_post_actions === undefined ? true : !!show_in_post_actions,
       ]
     );
     res.status(201).json(r.rows[0]);
@@ -69,7 +74,7 @@ router.post('/', requireAuth, requireRole('Admin'), async (req, res) => {
 // PATCH /api/statuses/:id — update (Admin)
 router.patch('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
   try {
-    const { name, color, sort_order, is_initial, is_terminal, is_blocker, semantic_tag, auto_close_after_days } = req.body || {};
+    const { name, color, sort_order, is_initial, is_terminal, is_blocker, semantic_tag, auto_close_after_days, show_in_post_actions } = req.body || {};
     const cur = await pool.query('SELECT * FROM statuses WHERE id = $1', [req.params.id]);
     if (!cur.rows[0]) return res.status(404).json({ error: 'Not found' });
     const row = cur.rows[0];
@@ -94,6 +99,7 @@ router.patch('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
         updates.auto_close_after_days = Number.isFinite(n) && n >= 0 ? n : null;
       }
     }
+    if (show_in_post_actions !== undefined) updates.show_in_post_actions = !!show_in_post_actions;
 
     if (Object.keys(updates).length === 0) return res.json(row);
 
@@ -238,6 +244,52 @@ router.put('/auto-resolve/phrases', requireAuth, requireRole('Admin'), async (re
     res.json({ phrases: cleaned });
   } catch (err) {
     console.error('phrases put error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// GET /api/statuses/auto-resolve/reply-routing — inbound-reply tunables.
+router.get('/auto-resolve/reply-routing', requireAuth, async (req, res) => {
+  try {
+    res.json(await getReplyRoutingSettings());
+  } catch (err) {
+    console.error('reply-routing get error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// PUT /api/statuses/auto-resolve/reply-routing — { stale_days, suppress_ooo } (Admin).
+router.put('/auto-resolve/reply-routing', requireAuth, requireRole('Admin'), async (req, res) => {
+  try {
+    const { stale_days, suppress_ooo } = req.body || {};
+    const next = await setReplyRoutingSettings({ stale_days, suppress_ooo });
+    res.json(next);
+  } catch (err) {
+    if (err.message?.includes('stale_days')) {
+      return res.status(400).json({ error: err.message });
+    }
+    console.error('reply-routing put error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// GET /api/statuses/workflow-automation — status automation toggles.
+router.get('/workflow-automation', requireAuth, async (req, res) => {
+  try {
+    res.json(await getWorkflowAutomationSettings());
+  } catch (err) {
+    console.error('workflow-automation get error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// PUT /api/statuses/workflow-automation — { external_ref_auto_advance } (Admin).
+router.put('/workflow-automation', requireAuth, requireRole('Admin'), async (req, res) => {
+  try {
+    const { external_ref_auto_advance } = req.body || {};
+    res.json(await setWorkflowAutomationSettings({ external_ref_auto_advance }));
+  } catch (err) {
+    console.error('workflow-automation put error:', err);
     res.status(500).json({ error: 'Database error' });
   }
 });

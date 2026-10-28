@@ -7,6 +7,7 @@ const { buildWritePatch, decryptRow, decryptRows } = require('../services/fields
 const { sendVendorEmail } = require('../services/vendorOutbound');
 const { resolveMentions } = require('../services/mentions');
 const { applyCommentToTerminalTicket } = require('../services/autoResolve');
+const { isProjectHandler } = require('../services/ticketHelpers');
 
 const router = express.Router();
 
@@ -64,6 +65,38 @@ router.get('/:id/comments', requireAuth, async (req, res) => {
       }
     }
 
+    // Stamp distributed_at for any comment in this ticket that hasn't
+    // been distributed yet AND whose author is someone other than the
+    // viewer. Counts UI reads by non-authors as "the original got out".
+    // System comments are skipped (no editing, no badge). Vendor inbound
+    // (vendor_contact_id) is also skipped — vendor authors are out of
+    // the editing workflow.
+    if (viewer?.id) {
+      try {
+        const updated = await pool.query(
+          `UPDATE comments SET distributed_at = NOW()
+             WHERE ticket_id = $1
+               AND distributed_at IS NULL
+               AND is_system = FALSE
+               AND vendor_contact_id IS NULL
+               AND user_id IS NOT NULL
+               AND user_id <> $2
+             RETURNING id`,
+          [req.params.id, viewer.id]
+        );
+        if (updated.rowCount > 0) {
+          const stampedIds = new Set(updated.rows.map((r) => r.id));
+          const stampTime = new Date().toISOString();
+          for (const row of result.rows) {
+            if (stampedIds.has(row.id)) row.distributed_at = stampTime;
+          }
+        }
+      } catch (err) {
+        // Tracking is best-effort — never block the comment list on it.
+        console.error('comment distribution stamp failed:', err.message);
+      }
+    }
+
     res.json(result.rows);
   } catch (err) {
     console.error(err);
@@ -84,11 +117,20 @@ router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Tech'
     if (!ticket.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
     await decryptRow('tickets', ticket.rows[0]);
 
-    // Vendor-visible comments require a privileged role — submitters can
-    // log internal comments but not flag content as outbound to vendors.
+    // Vendor-visible comments require a handler role — global
+    // Admin/Manager/Tech, OR a project member with a handler
+    // role_override / is_agent=TRUE on this ticket's project. Submitters
+    // can log internal comments but not flag content as outbound.
     const wantsExternal = !!is_external_visible;
-    if (wantsExternal && !['Admin', 'Manager'].includes(req.session.user.role)) {
-      return res.status(403).json({ error: 'Only Admin/Manager can mark a comment as vendor-visible' });
+    if (wantsExternal) {
+      const allowed = await isProjectHandler(pool, {
+        userId: req.session.user.id,
+        role: req.session.user.role,
+        projectId: ticket.rows[0].project_id,
+      });
+      if (!allowed) {
+        return res.status(403).json({ error: 'Not authorised to mark comment as vendor-visible' });
+      }
     }
 
     const trimmedBody = body.trim();
@@ -172,10 +214,19 @@ router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Tech'
       }).catch(err => console.error('auto-reopen check failed:', err.message));
     }
 
-    // SLA first-response stamp: any non-system comment by someone other
-    // than the submitter qualifies. Self-replies by the submitter
-    // shouldn't tick the response clock.
-    if (!result.is_system && req.session.user.id !== ticket.rows[0].submitted_by) {
+    // SLA first-response stamp. Two paths qualify:
+    //   1. A non-submitter posts a non-system comment (classic case —
+    //      someone other than the requestor has touched the ticket).
+    //   2. A handler (Admin / Manager / Tech) posts a non-system comment
+    //      even when they are also the submitted_by user. This happens
+    //      on alert-promoted tickets where the alert hook re-pointed
+    //      submitted_by at the on-call agent — their reply is still a
+    //      real "response" and should stop the response clock.
+    // Plain Submitter self-replies still do not tick.
+    const handlerRoles = new Set(['Admin', 'Manager', 'Tech']);
+    const isHandler = handlerRoles.has(req.session.user.role);
+    const isSelfSubmitterReply = req.session.user.id === ticket.rows[0].submitted_by;
+    if (!result.is_system && (!isSelfSubmitterReply || isHandler)) {
       sla.markResponded(null, ticket.rows[0].id)
         .catch(err => console.error('sla markResponded failed:', err.message));
     }
@@ -235,6 +286,7 @@ router.post('/:id/comments', requireAuth, requireRole('Admin', 'Manager', 'Tech'
             fanoutNewComment(pool, {
               ticket: ticket.rows[0],
               comment: trimmedBody,
+              commentId: insertResult.rows[0].id,
               actorId: req.session.user.id,
               actorName: req.session.user.displayName,
               excludeUserIds: mentionedIds,
@@ -291,6 +343,92 @@ router.post('/comments/:id/mute',   requireAuth, requireRole('Admin', 'Manager')
   (req, res) => setMuted(req, res, true));
 router.post('/comments/:id/unmute', requireAuth, requireRole('Admin', 'Manager'),
   (req, res) => setMuted(req, res, false));
+
+// PATCH /api/comments/:id — author or Admin/Manager can edit body.
+// System comments and inbound vendor-reply rows are not editable. Editing
+// stamps edited_at, scrubs the ai_* snapshot (no longer purely AI), and
+// audits on the ticket. Vendor outbound is NOT re-fired — the recipient
+// already has the original email; a follow-up comment communicates the
+// correction.
+router.patch('/comments/:id', requireAuth, async (req, res) => {
+  try {
+    const newBody = String(req.body?.body || '').trim();
+    if (!newBody) return res.status(400).json({ error: 'body required' });
+
+    const existing = await pool.query(
+      `SELECT id, ticket_id, user_id, is_system, body, body_enc, source_inbound_email_id
+         FROM comments WHERE id = $1`,
+      [req.params.id]
+    );
+    if (!existing.rows[0]) return res.status(404).json({ error: 'Comment not found' });
+    const c = existing.rows[0];
+    if (c.is_system) return res.status(400).json({ error: 'System comments are not editable' });
+    if (c.source_inbound_email_id) {
+      return res.status(400).json({ error: 'Inbound vendor replies are not editable' });
+    }
+
+    const user = req.session.user;
+    const isAuthor = c.user_id === user.id;
+    const isPriv = ['Admin', 'Manager'].includes(user.role);
+    if (!isAuthor && !isPriv) {
+      return res.status(403).json({ error: 'Only the author, Admin, or Manager can edit this comment' });
+    }
+
+    // Lock comments once anyone has replied. The thread reading order
+    // matters — a stealth edit after a reply could rewrite the context
+    // the next comment was responding to. Admins / Managers aren't
+    // exempted: the lock is about thread integrity, not permission.
+    // System comments are skipped (auto status / merge bookkeeping
+    // shouldn't lock human comments).
+    const newer = await pool.query(
+      `SELECT 1 FROM comments
+        WHERE ticket_id = $1
+          AND id > $2
+          AND is_system = FALSE
+        LIMIT 1`,
+      [c.ticket_id, c.id]
+    );
+    if (newer.rows.length) {
+      return res.status(409).json({ error: 'Comment locked — a newer reply has been posted on this ticket. Add a follow-up comment with the correction instead.' });
+    }
+
+    await decryptRow('comments', c);
+    const oldBody = c.body || '';
+    if (oldBody === newBody) {
+      return res.json({ id: c.id, ticket_id: c.ticket_id, edited_at: null, body: newBody });
+    }
+
+    const patch = await buildWritePatch(pool, 'comments', { body: newBody });
+    const sets = patch.cols.map((col, i) => `${col} = $${i + 1}`);
+    sets.push(`edited_at = NOW()`);
+    sets.push(`ai_provider = NULL`);
+    sets.push(`ai_model = NULL`);
+    sets.push(`ai_input_tokens = NULL`);
+    sets.push(`ai_output_tokens = NULL`);
+    sets.push(`ai_tone = NULL`);
+    sets.push(`ai_verbosity = NULL`);
+    sets.push(`ai_eli5 = NULL`);
+    sets.push(`ai_publish_consent = NULL`);
+    sets.push(`ai_project_context_used = NULL`);
+
+    const values = [...patch.values, req.params.id];
+    const result = await pool.query(
+      `UPDATE comments SET ${sets.join(', ')} WHERE id = $${values.length} RETURNING id, ticket_id, edited_at`,
+      values
+    );
+
+    await pool.query(
+      `INSERT INTO audit_log (ticket_id, user_id, action, old_value, new_value, note)
+       VALUES ($1, $2, 'comment_edited', $3, $4, $5)`,
+      [c.ticket_id, user.id, String(c.id), String(c.id), isAuthor ? null : 'edited by handler']
+    );
+
+    res.json({ id: result.rows[0].id, ticket_id: result.rows[0].ticket_id, edited_at: result.rows[0].edited_at, body: newBody });
+  } catch (err) {
+    console.error('comment edit failed:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
 
 // DELETE /api/comments/:id — Admin only
 router.delete('/comments/:id', requireAuth, requireRole('Admin'), async (req, res) => {

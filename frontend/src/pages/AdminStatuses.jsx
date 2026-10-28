@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useMemo } from "react";
 import toast from "react-hot-toast";
+import NumberInput from "../components/NumberInput";
 
 const SEMANTIC_TAGS = [
   { value: "", label: "— none —" },
@@ -39,6 +40,8 @@ function FlagBadge({ active, label, tone = "gray" }) {
       "bg-amber-100 dark:bg-amber-950/40 text-amber-800 dark:text-amber-300",
     emerald:
       "bg-emerald-100 dark:bg-emerald-950/40 text-emerald-700 dark:text-emerald-300",
+    indigo:
+      "bg-indigo-100 dark:bg-indigo-950/40 text-indigo-700 dark:text-indigo-300",
     gray: "bg-surface-2 text-fg",
   };
   return (
@@ -233,8 +236,225 @@ export default function AdminStatuses() {
         onDelete={deleteMapping}
       />
 
+      <WorkflowAutomationBlock />
+
       <GratitudePhrasesBlock />
+
+      <ReplyRoutingBlock />
     </div>
+  );
+}
+
+function WorkflowAutomationBlock() {
+  const [settings, setSettings] = useState({ external_ref_auto_advance: true });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/statuses/workflow-automation", {
+          credentials: "include",
+        });
+        if (!res.ok) throw new Error(await res.text());
+        setSettings(await res.json());
+      } catch {
+        toast.error("Failed to load workflow automation settings");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  async function save(patch) {
+    setSaving(true);
+    try {
+      const res = await fetch("/api/statuses/workflow-automation", {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(body.error || "Failed");
+        return;
+      }
+      setSettings(body);
+      toast.success("Saved");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section>
+      <h2 className="text-lg font-semibold text-fg mb-1">
+        Workflow automation
+      </h2>
+      {loading ? (
+        <div className="text-fg-muted text-sm">Loading…</div>
+      ) : (
+        <div className="border border-border rounded-lg p-3 bg-surface">
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={!!settings.external_ref_auto_advance}
+              disabled={saving}
+              onChange={(e) =>
+                save({ external_ref_auto_advance: e.target.checked })
+              }
+              className="mt-1"
+            />
+            <div>
+              <div className="text-sm font-medium text-fg">
+                Advance external status when a vendor ref is added
+              </div>
+              <div className="text-xs text-fg-muted">
+                The first time a vendor ticket ref is saved on a ticket
+                still in the initial external status (e.g. Unacknowledged),
+                move it to that status's next transition — or to
+                Acknowledged when no transition is drawn. If a{" "}
+                <strong>Mirror</strong> mapping links the new external
+                status to an internal status, the internal status follows
+                (when the internal transitions allow it). Picking an
+                external status by hand in the same save wins.
+              </div>
+            </div>
+          </label>
+        </div>
+      )}
+    </section>
+  );
+}
+
+function ReplyRoutingBlock() {
+  const [settings, setSettings] = useState({ stale_days: 30, suppress_ooo: true });
+  const [draftDays, setDraftDays] = useState("30");
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  async function load() {
+    try {
+      const res = await fetch("/api/statuses/auto-resolve/reply-routing", {
+        credentials: "include",
+      });
+      if (!res.ok) throw new Error(await res.text());
+      const d = await res.json();
+      setSettings(d);
+      setDraftDays(String(d.stale_days));
+    } catch {
+      toast.error("Failed to load reply routing settings");
+    } finally {
+      setLoading(false);
+    }
+  }
+  useEffect(() => {
+    load();
+  }, []);
+
+  async function save(patch) {
+    setSaving(true);
+    try {
+      const res = await fetch("/api/statuses/auto-resolve/reply-routing", {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(body.error || "Failed");
+        return;
+      }
+      setSettings(body);
+      setDraftDays(String(body.stale_days));
+      toast.success("Saved");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  function saveDays(e) {
+    e.preventDefault();
+    const n = Math.floor(Number(draftDays));
+    if (!Number.isFinite(n) || n < 1) {
+      toast.error("Stale-days must be a positive integer");
+      return;
+    }
+    save({ stale_days: n });
+  }
+
+  return (
+    <section>
+      <h2 className="text-lg font-semibold text-fg mb-1">
+        Inbound reply routing
+      </h2>
+      <p className="text-sm text-fg-muted mb-3">
+        When an inbound email carries a <code>[PREFIX-N]</code> ticket
+        reference, the system appends it to that ticket instead of opening
+        a new one. The settings below control how old a referenced ticket
+        can be before the reference is ignored (reply lands as a new
+        ticket via the normal auto-create path), and whether Outlook /
+        Gmail-style out-of-office auto-replies are silenced.
+      </p>
+      {loading ? (
+        <div className="text-fg-muted text-sm">Loading…</div>
+      ) : (
+        <div className="border border-border rounded-lg p-3 bg-surface space-y-4">
+          <form onSubmit={saveDays} className="flex flex-wrap items-end gap-3">
+            <label className="flex-1 min-w-[16rem]">
+              <div className="text-sm font-medium text-fg mb-1">
+                Stale threshold (days)
+              </div>
+              <div className="text-xs text-fg-muted mb-1">
+                A referenced ticket older than this is treated as stale —
+                the reply falls through to auto-create a fresh ticket
+                rather than resurrecting an ancient thread.
+              </div>
+              <input
+                type="number"
+                min="1"
+                max="3650"
+                value={draftDays}
+                onChange={(e) => setDraftDays(e.target.value)}
+                className="w-32 border border-border-strong rounded-md px-3 py-1.5 text-sm"
+              />
+            </label>
+            <button
+              type="submit"
+              disabled={saving || String(settings.stale_days) === draftDays}
+              className="px-3 py-1.5 bg-brand hover:bg-brand-bright disabled:opacity-60 text-brand-fg text-sm rounded-md"
+            >
+              Save days
+            </button>
+          </form>
+
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={!!settings.suppress_ooo}
+              disabled={saving}
+              onChange={(e) => save({ suppress_ooo: e.target.checked })}
+              className="mt-1"
+            />
+            <div>
+              <div className="text-sm font-medium text-fg">
+                Suppress out-of-office auto-replies
+              </div>
+              <div className="text-xs text-fg-muted">
+                When the subject contains "Automatic Reply" / "Out of
+                Office" and the body matches OOO language, the message
+                still lands as a comment on the matched ticket — but the
+                comment is muted, no status transition runs, and no
+                follower notifications fire. An audit-log entry records
+                that the OOO bounce was silenced.
+              </div>
+            </div>
+          </label>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -450,12 +670,11 @@ function StatusRow({
           value={draft.color}
           onChange={(e) => setDraft((d) => ({ ...d, color: e.target.value }))}
         />
-        <input
-          type="number"
+        <NumberInput
           className="col-span-1 border border-border-strong rounded-md px-2 py-1 text-sm"
           value={draft.sort_order}
-          onChange={(e) =>
-            setDraft((d) => ({ ...d, sort_order: Number(e.target.value) }))
+          onChange={(n) =>
+            setDraft((d) => ({ ...d, sort_order: n }))
           }
         />
         <select
@@ -501,6 +720,23 @@ function StatusRow({
               }
             />{" "}
             Blocker
+          </label>
+          <label
+            className="flex items-center gap-1"
+            title="Show this status in the comment composer 'Post & …' dropdown."
+          >
+            <input
+              type="checkbox"
+              checked={
+                draft.show_in_post_actions === undefined
+                  ? true
+                  : !!draft.show_in_post_actions
+              }
+              onChange={(e) =>
+                setDraft((d) => ({ ...d, show_in_post_actions: e.target.checked }))
+              }
+            />{" "}
+            Post &amp; menu
           </label>
         </div>
         {draft.semantic_tag === "resolved_pending_close" && (
@@ -570,6 +806,11 @@ function StatusRow({
           tone="emerald"
         />
         <FlagBadge active={status.is_blocker} label="blocker" tone="amber" />
+        <FlagBadge
+          active={status.show_in_post_actions !== false}
+          label="post & menu"
+          tone="indigo"
+        />
         {status.semantic_tag && (
           <FlagBadge active label={`tag: ${status.semantic_tag}`} tone="gray" />
         )}
@@ -725,8 +966,11 @@ function MappingsBlock({ internal, external, mappings, onCreate, onDelete }) {
     <section>
       <h2 className="text-lg font-semibold text-fg mb-1">Mappings</h2>
       <p className="text-sm text-fg-muted mb-3">
-        Link related internal and external statuses. Currently advisory: changes
-        are <strong>suggested</strong> in the UI, not auto-applied.
+        Link related internal and external statuses.{" "}
+        <strong>Suggest</strong> mappings show a hint in the ticket UI.{" "}
+        <strong>Mirror</strong> mappings also move the internal status when
+        the external status is advanced automatically (see Workflow
+        automation below).
       </p>
       <div className="border border-border rounded-lg divide-y">
         {mappings.map((m) => {
@@ -790,9 +1034,7 @@ function MappingsBlock({ internal, external, mappings, onCreate, onDelete }) {
           className="border border-border-strong rounded-md px-2 py-1.5 text-sm"
         >
           <option value="suggest">Suggest</option>
-          <option value="mirror">
-            Mirror (reserved — advisory only for now)
-          </option>
+          <option value="mirror">Mirror</option>
         </select>
         <button
           type="submit"

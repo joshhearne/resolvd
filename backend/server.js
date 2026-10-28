@@ -9,6 +9,7 @@ const { pool } = require('./db/pool');
 const { initSchema } = require('./db/schema');
 
 const authRoutes = require('./routes/auth');
+const versionRoutes = require('./routes/version');
 const inviteRoutes = require('./routes/invites');
 const authSettingsRoutes = require('./routes/authSettings');
 const ticketRoutes = require('./routes/tickets');
@@ -35,13 +36,20 @@ const pushRoutes = require('./routes/push');
 const systemHealthRoutes = require('./routes/systemHealth');
 const webhookRoutes = require('./routes/webhooks');
 const alertSourceRoutes = require('./routes/alertSources');
+const statusPageRoutes = require('./routes/statusPages');
+const maintenanceRoutes = require('./routes/maintenance');
+const calendarRoutes = require('./routes/calendar');
 const alertRoutes = require('./routes/alerts');
 const assetRoutes = require('./routes/assets');
 const assetTypeRoutes = require('./routes/assetTypes');
+const labelPrinterRoutes = require('./routes/labelPrinter');
+const consumableRoutes = require('./routes/consumables');
 const cannedResponseRoutes = require('./routes/cannedResponses');
 const slaRoutes = require('./routes/sla');
 const assignmentPolicyRoutes = require('./routes/assignmentPolicies');
+const dedupOmitRuleRoutes = require('./routes/dedupOmitRules');
 const escalationPolicyRoutes = require('./routes/escalationPolicies');
+const oncallRoutes = require('./routes/oncall');
 const agentRoutes = require('./routes/agents');
 const customFieldRoutes = require('./routes/customFields');
 const aiAssistRoutes = require('./routes/aiAssist');
@@ -54,11 +62,30 @@ const { securityHeaders } = require('./middleware/securityHeaders');
 const app = express();
 const PORT = process.env.PORT || 3001;
 
+// Express 5 defaults to the 'simple' query parser; keep v4's qs-based
+// parsing so bracketed params (axios arrays like ids[]=1) still nest.
+app.set('query parser', 'extended');
+
 // Set security response headers on every request. Cheap, runs first.
 app.use(securityHeaders);
 
+// Inbound webhook payloads carry the whole message — full body plus every
+// attachment inline as base64 — so they blow past the 100kb express default
+// the moment a vendor's mail has a signature image on it. Mounted ahead of
+// the global parser so only these routes get the bigger ceiling.
+app.use('/api/inbound', express.json({ limit: '30mb' }));
+
+// Trove KB webhooks carry an HMAC over the raw body, so this route takes
+// the body as bytes and sits ahead of the JSON parser and session auth.
+app.use('/api/trove-kb/webhook', express.raw({ type: '*/*', limit: '256kb' }), require('./routes/troveKbWebhook'));
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
+// Express 5 leaves req.body undefined when no parser ran (v4 gave {}).
+// Keep the v4 shape so handlers can destructure bodyless POSTs.
+app.use((req, res, next) => {
+  if (req.body === undefined) req.body = {};
+  next();
+});
 
 // Trust proxy (nginx sits in front)
 app.set('trust proxy', 1);
@@ -77,10 +104,14 @@ app.use(session({
   secret: process.env.SESSION_SECRET || 'changeme-in-production',
   resave: false,
   saveUninitialized: false,
+  // rolling: bump the cookie's maxAge on every response so an active user
+  // never gets logged out mid-work. The session only lapses after a full
+  // idle window (below), not on a fixed clock from login time.
+  rolling: true,
   cookie: {
     secure: process.env.COOKIE_SECURE === 'true',
     httpOnly: true,
-    maxAge: 8 * 60 * 60 * 1000, // 8 hours
+    maxAge: 30 * 24 * 60 * 60 * 1000, // 30 days idle
     sameSite: 'lax',
   },
 }));
@@ -90,6 +121,12 @@ app.use('/auth', authRoutes);
 // Webhook receivers authenticate via URL token, not session. Mount before
 // the support JIT guard since they aren't tied to any user principal.
 app.use('/api/webhooks', webhookRoutes);
+// Build identity — public, no auth, no PII. Sits before the support
+// guard since it's not user-scoped.
+app.use('/api/version', versionRoutes);
+// Calendar feeds authenticate via URL token (calendar apps can't log
+// in); the owner-management routes under /me use the session.
+app.use('/api/calendar', calendarRoutes);
 // Support routes mounted BEFORE the JIT guard so support principals can
 // poll their own grant status (/api/support/grants/me) and admins can
 // approve/revoke without being self-locked out.
@@ -104,6 +141,7 @@ app.use('/api/auth-settings', authSettingsRoutes);
 app.use('/api/tickets', ticketRoutes);
 app.use('/api/tickets', commentRoutes);
 app.use('/api/tickets', ticketNoteRoutes);
+app.use('/api/tickets', require('./routes/timeTracking').ticketRouter);
 // commentRoutes also mounts /comments/:id/mute|unmute at /api/comments/...
 app.use('/api', commentRoutes);
 app.use('/api/users', userRoutes);
@@ -126,19 +164,32 @@ app.use('/api/push', pushRoutes);
 app.use('/api/system-health', systemHealthRoutes);
 app.use('/api/alert-sources', alertSourceRoutes);
 app.use('/api/alerts', alertRoutes);
+app.use('/api/status-pages', statusPageRoutes);
+app.use('/api/maintenance', maintenanceRoutes);
 app.use('/api/software-aliases', require('./routes/softwareAliases'));
 app.use('/api/assets', assetRoutes);
+app.use('/api/label-printer', labelPrinterRoutes);
+app.use('/api/consumables', consumableRoutes);
 app.use('/api/asset-types', assetTypeRoutes);
 app.use('/api/canned-responses', cannedResponseRoutes);
 app.use('/api/sla', slaRoutes);
 app.use('/api/assignment-policies', assignmentPolicyRoutes);
+app.use('/api/dedup-omit-rules', dedupOmitRuleRoutes);
 app.use('/api/escalation-policies', escalationPolicyRoutes);
+app.use('/api/oncall', oncallRoutes);
 app.use('/api/agents', agentRoutes);
 app.use('/api/custom-field-defs', customFieldRoutes);
+app.use('/api/forms', require('./routes/forms'));
 app.use('/api/ai', aiAssistRoutes);
 app.use('/api/ai-settings', aiSettingsRoutes);
 app.use('/api/security', securityRoutes);
 app.use('/api/kb', kbRoutes);
+app.use('/api/trove-kb', require('./routes/troveKb'));
+app.use('/api/trove-kb-settings', require('./routes/troveKbSettings'));
+app.use('/api/ticket-schedules', require('./routes/ticketSchedules'));
+app.use('/api/tasks', require('./routes/tasks'));
+app.use('/api/time-tracking', require('./routes/timeTracking').settingsRouter);
+app.use('/api/billing', require('./routes/billing'));
 
 // Health check
 app.get('/health', (req, res) => res.json({ ok: true }));
@@ -166,6 +217,16 @@ initSchema()
     // each source's configured cadence (Action1 has no webhook channel).
     // 30-second tick; each source fires per its poll_interval_minutes.
     require('./services/alertSourcePollScheduler').startScheduler();
+    // Recurring ticket materialiser: every 60s, fire schedules whose
+    // next_fire_at has lapsed, log the run, advance the iterator.
+    require('./services/ticketSchedules').startScheduler();
+    require('./services/troveKbSnapshotScheduler').startScheduler();
+    // Time tracking: every 5 min, warn techs whose timer has run past
+    // the configured threshold with no work logged.
+    require('./services/timeTracking').startScheduler();
+    // Prepaid block alerts (MSP mode): every 30 min, warn Admins/Managers
+    // when a customer's block crosses its alert line or is used up.
+    require('./services/billing').startScheduler();
     app.listen(PORT, () => {
       console.log(`Resolvd backend running on port ${PORT}`);
     });

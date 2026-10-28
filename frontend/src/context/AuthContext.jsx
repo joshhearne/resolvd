@@ -40,11 +40,16 @@ export function AuthProvider({ children }) {
       .catch(() => setLoading(false));
   }, []);
 
-  const loginEntra = () => {
-    window.location.href = "/auth/login";
+  // returnTo (optional) is the in-app path to land on after the OAuth
+  // round-trip — it rides through as ?returnTo= and comes back via the
+  // OAuth `state` param. Falls back to the app root server-side when absent.
+  const loginEntra = (returnTo) => {
+    const q = returnTo ? `?returnTo=${encodeURIComponent(returnTo)}` : "";
+    window.location.href = `/auth/login${q}`;
   };
-  const loginGoogle = () => {
-    window.location.href = "/auth/google/login";
+  const loginGoogle = (returnTo) => {
+    const q = returnTo ? `?returnTo=${encodeURIComponent(returnTo)}` : "";
+    window.location.href = `/auth/google/login${q}`;
   };
   const logout = () => {
     window.location.href = "/auth/logout";
