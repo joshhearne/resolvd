@@ -4,6 +4,7 @@ const { requireAuth, requireRole } = require('../middleware/auth');
 const {
   getGratitudePhrases, setGratitudePhrases,
   getReplyRoutingSettings, setReplyRoutingSettings,
+  getWorkflowAutomationSettings, setWorkflowAutomationSettings,
 } = require('../services/autoResolve');
 
 const router = express.Router();
@@ -268,6 +269,27 @@ router.put('/auto-resolve/reply-routing', requireAuth, requireRole('Admin'), asy
       return res.status(400).json({ error: err.message });
     }
     console.error('reply-routing put error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// GET /api/statuses/workflow-automation — status automation toggles.
+router.get('/workflow-automation', requireAuth, async (req, res) => {
+  try {
+    res.json(await getWorkflowAutomationSettings());
+  } catch (err) {
+    console.error('workflow-automation get error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// PUT /api/statuses/workflow-automation — { external_ref_auto_advance } (Admin).
+router.put('/workflow-automation', requireAuth, requireRole('Admin'), async (req, res) => {
+  try {
+    const { external_ref_auto_advance } = req.body || {};
+    res.json(await setWorkflowAutomationSettings({ external_ref_auto_advance }));
+  } catch (err) {
+    console.error('workflow-automation put error:', err);
     res.status(500).json({ error: 'Database error' });
   }
 });

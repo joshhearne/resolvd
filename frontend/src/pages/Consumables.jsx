@@ -3,6 +3,7 @@ import toast from "react-hot-toast";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../utils/api";
 import HybridTime from "../components/HybridTime";
+import NumberInput from "../components/NumberInput";
 
 export default function Consumables() {
   const { id } = useParams();
@@ -412,11 +413,11 @@ function ConsumableDetailPage({ id }) {
               </select>
             </label>
             <label className="flex flex-col gap-1">Low-stock threshold
-              <input type="number" min="0" value={cur("low_stock_threshold") || 0} onChange={(e) => setField("low_stock_threshold", Number(e.target.value))}
+              <NumberInput min="0" value={cur("low_stock_threshold") || 0} emptyValue={0} onChange={(n) => setField("low_stock_threshold", n)}
                 className="bg-surface-2 border border-border rounded px-2 py-1" />
             </label>
             <label className="flex flex-col gap-1">Restock qty
-              <input type="number" min="0" value={cur("reorder_qty") || 0} onChange={(e) => setField("reorder_qty", Number(e.target.value))}
+              <NumberInput min="0" value={cur("reorder_qty") || 0} emptyValue={0} onChange={(n) => setField("reorder_qty", n)}
                 className="bg-surface-2 border border-border rounded px-2 py-1"
                 placeholder="how many to order at a time (used in vendor RFQ)" />
             </label>

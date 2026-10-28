@@ -71,3 +71,35 @@ describe('addBusinessMinutes', () => {
     expect(out.toISOString()).toBe('2026-06-03T22:00:00.000Z');
   });
 });
+
+describe('addBusinessMinutes — holidays', () => {
+  it('skips a fixed-date holiday like a weekend', () => {
+    // Fri 2026-06-05 4pm CT + 2h: Mon 06-08 is a holiday, so the
+    // remaining hour lands Tue 10am CT (15:00Z).
+    const bh = { ...BH_MF95_CT, holidays: [{ date: '2026-06-08', recurring: false }] };
+    const out = addBusinessMinutes(new Date('2026-06-05T21:00:00Z'), 120, bh);
+    expect(out.toISOString()).toBe('2026-06-09T15:00:00.000Z');
+  });
+
+  it('matches recurring holidays in any year', () => {
+    // Christmas Fri 2026-12-25 is closed every year. Thu 12-24 4pm CST
+    // (22:00Z) + 2h → Mon 12-28 10am CST (16:00Z).
+    const bh = { ...BH_MF95_CT, holidays: [{ date: '2001-12-25', recurring: true }] };
+    const out = addBusinessMinutes(new Date('2026-12-24T22:00:00Z'), 120, bh);
+    expect(out.toISOString()).toBe('2026-12-28T16:00:00.000Z');
+  });
+
+  it('judges the holiday by local date in the policy tz', () => {
+    // 2026-06-08 01:00Z is still Sunday 06-07 in Chicago; the Monday
+    // holiday must not swallow Sunday — it swallows Monday 06-08 local.
+    const bh = { ...BH_MF95_CT, holidays: [{ date: '2026-06-08' }] };
+    const out = addBusinessMinutes(new Date('2026-06-08T01:00:00Z'), 60, bh);
+    expect(out.toISOString()).toBe('2026-06-09T15:00:00.000Z');
+  });
+
+  it('ignores holidays outside the window and malformed entries', () => {
+    const bh = { ...BH_MF95_CT, holidays: [{ date: '2026-06-06' }, { date: 'nope' }, null] };
+    const out = addBusinessMinutes(new Date('2026-06-05T21:00:00Z'), 120, bh);
+    expect(out.toISOString()).toBe('2026-06-08T15:00:00.000Z');
+  });
+});

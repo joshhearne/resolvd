@@ -2,6 +2,7 @@ import React, { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
 import SaveBar, { useSavedBaseline } from "../components/SaveBar";
+import NumberInput from "../components/NumberInput";
 
 export default function AdminLabelPrinter() {
   const [cfg, setCfg] = useState(null);
@@ -66,18 +67,22 @@ export default function AdminLabelPrinter() {
     return (
       <label className="text-xs text-fg-muted flex flex-col gap-1">
         {label}
-        <input
-          type={type}
-          value={draft[key] ?? ""}
-          onChange={(e) =>
-            setDraft((d) => ({
-              ...d,
-              [key]: type === "number" ? Number(e.target.value) : e.target.value,
-            }))
-          }
-          className="bg-surface-2 border border-border rounded px-2 py-1 text-sm"
-          {...extra}
-        />
+        {type === "number" ? (
+          <NumberInput
+            value={draft[key] ?? ""}
+            onChange={(n) => setDraft((d) => ({ ...d, [key]: n }))}
+            className="bg-surface-2 border border-border rounded px-2 py-1 text-sm"
+            {...extra}
+          />
+        ) : (
+          <input
+            type={type}
+            value={draft[key] ?? ""}
+            onChange={(e) => setDraft((d) => ({ ...d, [key]: e.target.value }))}
+            className="bg-surface-2 border border-border rounded px-2 py-1 text-sm"
+            {...extra}
+          />
+        )}
       </label>
     );
   }

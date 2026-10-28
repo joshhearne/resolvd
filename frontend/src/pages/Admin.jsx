@@ -26,6 +26,7 @@ const NAV_GROUPS = [
       { to: "/admin/sla", label: "SLA policies", manager: true, keywords: ["response", "resolution", "breach", "due", "warn"] },
       { to: "/admin/assignment", label: "Auto-assignment", manager: true, keywords: ["round robin", "load balance", "policy"] },
       { to: "/admin/escalations", label: "Escalations", manager: true, keywords: ["page", "oncall", "pager"] },
+      { to: "/admin/oncall", label: "On-call rotations", manager: true, keywords: ["oncall", "on call", "rota", "pager", "shift", "schedule", "override"] },
       { to: "/admin/forms", label: "Forms / Fields", manager: true, keywords: ["form", "category", "request type", "onboarding", "offboarding", "custom field", "computed", "template", "intake"] },
       { to: "/admin/custom-fields", label: "Assets / Fields", manager: true, keywords: ["dropdown", "metadata", "asset", "custom field", "inventory"] },
       { to: "/admin/canned-responses", label: "Canned responses", manager: true, keywords: ["macros", "snippets", "boilerplate"] },

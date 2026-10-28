@@ -4,9 +4,9 @@ import { api } from "../../utils/api";
 import { fmtDateTime } from "../../utils/itemState";
 
 // Subscribable .ics feeds of scheduled work (maintenance windows and
-// recurring tickets) for Outlook / M365 and Google Calendar. One secret
-// link per user; regenerating it cuts off every calendar using the old
-// one.
+// recurring tickets) and company holidays for Outlook / M365 and Google
+// Calendar. One secret link per user; regenerating it cuts off every
+// calendar using the old one.
 
 function FeedRow({ label, hint, url }) {
   async function copy() {
@@ -67,8 +67,8 @@ export default function AccountCalendar() {
       <div className="space-y-1">
         <h2 className="text-lg font-semibold text-fg">Calendar feeds</h2>
         <p className="text-sm text-fg-muted">
-          Subscribe to scheduled work (maintenance windows and recurring tickets) in Outlook or Google
-          Calendar. The calendar stays read-only and updates on its own.
+          Subscribe to scheduled work (maintenance windows and recurring tickets) and company holidays
+          in Outlook or Google Calendar. The calendar stays read-only and updates on its own.
         </p>
       </div>
 
@@ -99,6 +99,17 @@ export default function AccountCalendar() {
               <div className="card px-4 divide-y divide-border">
                 {feed.links.projects.map((p) => (
                   <FeedRow key={p.id} label={`${p.prefix} · ${p.name}`} url={p.url} />
+                ))}
+              </div>
+            </div>
+          )}
+
+          {feed.links.holidays?.length > 0 && (
+            <div className="space-y-2">
+              <h3 className="text-sm font-semibold text-fg">Holiday calendars</h3>
+              <div className="card px-4 divide-y divide-border">
+                {feed.links.holidays.map((h) => (
+                  <FeedRow key={h.id} label={h.title} url={h.url} hint="All-day holidays only" />
                 ))}
               </div>
             </div>

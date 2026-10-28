@@ -1,5 +1,7 @@
 import { useState } from "react";
 import TimeField from "./TimeField";
+import AiRewriteButton from "./AiRewriteButton";
+import NumberInput from "./NumberInput";
 import {
   TRIANGLE_KEYS, editTriangle, formatShortDate, sameDay, toDateInput,
 } from "../utils/timeEntry";
@@ -19,9 +21,9 @@ function DurationInputs({ minutes, onChange, highlight }) {
   const cls = `input w-16 py-1 ${highlight ? "bg-brand/5" : ""}`;
   return (
     <span className="inline-flex items-center gap-1">
-      <input type="number" min="0" max="24" value={h} onChange={(e) => set(e.target.value, m)} className={cls} aria-label="Hours" />
+      <NumberInput min="0" max="24" value={h} emptyValue={0} onChange={(n) => set(n, m)} className={cls} aria-label="Hours" />
       <span className="text-xs text-fg-muted">h</span>
-      <input type="number" min="0" max="59" value={m} onChange={(e) => set(h, e.target.value)} className={cls} aria-label="Minutes" />
+      <NumberInput min="0" max="59" value={m} emptyValue={0} onChange={(n) => set(h, n)} className={cls} aria-label="Minutes" />
       <span className="text-xs text-fg-muted">m</span>
     </span>
   );
@@ -44,8 +46,10 @@ export default function TimeEntryForm({
   showVisibility = true,
   submitLabel = "Log",
   busy = false,
-  onSubmit,          // ({ started_at, ended_at, minutes, note, visibility, work_type_id }) => Promise
+  onSubmit,          // ({ started_at, ended_at, minutes, note, visibility, work_type_id }, andStatus?) => Promise
   onCancel,
+  renderStatusAction, // optional ({ disabled, onPick(status) }) => node — "Log & <status>" menu
+  aiProjectId = null, // project context for the note's AI rewrite
 }) {
   const fresh = () => ({
     values: { start: new Date(initial.start), end: new Date(initial.end), minutes: initial.minutes },
@@ -75,8 +79,8 @@ export default function TimeEntryForm({
     edit("end", next);
   }
 
-  async function submit(e) {
-    e.preventDefault();
+  async function submit(e, andStatus = null) {
+    e?.preventDefault();
     if (problem || noteLen < minChars) return;
     await onSubmit({
       started_at: values.start.toISOString(),
@@ -85,7 +89,7 @@ export default function TimeEntryForm({
       note: note.trim(),
       visibility,
       work_type_id: workTypeId,
-    });
+    }, andStatus);
   }
 
   const auto = order[0];
@@ -149,6 +153,15 @@ export default function TimeEntryForm({
       </p>
 
       <div>
+        <div className="flex justify-end mb-1">
+          <AiRewriteButton
+            value={note}
+            surface="time_note"
+            projectId={aiProjectId}
+            size="xs"
+            onChange={(t) => setState((s) => ({ ...s, note: t }))}
+          />
+        </div>
         <textarea
           value={note}
           onChange={(e) => setState((s) => ({ ...s, note: e.target.value }))}
@@ -193,6 +206,10 @@ export default function TimeEntryForm({
           <button type="submit" disabled={busy || !!problem || noteLen < minChars} className="btn btn-sm btn-primary">
             {submitLabel} {values.minutes > 0 ? fmtMinutes(values.minutes) : ""}
           </button>
+          {renderStatusAction?.({
+            disabled: busy || !!problem || noteLen < minChars,
+            onPick: (status) => submit(null, status),
+          })}
         </div>
       </div>
     </form>

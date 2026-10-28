@@ -17,7 +17,7 @@ const { getBranding } = require('./branding');
 
 const TONES = ['neutral', 'formal', 'friendly', 'polite', 'apologetic', 'terse', 'funny'];
 const VERBOSITIES = ['short', 'functional', 'verbose'];
-const SURFACES = ['comment_internal', 'comment_vendor', 'ticket_description', 'ticket_subject'];
+const SURFACES = ['comment_internal', 'comment_vendor', 'ticket_description', 'ticket_subject', 'time_note'];
 const ELIGIBLE_ROLES = new Set(['Admin', 'Manager']); // ELI5 mode gated to these
 
 function isToneAllowed(t) { return TONES.includes(t); }
@@ -141,6 +141,7 @@ function buildPrompt({ surface, tone, verbosity, eli5, text, projectContext }) {
     comment_vendor:   'This is an outbound message to an external vendor or service desk. Stay professional. The vendor is technical — do not over-simplify.',
     ticket_description: 'This is the description field on a support ticket. State the problem clearly so an assignee can act on it without follow-up questions.',
     ticket_subject: 'This is a subject line for an outbound email. ONE LINE ONLY — no markdown, no period at the end. Aim for under 80 characters.',
+    time_note: 'This is a technician\'s work log entry describing what they did on a support ticket. Keep it factual and in the past tense; list the actions taken and the outcome. It may be billed to the customer, so do not add work that is not in the original.',
   }[surface] || '';
 
   const eli5Hint = eli5

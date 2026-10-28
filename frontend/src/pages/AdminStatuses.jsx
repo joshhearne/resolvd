@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useMemo } from "react";
 import toast from "react-hot-toast";
+import NumberInput from "../components/NumberInput";
 
 const SEMANTIC_TAGS = [
   { value: "", label: "— none —" },
@@ -235,10 +236,95 @@ export default function AdminStatuses() {
         onDelete={deleteMapping}
       />
 
+      <WorkflowAutomationBlock />
+
       <GratitudePhrasesBlock />
 
       <ReplyRoutingBlock />
     </div>
+  );
+}
+
+function WorkflowAutomationBlock() {
+  const [settings, setSettings] = useState({ external_ref_auto_advance: true });
+  const [loading, setLoading] = useState(true);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    (async () => {
+      try {
+        const res = await fetch("/api/statuses/workflow-automation", {
+          credentials: "include",
+        });
+        if (!res.ok) throw new Error(await res.text());
+        setSettings(await res.json());
+      } catch {
+        toast.error("Failed to load workflow automation settings");
+      } finally {
+        setLoading(false);
+      }
+    })();
+  }, []);
+
+  async function save(patch) {
+    setSaving(true);
+    try {
+      const res = await fetch("/api/statuses/workflow-automation", {
+        method: "PUT",
+        credentials: "include",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify(patch),
+      });
+      const body = await res.json().catch(() => ({}));
+      if (!res.ok) {
+        toast.error(body.error || "Failed");
+        return;
+      }
+      setSettings(body);
+      toast.success("Saved");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <section>
+      <h2 className="text-lg font-semibold text-fg mb-1">
+        Workflow automation
+      </h2>
+      {loading ? (
+        <div className="text-fg-muted text-sm">Loading…</div>
+      ) : (
+        <div className="border border-border rounded-lg p-3 bg-surface">
+          <label className="flex items-start gap-3 cursor-pointer">
+            <input
+              type="checkbox"
+              checked={!!settings.external_ref_auto_advance}
+              disabled={saving}
+              onChange={(e) =>
+                save({ external_ref_auto_advance: e.target.checked })
+              }
+              className="mt-1"
+            />
+            <div>
+              <div className="text-sm font-medium text-fg">
+                Advance external status when a vendor ref is added
+              </div>
+              <div className="text-xs text-fg-muted">
+                The first time a vendor ticket ref is saved on a ticket
+                still in the initial external status (e.g. Unacknowledged),
+                move it to that status's next transition — or to
+                Acknowledged when no transition is drawn. If a{" "}
+                <strong>Mirror</strong> mapping links the new external
+                status to an internal status, the internal status follows
+                (when the internal transitions allow it). Picking an
+                external status by hand in the same save wins.
+              </div>
+            </div>
+          </label>
+        </div>
+      )}
+    </section>
   );
 }
 
@@ -584,12 +670,11 @@ function StatusRow({
           value={draft.color}
           onChange={(e) => setDraft((d) => ({ ...d, color: e.target.value }))}
         />
-        <input
-          type="number"
+        <NumberInput
           className="col-span-1 border border-border-strong rounded-md px-2 py-1 text-sm"
           value={draft.sort_order}
-          onChange={(e) =>
-            setDraft((d) => ({ ...d, sort_order: Number(e.target.value) }))
+          onChange={(n) =>
+            setDraft((d) => ({ ...d, sort_order: n }))
           }
         />
         <select
@@ -881,8 +966,11 @@ function MappingsBlock({ internal, external, mappings, onCreate, onDelete }) {
     <section>
       <h2 className="text-lg font-semibold text-fg mb-1">Mappings</h2>
       <p className="text-sm text-fg-muted mb-3">
-        Link related internal and external statuses. Currently advisory: changes
-        are <strong>suggested</strong> in the UI, not auto-applied.
+        Link related internal and external statuses.{" "}
+        <strong>Suggest</strong> mappings show a hint in the ticket UI.{" "}
+        <strong>Mirror</strong> mappings also move the internal status when
+        the external status is advanced automatically (see Workflow
+        automation below).
       </p>
       <div className="border border-border rounded-lg divide-y">
         {mappings.map((m) => {
@@ -946,9 +1034,7 @@ function MappingsBlock({ internal, external, mappings, onCreate, onDelete }) {
           className="border border-border-strong rounded-md px-2 py-1.5 text-sm"
         >
           <option value="suggest">Suggest</option>
-          <option value="mirror">
-            Mirror (reserved — advisory only for now)
-          </option>
+          <option value="mirror">Mirror</option>
         </select>
         <button
           type="submit"

@@ -13,6 +13,11 @@
 //   notify_assignee  — current ticket assignee (NULL-safe)
 //   reassign_user    — set assigned_to to a specific user
 //   reassign_role    — set assigned_to to first active user in that role
+//   notify_oncall    — whoever is on call now for the ticket's project
+//                      (each matching rotation's person; optional
+//                      rotation_id pins one rotation). See oncall.js.
+//   reassign_oncall  — set assigned_to to the on-call person (first
+//                      matching rotation)
 //   reassign_agent   — defer to project's assignment policy
 //                      (round_robin or case_load) when one is set,
 //                      excluding current assignee. Falls back to any
@@ -149,6 +154,40 @@ async function fireAction({ action, step, ticket }) {
     const u = await getUserById(submitterId);
     if (!u) return { ok: false, reason: 'submitter user not found' };
     await fanout.dispatchPerRecipient({ user: u, ...notifyBody(step, ticket) });
+    return { ok: true };
+  }
+
+  if (kind === 'notify_oncall' || kind === 'reassign_oncall') {
+    const oncall = require('./oncall');
+    const picks = await oncall.currentOnCall(null, {
+      projectId: ticket.project_id,
+      rotationId: action.rotation_id || null,
+    });
+    // Nobody on call → the step stays unfired and retries next tick, so
+    // it lands as soon as a shift (or override) covers it.
+    if (!picks.length) return { ok: false, reason: 'nobody on call' };
+    if (kind === 'notify_oncall') {
+      const seen = new Set();
+      for (const p of picks) {
+        if (seen.has(p.user_id)) continue;
+        seen.add(p.user_id);
+        const u = await getUserById(p.user_id);
+        if (!u) continue;
+        await fanout.dispatchPerRecipient({ user: u, ...notifyBody(step, ticket) })
+          .catch((err) => console.error('escalation notify_oncall recipient failed:', err.message));
+      }
+      return { ok: true, recipients: seen.size };
+    }
+    const target = picks[0].user_id;
+    if (target === ticket.assigned_to) return { ok: true, unchanged: true };
+    await pool.query(`UPDATE tickets SET assigned_to = $1 WHERE id = $2`, [target, ticket.id]);
+    await fanout.fanoutAssignment(null, {
+      ticket: { ...ticket, assigned_to: target },
+      assigneeId: target,
+      actorId: null,
+      actorName: `SLA escalation (on call: ${picks[0].rotation.name})`,
+    }).catch((err) => console.error('escalation reassign_oncall fanout failed:', err.message));
+    ticket.assigned_to = target;
     return { ok: true };
   }
 
@@ -342,7 +381,7 @@ async function tickEscalations() {
     )`;
     const candidates = await pool.query(
       `SELECT t.id, t.internal_ref, t.title, t.title_enc, t.project_id, t.assigned_to,
-              t.effective_priority, t.escalation_priority_snapshot,
+              t.effective_priority, t.escalation_priority_snapshot, t.location_id,
               ${chainPriExpr} AS chain_priority,
               t.escalation_steps_fired, t.${tsCol} AS triggered_at
          FROM tickets t
@@ -368,9 +407,8 @@ async function tickEscalations() {
       const slaPolicy = await sla.policyForTicket(
         null, ticket.chain_priority || 3, ticket.project_id
       ).catch(() => null);
-      const bh = slaPolicy?.business_hours_id
-        ? await businessHours.policyById(null, slaPolicy.business_hours_id).catch(() => null)
-        : null;
+      const bh = await businessHours.policyForSla(null, slaPolicy, ticket.location_id)
+        .catch(() => null);
 
       const steps = await pool.query(
         `SELECT s.* FROM escalation_chain_steps s

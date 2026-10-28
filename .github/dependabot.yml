@@ -4,9 +4,13 @@
 # https://docs.github.com/code-security/dependabot/dependabot-version-updates/configuration-options-for-the-dependabot.yml-file
 
   version: 2
+  # Every update targets dev, like any other change: it ships to
+  # Development-channel servers first and reaches production in the next
+  # dev -> main release.
   updates:
     - package-ecosystem: npm
       directory: /backend
+      target-branch: dev
       schedule:
         interval: weekly
         day: monday
@@ -23,6 +27,7 @@
 
     - package-ecosystem: npm
       directory: /frontend
+      target-branch: dev
       schedule:
         interval: weekly
         day: monday
@@ -60,6 +65,7 @@
 
     - package-ecosystem: docker
       directory: /backend
+      target-branch: dev
       schedule:
         interval: weekly
         day: monday
@@ -70,6 +76,7 @@
 
     - package-ecosystem: docker
       directory: /frontend
+      target-branch: dev
       schedule:
         interval: weekly
         day: monday
@@ -79,6 +86,7 @@
 
     - package-ecosystem: docker-compose
       directory: /
+      target-branch: dev
       schedule:
         interval: weekly
         day: monday
@@ -89,6 +97,7 @@
 
     - package-ecosystem: github-actions
       directory: /
+      target-branch: dev
       schedule:
         interval: weekly
         day: monday
