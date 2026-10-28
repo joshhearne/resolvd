@@ -62,14 +62,16 @@ main() {
   CURRENT_TAG="$(env_get RESOLVD_IMAGE_TAG)"
   CURRENT_TAG="${CURRENT_TAG:-stable}"
 
-  local fetch_err
-  fetch_err="$(mktemp)"
-  if ! git fetch --quiet --prune --tags "$REMOTE" 2>"$fetch_err"; then
-    report waiting "git fetch from $REMOTE failed: $(head -c 300 "$fetch_err")"
-    rm -f "$fetch_err"
+  # The remote is the source of truth for release tags: --force/--prune-tags
+  # replace local tags that differ (e.g. from before a history rewrite)
+  # instead of rejecting them. Not --quiet: it hides git's reasons for
+  # rejected refs, so a failure would report no cause at all.
+  local fetch_out fetch_rc=0
+  fetch_out="$(git fetch --prune --prune-tags --force --tags "$REMOTE" 2>&1)" || fetch_rc=$?
+  if [ "$fetch_rc" != 0 ]; then
+    report waiting "git fetch from $REMOTE failed (exit $fetch_rc): $(printf '%s\n' "$fetch_out" | grep -v '^[[:space:]]*$' | head -n 3 | tr '\n' ' ' | head -c 400)"
     return 1
   fi
-  rm -f "$fetch_err"
   local latest_release
   latest_release="$(git tag -l 'v[0-9]*.[0-9]*.[0-9]*' --sort=-v:refname | grep -v -- '-' | head -n1 || true)"
 
