@@ -7,6 +7,7 @@ import { brandingLogoFilter } from "../utils/helpers";
 import Avatar from "./Avatar";
 import NotificationTray from "./NotificationTray";
 import WhatsNew from "./WhatsNew";
+import ImpersonationBanner from "./ImpersonationBanner";
 import ActiveTimerPill from "./ActiveTimerPill";
 import NewMenu from "./NewMenu";
 
@@ -641,6 +642,7 @@ export default function Layout() {
           <Outlet />
         </main>
         {user && <WhatsNew />}
+        <ImpersonationBanner user={user} />
       </div>
 
       {branding.show_powered_by && (
