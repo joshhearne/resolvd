@@ -6,6 +6,7 @@ import { useAuth } from "../context/AuthContext";
 import PriorityBadge from "../components/PriorityBadge";
 import HybridTime from "../components/HybridTime";
 import PageShell from "../components/PageShell";
+import SubmitterDashboard from "../components/SubmitterDashboard";
 import {
   useDashboardFilters,
   useFilterLookups,
@@ -519,7 +520,16 @@ function SlaBreachCard({ sla }) {
   );
 }
 
+// Submitters get a curated "my tickets" dashboard instead of the team view
+// (#102) — independent of any project-level elevation. Split into two
+// components so hook order stays stable per role.
 export default function Dashboard() {
+  const { user } = useAuth();
+  if (user?.role === "Submitter") return <SubmitterDashboard />;
+  return <TeamDashboard />;
+}
+
+function TeamDashboard() {
   const { user } = useAuth();
   const canSeeAlerts = ["Admin", "Manager", "Tech"].includes(user?.role);
   const { filters, setFilters } = useDashboardFilters();

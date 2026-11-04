@@ -112,7 +112,7 @@ function SectionOverview({ role }) {
               ["Admin",     "Full system access including user management, encryption, and all admin settings."],
               ["Manager",   "Full ticket and project access; most admin settings. Cannot manage users or encryption."],
               ["Tech",      "Handler tier (v0.7.0). Edit any ticket in their projects, manage inventory assets, edit Knowledge Base articles, post handler-only notes, receive escalation pages. No org-config access."],
-              ["Submitter", "Can submit tickets, comment, and view their own submissions. No admin or status controls."],
+              ["Submitter", "Can submit tickets, comment, and view their own submissions plus tickets they follow. Sees a personal dashboard instead of the team dashboard. A project role override (e.g. Tech) or agent flag opens that one project's full board."],
               ["Viewer",    "Read-only access to tickets. Cannot submit, comment, or take any action."],
               ["Support",   "Read-only access gated by a time-limited grant issued by an Admin. Every access is audit-logged."],
             ].map(([r, desc]) => (

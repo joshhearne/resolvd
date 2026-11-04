@@ -23,6 +23,7 @@ const attachmentRoutes = require('./routes/attachments');
 const brandingRoutes = require('./routes/branding');
 const exportRoutes = require('./routes/export');
 const followerRoutes = require('./routes/followers');
+const { requireTicketVisible } = require('./services/ticketVisibility');
 const statusRoutes = require('./routes/statuses');
 const supportRoutes = require('./routes/support');
 const companyRoutes = require('./routes/companies');
@@ -138,6 +139,11 @@ app.use('/api', requireSupportAccessIfSupport);
 
 app.use('/api/invites', inviteRoutes);
 app.use('/api/auth-settings', authSettingsRoutes);
+// Ticket visibility guard: every /api/tickets/<id>/... route (detail,
+// comments, notes, attachments, followers, time) 404s when the caller
+// can't see that ticket. Submitter-scoped users are limited to their own
+// + followed tickets (see services/ticketVisibility.js).
+app.use('/api/tickets/:ticketId', requireTicketVisible('ticketId'));
 app.use('/api/tickets', ticketRoutes);
 app.use('/api/tickets', commentRoutes);
 app.use('/api/tickets', ticketNoteRoutes);

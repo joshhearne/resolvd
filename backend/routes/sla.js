@@ -529,6 +529,11 @@ async function getAccessibleProjectIds(user) {
 // project so the user can see where their pain is.
 router.get('/dashboard', requireAuth, async (req, res) => {
   try {
+    // Team-wide SLA analytics are hidden from Submitters (#102); their
+    // curated dashboard is /api/dashboard/mine.
+    if (req.session.user.role === 'Submitter') {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
     const accessible = await getAccessibleProjectIds(req.session.user);
     // Caller-requested project narrow (comma-separated). Intersects
     // with `accessible` so a member can never widen past their scope.
@@ -772,6 +777,9 @@ router.get('/dashboard', requireAuth, async (req, res) => {
 //   until      — ISO8601 upper bound for entered_at (optional).
 router.get('/time-in-status', requireAuth, async (req, res) => {
   try {
+    if (req.session.user.role === 'Submitter') {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
     const accessible = await getAccessibleProjectIds(req.session.user);
     if (accessible !== null && accessible.length === 0) {
       return res.json({ scope: 'project_member', rows: [] });

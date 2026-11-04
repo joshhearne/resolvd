@@ -20,6 +20,7 @@ const { logSupportRead } = require('../middleware/supportAccess');
 const { sendVendorEmail } = require('../services/vendorOutbound');
 const { auditLog, systemComment, isProjectHandler } = require('../services/ticketHelpers');
 const ticketCustomFields = require('../services/ticketCustomFields');
+const { getTicketScope, scopeClause } = require('../services/ticketVisibility');
 
 const router = express.Router();
 
@@ -28,16 +29,6 @@ const router = express.Router();
 const TICKET_JOIN_ALIASES = {
   blocking_ticket_title: 'tickets.title',
 };
-
-// Returns array of project IDs the user can access, or null if Admin (= all)
-async function getAccessibleProjectIds(user) {
-  if (['Admin','Manager'].includes(user.role)) return null;
-  const result = await pool.query(
-    'SELECT project_id FROM project_members WHERE user_id = $1',
-    [user.id]
-  );
-  return result.rows.map(r => r.project_id);
-}
 
 // Strip ai_* fields from a ticket row when the viewer isn't allowed
 // to see them. Author + Admins/Managers always see; otherwise the
@@ -78,21 +69,19 @@ router.get('/counts', requireAuth, async (req, res) => {
     const params = [];
     let p = 1;
 
-    // Project filter
+    // Project filter (optional narrow) + visibility scope. The scope
+    // clause limits non-Admin/Manager callers to full-visibility projects
+    // plus their own / followed tickets (Submitters: own + followed only).
     if (project_id) {
-      where.push(`project_id = $${p++}`);
+      where.push(`t.project_id = $${p++}`);
       params.push(Number(project_id));
-    } else {
-      const accessibleIds = await getAccessibleProjectIds(user);
-      if (accessibleIds !== null) {
-        if (accessibleIds.length === 0) {
-          return res.json({ total:0, active:0, open:0, in_progress:0, awaiting_mot:0,
-            pending_review:0, reopened:0, closed:0, flagged:0, p1:0, p2:0,
-            external_unacked:0, external_resolved:0, internal_blocker:0 });
-        }
-        where.push(`project_id = ANY($${p++})`);
-        params.push(accessibleIds);
-      }
+    }
+    const scope = await getTicketScope(user);
+    if (!scope.unrestricted) {
+      const c = scopeClause(scope, 't', p);
+      where.push(c.sql);
+      params.push(...c.params);
+      p += c.params.length;
     }
 
     const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : '';
@@ -113,7 +102,7 @@ router.get('/counts', requireAuth, async (req, res) => {
         SUM(CASE WHEN external_status = 'Unacknowledged' AND internal_status != 'Closed' THEN 1 ELSE 0 END)::int as external_unacked,
         SUM(CASE WHEN external_status = 'Resolved' AND internal_status != 'Closed' THEN 1 ELSE 0 END)::int as external_resolved,
         SUM(CASE WHEN blocker_type = 'internal_input' AND internal_status != 'Closed' THEN 1 ELSE 0 END)::int as internal_blocker
-      FROM tickets
+      FROM tickets t
       ${whereClause}
     `, params);
 
@@ -143,34 +132,39 @@ router.get('/', requireAuth, async (req, res) => {
     const params = [];
     let p = 1;
 
-    // Project access control. `project_id` may be a single id (legacy)
-    // or a comma-separated list (matches the dashboard filter shape).
-    // Requested list is intersected with the caller's accessible set so
-    // a non-Admin can never widen past their project_members.
+    // Project filter. `project_id` may be a single id (legacy) or a
+    // comma-separated list (matches the dashboard filter shape). It only
+    // ever narrows: the visibility scope below is ANDed on top, so a
+    // non-Admin can never widen past what they're allowed to see.
     const requestedProjectIds = project_id
       ? String(project_id)
           .split(',')
           .map((s) => Number(s.trim()))
           .filter((n) => Number.isFinite(n) && n > 0)
       : [];
-    const accessibleIds = await getAccessibleProjectIds(user);
-    let effectiveProjectIds = null;
-    if (accessibleIds !== null && requestedProjectIds.length) {
-      effectiveProjectIds = requestedProjectIds.filter((id) => accessibleIds.includes(id));
-      if (effectiveProjectIds.length === 0) {
-        return res.json({ tickets: [], total: 0, page: Number(page), limit: Number(limit) });
-      }
-    } else if (accessibleIds !== null) {
-      effectiveProjectIds = accessibleIds;
-      if (effectiveProjectIds.length === 0) {
-        return res.json({ tickets: [], total: 0, page: Number(page), limit: Number(limit) });
-      }
-    } else if (requestedProjectIds.length) {
-      effectiveProjectIds = requestedProjectIds;
-    }
-    if (effectiveProjectIds !== null) {
+    if (requestedProjectIds.length) {
       where.push(`t.project_id = ANY($${p++}::int[])`);
-      params.push(effectiveProjectIds);
+      params.push(requestedProjectIds);
+    }
+    // Visibility scope (#101): Admin/Manager unrestricted; others see
+    // full-visibility projects + own + followed. Submitter-scoped users
+    // therefore get only their own submissions and followed tickets.
+    const scope = await getTicketScope(user);
+    if (!scope.unrestricted) {
+      const c = scopeClause(scope, 't', p);
+      where.push(c.sql);
+      params.push(...c.params);
+      p += c.params.length;
+    }
+    // "Followed" facet — tickets the caller follows.
+    if (req.query.following === '1' || req.query.following === 'true') {
+      where.push(`EXISTS (SELECT 1 FROM ticket_followers tf_me WHERE tf_me.ticket_id = t.id AND tf_me.user_id = $${p++})`);
+      params.push(user.id);
+    }
+    // "Mine" facet — tickets the caller submitted.
+    if (req.query.submitted_by === 'me') {
+      where.push(`t.submitted_by = $${p++}`);
+      params.push(user.id);
     }
 
     // Search: under encrypted mode the title ciphertext is opaque to ILIKE.
@@ -650,7 +644,7 @@ router.get('/similar', requireAuth, async (req, res) => {
     if (searchText.length < 4 && !extRef) return res.json([]);
 
     const user = req.session.user;
-    const accessibleIds = await getAccessibleProjectIds(user);
+    const scope = await getTicketScope(user);
 
     // params: $1=searchText, $2=extRef, then project filters
     const params = [searchText, extRef];
@@ -660,10 +654,14 @@ router.get('/similar', requireAuth, async (req, res) => {
     if (project_id) {
       where.push(`t.project_id = $${p++}`);
       params.push(Number(project_id));
-    } else if (accessibleIds !== null) {
-      if (accessibleIds.length === 0) return res.json([]);
-      where.push(`t.project_id = ANY($${p++}::int[])`);
-      params.push(accessibleIds);
+    }
+    // Duplicate hints must not leak titles of tickets the caller can't
+    // see (Submitters: own + followed only).
+    if (!scope.unrestricted) {
+      const c = scopeClause(scope, 't', p);
+      where.push(c.sql);
+      params.push(...c.params);
+      p += c.params.length;
     }
 
     const whereClause = 'AND ' + where.join(' AND ');
