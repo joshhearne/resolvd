@@ -254,6 +254,9 @@ initSchema()
     // Prepaid block alerts (MSP mode): every 30 min, warn Admins/Managers
     // when a customer's block crosses its alert line or is used up.
     require('./services/billing').startScheduler();
+    // Status page subscriptions: every minute, email subscribers about
+    // services going down / recovering.
+    require('./services/statusPageNotifier').startScheduler();
     app.listen(PORT, () => {
       console.log(`Resolvd backend running on port ${PORT}`);
     });

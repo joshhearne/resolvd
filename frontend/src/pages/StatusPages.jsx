@@ -7,13 +7,16 @@ import MarkdownContent from "../components/MarkdownContent";
 import MonitoredItemPicker from "../components/MonitoredItemPicker";
 import StatusPageLayoutEditor, { toSections, fromSections, layoutProblem } from "../components/StatusPageLayoutEditor";
 import { StateDot, stateInfo, fmtUptime, fmtDateTime, fmtDuration } from "../utils/itemState";
+import StatusTimeline, { TimelineAxis } from "../components/StatusTimeline";
 
 const REFRESH_MS = 60 * 1000;
 
 // Status pages: curated views over monitored items (Uptime Kuma
-// monitors etc.) with live state, alert-driven incidents and
-// maintenance windows. Readable by every logged-in user; Admin /
-// Manager build and edit pages here.
+// monitors etc.) with live state, a 14-day history bar per service and
+// component, outages (with or without a ticket) and maintenance
+// windows. Public pages: every logged-in user; private pages: Admin /
+// Manager / Tech. Anyone who can see a page can subscribe to email
+// alerts. Admin / Manager build and edit pages here.
 export default function StatusPages() {
   const { slug } = useParams();
   const navigate = useNavigate();
@@ -75,6 +78,9 @@ export default function StatusPages() {
               aria-current={p.slug === slug ? "page" : undefined}>
               <StateDot state={pageState(p)} />
               <span className="flex-1 min-w-0 truncate">{p.name}</span>
+              {!p.is_public && (
+                <span className="text-[10px] uppercase tracking-wide text-fg-dim shrink-0" title="Private: Admin, Manager and Tech only">staff</span>
+              )}
               {p.down_count > 0 && (
                 <span className="text-[11px] font-semibold text-red-700 dark:text-red-300 shrink-0">{p.down_count}</span>
               )}
@@ -222,11 +228,44 @@ function PageView({ slug, canCurate, onChanged }) {
     );
   }
 
-  return <PageBody data={data} canCurate={canCurate} onEdit={() => setEditing(true)} />;
+  return <PageBody data={data} canCurate={canCurate} onEdit={() => setEditing(true)} onReload={load} />;
 }
 
-function PageBody({ data, canCurate, onEdit }) {
-  const { page, items, incidents, maintenance, history_days: historyDays } = data;
+// Expanded services, remembered per page in this browser.
+function useExpanded(pageId) {
+  const key = `resolvd.status.expanded.${pageId}`;
+  const [expanded, setExpanded] = useState(() => {
+    try { return new Set(JSON.parse(localStorage.getItem(key) || "[]")); } catch { return new Set(); }
+  });
+  useEffect(() => {
+    try { localStorage.setItem(key, JSON.stringify([...expanded])); } catch { /* ignore */ }
+  }, [key, expanded]);
+  return [expanded, setExpanded];
+}
+
+function ExpandToggle({ allOpen, onClick, label }) {
+  return (
+    <button type="button" onClick={onClick} className="text-xs text-brand hover:underline whitespace-nowrap">
+      {allOpen ? "Collapse" : "Expand"}{label ? ` ${label}` : ""}
+    </button>
+  );
+}
+
+function PageBody({ data, canCurate, onEdit, onReload }) {
+  const { page, items, incidents, maintenance, history_days: historyDays, outages = [], timeline: tlMeta } = data;
+  const [expanded, setExpanded] = useExpanded(page.id);
+  const expandable = useMemo(() => items.filter((i) => (i.components || []).length), [items]);
+  const setMany = (ids, open) => setExpanded((prev) => {
+    const next = new Set(prev);
+    for (const id of ids) open ? next.add(id) : next.delete(id);
+    return next;
+  });
+  const toggleOne = (id) => setExpanded((prev) => {
+    const next = new Set(prev);
+    next.has(id) ? next.delete(id) : next.add(id);
+    return next;
+  });
+  const allOpen = expandable.length > 0 && expandable.every((i) => expanded.has(i.page_item_id));
   // Component incidents read "Service › component".
   const nameById = useMemo(() => {
     const m = {};
@@ -271,10 +310,25 @@ function PageBody({ data, canCurate, onEdit }) {
     <div className="max-w-5xl mx-auto space-y-5">
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div className="min-w-0">
-          <h2 className="text-lg font-semibold text-fg">{page.name}</h2>
+          <h2 className="text-lg font-semibold text-fg flex items-center gap-2">
+            {page.name}
+            {!page.is_public && (
+              <span className="text-[10px] uppercase tracking-wide font-medium text-fg-muted border border-border rounded px-1.5 py-0.5"
+                title="Private: visible to Admin, Manager and Tech only">Staff only</span>
+            )}
+          </h2>
           {page.description && <p className="text-sm text-fg-muted mt-0.5">{page.description}</p>}
         </div>
-        {canCurate && <button onClick={onEdit} className="btn btn-secondary btn-sm">Edit page</button>}
+        <div className="flex items-center gap-2">
+          {expandable.length > 0 && (
+            <button type="button" onClick={() => setMany(expandable.map((i) => i.page_item_id), !allOpen)}
+              className="btn btn-ghost btn-sm">
+              {allOpen ? "Collapse all" : "Expand all"}
+            </button>
+          )}
+          <SubscribeMenu page={page} subscription={data.subscription} onChanged={onReload} />
+          {canCurate && <button onClick={onEdit} className="btn btn-secondary btn-sm">Edit page</button>}
+        </div>
       </div>
 
       <div className={`card p-4 flex items-center gap-3 ${banner.state === "down" ? "border-red-400 dark:border-red-800" : ""}`}>
@@ -291,16 +345,28 @@ function PageBody({ data, canCurate, onEdit }) {
         </section>
       )}
 
-      {sections.map(([section, rows]) => (
-        <section key={section || "_"} className="card overflow-hidden">
-          {section && (
-            <div className="px-4 py-2 border-b border-border text-sm font-semibold text-fg bg-surface-2/60">{section}</div>
-          )}
-          <ul className="divide-y divide-border">
-            {rows.map((it) => <ItemRow key={it.page_item_id} it={it} />)}
-          </ul>
-        </section>
-      ))}
+      {sections.map(([section, rows]) => {
+        const secExpandable = rows.filter((r) => (r.components || []).length);
+        const secOpen = secExpandable.length > 0 && secExpandable.every((r) => expanded.has(r.page_item_id));
+        return (
+          <section key={section || "_"} className="card overflow-hidden">
+            <div className="px-4 py-2 border-b border-border bg-surface-2/60 flex items-center justify-between gap-3">
+              <span className="text-sm font-semibold text-fg">{section || "Services"}</span>
+              {secExpandable.length > 0 && (
+                <ExpandToggle allOpen={secOpen} label="section"
+                  onClick={() => setMany(secExpandable.map((r) => r.page_item_id), !secOpen)} />
+              )}
+            </div>
+            {tlMeta && <div className="px-4 pt-2"><TimelineAxis days={historyDays} /></div>}
+            <ul className="divide-y divide-border">
+              {rows.map((it) => (
+                <ItemRow key={it.page_item_id} it={it} tlMeta={tlMeta}
+                  open={expanded.has(it.page_item_id)} onToggle={() => toggleOne(it.page_item_id)} />
+              ))}
+            </ul>
+          </section>
+        );
+      })}
 
       {upcomingMaint.length > 0 && (
         <section className="space-y-2">
@@ -311,10 +377,11 @@ function PageBody({ data, canCurate, onEdit }) {
 
       <section className="space-y-2">
         <h3 className="text-sm font-semibold text-fg">Past {historyDays} days</h3>
-        {pastIncidents.length === 0 && pastMaint.length === 0 ? (
-          <div className="text-sm text-fg-muted">No incidents or maintenance.</div>
+        {outages.length === 0 && pastIncidents.length === 0 && pastMaint.length === 0 ? (
+          <div className="text-sm text-fg-muted">No outages, incidents or maintenance.</div>
         ) : (
           <>
+            {outages.map((o) => <OutageRow key={`${o.item_id}-${o.started_at}`} o={o} />)}
             {pastIncidents.map((inc) => <IncidentRow key={inc.id} inc={inc} nameById={nameById} />)}
             {pastMaint.map((w) => <MaintenanceCard key={w.id} w={w} nameById={nameById} tone="past" />)}
           </>
@@ -324,8 +391,7 @@ function PageBody({ data, canCurate, onEdit }) {
   );
 }
 
-function ItemRow({ it }) {
-  const [open, setOpen] = useState(false);
+function ItemRow({ it, tlMeta, open, onToggle }) {
   const comps = it.components || [];
   const info = stateInfo(it.active ? it.state : "unknown");
   const since = it.state && it.state !== "up" && it.state_since && !comps.length ? ` · ${fmtDuration(it.state_since)}` : "";
@@ -336,7 +402,7 @@ function ItemRow({ it }) {
         <StateDot state={it.active ? it.state : "unknown"} />
         <div className="min-w-0 flex-1">
           {comps.length ? (
-            <button type="button" onClick={() => setOpen(!open)} className="text-sm text-fg text-left hover:underline">
+            <button type="button" onClick={onToggle} aria-expanded={open} className="text-sm text-fg text-left hover:underline">
               {open ? "▾" : "▸"} {it.display_name || it.label}
               <span className="text-xs text-fg-dim ml-1.5">{comps.length} components</span>
             </button>
@@ -362,12 +428,16 @@ function ItemRow({ it }) {
           <span className={`font-medium whitespace-nowrap ${info.text}`}>{it.active ? info.label : "Not reported"}{since}</span>
         </div>
       </div>
+      <div className="px-4 pb-3 pl-9">
+        <StatusTimeline buckets={it.timeline} meta={tlMeta} uptime={it.uptime_14d} />
+      </div>
       {open && comps.length > 0 && (
-        <ul className="pb-2">
+        <ul className="pb-2 bg-surface-2/30 border-t border-border">
           {comps.map((c) => {
             const ci = stateInfo(c.state);
             return (
-              <li key={c.item_id} className="pl-10 pr-4 py-1.5 flex items-center gap-3 text-sm">
+              <li key={c.item_id} className="pl-10 pr-4 py-1.5 space-y-1">
+                <div className="flex items-center gap-3 text-sm">
                 <StateDot state={c.state} className="w-2 h-2" />
                 <span className="flex-1 min-w-0 truncate text-fg-muted">
                   {c.label}
@@ -377,12 +447,110 @@ function ItemRow({ it }) {
                 <span className={`text-xs font-medium whitespace-nowrap ${ci.text}`}>
                   {ci.label}{c.state !== "up" && c.state_since ? ` · ${fmtDuration(c.state_since)}` : ""}
                 </span>
+                </div>
+                <div className="pl-5">
+                  <StatusTimeline buckets={c.timeline} meta={tlMeta} uptime={c.uptime_14d} size="sm" />
+                </div>
               </li>
             );
           })}
         </ul>
       )}
     </li>
+  );
+}
+
+// One down / partial run from the history, whether or not it became an
+// incident or ticket.
+function OutageRow({ o }) {
+  const ongoing = !o.ended_at;
+  const info = stateInfo(o.state);
+  return (
+    <div className={`card p-3 flex items-start gap-3 ${ongoing ? "border-red-300 dark:border-red-900" : ""}`}>
+      <StateDot state={o.state} className="mt-1.5" />
+      <div className="min-w-0 flex-1">
+        <div className="text-sm text-fg">
+          {o.name}
+          <span className={`ml-2 text-xs font-medium ${info.text}`}>{info.label}</span>
+        </div>
+        <div className="text-xs text-fg-muted mt-0.5">
+          {o.start_clipped ? "Before the window" : fmtDateTime(o.started_at)}
+          {ongoing ? <> · ongoing</> : <> → {fmtDateTime(o.ended_at)} · {fmtDuration(o.started_at, o.ended_at)}</>}
+          {o.components?.length > 0 && <> · {o.components.join(", ")}</>}
+        </div>
+      </div>
+      {o.tickets?.length ? (
+        <div className="flex flex-col items-end gap-0.5">
+          {o.tickets.map((t) => (
+            <Link key={t.id} to={`/tickets/${t.id}`} className="text-xs text-brand hover:underline whitespace-nowrap">
+              {t.ref} · {t.status}
+            </Link>
+          ))}
+        </div>
+      ) : (
+        <span className="text-[11px] text-fg-dim whitespace-nowrap border border-border rounded px-1.5 py-0.5"
+          title="Recovered without becoming an incident ticket">No ticket</span>
+      )}
+    </div>
+  );
+}
+
+// Email subscription: up/down alerts and/or page changes.
+function SubscribeMenu({ page, subscription, onChanged }) {
+  const [open, setOpen] = useState(false);
+  const [state, setState] = useState(subscription ? subscription.notify_state : true);
+  const [changes, setChanges] = useState(subscription ? subscription.notify_changes : true);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    setState(subscription ? subscription.notify_state : true);
+    setChanges(subscription ? subscription.notify_changes : true);
+  }, [subscription]);
+
+  async function save(next) {
+    setSaving(true);
+    try {
+      const r = await api.put(`/api/status-pages/${page.id}/subscription`, next);
+      toast.success(r.subscription ? "Subscription saved" : "Unsubscribed");
+      setOpen(false);
+      onChanged?.();
+    } catch (e) { toast.error(e.message); }
+    finally { setSaving(false); }
+  }
+
+  return (
+    <div className="relative">
+      <button type="button" onClick={() => setOpen(!open)} aria-expanded={open}
+        className={`btn btn-sm ${subscription ? "btn-secondary" : "btn-primary"}`}>
+        {subscription ? "Subscribed ✓" : "Subscribe"}
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-30" onClick={() => setOpen(false)} />
+          <div className="absolute right-0 mt-1 z-40 w-72 card p-3 shadow-lg space-y-2 text-sm">
+            <div className="text-xs text-fg-muted">Email me about <b className="text-fg">{page.name}</b>:</div>
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input type="checkbox" checked={state} onChange={(e) => setState(e.target.checked)} className="mt-0.5" />
+              <span>Up / down alerts<span className="block text-xs text-fg-dim">When a service or component goes down or recovers.</span></span>
+            </label>
+            <label className="flex items-start gap-2 cursor-pointer">
+              <input type="checkbox" checked={changes} onChange={(e) => setChanges(e.target.checked)} className="mt-0.5" />
+              <span>Page changes<span className="block text-xs text-fg-dim">When a new service is added to this page.</span></span>
+            </label>
+            <p className="text-[11px] text-fg-dim">Alerts are sent from Resolvd's mail server; if that system itself is down, emails can't go out.</p>
+            <div className="flex items-center justify-between gap-2 pt-1">
+              {subscription ? (
+                <button type="button" disabled={saving} onClick={() => save({ notify_state: false, notify_changes: false })}
+                  className="btn btn-ghost btn-sm text-red-600">Unsubscribe</button>
+              ) : <span />}
+              <button type="button" disabled={saving || (!state && !changes)}
+                onClick={() => save({ notify_state: state, notify_changes: changes })} className="btn btn-primary btn-sm">
+                {saving ? "Saving…" : subscription ? "Save" : "Subscribe"}
+              </button>
+            </div>
+          </div>
+        </>
+      )}
+    </div>
   );
 }
 
@@ -457,6 +625,7 @@ function PageEditor({ data, onDone, onDeleted }) {
   const [name, setName] = useState(page.name);
   const [description, setDescription] = useState(page.description || "");
   const [slug, setSlug] = useState(page.slug);
+  const [isPublic, setIsPublic] = useState(page.is_public !== false);
   const [all, setAll] = useState([]);
   const [sections, setSections] = useState(() => toSections(data.items.map((i) => ({
     item_id: i.item_id, label: i.label, section: i.section || "", display_name: i.display_name || "",
@@ -486,7 +655,7 @@ function PageEditor({ data, onDone, onDeleted }) {
     setSaving(true);
     try {
       const p = await api.patch(`/api/status-pages/${page.id}`, {
-        name, description, ...(slug !== page.slug ? { slug } : {}),
+        name, description, is_public: isPublic, ...(slug !== page.slug ? { slug } : {}),
       });
       await api.put(`/api/status-pages/${page.id}/items`, {
         items: fromSections(sections),
@@ -525,6 +694,14 @@ function PageEditor({ data, onDone, onDeleted }) {
           Description (optional)
           <input value={description} onChange={(e) => setDescription(e.target.value)}
             className="bg-surface-2 border border-border rounded px-2 py-1.5 text-sm" />
+        </label>
+        <label className="text-xs text-fg-muted flex flex-col gap-1 sm:max-w-xs">
+          Visible to
+          <select value={isPublic ? "public" : "staff"} onChange={(e) => setIsPublic(e.target.value === "public")}
+            className="bg-surface-2 border border-border rounded px-2 py-1.5 text-sm">
+            <option value="public">Everyone (all roles)</option>
+            <option value="staff">Staff only (Admin, Manager, Tech)</option>
+          </select>
         </label>
       </div>
 

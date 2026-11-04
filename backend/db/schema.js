@@ -2852,6 +2852,35 @@ async function initSchema() {
         UNIQUE(page_id, item_id)
       )
     `);
+    // Visibility: public pages are readable by every logged-in user;
+    // private pages only by Admin / Manager / Tech. Existing pages stay
+    // public (prior behaviour).
+    await client.query(`ALTER TABLE status_pages ADD COLUMN IF NOT EXISTS is_public BOOLEAN NOT NULL DEFAULT TRUE`);
+    // Email subscriptions: notify_state = up/down alerts for the page's
+    // services; notify_changes = page changes (a service added).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS status_page_subscriptions (
+        id SERIAL PRIMARY KEY,
+        page_id INTEGER NOT NULL REFERENCES status_pages(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        notify_state BOOLEAN NOT NULL DEFAULT TRUE,
+        notify_changes BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(page_id, user_id)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_status_page_subs_user ON status_page_subscriptions(user_id)`);
+    // Notifier cursor over alert_item_state_changes (single row). NULL
+    // last_change_id = not started; first tick jumps to the current max
+    // so history is never emailed.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS status_page_notifier_state (
+        id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+        last_change_id BIGINT,
+        last_run_at TIMESTAMPTZ
+      )
+    `);
 
     // Maintenance windows. While a window covering an item is active,
     // alerts for that item are recorded but not promoted to tickets;
