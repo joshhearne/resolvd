@@ -6,6 +6,7 @@ import { useAuth } from "../context/AuthContext";
 import PriorityBadge from "../components/PriorityBadge";
 import HybridTime from "../components/HybridTime";
 import PageShell from "../components/PageShell";
+import SubmitterDashboard from "../components/SubmitterDashboard";
 import {
   useDashboardFilters,
   useFilterLookups,
@@ -283,7 +284,7 @@ function ActiveAlertsCard({ filters }) {
 // admin can tell the wait is still accruing. The popover portals to
 // <body> so the parent "Total SLA pause time" card's overflow-hidden
 // can't clip it.
-function VendorWaitChip({ total, byVendor }) {
+function VendorWaitChip({ total, byVendor, count }) {
   const [open, setOpen] = useState(false);
   const [coords, setCoords] = useState({ left: 0, top: 0 });
   const anchorRef = useRef(null);
@@ -323,15 +324,17 @@ function VendorWaitChip({ total, byVendor }) {
       onBlur={() => setOpen(false)}
       tabIndex={0}>
       <span className="inline-block w-2 h-2 rounded-sm bg-amber-500 mr-1.5 align-middle" />
-      Vendor wait <b className="text-fg ml-1 underline decoration-dotted decoration-fg-muted/60 cursor-help">
+      Vendor wait{count != null ? `: ${count} ticket${count === 1 ? "" : "s"},` : ""}{" "}
+      <b className="text-fg underline decoration-dotted decoration-fg-muted/60 cursor-help">
         {fmtSeconds(total)}
       </b>
+      {count != null && " combined"}
       {open && createPortal(
         <div role="tooltip"
           style={{ position: "fixed", left: coords.left, top: coords.top, maxWidth: 320 }}
           className="z-[9999] min-w-[18rem] rounded-md border border-border bg-surface shadow-lg p-3 text-xs space-y-1.5">
           <div className="text-[10px] uppercase tracking-wide text-fg-dim mb-1">
-            Vendor wait by vendor
+            Paused on a vendor right now
           </div>
           {safe.length === 0 ? (
             <div className="text-fg-dim">No per-vendor breakdown yet.</div>
@@ -356,19 +359,80 @@ function VendorWaitChip({ total, byVendor }) {
   );
 }
 
+// Compact ticket row used by the SLA card's actionable lists.
+function SlaTicketRow({ t, right, sub }) {
+  return (
+    <li className="px-3 py-2 flex items-center justify-between gap-3 hover:bg-surface-2 transition-colors">
+      <div className="min-w-0">
+        <div className="flex items-baseline gap-2 min-w-0">
+          <Link
+            to={`/tickets/${t.id}`}
+            className="text-sm font-medium text-brand hover:underline whitespace-nowrap"
+          >
+            {t.internal_ref}
+          </Link>
+          <span className="text-sm text-fg truncate">{t.title}</span>
+        </div>
+        <div className="text-xs text-fg-dim mt-0.5 flex flex-wrap gap-x-1.5">
+          <span>{t.assigned_to_name || <span className="text-amber-600 dark:text-amber-400">Unassigned</span>}</span>
+          <span>· {t.internal_status}</span>
+          {sub && <span>· {sub}</span>}
+        </div>
+      </div>
+      <div className="shrink-0 text-right">{right}</div>
+    </li>
+  );
+}
+
+function SlaList({ title, count, tone = "text-fg-dim", children, empty }) {
+  return (
+    <div className="border border-border rounded-md overflow-hidden">
+      <div className="bg-surface-2 px-3 py-1.5 text-[11px] uppercase tracking-wider font-semibold text-fg-dim flex items-center justify-between gap-2">
+        <span>{title}</span>
+        {count != null && <span className={`normal-case tracking-normal font-bold ${tone}`}>{count}</span>}
+      </div>
+      {empty ? (
+        <p className="text-xs text-fg-dim px-3 py-3 text-center">{empty}</p>
+      ) : (
+        <ul className="divide-y divide-border">{children}</ul>
+      )}
+    </div>
+  );
+}
+
+function fmtDueIn(iso) {
+  if (!iso) return "—";
+  const s = Math.round((new Date(iso).getTime() - Date.now()) / 1000);
+  return s <= 0 ? "due now" : `in ${fmtSeconds(s)}`;
+}
+
+// SLA card. Every section answers "what's stuck / late, and who has it":
+//   - headline tiles (MTD + live counts, link to the matching list)
+//   - Breached now: owed + overdue, most overdue first
+//   - Due soon: response < 1h / resolve < 4h with the clock running
+//   - Paused right now: in-flight vendor / internal holds, longest first
+//     (pause totals are in-flight only, not lifetime accumulators)
+//   - Late this month: each clock that breached since the 1st and how late
 function SlaBreachCard({ sla }) {
   const live = sla.live || {};
   const mtd = sla.mtd_total || { response: 0, resolve: 0 };
   const byProject = sla.mtd_by_project || [];
   const byVendor = sla.vendor_wait_by_vendor || [];
+  const breached = sla.breached || [];
+  const atRisk = sla.at_risk || [];
+  const pausedNow = sla.paused_now || [];
+  const mtdLate = sla.mtd_late || [];
   // Distinct breached tickets (matches the ?sla=breached list). Falls back to
   // the response+resolve sum for older API payloads without breached_clock.
   const liveBreached = live.breached_clock ?? ((live.breached_response || 0) + (live.breached_resolve || 0));
   const mtdTotal = (mtd.response || 0) + (mtd.resolve || 0);
   const vendor = Number(live.vendor_wait_seconds || 0);
   const internal = Number(live.internal_hold_seconds || 0);
-  const pauseTotal = vendor + internal;
-  const allClear = liveBreached === 0 && mtdTotal === 0 && byProject.length === 0 && pauseTotal === 0;
+  const vendorCount = Number(live.vendor_paused_count || 0);
+  const internalCount = Number(live.internal_paused_count || 0);
+  const pausedCount = vendorCount + internalCount;
+  const allClear =
+    liveBreached === 0 && mtdTotal === 0 && pausedCount === 0 && atRisk.length === 0;
 
   const monthLabel = new Date().toLocaleString("default", { month: "long" });
 
@@ -385,41 +449,17 @@ function SlaBreachCard({ sla }) {
 
       {allClear ? (
         <div className="text-sm text-fg-muted py-4 text-center">
-          No SLA breaches this month. Nothing currently breached or at risk.
+          No SLA breaches this month. Nothing currently breached, paused or at risk.
         </div>
       ) : (
         <>
           <div className="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-4">
             <Link
-              to="/tickets?preset=sla_mtd_response"
-              className="rounded-md border border-border bg-surface-2 px-3 py-2 hover:bg-surface transition-colors"
-            >
-              <div className="text-xs text-fg-muted">MTD response breaches</div>
-              <div className="text-2xl font-bold text-amber-500 dark:text-amber-400">
-                {mtd.response || 0}
-              </div>
-            </Link>
-            <Link
-              to="/tickets?preset=sla_mtd_resolve"
-              className="rounded-md border border-border bg-surface-2 px-3 py-2 hover:bg-surface transition-colors"
-            >
-              <div className="text-xs text-fg-muted">MTD resolve breaches</div>
-              <div className="text-2xl font-bold text-amber-500 dark:text-amber-400">
-                {mtd.resolve || 0}
-              </div>
-            </Link>
-            <Link
               to="/tickets?preset=sla_breached"
               className="rounded-md border border-border bg-surface-2 px-3 py-2 hover:bg-surface transition-colors"
             >
-              <div className="text-xs text-fg-muted">Currently breached</div>
-              <div
-                className={`text-2xl font-bold ${
-                  liveBreached > 0
-                    ? "text-red-500 dark:text-red-400"
-                    : "text-fg-muted"
-                }`}
-              >
+              <div className="text-xs text-fg-muted">Breached now</div>
+              <div className={`text-2xl font-bold ${liveBreached > 0 ? "text-red-500 dark:text-red-400" : "text-fg-muted"}`}>
                 {liveBreached}
               </div>
             </Link>
@@ -432,94 +472,163 @@ function SlaBreachCard({ sla }) {
                 {live.open_clock ?? ((live.open_response || 0) + (live.open_resolve || 0))}
               </div>
             </Link>
+            <Link
+              to="/tickets?preset=sla_mtd_response"
+              className="rounded-md border border-border bg-surface-2 px-3 py-2 hover:bg-surface transition-colors"
+            >
+              <div className="text-xs text-fg-muted">Late responses (MTD)</div>
+              <div className="text-2xl font-bold text-amber-500 dark:text-amber-400">{mtd.response || 0}</div>
+            </Link>
+            <Link
+              to="/tickets?preset=sla_mtd_resolve"
+              className="rounded-md border border-border bg-surface-2 px-3 py-2 hover:bg-surface transition-colors"
+            >
+              <div className="text-xs text-fg-muted">Late resolutions (MTD)</div>
+              <div className="text-2xl font-bold text-amber-500 dark:text-amber-400">{mtd.resolve || 0}</div>
+            </Link>
           </div>
 
-          {pauseTotal > 0 && (
-            <div className="border border-border rounded-md overflow-hidden mb-3">
-              <div className="bg-surface-2 px-3 py-1.5 text-[11px] uppercase tracking-wider font-semibold text-fg-dim flex items-center justify-between">
-                <span>Total SLA pause time</span>
-                <span className="normal-case tracking-normal">{fmtSeconds(pauseTotal)}</span>
-              </div>
-              <div className="p-3 space-y-2">
-                <div className="flex h-2 rounded overflow-hidden bg-surface-2">
-                  <div
-                    className="bg-amber-500"
-                    style={{ width: `${(vendor / pauseTotal) * 100}%` }}
-                    title={`Vendor wait — ${fmtSeconds(vendor)}`}
-                  />
-                  <div
-                    className="bg-sky-500"
-                    style={{ width: `${(internal / pauseTotal) * 100}%` }}
-                    title={`Internal hold — ${fmtSeconds(internal)}`}
-                  />
-                </div>
-                <div className="flex justify-between text-xs">
-                  <VendorWaitChip total={vendor} byVendor={byVendor} />
-                  <span className="text-fg-muted">
-                    <span className="inline-block w-2 h-2 rounded-sm bg-sky-500 mr-1.5 align-middle" />
-                    Internal hold <b className="text-fg ml-1">{fmtSeconds(internal)}</b>
-                  </span>
-                </div>
-              </div>
-            </div>
-          )}
+          <div className="grid lg:grid-cols-2 gap-3">
+            <SlaList
+              title="Breached now — most overdue first"
+              count={liveBreached}
+              tone="text-red-500 dark:text-red-400"
+              empty={breached.length === 0 ? "Nothing is currently past its SLA." : null}
+            >
+              {breached.map((t) => (
+                <SlaTicketRow
+                  key={t.id}
+                  t={t}
+                  sub={[
+                    t.response_breached && t.resolve_breached ? "response + resolve" : t.response_breached ? "response" : "resolve",
+                    t.paused ? "paused" : null,
+                  ].filter(Boolean).join(" · ")}
+                  right={
+                    <span className="text-xs font-semibold text-red-500 dark:text-red-400 whitespace-nowrap">
+                      {fmtSeconds(Number(t.overdue_seconds))} over
+                    </span>
+                  }
+                />
+              ))}
+            </SlaList>
 
-          {byProject.length > 0 && (
-            <div className="border border-border rounded-md overflow-hidden">
-              <div className="bg-surface-2 px-3 py-1.5 text-[11px] uppercase tracking-wider font-semibold text-fg-dim">
-                MTD breaches by project
-              </div>
-              <table className="w-full text-sm">
-                <thead className="bg-surface-2 text-xs text-fg-muted border-t border-border">
-                  <tr>
-                    <th className="text-left px-3 py-1.5 font-medium">Project</th>
-                    <th className="text-right px-3 py-1.5 font-medium w-28">Response</th>
-                    <th className="text-right px-3 py-1.5 font-medium w-28">Resolve</th>
-                    <th className="text-right px-3 py-1.5 font-medium w-20">Total</th>
-                  </tr>
-                </thead>
-                <tbody>
-                  {byProject.map((p) => {
-                    const total =
-                      (p.breached_response || 0) + (p.breached_resolve || 0);
-                    return (
-                      <tr key={p.project_id} className="border-t border-border">
-                        <td className="px-3 py-2">
-                          <Link
-                            to={`/tickets?project_id=${p.project_id}&preset=sla_breached`}
-                            className="text-brand hover:underline font-medium"
-                          >
-                            {p.project_prefix || p.project_name || `#${p.project_id}`}
-                          </Link>
-                          {p.project_name && p.project_prefix && (
-                            <span className="ml-2 text-fg-muted text-xs">
-                              {p.project_name}
-                            </span>
-                          )}
-                        </td>
-                        <td className="px-3 py-2 text-right text-fg">
-                          {p.breached_response || 0}
-                        </td>
-                        <td className="px-3 py-2 text-right text-fg">
-                          {p.breached_resolve || 0}
-                        </td>
-                        <td className="px-3 py-2 text-right font-semibold text-amber-500 dark:text-amber-400">
-                          {total}
-                        </td>
-                      </tr>
-                    );
-                  })}
-                </tbody>
-              </table>
-            </div>
-          )}
+            <SlaList
+              title="Due soon"
+              count={atRisk.length}
+              tone="text-amber-500 dark:text-amber-400"
+              empty={atRisk.length === 0 ? "No clocks due in the next few hours." : null}
+            >
+              {atRisk.map((t) => (
+                <SlaTicketRow
+                  key={t.id}
+                  t={t}
+                  sub={t.clock}
+                  right={
+                    <span className="text-xs font-semibold text-amber-600 dark:text-amber-400 whitespace-nowrap">
+                      {fmtDueIn(t.due_at)}
+                    </span>
+                  }
+                />
+              ))}
+            </SlaList>
+
+            <SlaList
+              title="Paused right now — what we're waiting on"
+              count={pausedCount}
+              empty={pausedNow.length === 0 ? "No tickets are paused on a vendor or internal hold." : null}
+            >
+              {pausedCount > 0 && (
+                <li className="px-3 py-2 flex flex-wrap gap-x-4 gap-y-1 text-xs bg-surface/50">
+                  {vendorCount > 0 && (
+                    <VendorWaitChip total={vendor} byVendor={byVendor} count={vendorCount} />
+                  )}
+                  {internalCount > 0 && (
+                    <span className="text-fg-muted">
+                      <span className="inline-block w-2 h-2 rounded-sm bg-sky-500 mr-1.5 align-middle" />
+                      Internal hold: {internalCount} ticket{internalCount === 1 ? "" : "s"},{" "}
+                      <b className="text-fg">{fmtSeconds(internal)}</b> combined
+                    </span>
+                  )}
+                </li>
+              )}
+              {pausedNow.map((t) => (
+                <SlaTicketRow
+                  key={t.id}
+                  t={t}
+                  sub={
+                    t.pause_kind === "vendor"
+                      ? `waiting on ${t.vendor_name || "vendor"}`
+                      : "internal hold"
+                  }
+                  right={
+                    <span className="text-xs font-semibold text-fg whitespace-nowrap">
+                      <span
+                        className={`inline-block w-2 h-2 rounded-sm mr-1.5 align-middle ${
+                          t.pause_kind === "vendor" ? "bg-amber-500" : "bg-sky-500"
+                        }`}
+                      />
+                      {fmtSeconds(Number(t.paused_seconds))}
+                    </span>
+                  }
+                />
+              ))}
+            </SlaList>
+
+            <SlaList
+              title="Late this month"
+              count={mtdTotal}
+              tone="text-amber-500 dark:text-amber-400"
+              empty={mtdLate.length === 0 ? "No SLA clocks breached this month." : null}
+            >
+              {byProject.length > 1 && (
+                <li className="px-3 py-1.5 flex flex-wrap gap-1.5 text-xs bg-surface/50">
+                  {byProject.map((p) => (
+                    <Link
+                      key={p.project_id}
+                      to={`/tickets?project_id=${p.project_id}&preset=sla_breached`}
+                      className="rounded border border-border px-1.5 py-0.5 text-fg-muted hover:text-fg"
+                      title={`${p.project_name || ""}: ${p.breached_response || 0} response, ${p.breached_resolve || 0} resolve`}
+                    >
+                      {p.project_prefix || p.project_name}{" "}
+                      <b className="text-fg">{(p.breached_response || 0) + (p.breached_resolve || 0)}</b>
+                    </Link>
+                  ))}
+                </li>
+              )}
+              {mtdLate.map((t) => (
+                <SlaTicketRow
+                  key={`${t.id}-${t.clock}`}
+                  t={t}
+                  sub={`${t.clock} ${t.met_at ? "met late" : "still open"}`}
+                  right={
+                    <span
+                      className={`text-xs font-semibold whitespace-nowrap ${
+                        t.met_at ? "text-fg-muted" : "text-red-500 dark:text-red-400"
+                      }`}
+                    >
+                      {fmtSeconds(Number(t.late_seconds))} late
+                    </span>
+                  }
+                />
+              ))}
+            </SlaList>
+          </div>
         </>
       )}
     </div>
   );
 }
 
+// Submitters get a curated "my tickets" dashboard instead of the team view
+// (#102) — independent of any project-level elevation. Split into two
+// components so hook order stays stable per role.
 export default function Dashboard() {
+  const { user } = useAuth();
+  if (user?.role === "Submitter") return <SubmitterDashboard />;
+  return <TeamDashboard />;
+}
+
+function TeamDashboard() {
   const { user } = useAuth();
   const canSeeAlerts = ["Admin", "Manager", "Tech"].includes(user?.role);
   const { filters, setFilters } = useDashboardFilters();

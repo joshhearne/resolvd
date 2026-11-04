@@ -479,12 +479,15 @@ router.get('/me', async (req, res) => {
     }
     return res.status(401).json({ error: 'Unauthenticated' });
   }
+  // Set while an Admin is masquerading as this user (routes/impersonation.js).
+  const imp = req.session.impersonator;
+  const impersonator = imp ? { id: imp.id, displayName: imp.displayName } : null;
   try {
     const r = await pool.query('SELECT preferences FROM users WHERE id = $1', [req.session.user.id]);
     const stored = r.rows[0]?.preferences || {};
-    res.json({ ...req.session.user, preferences: { ...PREF_DEFAULTS, ...stored } });
+    res.json({ ...req.session.user, impersonator, preferences: { ...PREF_DEFAULTS, ...stored } });
   } catch {
-    res.json({ ...req.session.user, preferences: { ...PREF_DEFAULTS } });
+    res.json({ ...req.session.user, impersonator, preferences: { ...PREF_DEFAULTS } });
   }
 });
 

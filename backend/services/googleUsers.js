@@ -71,7 +71,7 @@ async function lookupUserByEmail(email) {
   // only useful projection for our enrichment.
   const url = `${DIRECTORY}/users/${encodeURIComponent(emailLc)}?projection=full`;
   try {
-    const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10000) });
     if (r.status === 404) {
       cacheSet(emailLc, null);
       return null;

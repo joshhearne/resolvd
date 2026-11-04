@@ -67,6 +67,11 @@ const URL_PRESETS = {
   // with a ?priorities=N param from the dashboard priority bars (hydrated below).
   active:           { active: true, days: 0, statuses: [] },
   mine:           { mine: true,                                                    excludeClosed: true },
+  // Submitter dashboard deep links (#102). Clear other narrowing so the list
+  // matches the dashboard section exactly.
+  submitted:      { submittedByMe: true, following: false, mine: false, days: 0, statuses: [], priorities: [], projectIds: [], excludeClosed: false },
+  submitted_open: { submittedByMe: true, following: false, mine: false, days: 0, statuses: [], priorities: [], projectIds: [], active: true, excludeClosed: true },
+  following:      { following: true, submittedByMe: false, mine: false, days: 0, statuses: [], priorities: [], projectIds: [], excludeClosed: true },
 };
 
 function DateTimeStack({ value }) {
@@ -95,6 +100,7 @@ function DateTimeStack({ value }) {
 export default function TicketList() {
   const { user } = useAuth();
   const isAdmin = user?.role === "Admin";
+  const isSubmitter = user?.role === "Submitter";
   const { internal: internalStatuses } = useStatuses();
   const [searchParams, setSearchParams] = useSearchParams();
   const cols = useColumnPrefs("tickets");
@@ -430,6 +436,8 @@ export default function TicketList() {
 
   const filterCount =
     (filters.mine ? 1 : 0) +
+    (filters.submittedByMe ? 1 : 0) +
+    (filters.following ? 1 : 0) +
     (filters.flagged ? 1 : 0) +
     (filters.hasFix !== null ? 1 : 0) +
     filters.projectIds.length +
@@ -570,17 +578,44 @@ export default function TicketList() {
               </h1>
             </div>
             <div className="flex items-center gap-2 flex-wrap">
-              <button
-                onClick={() => setFilters((f) => ({ ...f, mine: !f.mine }))}
-                className={`btn ${
-                  filters.mine
-                    ? "bg-brand text-brand-fg hover:bg-brand-bright"
-                    : "btn-secondary"
-                }`}
-                title="Show tickets assigned to me"
-              >
-                Mine
-              </button>
+              {isSubmitter ? (
+                <>
+                  <button
+                    onClick={() => setFilters((f) => ({ ...f, submittedByMe: !f.submittedByMe }))}
+                    className={`btn ${
+                      filters.submittedByMe
+                        ? "bg-brand text-brand-fg hover:bg-brand-bright"
+                        : "btn-secondary"
+                    }`}
+                    title="Show tickets I submitted"
+                  >
+                    My submissions
+                  </button>
+                  <button
+                    onClick={() => setFilters((f) => ({ ...f, following: !f.following }))}
+                    className={`btn ${
+                      filters.following
+                        ? "bg-brand text-brand-fg hover:bg-brand-bright"
+                        : "btn-secondary"
+                    }`}
+                    title="Show tickets I follow"
+                  >
+                    Following
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={() => setFilters((f) => ({ ...f, mine: !f.mine }))}
+                  className={`btn ${
+                    filters.mine
+                      ? "bg-brand text-brand-fg hover:bg-brand-bright"
+                      : "btn-secondary"
+                  }`}
+                  title="Show tickets assigned to me"
+                >
+                  Mine
+                </button>
+              )}
               <button
                 onClick={() => setFiltersOpen(true)}
                 className="btn btn-secondary"

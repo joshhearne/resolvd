@@ -23,6 +23,7 @@ const attachmentRoutes = require('./routes/attachments');
 const brandingRoutes = require('./routes/branding');
 const exportRoutes = require('./routes/export');
 const followerRoutes = require('./routes/followers');
+const { requireTicketVisible } = require('./services/ticketVisibility');
 const statusRoutes = require('./routes/statuses');
 const supportRoutes = require('./routes/support');
 const companyRoutes = require('./routes/companies');
@@ -117,6 +118,11 @@ app.use(session({
 }));
 
 // Routes
+// Admin masquerade: auto-expire stale masquerades and refuse
+// account-sensitive writes while an Admin is viewing as someone else.
+const impersonationRoutes = require('./routes/impersonation');
+app.use(impersonationRoutes.expireImpersonation);
+app.use(impersonationRoutes.blockWhileImpersonating);
 app.use('/auth', authRoutes);
 // Webhook receivers authenticate via URL token, not session. Mount before
 // the support JIT guard since they aren't tied to any user principal.
@@ -134,10 +140,18 @@ app.use('/api/support', supportRoutes);
 
 // JIT guard: blocks role='Support' on every other /api/* path unless they
 // have an active, non-expired grant. No-op for non-Support users.
+// Mounted before the Support JIT guard so an Admin viewing as a Support
+// user can always release.
+app.use('/api/impersonate', impersonationRoutes);
 app.use('/api', requireSupportAccessIfSupport);
 
 app.use('/api/invites', inviteRoutes);
 app.use('/api/auth-settings', authSettingsRoutes);
+// Ticket visibility guard: every /api/tickets/<id>/... route (detail,
+// comments, notes, attachments, followers, time) 404s when the caller
+// can't see that ticket. Submitter-scoped users are limited to their own
+// + followed tickets (see services/ticketVisibility.js).
+app.use('/api/tickets/:ticketId', requireTicketVisible('ticketId'));
 app.use('/api/tickets', ticketRoutes);
 app.use('/api/tickets', commentRoutes);
 app.use('/api/tickets', ticketNoteRoutes);
@@ -240,6 +254,9 @@ initSchema()
     // Prepaid block alerts (MSP mode): every 30 min, warn Admins/Managers
     // when a customer's block crosses its alert line or is used up.
     require('./services/billing').startScheduler();
+    // Status page subscriptions: every minute, email subscribers about
+    // services going down / recovering.
+    require('./services/statusPageNotifier').startScheduler();
     app.listen(PORT, () => {
       console.log(`Resolvd backend running on port ${PORT}`);
     });

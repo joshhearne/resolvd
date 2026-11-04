@@ -20,24 +20,21 @@ const { logSupportRead } = require('../middleware/supportAccess');
 const { sendVendorEmail } = require('../services/vendorOutbound');
 const { auditLog, systemComment, isProjectHandler } = require('../services/ticketHelpers');
 const ticketCustomFields = require('../services/ticketCustomFields');
+const { getTicketScope, scopeClause } = require('../services/ticketVisibility');
 
 const router = express.Router();
+
+// Error carrying an HTTP status. Thrown from inside transaction callbacks
+// so the transaction ROLLs BACK and the outer catch responds once.
+function httpError(status, message) {
+  return Object.assign(new Error(message), { httpStatus: status });
+}
 
 // Aliases used in JOIN result rows so decryptRow can also recover ciphertext
 // stored under aliased column names (`bt.title AS blocking_ticket_title`).
 const TICKET_JOIN_ALIASES = {
   blocking_ticket_title: 'tickets.title',
 };
-
-// Returns array of project IDs the user can access, or null if Admin (= all)
-async function getAccessibleProjectIds(user) {
-  if (['Admin','Manager'].includes(user.role)) return null;
-  const result = await pool.query(
-    'SELECT project_id FROM project_members WHERE user_id = $1',
-    [user.id]
-  );
-  return result.rows.map(r => r.project_id);
-}
 
 // Strip ai_* fields from a ticket row when the viewer isn't allowed
 // to see them. Author + Admins/Managers always see; otherwise the
@@ -78,21 +75,19 @@ router.get('/counts', requireAuth, async (req, res) => {
     const params = [];
     let p = 1;
 
-    // Project filter
+    // Project filter (optional narrow) + visibility scope. The scope
+    // clause limits non-Admin/Manager callers to full-visibility projects
+    // plus their own / followed tickets (Submitters: own + followed only).
     if (project_id) {
-      where.push(`project_id = $${p++}`);
+      where.push(`t.project_id = $${p++}`);
       params.push(Number(project_id));
-    } else {
-      const accessibleIds = await getAccessibleProjectIds(user);
-      if (accessibleIds !== null) {
-        if (accessibleIds.length === 0) {
-          return res.json({ total:0, active:0, open:0, in_progress:0, awaiting_mot:0,
-            pending_review:0, reopened:0, closed:0, flagged:0, p1:0, p2:0,
-            external_unacked:0, external_resolved:0, internal_blocker:0 });
-        }
-        where.push(`project_id = ANY($${p++})`);
-        params.push(accessibleIds);
-      }
+    }
+    const scope = await getTicketScope(user);
+    if (!scope.unrestricted) {
+      const c = scopeClause(scope, 't', p);
+      where.push(c.sql);
+      params.push(...c.params);
+      p += c.params.length;
     }
 
     const whereClause = where.length ? `WHERE ${where.join(' AND ')}` : '';
@@ -113,7 +108,7 @@ router.get('/counts', requireAuth, async (req, res) => {
         SUM(CASE WHEN external_status = 'Unacknowledged' AND internal_status != 'Closed' THEN 1 ELSE 0 END)::int as external_unacked,
         SUM(CASE WHEN external_status = 'Resolved' AND internal_status != 'Closed' THEN 1 ELSE 0 END)::int as external_resolved,
         SUM(CASE WHEN blocker_type = 'internal_input' AND internal_status != 'Closed' THEN 1 ELSE 0 END)::int as internal_blocker
-      FROM tickets
+      FROM tickets t
       ${whereClause}
     `, params);
 
@@ -143,34 +138,39 @@ router.get('/', requireAuth, async (req, res) => {
     const params = [];
     let p = 1;
 
-    // Project access control. `project_id` may be a single id (legacy)
-    // or a comma-separated list (matches the dashboard filter shape).
-    // Requested list is intersected with the caller's accessible set so
-    // a non-Admin can never widen past their project_members.
+    // Project filter. `project_id` may be a single id (legacy) or a
+    // comma-separated list (matches the dashboard filter shape). It only
+    // ever narrows: the visibility scope below is ANDed on top, so a
+    // non-Admin can never widen past what they're allowed to see.
     const requestedProjectIds = project_id
       ? String(project_id)
           .split(',')
           .map((s) => Number(s.trim()))
           .filter((n) => Number.isFinite(n) && n > 0)
       : [];
-    const accessibleIds = await getAccessibleProjectIds(user);
-    let effectiveProjectIds = null;
-    if (accessibleIds !== null && requestedProjectIds.length) {
-      effectiveProjectIds = requestedProjectIds.filter((id) => accessibleIds.includes(id));
-      if (effectiveProjectIds.length === 0) {
-        return res.json({ tickets: [], total: 0, page: Number(page), limit: Number(limit) });
-      }
-    } else if (accessibleIds !== null) {
-      effectiveProjectIds = accessibleIds;
-      if (effectiveProjectIds.length === 0) {
-        return res.json({ tickets: [], total: 0, page: Number(page), limit: Number(limit) });
-      }
-    } else if (requestedProjectIds.length) {
-      effectiveProjectIds = requestedProjectIds;
-    }
-    if (effectiveProjectIds !== null) {
+    if (requestedProjectIds.length) {
       where.push(`t.project_id = ANY($${p++}::int[])`);
-      params.push(effectiveProjectIds);
+      params.push(requestedProjectIds);
+    }
+    // Visibility scope (#101): Admin/Manager unrestricted; others see
+    // full-visibility projects + own + followed. Submitter-scoped users
+    // therefore get only their own submissions and followed tickets.
+    const scope = await getTicketScope(user);
+    if (!scope.unrestricted) {
+      const c = scopeClause(scope, 't', p);
+      where.push(c.sql);
+      params.push(...c.params);
+      p += c.params.length;
+    }
+    // "Followed" facet — tickets the caller follows.
+    if (req.query.following === '1' || req.query.following === 'true') {
+      where.push(`EXISTS (SELECT 1 FROM ticket_followers tf_me WHERE tf_me.ticket_id = t.id AND tf_me.user_id = $${p++})`);
+      params.push(user.id);
+    }
+    // "Mine" facet — tickets the caller submitted.
+    if (req.query.submitted_by === 'me') {
+      where.push(`t.submitted_by = $${p++}`);
+      params.push(user.id);
     }
 
     // Search: under encrypted mode the title ciphertext is opaque to ILIKE.
@@ -650,7 +650,7 @@ router.get('/similar', requireAuth, async (req, res) => {
     if (searchText.length < 4 && !extRef) return res.json([]);
 
     const user = req.session.user;
-    const accessibleIds = await getAccessibleProjectIds(user);
+    const scope = await getTicketScope(user);
 
     // params: $1=searchText, $2=extRef, then project filters
     const params = [searchText, extRef];
@@ -660,10 +660,14 @@ router.get('/similar', requireAuth, async (req, res) => {
     if (project_id) {
       where.push(`t.project_id = $${p++}`);
       params.push(Number(project_id));
-    } else if (accessibleIds !== null) {
-      if (accessibleIds.length === 0) return res.json([]);
-      where.push(`t.project_id = ANY($${p++}::int[])`);
-      params.push(accessibleIds);
+    }
+    // Duplicate hints must not leak titles of tickets the caller can't
+    // see (Submitters: own + followed only).
+    if (!scope.unrestricted) {
+      const c = scopeClause(scope, 't', p);
+      where.push(c.sql);
+      params.push(...c.params);
+      p += c.params.length;
     }
 
     const whereClause = 'AND ' + where.join(' AND ');
@@ -844,6 +848,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
     // SLA, timers, notifications) as an admin-picked status.
     const body = { ...(req.body || {}) };
     let autoAdvance = null;
+    let enrichSubmitterId = null;
 
     const updated = await transaction(async (client) => {
       if (isAdmin && body.external_ticket_ref !== undefined) {
@@ -897,13 +902,13 @@ router.patch('/:id', requireAuth, async (req, res) => {
             [ticket.project_id]
           );
           if (!proj.rows[0]?.allow_asset_linking) {
-            return res.status(400).json({ error: 'Asset linking is disabled for this project' });
+            throw httpError(400, 'Asset linking is disabled for this project');
           }
           const assetRes = await client.query(`SELECT id, company_id FROM assets WHERE id = $1`, [assetId]);
-          if (!assetRes.rows[0]) return res.status(400).json({ error: 'Asset not found' });
+          if (!assetRes.rows[0]) throw httpError(400, 'Asset not found');
           const companyIds = proj.rows[0].asset_company_ids || [];
           if (companyIds.length && !companyIds.includes(assetRes.rows[0].company_id)) {
-            return res.status(400).json({ error: 'Asset is not in an allowed company for this project' });
+            throw httpError(400, 'Asset is not in an allowed company for this project');
           }
         }
         updates.asset_id = assetId;
@@ -913,13 +918,13 @@ router.patch('/:id', requireAuth, async (req, res) => {
       if (isAdmin && body.submitted_by !== undefined && body.submitted_by !== null) {
         const targetId = Number(body.submitted_by);
         if (!Number.isInteger(targetId) || targetId <= 0) {
-          return res.status(400).json({ error: 'submitted_by must be a user id' });
+          throw httpError(400, 'submitted_by must be a user id');
         }
         const targetUser = await client.query(
           `SELECT id, display_name FROM users WHERE id = $1 AND status = 'active'`,
           [targetId]
         );
-        if (!targetUser.rows[0]) return res.status(400).json({ error: 'submitted_by user not found or inactive' });
+        if (!targetUser.rows[0]) throw httpError(400, 'submitted_by user not found or inactive');
         if (targetId !== ticket.submitted_by) {
           updates.submitted_by = targetId;
           await auditLog(client, {
@@ -935,18 +940,12 @@ router.patch('/:id', requireAuth, async (req, res) => {
             [ticket.id, targetId]
           );
         }
-        // If the target user still only has an email (no display_name),
-        // try to enrich from the configured directory (Graph / Google)
-        // before responding so the UI immediately renders the resolved
-        // name. Best-effort: failures degrade silently.
-        if (!targetUser.rows[0].display_name) {
-          try {
-            const { enrichExistingUser } = require('../services/userAutoProvision');
-            await enrichExistingUser(targetId);
-          } catch (err) {
-            console.warn('submitter enrich failed:', err.message);
-          }
-        }
+        // Email-only target: enrich from the directory AFTER commit (see
+        // below). Doing it here deadlocked (#104): the follower insert
+        // above holds a FOR KEY SHARE lock on the user row and the
+        // enrichment's UPDATE users (entra_oid) on another connection
+        // waits on it forever, while this transaction waits on it.
+        if (!targetUser.rows[0].display_name) enrichSubmitterId = targetId;
       }
 
       let imp = ticket.impact, urg = ticket.urgency;
@@ -1252,6 +1251,20 @@ router.patch('/:id', requireAuth, async (req, res) => {
       await require('../services/timeTracking')
         .startTimer({ userId: user.id, ticketId: ticket.id, auto: true, trigger: 'take' })
         .catch((err) => console.error('time tracking auto-start on take:', err.message));
+    }
+
+    // Post-commit, best-effort directory enrichment for an email-only
+    // submitter so the UI renders the resolved name right away.
+    if (enrichSubmitterId) {
+      try {
+        const { enrichExistingUser } = require('../services/userAutoProvision');
+        const u = await enrichExistingUser(enrichSubmitterId);
+        if (u?.display_name && updated.submitted_by === enrichSubmitterId) {
+          updated.submitted_by_name = u.display_name;
+        }
+      } catch (err) {
+        console.warn('submitter enrich failed:', err.message);
+      }
     }
 
     res.json(updated);
