@@ -71,7 +71,7 @@ async function lookupUserByEmail(email) {
   const select = '$select=id,displayName,officeLocation,department,mail,userPrincipalName,jobTitle';
   const url = `${GRAPH}/users/${encodeURIComponent(emailLc)}?${select}`;
   try {
-    const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    const r = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10000) });
     if (r.status === 404) {
       cacheSet(emailLc, null);
       return null;

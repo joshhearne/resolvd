@@ -29,7 +29,7 @@ async function lookupEntraByEmail(email) {
     const { getGraphAppToken } = require('./email');
     const token = await getGraphAppToken();
     const url = `https://graph.microsoft.com/v1.0/users/${encodeURIComponent(email)}?$select=id,displayName,mail,userPrincipalName`;
-    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` } });
+    const res = await fetch(url, { headers: { Authorization: `Bearer ${token}` }, signal: AbortSignal.timeout(10000) });
     if (!res.ok) return null;
     const profile = await res.json();
     if (!profile?.id) return null;

@@ -24,6 +24,12 @@ const { getTicketScope, scopeClause } = require('../services/ticketVisibility');
 
 const router = express.Router();
 
+// Error carrying an HTTP status. Thrown from inside transaction callbacks
+// so the transaction ROLLs BACK and the outer catch responds once.
+function httpError(status, message) {
+  return Object.assign(new Error(message), { httpStatus: status });
+}
+
 // Aliases used in JOIN result rows so decryptRow can also recover ciphertext
 // stored under aliased column names (`bt.title AS blocking_ticket_title`).
 const TICKET_JOIN_ALIASES = {
@@ -842,6 +848,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
     // SLA, timers, notifications) as an admin-picked status.
     const body = { ...(req.body || {}) };
     let autoAdvance = null;
+    let enrichSubmitterId = null;
 
     const updated = await transaction(async (client) => {
       if (isAdmin && body.external_ticket_ref !== undefined) {
@@ -895,13 +902,13 @@ router.patch('/:id', requireAuth, async (req, res) => {
             [ticket.project_id]
           );
           if (!proj.rows[0]?.allow_asset_linking) {
-            return res.status(400).json({ error: 'Asset linking is disabled for this project' });
+            throw httpError(400, 'Asset linking is disabled for this project');
           }
           const assetRes = await client.query(`SELECT id, company_id FROM assets WHERE id = $1`, [assetId]);
-          if (!assetRes.rows[0]) return res.status(400).json({ error: 'Asset not found' });
+          if (!assetRes.rows[0]) throw httpError(400, 'Asset not found');
           const companyIds = proj.rows[0].asset_company_ids || [];
           if (companyIds.length && !companyIds.includes(assetRes.rows[0].company_id)) {
-            return res.status(400).json({ error: 'Asset is not in an allowed company for this project' });
+            throw httpError(400, 'Asset is not in an allowed company for this project');
           }
         }
         updates.asset_id = assetId;
@@ -911,13 +918,13 @@ router.patch('/:id', requireAuth, async (req, res) => {
       if (isAdmin && body.submitted_by !== undefined && body.submitted_by !== null) {
         const targetId = Number(body.submitted_by);
         if (!Number.isInteger(targetId) || targetId <= 0) {
-          return res.status(400).json({ error: 'submitted_by must be a user id' });
+          throw httpError(400, 'submitted_by must be a user id');
         }
         const targetUser = await client.query(
           `SELECT id, display_name FROM users WHERE id = $1 AND status = 'active'`,
           [targetId]
         );
-        if (!targetUser.rows[0]) return res.status(400).json({ error: 'submitted_by user not found or inactive' });
+        if (!targetUser.rows[0]) throw httpError(400, 'submitted_by user not found or inactive');
         if (targetId !== ticket.submitted_by) {
           updates.submitted_by = targetId;
           await auditLog(client, {
@@ -933,18 +940,12 @@ router.patch('/:id', requireAuth, async (req, res) => {
             [ticket.id, targetId]
           );
         }
-        // If the target user still only has an email (no display_name),
-        // try to enrich from the configured directory (Graph / Google)
-        // before responding so the UI immediately renders the resolved
-        // name. Best-effort: failures degrade silently.
-        if (!targetUser.rows[0].display_name) {
-          try {
-            const { enrichExistingUser } = require('../services/userAutoProvision');
-            await enrichExistingUser(targetId);
-          } catch (err) {
-            console.warn('submitter enrich failed:', err.message);
-          }
-        }
+        // Email-only target: enrich from the directory AFTER commit (see
+        // below). Doing it here deadlocked (#104): the follower insert
+        // above holds a FOR KEY SHARE lock on the user row and the
+        // enrichment's UPDATE users (entra_oid) on another connection
+        // waits on it forever, while this transaction waits on it.
+        if (!targetUser.rows[0].display_name) enrichSubmitterId = targetId;
       }
 
       let imp = ticket.impact, urg = ticket.urgency;
@@ -1250,6 +1251,20 @@ router.patch('/:id', requireAuth, async (req, res) => {
       await require('../services/timeTracking')
         .startTimer({ userId: user.id, ticketId: ticket.id, auto: true, trigger: 'take' })
         .catch((err) => console.error('time tracking auto-start on take:', err.message));
+    }
+
+    // Post-commit, best-effort directory enrichment for an email-only
+    // submitter so the UI renders the resolved name right away.
+    if (enrichSubmitterId) {
+      try {
+        const { enrichExistingUser } = require('../services/userAutoProvision');
+        const u = await enrichExistingUser(enrichSubmitterId);
+        if (u?.display_name && updated.submitted_by === enrichSubmitterId) {
+          updated.submitted_by_name = u.display_name;
+        }
+      } catch (err) {
+        console.warn('submitter enrich failed:', err.message);
+      }
     }
 
     res.json(updated);
