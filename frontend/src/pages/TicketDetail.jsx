@@ -15,6 +15,7 @@ import HybridTime from "../components/HybridTime";
 import SlaTimer from "../components/SlaTimer";
 import TimeTracker from "../components/TimeTracker";
 import AiUsageBadge from "../components/AiUsageBadge";
+import AiRewriteButton from "../components/AiRewriteButton";
 import CustomFieldsCard from "../components/CustomFieldsCard";
 import MentionTextarea from "../components/MentionTextarea";
 import {

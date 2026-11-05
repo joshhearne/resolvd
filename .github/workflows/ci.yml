@@ -52,6 +52,10 @@ jobs:
         working-directory: frontend
         run: npm ci
 
+      - name: Check for undefined components / identifiers
+        working-directory: frontend
+        run: npm run check:undefined
+
       - name: Build
         working-directory: frontend
         run: npm run build
