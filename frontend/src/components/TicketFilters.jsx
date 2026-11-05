@@ -221,12 +221,16 @@ export function TicketFiltersModal({ open, filters, setFilters, projects, status
               <Toggle
                 label="Submitted by me"
                 active={draft.submittedByMe}
-                onClick={() => setDraft((d) => ({ ...d, submittedByMe: !d.submittedByMe }))}
+                onClick={() => setDraft((d) => (d.submittedByMe
+                  ? { ...d, submittedByMe: false }
+                  : { ...d, submittedByMe: true, excludeClosed: false }))}
               />
               <Toggle
                 label="Following"
                 active={draft.following}
-                onClick={() => setDraft((d) => ({ ...d, following: !d.following }))}
+                onClick={() => setDraft((d) => (d.following
+                  ? { ...d, following: false }
+                  : { ...d, following: true, excludeClosed: false }))}
               />
               <Toggle
                 label="Active only (hide Closed)"
