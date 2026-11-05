@@ -316,6 +316,12 @@ function PageBody({ data, canCurate, onEdit, onReload }) {
               <span className="text-[10px] uppercase tracking-wide font-medium text-fg-muted border border-border rounded px-1.5 py-0.5"
                 title="Private: visible to Admin, Manager and Tech only">Staff only</span>
             )}
+            {page.projects?.length > 0 && (
+              <span className="text-[10px] uppercase tracking-wide font-medium text-fg-muted border border-border rounded px-1.5 py-0.5"
+                title={`Only members of ${page.projects.map((p) => p.name).join(", ")} (plus Admins and Managers) see this page`}>
+                {page.projects.map((p) => p.prefix || p.name).join(" · ")} only
+              </span>
+            )}
           </h2>
           {page.description && <p className="text-sm text-fg-muted mt-0.5">{page.description}</p>}
         </div>
@@ -626,6 +632,13 @@ function PageEditor({ data, onDone, onDeleted }) {
   const [description, setDescription] = useState(page.description || "");
   const [slug, setSlug] = useState(page.slug);
   const [isPublic, setIsPublic] = useState(page.is_public !== false);
+  const [projectIds, setProjectIds] = useState(() => new Set(page.project_ids || []));
+  const [projects, setProjects] = useState([]);
+  useEffect(() => {
+    api.get("/api/projects")
+      .then((all) => setProjects((all || []).filter((p) => p.status === "active")))
+      .catch(() => setProjects([]));
+  }, []);
   const [all, setAll] = useState([]);
   const [sections, setSections] = useState(() => toSections(data.items.map((i) => ({
     item_id: i.item_id, label: i.label, section: i.section || "", display_name: i.display_name || "",
@@ -655,7 +668,8 @@ function PageEditor({ data, onDone, onDeleted }) {
     setSaving(true);
     try {
       const p = await api.patch(`/api/status-pages/${page.id}`, {
-        name, description, is_public: isPublic, ...(slug !== page.slug ? { slug } : {}),
+        name, description, is_public: isPublic, project_ids: [...projectIds],
+        ...(slug !== page.slug ? { slug } : {}),
       });
       await api.put(`/api/status-pages/${page.id}/items`, {
         items: fromSections(sections),
@@ -703,6 +717,32 @@ function PageEditor({ data, onDone, onDeleted }) {
             <option value="staff">Staff only (Admin, Manager, Tech)</option>
           </select>
         </label>
+        <div className="text-xs text-fg-muted space-y-1">
+          <div>Limit to project members (optional)</div>
+          <p className="text-[11px] text-fg-dim">
+            When any project is ticked, only members of those projects see this page
+            (Admins and Managers always do). Combines with “Visible to”.
+          </p>
+          <div className="flex flex-wrap gap-1.5 pt-1">
+            {projects.map((p) => {
+              const on = projectIds.has(p.id);
+              return (
+                <button key={p.id} type="button" aria-pressed={on}
+                  onClick={() => setProjectIds((prev) => {
+                    const next = new Set(prev);
+                    on ? next.delete(p.id) : next.add(p.id);
+                    return next;
+                  })}
+                  className={`px-2 py-1 rounded border text-xs ${on
+                    ? "bg-brand/10 border-brand text-brand font-medium"
+                    : "border-border text-fg-muted hover:text-fg"}`}>
+                  {p.prefix ? `${p.prefix} — ${p.name}` : p.name}
+                </button>
+              );
+            })}
+            {projects.length === 0 && <span className="text-fg-dim">No projects</span>}
+          </div>
+        </div>
       </div>
 
       <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
