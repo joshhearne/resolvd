@@ -40,8 +40,9 @@ export default function NewMenu({ user, projects = [] }) {
   function goNewInventory() { navigate("/inventory/new"); }
   function goNewConsumable() { navigate("/consumables?new=1"); }
   function goNewKb() {
-    if (user?.default_project_id) {
-      navigate(`/kb/${user.default_project_id}/new`);
+    // defaultProjectId = the user's own default, else the org default.
+    if (user?.defaultProjectId) {
+      navigate(`/kb/${user.defaultProjectId}/new`);
       return;
     }
     const first = projects.find((p) => p.status === "active");

@@ -483,9 +483,19 @@ router.get('/me', async (req, res) => {
   const imp = req.session.impersonator;
   const impersonator = imp ? { id: imp.id, displayName: imp.displayName } : null;
   try {
-    const r = await pool.query('SELECT preferences FROM users WHERE id = $1', [req.session.user.id]);
+    const r = await pool.query('SELECT preferences, default_project_id FROM users WHERE id = $1', [req.session.user.id]);
     const stored = r.rows[0]?.preferences || {};
-    res.json({ ...req.session.user, impersonator, preferences: { ...PREF_DEFAULTS, ...stored } });
+    // defaultProjectId = the user's own default, else the org default.
+    const { resolveDefaultProject } = require('../services/defaultProject');
+    const dp = await resolveDefaultProject(r.rows[0]?.default_project_id);
+    res.json({
+      ...req.session.user,
+      defaultProjectId: dp.effective,
+      ownDefaultProjectId: dp.own,
+      orgDefaultProjectId: dp.org,
+      impersonator,
+      preferences: { ...PREF_DEFAULTS, ...stored },
+    });
   } catch {
     res.json({ ...req.session.user, impersonator, preferences: { ...PREF_DEFAULTS } });
   }

@@ -153,7 +153,7 @@ export default function SubmitterDashboard() {
           label="Following (open)"
           value={c.following_open || 0}
           tone="text-indigo-500 dark:text-indigo-400"
-          to="/tickets?preset=following"
+          to="/tickets?preset=following_open"
         />
       </div>
 

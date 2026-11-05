@@ -2404,6 +2404,9 @@ async function initSchema() {
     // pref at apply time) can override admin_only/self_and_admin upward to
     // org-wide visibility for that single comment.
     await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS ai_disclosure_audience TEXT NOT NULL DEFAULT 'self_and_admin' CHECK (ai_disclosure_audience IN ('self_and_admin','admin_only','all_users'))`);
+    // Org-wide default project (e.g. Incident). A user's own
+    // users.default_project_id overrides it; NULL there = use this.
+    await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS default_project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL`);
 
     // Per-rewrite log. Every successful /api/ai/rewrite call writes a
     // row. When the user clicks 'Apply' in the modal, the consuming

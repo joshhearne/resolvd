@@ -1,4 +1,4 @@
-import React, { useEffect, useMemo, useState, useCallback } from "react";
+import React, { useEffect, useMemo, useState, useCallback, useRef } from "react";
 import { Link, useSearchParams } from "react-router-dom";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
@@ -71,7 +71,9 @@ const URL_PRESETS = {
   // matches the dashboard section exactly.
   submitted:      { submittedByMe: true, following: false, mine: false, days: 0, statuses: [], priorities: [], projectIds: [], excludeClosed: false },
   submitted_open: { submittedByMe: true, following: false, mine: false, days: 0, statuses: [], priorities: [], projectIds: [], active: true, excludeClosed: true },
-  following:      { following: true, submittedByMe: false, mine: false, days: 0, statuses: [], priorities: [], projectIds: [], excludeClosed: true },
+  // "following" includes closed tickets, like the dashboard's Following list.
+  following:      { following: true, submittedByMe: false, mine: false, days: 0, statuses: [], priorities: [], projectIds: [], excludeClosed: false },
+  following_open: { following: true, submittedByMe: false, mine: false, days: 0, statuses: [], priorities: [], projectIds: [], active: true, excludeClosed: true },
 };
 
 function DateTimeStack({ value }) {
@@ -271,7 +273,13 @@ export default function TicketList() {
     });
   }
 
+  // Only the most recent request may update the list. Arriving from a
+  // dashboard link fires two fetches (persisted filters, then the
+  // preset); without this the slower, stale one could win and show the
+  // wrong (often empty) set until the next click.
+  const fetchSeq = useRef(0);
   const fetchTickets = useCallback(() => {
+    const seq = ++fetchSeq.current;
     setLoading(true);
     const qs = buildTicketQs(filters, {
       q: q.trim() || null,
@@ -281,11 +289,12 @@ export default function TicketList() {
     api
       .get(`/api/tickets${qs}`)
       .then((data) => {
+        if (seq !== fetchSeq.current) return;
         setTickets(data.tickets || []);
         setTotal(data.total || 0);
         setLoading(false);
       })
-      .catch(() => setLoading(false));
+      .catch(() => { if (seq === fetchSeq.current) setLoading(false); });
   }, [filters, q, page]);
 
   useEffect(() => {
@@ -581,7 +590,9 @@ export default function TicketList() {
               {isSubmitter ? (
                 <>
                   <button
-                    onClick={() => setFilters((f) => ({ ...f, submittedByMe: !f.submittedByMe }))}
+                    onClick={() => setFilters((f) => (f.submittedByMe
+                      ? { ...f, submittedByMe: false }
+                      : { ...f, submittedByMe: true, excludeClosed: false, active: undefined, statuses: [] }))}
                     className={`btn ${
                       filters.submittedByMe
                         ? "bg-brand text-brand-fg hover:bg-brand-bright"
@@ -592,7 +603,9 @@ export default function TicketList() {
                     My submissions
                   </button>
                   <button
-                    onClick={() => setFilters((f) => ({ ...f, following: !f.following }))}
+                    onClick={() => setFilters((f) => (f.following
+                      ? { ...f, following: false }
+                      : { ...f, following: true, excludeClosed: false, active: undefined, statuses: [] }))}
                     className={`btn ${
                       filters.following
                         ? "bg-brand text-brand-fg hover:bg-brand-bright"

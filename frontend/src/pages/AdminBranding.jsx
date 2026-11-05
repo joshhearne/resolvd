@@ -25,7 +25,15 @@ export default function AdminBranding() {
     ai_assist_enabled: branding.ai_assist_enabled ?? true,
     ai_project_context_enabled: branding.ai_project_context_enabled ?? true,
     ai_disclosure_audience: branding.ai_disclosure_audience || 'self_and_admin',
+    default_project_id: branding.default_project_id ?? "",
   });
+  const [projects, setProjects] = useState([]);
+  useEffect(() => {
+    fetch("/api/projects", { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : []))
+      .then((all) => setProjects((all || []).filter((p) => p.status === "active")))
+      .catch(() => setProjects([]));
+  }, []);
   const [saving, setSaving] = useState(false);
   const { dirty, markSaved, savedValue } = useSavedBaseline(form);
   // Baseline = the form as first shown.
@@ -43,7 +51,7 @@ export default function AdminBranding() {
         method: "PATCH",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify(form),
+        body: JSON.stringify({ ...form, default_project_id: form.default_project_id ? Number(form.default_project_id) : null }),
       });
       if (!res.ok) throw new Error("Save failed");
       const data = await res.json();
@@ -585,6 +593,28 @@ export default function AdminBranding() {
               </label>
             </div>
           </div>
+        </div>
+
+        <div className="border-t border-border pt-4">
+          <h2 className="text-sm font-semibold text-fg mb-1">Default project</h2>
+          <p className="text-xs text-fg-muted mb-3">
+            Preselected on New Ticket for everyone who hasn't picked their own
+            default (Account → Preferences). Users who can't access this project
+            fall back to their usual choice.
+          </p>
+          <label className="block max-w-sm">
+            <span className="block text-xs text-fg-muted mb-1">Organization default project</span>
+            <select
+              value={form.default_project_id}
+              onChange={(e) => setForm((f) => ({ ...f, default_project_id: e.target.value }))}
+              className="w-full border border-border-strong rounded-md px-2 py-1.5 text-sm bg-surface"
+            >
+              <option value="">None</option>
+              {projects.map((p) => (
+                <option key={p.id} value={p.id}>{p.prefix ? `${p.prefix} — ${p.name}` : p.name}</option>
+              ))}
+            </select>
+          </label>
         </div>
 
         <div className="border-t border-border pt-4">

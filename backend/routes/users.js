@@ -14,6 +14,7 @@ const {
   CADENCES,
 } = require('../services/notificationPrefs');
 
+const { resolveDefaultProject } = require('../services/defaultProject');
 const router = express.Router();
 
 const MAX_AVATAR_BYTES = 5 * 1024 * 1024;
@@ -160,11 +161,14 @@ router.get('/me/prefs', requireAuth, async (req, res) => {
       ...DEFAULT_NOTIFICATION_PREFS,
       ...(stored.notification_prefs || {}),
     };
+    const dp = await resolveDefaultProject(r.rows[0]?.default_project_id);
     res.json({
       ...PREF_DEFAULTS,
       ...stored,
       notification_prefs: mergedMatrix,
-      default_project_id: r.rows[0]?.default_project_id ?? null,
+      default_project_id: dp.own,
+      org_default_project_id: dp.org,
+      effective_default_project_id: dp.effective,
     });
   } catch (err) {
     console.error('prefs get error:', err);
@@ -264,11 +268,14 @@ router.patch('/me/prefs', requireAuth, async (req, res) => {
       ...DEFAULT_NOTIFICATION_PREFS,
       ...(stored.notification_prefs || {}),
     };
+    const dp = await resolveDefaultProject(r.rows[0]?.default_project_id);
     res.json({
       ...PREF_DEFAULTS,
       ...stored,
       notification_prefs: mergedMatrix,
-      default_project_id: r.rows[0]?.default_project_id ?? null,
+      default_project_id: dp.own,
+      org_default_project_id: dp.org,
+      effective_default_project_id: dp.effective,
     });
   } catch (err) {
     console.error('prefs patch error:', err);
