@@ -72,6 +72,7 @@ export function AuthProvider({ children }) {
       return { pendingMfa: true };
     }
     setUser(data.user);
+    refreshMe();
     setPendingMfa(false);
     return { user: data.user };
   }
@@ -86,6 +87,7 @@ export function AuthProvider({ children }) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     setUser(data.user);
+    refreshMe();
     setMethods((m) => ({ ...m, bootstrap: false }));
     return data.user;
   }
@@ -100,8 +102,18 @@ export function AuthProvider({ children }) {
     const data = await res.json().catch(() => ({}));
     if (!res.ok) throw new Error(data.error || `HTTP ${res.status}`);
     setUser(data.user);
+    refreshMe();
     setPendingMfa(false);
     return data.user;
+  }
+
+  // Re-read /auth/me: it adds derived fields the login responses don't
+  // carry (effective default project, preferences).
+  function refreshMe() {
+    fetch("/auth/me", { credentials: "include" })
+      .then((r) => (r.ok ? r.json() : null))
+      .then((u) => { if (u) setUser(u); })
+      .catch(() => {});
   }
 
   async function updatePrefs(patch) {
@@ -113,9 +125,21 @@ export function AuthProvider({ children }) {
     });
     if (!res.ok) throw new Error("Failed to save preference");
     const merged = await res.json();
-    const { default_project_id, ...prefs } = merged;
+    const {
+      default_project_id,
+      org_default_project_id,
+      effective_default_project_id,
+      ...prefs
+    } = merged;
     setUser((u) =>
-      u ? { ...u, preferences: prefs, defaultProjectId: default_project_id ?? null } : u
+      u ? {
+        ...u,
+        preferences: prefs,
+        // Effective default: own choice, else the org default.
+        defaultProjectId: effective_default_project_id ?? default_project_id ?? null,
+        ownDefaultProjectId: default_project_id ?? null,
+        orgDefaultProjectId: org_default_project_id ?? null,
+      } : u
     );
     return merged;
   }

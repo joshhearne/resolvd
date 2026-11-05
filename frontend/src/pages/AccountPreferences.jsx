@@ -793,6 +793,58 @@ function AiAssistCard() {
   );
 }
 
+// Personal default project. "Organization default" (empty) follows the
+// Admin-set default (Admin → Branding); picking a project overrides it
+// for this user only.
+function DefaultProjectSetting({ user, busy }) {
+  const { setDefaultProject } = useAuth();
+  const [projects, setProjects] = useState([]);
+  const [saving, setSaving] = useState(false);
+  useEffect(() => {
+    api.get("/api/projects")
+      .then((all) => setProjects((all || []).filter((p) => p.status === "active")))
+      .catch(() => setProjects([]));
+  }, []);
+  const org = projects.find((p) => p.id === user?.orgDefaultProjectId);
+  const own = user?.ownDefaultProjectId ?? "";
+  async function change(v) {
+    setSaving(true);
+    try {
+      await setDefaultProject(v ? Number(v) : null);
+      toast.success("Saved");
+    } catch (e) {
+      toast.error(e.message || "Failed");
+    } finally {
+      setSaving(false);
+    }
+  }
+  return (
+    <label className="flex items-start justify-between gap-4 py-3">
+      <div className="flex-1">
+        <div className="text-sm font-medium text-fg">Default project</div>
+        <div className="text-xs text-fg-muted mt-0.5">
+          Preselected when you create a new ticket.{" "}
+          {org
+            ? <>The organization default is <b className="text-fg">{org.name}</b>; pick a project to use your own instead.</>
+            : "Pick a project to preselect it."}
+        </div>
+      </div>
+      <select
+        value={own}
+        onChange={(e) => change(e.target.value)}
+        disabled={busy || saving}
+        aria-label="Default project"
+        className="border border-border-strong rounded-md px-2 py-1 text-sm max-w-[16rem]"
+      >
+        <option value="">{org ? `Organization default (${org.prefix || org.name})` : "None"}</option>
+        {projects.map((p) => (
+          <option key={p.id} value={p.id}>{p.prefix ? `${p.prefix} — ${p.name}` : p.name}</option>
+        ))}
+      </select>
+    </label>
+  );
+}
+
 export default function AccountPreferences() {
   const { user, updatePrefs } = useAuth();
   const { branding } = useBranding();
@@ -852,6 +904,7 @@ export default function AccountPreferences() {
           Tweak how Resolvd behaves day-to-day. Changes save automatically.
         </p>
         <div className="mt-3">
+          <DefaultProjectSetting user={user} busy={busy} />
           <Toggle
             label="New ticket scope follows the active filter"
             hint="When you click + New Ticket from a filtered list that isn't your default project, preselect that project on the form."
