@@ -2874,6 +2874,16 @@ async function initSchema() {
       )
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_status_page_subs_user ON status_page_subscriptions(user_id)`);
+    // Optional project restriction: when a page has rows here, only
+    // members of at least one of these projects see it (Admin / Manager
+    // always do). See services/statusPageAccess.js.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS status_page_projects (
+        page_id INTEGER NOT NULL REFERENCES status_pages(id) ON DELETE CASCADE,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        PRIMARY KEY (page_id, project_id)
+      )
+    `);
     // Notifier cursor over alert_item_state_changes (single row). NULL
     // last_change_id = not started; first tick jumps to the current max
     // so history is never emailed.

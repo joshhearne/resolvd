@@ -21,12 +21,34 @@ const router = express.Router();
 router.use(requireAuth);
 
 const CURATORS = ['Admin', 'Manager'];
-const STAFF = ['Admin', 'Manager', 'Tech'];
 const HISTORY_DAYS = 14;
 const BUCKET_HOURS = 6; // 14 days → 56 pips per bar
 
-const isStaff = (user) => STAFF.includes(user?.role);
-const canViewPage = (user, page) => page.is_public || isStaff(user);
+const access = require('../services/statusPageAccess');
+
+// Replace a page's project restriction. ids: int[] (empty = no limit).
+async function setPageProjects(client, pageId, ids) {
+  const clean = [...new Set((ids || []).map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+  await client.query(`DELETE FROM status_page_projects WHERE page_id = $1`, [pageId]);
+  if (clean.length) {
+    await client.query(
+      `INSERT INTO status_page_projects (page_id, project_id)
+       SELECT $1, p.id FROM projects p WHERE p.id = ANY($2::int[])`,
+      [pageId, clean]
+    );
+  }
+}
+
+// Page row + project_ids/projects for the response.
+async function withProjects(page) {
+  const r = await pool.query(
+    `SELECT p.id, p.name, p.prefix FROM status_page_projects spp
+       JOIN projects p ON p.id = spp.project_id
+      WHERE spp.page_id = $1 ORDER BY p.name`,
+    [page.id]
+  );
+  return { ...page, project_ids: r.rows.map((x) => x.id), projects: r.rows };
+}
 const UPCOMING_DAYS = 30;
 
 function slugify(s) {
@@ -221,15 +243,17 @@ async function buildTimelines(items, incidents) {
 // GET /api/status-pages — pages with a down/maintenance summary.
 router.get('/', async (req, res) => {
   try {
-    const r = await pool.query(
+    const all = await pool.query(
       `SELECT p.id, p.name, p.slug, p.description, p.sort_order, p.is_public,
-              (s.id IS NOT NULL) AS subscribed
+              (s.id IS NOT NULL) AS subscribed,
+              COALESCE(ARRAY(SELECT project_id FROM status_page_projects WHERE page_id = p.id ORDER BY project_id), '{}') AS project_ids
          FROM status_pages p
          LEFT JOIN status_page_subscriptions s ON s.page_id = p.id AND s.user_id = $1
-        WHERE p.is_public OR $2::boolean
         ORDER BY p.sort_order ASC, p.name ASC`,
-      [req.session.user.id, isStaff(req.session.user)]
+      [req.session.user.id]
     );
+    const viewer = await access.viewerFor(req.session.user);
+    const r = { rows: all.rows.filter((p) => access.canViewPage(viewer, p)) };
     const items = await loadPageItems(r.rows.map((p) => p.id));
     for (const page of r.rows) {
       const mine = items.filter((i) => i.page_id === page.id);
@@ -268,9 +292,9 @@ router.get('/_meta/items', requireRole('Admin', 'Manager', 'Tech'), async (_req,
 router.get('/:slug', async (req, res) => {
   try {
     const p = await pool.query(`SELECT * FROM status_pages WHERE slug = $1`, [req.params.slug]);
-    const page = p.rows[0];
-    // Private pages 404 (not 403) for non-staff so they can't be probed.
-    if (!page || !canViewPage(req.session.user, page)) {
+    const page = p.rows[0] ? await withProjects(p.rows[0]) : null;
+    // Pages the viewer can't see 404 (not 403) so they can't be probed.
+    if (!page || !access.canViewPage(await access.viewerFor(req.session.user), page)) {
       return res.status(404).json({ error: 'Status page not found' });
     }
 
@@ -371,9 +395,10 @@ router.post('/', requireRole(...CURATORS), async (req, res) => {
           body.is_public !== false,
         ]
       );
+      if (Array.isArray(body.project_ids)) await setPageProjects(client, r.rows[0].id, body.project_ids);
       return r.rows[0];
     });
-    res.status(201).json(row);
+    res.status(201).json(await withProjects(row));
   } catch (e) {
     console.error('status page create:', e);
     res.status(500).json({ error: 'Database error' });
@@ -411,10 +436,11 @@ router.patch('/:id', requireRole(...CURATORS), async (req, res) => {
         `UPDATE status_pages SET ${sets.join(', ')} WHERE id = $${p} RETURNING *`,
         vals
       );
+      if (r.rows[0] && Array.isArray(body.project_ids)) await setPageProjects(client, id, body.project_ids);
       return r.rows[0];
     });
     if (!row) return res.status(404).json({ error: 'Status page not found' });
-    res.json(row);
+    res.json(await withProjects(row));
   } catch (e) {
     console.error('status page patch:', e);
     res.status(500).json({ error: 'Database error' });
@@ -477,7 +503,8 @@ router.put('/:id/subscription', async (req, res) => {
   try {
     const id = Number(req.params.id);
     const p = await pool.query(`SELECT id, is_public FROM status_pages WHERE id = $1`, [id]);
-    if (!p.rows[0] || !canViewPage(req.session.user, p.rows[0])) {
+    const pg = p.rows[0] ? await withProjects(p.rows[0]) : null;
+    if (!pg || !access.canViewPage(await access.viewerFor(req.session.user), pg)) {
       return res.status(404).json({ error: 'Status page not found' });
     }
     const body = req.body || {};

@@ -17,10 +17,10 @@
 const { pool } = require('../db/pool');
 const { sendMail, baseHtml } = require('./email');
 const { rollupServiceState } = require('./monitoredItems');
+const access = require('./statusPageAccess');
 
 const TICK_MS = 60 * 1000;
 const BATCH = 1000;
-const STAFF = new Set(['Admin', 'Manager', 'Tech']);
 const APP_URL = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
 
 const esc = (s) => String(s ?? '').replace(/[&<>"']/g, (c) => (
@@ -58,7 +58,8 @@ function summarizeItem(transitions) {
 
 async function loadSubscribers(pageIds, flag) {
   const r = await pool.query(
-    `SELECT s.page_id, u.id AS user_id, u.email, u.display_name, u.role
+    `SELECT s.page_id, u.id AS user_id, u.email, u.display_name, u.role,
+            COALESCE(ARRAY(SELECT project_id FROM project_members WHERE user_id = u.id), '{}') AS member_project_ids
        FROM status_page_subscriptions s
        JOIN users u ON u.id = s.user_id
       WHERE s.page_id = ANY($1::int[]) AND s.${flag} = TRUE
@@ -69,7 +70,8 @@ async function loadSubscribers(pageIds, flag) {
 }
 
 function canSee(page, sub) {
-  return page.is_public || STAFF.has(sub.role);
+  // Same rule as the page itself (staff-only + project restriction).
+  return access.canViewPage({ role: sub.role, memberProjectIds: sub.member_project_ids }, page);
 }
 
 async function sendToSubscribers(page, subs, subject, bodyHtml) {
@@ -222,6 +224,8 @@ async function tickOnce() {
     });
   }
   if (!pages.size) return { events: 0, emails: 0 };
+  const limits = await access.pageProjectIds([...pages.keys()]);
+  for (const [pid, entry] of pages) entry.page.project_ids = limits.get(pid) || [];
 
   const subs = await loadSubscribers([...pages.keys()], 'notify_state');
   let emails = 0;
@@ -245,6 +249,7 @@ async function notifyPageChanged(pageId, addedItemIds) {
   const p = await pool.query(`SELECT id, name, slug, is_public FROM status_pages WHERE id = $1`, [pageId]);
   const page = p.rows[0];
   if (!page) return { emails: 0 };
+  page.project_ids = (await access.pageProjectIds([page.id])).get(page.id) || [];
   const items = await pool.query(
     `SELECT COALESCE(spi.display_name, i.label) AS name, spi.section
        FROM status_page_items spi JOIN alert_monitored_items i ON i.id = spi.item_id
