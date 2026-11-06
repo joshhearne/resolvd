@@ -404,7 +404,7 @@ function SectionTicketDetail({ role }) {
       <div className="space-y-0">
         <Feature name="Follow / unfollow ticket" roles={["Admin","Manager","Submitter"]} note="Followers receive email on new comments." />
         <Feature name="Manage followers (add/remove others)" roles={PRIV} />
-        <Feature name="CC followers when creating a ticket" roles="all" note="The New Ticket form has a CC / Followers picker. CC'd users are added as followers and get a direct notice (uses the Mention notification channel). When the project restricts followers to members, only project members (and Admins) can be picked; Admin filers can CC anyone." />
+        <Feature name="CC followers when creating a ticket" roles="all" note="The New Ticket form has a CC / Followers picker. CC'd users are added as followers and get an 'Added as a follower' notification (its own row in the notifications matrix; also fires when an agent adds a follower from the ticket page). When the project restricts followers to members, only project members (and Admins) can be picked; Admin filers can CC anyone." />
         <Feature name="Move ticket to another project" roles={["Admin","Manager","Submitter"]} note="Re-issues a new ref from the target project." />
         <Feature name="Merge ticket into another" roles={PRIV} note="Reassigns all comments and history then closes this ticket." />
         <Feature name="Delete ticket" roles={["Admin"]} />
@@ -513,7 +513,7 @@ function SectionNotifications({ role }) {
         : <PartialAccess note="You will receive in-app notifications if mentioned, but cannot post comments that would generate them for others." />
       }
       <p className="text-sm text-fg leading-relaxed">
-        Notifications fan out across three channels — in-app (the bell tray), email, and browser push — for six event types: assignment, mention, comment, status change, pending review, follow-up reminder. A 6×3 matrix in <strong>Account → Preferences → Notifications</strong> lets you toggle each channel per event independently.
+        Notifications fan out across three channels — in-app (the bell tray), email, and browser push — for each event type: new ticket, assignment, mention, comment, status change, pending review, follow-up reminder, and added as a follower. A matrix in <strong>Account → Preferences → Notifications</strong> lets you toggle each channel per event independently.
       </p>
       <HelpScreenshot src="/help/notifications-matrix.png?v=2" alt="Account → Preferences → Notifications — 6 event rows × 3 channel columns (in-app, email, push). Pending review and follow-up rows are greyed (always on)." />
       <p className="text-sm text-fg leading-relaxed">
@@ -541,7 +541,7 @@ function SectionNotifications({ role }) {
         <Feature name="Daily digest delivery hour" roles="all" note="Pick the 24-hour local hour the daily digest fires (defaults to 09:00). Honors your timezone override if set." />
       </div>
       <div className="space-y-0">
-        <Feature name="6×3 channel matrix" roles="all" note="Per-event toggles for in-app / email / push. Account → Preferences → Notifications." />
+        <Feature name="Per-event channel matrix" roles="all" note="Per-event toggles for in-app / email / push. Account → Preferences → Notifications." />
         <Feature name="Email digest cadence" roles="all" note="Instant / hourly / 12h / daily / off. Pending review + follow-up bypass." />
         <Feature name="In-app tray with all 6 event types" roles="all" note="Bell icon. Mention rows scroll-and-flash to the specific comment. (v0.10.0) Mention emails deep-link to the response too." />
         <Feature name="New-ticket fanout to Admins / Managers" roles={PRIV} note="(v0.10.0) Every create path — form, inbound email, alert promotion — notifies active Admins and Managers. In-app on, email off by default." />

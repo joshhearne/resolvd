@@ -10,7 +10,7 @@ const {
   fanoutNewComment,
   fanoutMention,
   fanoutNewTicket,
-  fanoutCcFollowers,
+  fanoutFollowerAdded,
 } = require('../services/notificationFanout');
 const { getRestrictionDefaults, effectiveFlag } = require('../services/restrictions');
 const { resolveMentions } = require('../services/mentions');
@@ -698,12 +698,13 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter
       excludeUserIds: ccNotify,
     }).catch(err => console.error('fanoutNewTicket (create) failed:', err.message));
     if (ccNotify.length) {
-      fanoutCcFollowers(pool, {
+      fanoutFollowerAdded(pool, {
         ticket,
         userIds: ccNotify,
         actorId: user.id,
         actorName: user.displayName,
-      }).catch(err => console.error('fanoutCcFollowers (create) failed:', err.message));
+        atCreate: true,
+      }).catch(err => console.error('fanoutFollowerAdded (create) failed:', err.message));
     }
   } catch (err) {
     console.error(err);
