@@ -284,6 +284,7 @@ const NOTIFICATION_EVENTS = [
   { key: "status_change", label: "Status changes", hint: "Internal status changes on a ticket I follow." },
   { key: "pending_review", label: "Pending review", hint: "Ticket flagged for admin review.", locked: true },
   { key: "follow_up", label: "Follow-up reminder", hint: "Scheduled follow-up I set.", locked: true },
+  { key: "follower_added", label: "Added as a follower", hint: "Someone CCs me on a new ticket or adds me as a follower." },
 ];
 
 const DEFAULT_MATRIX = {
@@ -294,6 +295,7 @@ const DEFAULT_MATRIX = {
   status_change: { in_app: true, email: true, push: false },
   pending_review: { in_app: true, email: true, push: false },
   follow_up: { in_app: true, email: true, push: false },
+  follower_added: { in_app: true, email: true, push: false },
 };
 
 function NotificationMatrix({ value, onChange, disabled, pushAvailable }) {
@@ -301,7 +303,9 @@ function NotificationMatrix({ value, onChange, disabled, pushAvailable }) {
   function setCell(eventKey, channel, v) {
     onChange({
       ...matrix,
-      [eventKey]: { ...matrix[eventKey], [channel]: v },
+      // Seed from defaults so toggling one channel on a row the user has
+      // never saved (e.g. a newly added event type) keeps the others.
+      [eventKey]: { ...(matrix[eventKey] || DEFAULT_MATRIX[eventKey]), [channel]: v },
     });
   }
   return (
