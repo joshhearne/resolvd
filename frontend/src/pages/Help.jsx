@@ -404,6 +404,7 @@ function SectionTicketDetail({ role }) {
       <div className="space-y-0">
         <Feature name="Follow / unfollow ticket" roles={["Admin","Manager","Submitter"]} note="Followers receive email on new comments." />
         <Feature name="Manage followers (add/remove others)" roles={PRIV} />
+        <Feature name="CC followers when creating a ticket" roles="all" note="The New Ticket form has a CC / Followers picker. CC'd users are added as followers and get a direct notice (uses the Mention notification channel). When the project restricts followers to members, only project members (and Admins) can be picked; Admin filers can CC anyone." />
         <Feature name="Move ticket to another project" roles={["Admin","Manager","Submitter"]} note="Re-issues a new ref from the target project." />
         <Feature name="Merge ticket into another" roles={PRIV} note="Reassigns all comments and history then closes this ticket." />
         <Feature name="Delete ticket" roles={["Admin"]} />
