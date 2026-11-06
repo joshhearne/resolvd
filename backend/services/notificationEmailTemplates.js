@@ -89,7 +89,18 @@ const RENDERERS = {
   },
 
   mention(payload) {
-    const { ticket_id, ticket_ref, ticket_title, actor_name, comment_id } = payload;
+    const { ticket_id, ticket_ref, ticket_title, actor_name, comment_id, cc } = payload;
+    // CC at create time rides the mention channel (direct attention) but
+    // has no comment to link to.
+    if (cc) {
+      const subject = `[${ticket_ref}] You were CC'd on a new ticket`;
+      const body = `
+      <p style="color:#374151;font-size:14px;margin:0 0 12px">
+        <strong>${esc(actor_name || 'Someone')}</strong> added you as a follower on <strong>${esc(ticket_ref)}</strong>${ticket_title ? ` — ${esc(ticket_title)}` : ''}.
+      </p>
+      ${viewButton(ticketUrl(ticket_id))}`;
+      return { subject, body };
+    }
     const subject = `[${ticket_ref}] You were mentioned`;
     const body = `
       <p style="color:#374151;font-size:14px;margin:0 0 12px">
@@ -179,7 +190,9 @@ function eventLineLabel(eventType, payload) {
       return `${esc(payload.actor_name || 'Someone')} commented: ${esc(trimmed)}`;
     }
     case 'mention':
-      return `${esc(payload.actor_name || 'Someone')} mentioned you`;
+      return payload.cc
+        ? `${esc(payload.actor_name || 'Someone')} CC'd you`
+        : `${esc(payload.actor_name || 'Someone')} mentioned you`;
     default:
       return esc(eventType);
   }

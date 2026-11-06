@@ -235,10 +235,10 @@ async function dispatchPerRecipient({ user, eventType, inApp, push, ticketId, ti
 // submitter (they obviously know they filed it). Default matrix has
 // email off so the firehose doesn't spam, but in_app shows up in the
 // tray for opted-in users.
-async function fanoutNewTicket(_unusedPool, { ticket, actorId, actorName, submitterId }) {
+async function fanoutNewTicket(_unusedPool, { ticket, actorId, actorName, submitterId, excludeUserIds = [] }) {
   if (!ticket || !ticket.id) return;
   if (await isTicketTerminal(ticket.id)) return;
-  const excludes = [actorId, ticket.assigned_to, submitterId].filter(x => x != null);
+  const excludes = [actorId, ticket.assigned_to, submitterId, ...excludeUserIds].filter(x => x != null);
   const r = await pool.query(
     `SELECT id, email, display_name, preferences FROM users
       WHERE role IN ('Admin','Manager') AND status = 'active'
@@ -462,6 +462,48 @@ async function fanoutMention(_unusedPool, { ticket, comment, commentId, mentione
   }
 }
 
+// CC-on-create fanout. The submitter picked these users as followers
+// while filing; tell them directly. Rides the 'mention' event type since
+// it's the same "someone pointed this at you" signal — no new prefs row.
+async function fanoutCcFollowers(_unusedPool, { ticket, userIds, actorId, actorName }) {
+  if (!ticket || !ticket.id || !Array.isArray(userIds) || !userIds.length) return;
+  if (await isTicketTerminal(ticket.id)) return;
+  const ticketRef = ticket.internal_ref;
+  const ticketTitle = ticket.title || '';
+  const seen = new Set();
+  for (const uid of userIds) {
+    if (!uid || uid === actorId || seen.has(uid)) continue;
+    seen.add(uid);
+    const user = await getUserById(uid);
+    if (!user) continue;
+    const payload = {
+      ticket_id: ticket.id,
+      ticket_ref: ticketRef,
+      ticket_title: ticketTitle,
+      actor_name: actorName || 'Someone',
+      cc: true,
+    };
+    const msg = `${actorName || 'Someone'} added you as a follower${ticketTitle ? `: ${ticketTitle}` : '.'}`;
+    const matrix = await dispatchPerRecipient({
+      user,
+      eventType: 'mention',
+      ticketId: ticket.id,
+      ticketRef,
+      inApp: { title: `CC'd on ${ticketRef}`, body: msg },
+      push: {
+        title: `CC'd on ${ticketRef}`,
+        body: msg,
+        url: `/tickets/${ticket.id}`,
+        tag: `cc-${ticket.id}`,
+      },
+      payload,
+    });
+    if (matrix.email) {
+      await routeEmail({ user, eventType: 'mention', payload, ticketId: ticket.id, projectId: ticket.project_id });
+    }
+  }
+}
+
 async function fanoutPendingReview(_unusedPool, { ticket, actorId }) {
   if (await isTicketTerminal(ticket.id)) return;
   // Recipients = all active Admins minus the actor.
@@ -666,6 +708,7 @@ module.exports = {
   fanoutStatusChange,
   fanoutNewComment,
   fanoutMention,
+  fanoutCcFollowers,
   fanoutPendingReview,
   fanoutFollowUp,
   fanoutSlaBreach,
