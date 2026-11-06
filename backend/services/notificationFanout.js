@@ -462,10 +462,10 @@ async function fanoutMention(_unusedPool, { ticket, comment, commentId, mentione
   }
 }
 
-// CC-on-create fanout. The submitter picked these users as followers
-// while filing; tell them directly. Rides the 'mention' event type since
-// it's the same "someone pointed this at you" signal — no new prefs row.
-async function fanoutCcFollowers(_unusedPool, { ticket, userIds, actorId, actorName }) {
+// Follower-added fanout. Fires when someone other than the user adds
+// them as a follower: CC'd at create time (atCreate) or added later from
+// the ticket's follower manager. Self-follows never notify.
+async function fanoutFollowerAdded(_unusedPool, { ticket, userIds, actorId, actorName, atCreate = false }) {
   if (!ticket || !ticket.id || !Array.isArray(userIds) || !userIds.length) return;
   if (await isTicketTerminal(ticket.id)) return;
   const ticketRef = ticket.internal_ref;
@@ -481,25 +481,26 @@ async function fanoutCcFollowers(_unusedPool, { ticket, userIds, actorId, actorN
       ticket_ref: ticketRef,
       ticket_title: ticketTitle,
       actor_name: actorName || 'Someone',
-      cc: true,
+      at_create: !!atCreate,
     };
+    const title = atCreate ? `CC'd on ${ticketRef}` : `Following ${ticketRef}`;
     const msg = `${actorName || 'Someone'} added you as a follower${ticketTitle ? `: ${ticketTitle}` : '.'}`;
     const matrix = await dispatchPerRecipient({
       user,
-      eventType: 'mention',
+      eventType: 'follower_added',
       ticketId: ticket.id,
       ticketRef,
-      inApp: { title: `CC'd on ${ticketRef}`, body: msg },
+      inApp: { title, body: msg },
       push: {
-        title: `CC'd on ${ticketRef}`,
+        title,
         body: msg,
         url: `/tickets/${ticket.id}`,
-        tag: `cc-${ticket.id}`,
+        tag: `follower-${ticket.id}`,
       },
       payload,
     });
     if (matrix.email) {
-      await routeEmail({ user, eventType: 'mention', payload, ticketId: ticket.id, projectId: ticket.project_id });
+      await routeEmail({ user, eventType: 'follower_added', payload, ticketId: ticket.id, projectId: ticket.project_id });
     }
   }
 }
@@ -708,7 +709,7 @@ module.exports = {
   fanoutStatusChange,
   fanoutNewComment,
   fanoutMention,
-  fanoutCcFollowers,
+  fanoutFollowerAdded,
   fanoutPendingReview,
   fanoutFollowUp,
   fanoutSlaBreach,
