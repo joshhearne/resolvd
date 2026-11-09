@@ -4,9 +4,7 @@ import { api } from "../utils/api";
 // Typeahead + chip list for CC'ing users onto a ticket at creation time.
 // Searches /api/users/search with purpose=followers so the results honour
 // the project's restrict_followers_to_members flag (the server re-checks
-// on create). `value` is an array of { id, display_name, email, tag? } —
-// `tag` (e.g. "you", "submitter") marks an automatic follower; it renders
-// as a removable chip like any other.
+// on create). `value` is an array of { id, display_name, email }.
 export default function FollowerPicker({ projectId, value, onChange, excludeIds = [] }) {
   const [query, setQuery] = useState("");
   const [results, setResults] = useState([]);
@@ -83,7 +81,6 @@ export default function FollowerPicker({ projectId, value, onChange, excludeIds 
             className="inline-flex items-center gap-1 rounded-full bg-surface-2 border border-border px-2 py-0.5 text-xs text-fg"
           >
             {u.display_name || u.email}
-            {u.tag && <span className="text-fg-dim">({u.tag})</span>}
             <button
               type="button"
               onClick={(e) => { e.stopPropagation(); remove(u.id); }}
