@@ -292,6 +292,35 @@ async function rest(path, { method = 'GET', body, settings, headers } = {}) {
   return json;
 }
 
+// The document an article was imported from (e.g. the PDF), through the
+// API with the key — GET /api/v1/kb/articles/:id/original. Not every Trove KB
+// version has that route; a 404 / 405 means "not available here" and the
+// caller can fall back to the public /pub/.../original address.
+// Returns a Buffer, or throws httpError with a reason worth showing.
+async function fetchOriginal(articleId, { maxBytes = 80 * 1024 * 1024, timeoutMs = 25000 } = {}) {
+  const cfg = await getSettings({ withKey: true });
+  if (!cfg.enabled || !cfg.base_url || !cfg._apiKey) throw httpError(503, 'Trove KB is not configured');
+  const id = String(articleId || '').toLowerCase();
+  if (!/^[0-9a-f-]{36}$/.test(id)) throw httpError(404, 'Article not found');
+  let res;
+  try {
+    res = await fetch(`${cfg.base_url}/api/v1/kb/articles/${id}/original`, {
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: { Authorization: `Bearer ${cfg._apiKey}`, 'User-Agent': 'Resolvd-TroveKb/2', Accept: 'application/pdf, */*' },
+    });
+  } catch (err) {
+    throw httpError(502, err.name === 'TimeoutError' ? 'Trove KB did not answer in time' : `Could not reach Trove KB: ${err.message}`);
+  }
+  if (res.status === 404 || res.status === 405) throw httpError(404, "Trove KB's API has no original-file route for this article (needs a Trove KB update, or the article has no original)");
+  if (res.status === 401 || res.status === 403) throw httpError(502, 'Trove KB refused the API key for the original file');
+  if (!res.ok) throw httpError(502, `Trove KB answered HTTP ${res.status} for the original file`);
+  const len = Number(res.headers.get('content-length') || 0);
+  if (len > maxBytes) throw httpError(413, 'The original file is too large');
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length > maxBytes) throw httpError(413, 'The original file is too large');
+  return buf;
+}
+
 // Ids of every collection the key can read, cached briefly, so a search
 // over "all mapped collections" can be one unfiltered call instead of a
 // fan-out when the mapping covers everything the key sees.
@@ -809,6 +838,7 @@ async function testConnection() {
 
 module.exports = {
   pdfUrlFor,
+  fetchOriginal,
   getSettings,
   patchSettings,
   setApiKey,

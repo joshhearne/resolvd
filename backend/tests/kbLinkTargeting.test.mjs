@@ -81,3 +81,28 @@ describe('targetLinks', () => {
     await expect(targetLinks({ user: { id: 1 }, text: 'no links here' })).rejects.toThrow(/No KB links/);
   });
 });
+
+describe('fetchTrovePdf', () => {
+  const { fetchTrovePdf } = require('../services/kbLinkTargeting');
+  const pdf = Buffer.from('%PDF-1.4 fake');
+  beforeEach(() => { vi.restoreAllMocks(); });
+
+  it('uses the authenticated API route first', async () => {
+    vi.spyOn(troveKb, 'fetchOriginal').mockResolvedValue(pdf);
+    const f = vi.spyOn(globalThis, 'fetch');
+    expect(await fetchTrovePdf(ID, BASE)).toBe(pdf);
+    expect(f).not.toHaveBeenCalled();
+  });
+
+  it('falls back to the public address', async () => {
+    vi.spyOn(troveKb, 'fetchOriginal').mockRejectedValue(new Error('no route'));
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response(pdf, { status: 200 }));
+    expect((await fetchTrovePdf(ID, BASE)).toString()).toBe(pdf.toString());
+  });
+
+  it('explains a Cloudflare Access sign-in page', async () => {
+    vi.spyOn(troveKb, 'fetchOriginal').mockRejectedValue(new Error("Trove KB's API has no original-file route"));
+    vi.spyOn(globalThis, 'fetch').mockResolvedValue(new Response('<!doctype html><html>Sign in</html>', { status: 200 }));
+    await expect(fetchTrovePdf(ID, BASE)).rejects.toThrow(/no original-file route.*web page \(likely a sign-in\)/);
+  });
+});
