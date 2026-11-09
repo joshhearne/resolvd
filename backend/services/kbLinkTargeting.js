@@ -39,15 +39,39 @@ function terms(text) {
   return out;
 }
 
-async function fetchPdf(url) {
+// The public /pub/.../original address. Often unusable server-side: a public
+// site behind Cloudflare Access (or any SSO gate) answers with a sign-in page.
+async function fetchPublicPdf(url) {
   const r = await fetch(url, { signal: AbortSignal.timeout(25000), redirect: 'follow' });
-  if (!r.ok) throw new Error(`HTTP ${r.status}`);
+  const signIn = /cloudflareaccess\.com|\/cdn-cgi\/access\//i.test(r.url || '') || r.status === 401 || r.status === 403;
+  if (signIn) throw new Error('the public site asks for a sign-in (e.g. Cloudflare Access)');
+  if (!r.ok) throw new Error(`the public site answered HTTP ${r.status}`);
   const len = Number(r.headers.get('content-length') || 0);
   if (len > MAX_PDF_BYTES) throw new Error('PDF too large');
   const buf = Buffer.from(await r.arrayBuffer());
   if (buf.length > MAX_PDF_BYTES) throw new Error('PDF too large');
-  if (!kbPdf.isPdf(buf)) throw new Error('not a PDF');
+  if (!kbPdf.isPdf(buf)) {
+    const html = /^\s*</.test(buf.slice(0, 64).toString('utf8'));
+    throw new Error(html ? 'the public site returned a web page (likely a sign-in) instead of the PDF' : 'the public address did not return a PDF');
+  }
   return buf;
+}
+
+// Trove KB PDF bytes: the authenticated API route first, then the public
+// address. Throws with both reasons when neither works.
+async function fetchTrovePdf(articleId, publicUrl) {
+  const reasons = [];
+  try {
+    const buf = await troveKb.fetchOriginal(articleId, { maxBytes: MAX_PDF_BYTES });
+    if (kbPdf.isPdf(buf)) return buf;
+    reasons.push("Trove KB's API returned a file that isn't a PDF");
+  } catch (err) {
+    reasons.push(err.message);
+  }
+  if (publicUrl) {
+    try { return await fetchPublicPdf(publicUrl); } catch (err) { reasons.push(err.message); }
+  }
+  throw new Error(reasons.join('; '));
 }
 
 // Load the text of one linked document. Returns
@@ -58,7 +82,7 @@ async function loadDocument(link, { user, loadLocalArticle }) {
     if (link.pdf) {
       const pdfUrl = art.pdf_url || link.base;
       try {
-        const pages = await pdfText.cachedPages(`trove:${art.article_id}:${art.date_modified || ''}`, () => fetchPdf(pdfUrl));
+        const pages = await pdfText.cachedPages(`trove:${art.article_id}:${art.date_modified || ''}`, () => fetchTrovePdf(art.article_id, pdfUrl));
         return { title: art.title, pages, body: '' };
       } catch (err) {
         // Fall back to Trove's extracted body: phrases still verifiable,
@@ -288,4 +312,4 @@ async function targetLinks({ user, ticket, text, targets, stepped = true, instru
   };
 }
 
-module.exports = { targetLinks, resolveToken, excerpt, buildPrompt, TOKEN_RE };
+module.exports = { targetLinks, resolveToken, excerpt, buildPrompt, fetchTrovePdf, TOKEN_RE };
