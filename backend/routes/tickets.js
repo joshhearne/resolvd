@@ -368,7 +368,7 @@ router.get('/', requireAuth, async (req, res) => {
 router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter'), async (req, res) => {
   try {
     const user = req.session.user;
-    const { project_id, title, description, impact = 2, urgency = 2, external_ticket_ref, assigned_to, contact_ids, submitted_by, form_id, custom_fields, follower_ids } = req.body;
+    const { project_id, title, description, impact = 2, urgency = 2, external_ticket_ref, assigned_to, contact_ids, submitted_by, form_id, custom_fields, follower_ids, exclude_follower_ids } = req.body;
 
     if (!project_id) return res.status(400).json({ error: 'project_id required' });
     if (!title) return res.status(400).json({ error: 'Title required' });
@@ -485,6 +485,15 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter
       }
     }
 
+    // Opt-outs from the automatic follows (the filer, and the submitter when
+    // filing on behalf), removed as chips on the new-ticket form. Only those
+    // two ids are honoured; anything else is ignored.
+    const skipAutoFollow = new Set(
+      (Array.isArray(exclude_follower_ids) ? exclude_follower_ids : [])
+        .map(Number)
+        .filter((n) => n === user.id || n === effectiveSubmitterId)
+    );
+
     const ticket = await transaction(async (client) => {
       const internalRef = await nextInternalRef(client, Number(project_id));
 
@@ -598,11 +607,14 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter
       }
       // Auto-follow: submitter watches their own ticket. Also follow the
       // creator when filing on behalf, so they see comments roll in.
-      await client.query(
-        'INSERT INTO ticket_followers (ticket_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
-        [t.id, effectiveSubmitterId]
-      );
-      if (effectiveSubmitterId !== user.id) {
+      // Either can be opted out of via exclude_follower_ids.
+      if (!skipAutoFollow.has(effectiveSubmitterId)) {
+        await client.query(
+          'INSERT INTO ticket_followers (ticket_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
+          [t.id, effectiveSubmitterId]
+        );
+      }
+      if (effectiveSubmitterId !== user.id && !skipAutoFollow.has(user.id)) {
         await client.query(
           'INSERT INTO ticket_followers (ticket_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
           [t.id, user.id]
@@ -802,9 +814,12 @@ router.get('/:id', requireAuth, async (req, res) => {
         asgn.display_name as assigned_to_name,
         bt.internal_ref as blocking_ticket_ref, bt.title as blocking_ticket_title, bt.title_enc as blocking_ticket_title_enc, bt.internal_status as blocking_ticket_status,
         ast.hostname as asset_hostname, ast.serial as asset_serial,
-        loc.name as location_name
+        loc.name as location_name,
+        tf.name as form_name, tfc.name as form_category_name
       FROM tickets t
       LEFT JOIN projects proj ON t.project_id = proj.id
+      LEFT JOIN ticket_forms tf ON tf.id = t.form_id
+      LEFT JOIN ticket_categories tfc ON tfc.id = tf.category_id
       LEFT JOIN users sub ON t.submitted_by = sub.id
       LEFT JOIN users asgn ON t.assigned_to = asgn.id
       LEFT JOIN tickets bt ON t.blocked_by_ticket = bt.id
@@ -1767,6 +1782,195 @@ router.post('/bulk/comment', requireAuth, requireRole('Admin', 'Manager', 'Tech'
   }
 });
 
+// Re-home a ticket into another project inside an open transaction:
+// re-issue internal_ref from the target's counter, detach project-scoped
+// vendor contacts, audit. Callers add their own system comment. Shared by
+// POST /:id/move and POST /:id/apply-form.
+async function moveTicketToProject(client, { ticket, target, userId }) {
+  const newRef = await nextInternalRef(client, target.id);
+  await client.query(
+    `UPDATE tickets SET project_id = $1, internal_ref = $2, updated_at = NOW() WHERE id = $3`,
+    [target.id, newRef, ticket.id]
+  );
+  // Vendor contacts are project-scoped — drop them on move.
+  const detached = await client.query(
+    `DELETE FROM ticket_contacts WHERE ticket_id = $1 RETURNING contact_id`,
+    [ticket.id]
+  );
+  await auditLog(client, {
+    ticketId: ticket.id, userId,
+    action: 'ticket_moved',
+    oldValue: `${ticket.internal_ref} (project ${ticket.project_id})`,
+    newValue: `${newRef} (project ${target.id})`,
+    note: `Moved to ${target.name}; ${detached.rowCount} contact(s) detached`,
+  });
+  return { newRef, detachedCount: detached.rowCount };
+}
+
+// Quote multi-line text as a markdown blockquote for system notes.
+function mdQuote(text) {
+  return String(text).split(/\r?\n/).map((l) => `> ${l}`).join('\n');
+}
+
+// POST /api/tickets/:id/apply-form — convert an existing ticket (typically
+// one filed without a form) into a request type. Handlers only.
+// Body: { form_id, custom_fields?: [{def_id, value}] }
+//  - If the form belongs to another project, the ticket moves there first
+//    (new ref, vendor contacts detached — same as /move).
+//  - tickets.form_id is set; supplied values are written via the same path
+//    as PATCH /:id/custom-fields. Required fields are NOT enforced here —
+//    the agent may fill them later; the response lists what's still missing.
+//  - The submitter's title/description are never overwritten. The form's
+//    default title/description (template text) are posted in a system note
+//    alongside a summary of what changed.
+//  - Existing custom-field values are kept; fields shared with the new form
+//    carry over.
+router.post('/:id/apply-form', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+  try {
+    const user = req.session.user;
+    const ticketId = Number(req.params.id);
+    const formId = Number(req.body?.form_id);
+    if (!Number.isInteger(formId) || formId <= 0) return res.status(400).json({ error: 'form_id required' });
+    const items = req.body?.custom_fields;
+    if (items !== undefined && !Array.isArray(items)) {
+      return res.status(400).json({ error: 'custom_fields must be an array of {def_id, value}' });
+    }
+
+    const tk = await pool.query(
+      `SELECT t.id, t.project_id, t.internal_ref, t.form_id,
+              p.name AS project_name,
+              oldf.name AS old_form_name, oldc.name AS old_category_name
+         FROM tickets t
+         JOIN projects p ON p.id = t.project_id
+         LEFT JOIN ticket_forms oldf ON oldf.id = t.form_id
+         LEFT JOIN ticket_categories oldc ON oldc.id = oldf.category_id
+        WHERE t.id = $1`,
+      [ticketId]
+    );
+    const ticket = tk.rows[0];
+    if (!ticket) return res.status(404).json({ error: 'Ticket not found' });
+
+    const fm = await pool.query(
+      `SELECT f.id, f.name, f.enabled, f.default_title, f.default_description,
+              c.name AS category_name, c.project_id,
+              p.name AS project_name, p.status AS project_status
+         FROM ticket_forms f
+         JOIN ticket_categories c ON c.id = f.category_id
+         JOIN projects p ON p.id = c.project_id
+        WHERE f.id = $1`,
+      [formId]
+    );
+    const form = fm.rows[0];
+    if (!form || !form.enabled) return res.status(404).json({ error: 'Form not found or disabled' });
+    if (form.project_status !== 'active') return res.status(400).json({ error: 'Form\'s project is archived' });
+    if (ticket.form_id === form.id) return res.status(400).json({ error: 'Ticket already uses this form' });
+
+    const moving = Number(form.project_id) !== Number(ticket.project_id);
+    // Techs must belong to the ticket's current project and the form's
+    // project. Admin/Manager can act across all projects.
+    if (!['Admin', 'Manager'].includes(user.role)) {
+      const need = [...new Set([ticket.project_id, form.project_id].map(Number))];
+      const m = await pool.query(
+        `SELECT project_id FROM project_members WHERE user_id = $1 AND project_id = ANY($2::int[])`,
+        [user.id, need]
+      );
+      if (m.rows.length !== need.length) {
+        return res.status(403).json({ error: 'You must be a member of the ticket\'s project and the form\'s project' });
+      }
+    }
+
+    let badReq = null;
+    let result = null;
+    await transaction(async (client) => {
+      let moved = null;
+      if (moving) {
+        moved = await moveTicketToProject(client, {
+          ticket,
+          target: { id: Number(form.project_id), name: form.project_name },
+          userId: user.id,
+        });
+      }
+      await client.query(`UPDATE tickets SET form_id = $1, updated_at = NOW() WHERE id = $2`, [form.id, ticketId]);
+
+      let filled = [];
+      if (Array.isArray(items) && items.length) {
+        try {
+          filled = await ticketCustomFields.applyTicketPatch(client, ticketId, form.id, items);
+        } catch (e) {
+          if (e.status === 400) { badReq = e.message; throw e; } // roll back the move too
+          throw e;
+        }
+      }
+
+      // Human labels for the note/audit (applyTicketPatch returns slugs).
+      if (filled.length) {
+        const bySlug = new Map((await ticketCustomFields.loadFormFields(client, form.id)).map((f) => [f.slug, f.label]));
+        filled = filled.map((sl) => bySlug.get(sl) || sl);
+      }
+      const label = `${form.category_name} › ${form.name}`;
+      await auditLog(client, {
+        ticketId, userId: user.id,
+        action: 'form_applied',
+        oldValue: ticket.form_id ? `${ticket.old_category_name} › ${ticket.old_form_name}` : '',
+        newValue: label,
+        note: filled.length ? `Fields filled: ${filled.join(', ')}` : null,
+      });
+
+      const who = user.displayName || user.email;
+      const lines = [`**Converted to request type: ${label}** by ${who}.`, ''];
+      if (moved) {
+        lines.push(`- Moved from **${ticket.project_name}** (was ${ticket.internal_ref}) to **${form.project_name}** as **${moved.newRef}**.`);
+        if (moved.detachedCount) lines.push(`- ${moved.detachedCount} vendor contact(s) detached (project-scoped); re-attach as needed.`);
+      }
+      if (ticket.form_id) lines.push(`- Replaces previous request type: ${ticket.old_category_name} › ${ticket.old_form_name}. Existing field values were kept.`);
+      if (filled.length) lines.push(`- Fields filled: ${filled.join(', ')}.`);
+      lines.push('- The original request (title and description) is unchanged.');
+      const tplTitle = (form.default_title || '').trim();
+      const tplDesc = (form.default_description || '').trim();
+      if (tplTitle || tplDesc) {
+        lines.push('', '**Form template text:**', '');
+        if (tplTitle) lines.push(mdQuote(`**${tplTitle}**`));
+        if (tplTitle && tplDesc) lines.push('>');
+        if (tplDesc) lines.push(mdQuote(tplDesc));
+      }
+      await systemComment(client, ticketId, lines.join('\n'));
+
+      result = { moved, filled };
+    }).catch((e) => { if (!badReq) throw e; });
+    if (badReq) return res.status(400).json({ error: badReq });
+
+    // Computed fields evaluate after commit (same as create). Best-effort.
+    try {
+      await ticketCustomFields.recomputeForTicket(pool, ticketId);
+    } catch (e) {
+      console.error('recompute computed fields (apply-form) failed:', e.message);
+    }
+
+    // What's still required and empty, so the UI can prompt the agent.
+    const fields = await ticketCustomFields.loadFormFields(pool, form.id);
+    const values = await ticketCustomFields.readValues(pool, ticketId, { reveal: true });
+    const have = new Set(values
+      .filter((v) => v.value != null && v.value !== '' && !(Array.isArray(v.value) && !v.value.length) && !(v.type === 'bool' && !v.value))
+      .map((v) => v.def_id));
+    const missing = fields.filter((f) => f.required && !f.computed && !have.has(f.def_id)).map((f) => f.label);
+
+    res.json({
+      ok: true,
+      ticket_id: ticketId,
+      form_id: form.id,
+      moved: !!result.moved,
+      old_ref: ticket.internal_ref,
+      new_ref: result.moved ? result.moved.newRef : ticket.internal_ref,
+      filled: result.filled,
+      missing_required: missing,
+      custom_fields: values,
+    });
+  } catch (err) {
+    console.error('apply-form error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
 // POST /api/tickets/:id/move — relocate a ticket to a different project.
 // Re-issues internal_ref from the target project's counter (old ref kept
 // in audit log). Detaches vendor contacts (vendor scope = project).
@@ -1813,28 +2017,12 @@ router.post('/:id/move', requireAuth, async (req, res) => {
     }
 
     const result = await transaction(async (client) => {
-      const newRef = await nextInternalRef(client, targetProjectId);
-      await client.query(
-        `UPDATE tickets SET project_id = $1, internal_ref = $2, updated_at = NOW() WHERE id = $3`,
-        [targetProjectId, newRef, ticket.id]
-      );
-      // Vendor contacts are project-scoped — drop them on move.
-      const detached = await client.query(
-        `DELETE FROM ticket_contacts WHERE ticket_id = $1 RETURNING contact_id`,
-        [ticket.id]
-      );
-      await auditLog(client, {
-        ticketId: ticket.id, userId: user.id,
-        action: 'ticket_moved',
-        oldValue: `${ticket.internal_ref} (project ${ticket.project_id})`,
-        newValue: `${newRef} (project ${targetProjectId})`,
-        note: `Moved to ${targetProj.rows[0].name}; ${detached.rowCount} contact(s) detached`,
-      });
+      const moved = await moveTicketToProject(client, { ticket, target: targetProj.rows[0], userId: user.id });
       await systemComment(
         client, ticket.id,
-        `Ticket moved from project ID ${ticket.project_id} (was ${ticket.internal_ref}) to ${targetProj.rows[0].name} as ${newRef}.`
+        `Ticket moved from project ID ${ticket.project_id} (was ${ticket.internal_ref}) to ${targetProj.rows[0].name} as ${moved.newRef}.`
       );
-      return { newRef, detachedCount: detached.rowCount };
+      return moved;
     });
 
     res.json({
