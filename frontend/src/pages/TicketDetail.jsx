@@ -17,6 +17,7 @@ import TimeTracker from "../components/TimeTracker";
 import AiUsageBadge from "../components/AiUsageBadge";
 import AiRewriteButton from "../components/AiRewriteButton";
 import CustomFieldsCard from "../components/CustomFieldsCard";
+import ApplyFormDialog from "../components/ApplyFormDialog";
 import MentionTextarea from "../components/MentionTextarea";
 import {
   useStatuses,
@@ -1807,6 +1808,15 @@ export default function TicketDetail() {
             </button>
             {isAdmin && (
               <button
+                onClick={() => setConfirm("apply-form")}
+                className="btn-secondary btn btn-sm whitespace-nowrap"
+                title="Convert this ticket to a request type (moves it to the form's project if needed)"
+              >
+                {ticket.form_id ? "Change form…" : "Apply form…"}
+              </button>
+            )}
+            {isAdmin && (
+              <button
                 onClick={() => setConfirm("merge")}
                 className="btn-secondary btn btn-sm whitespace-nowrap"
                 title="Merge this ticket into another (closes this one, reassigns comments/attachments/etc.)"
@@ -1851,6 +1861,14 @@ export default function TicketDetail() {
                 >
                   Move…
                 </button>
+                {isAdmin && (
+                  <button
+                    onClick={() => { setShowMobileActions(false); setConfirm("apply-form"); }}
+                    className="w-full text-left px-3 py-2 text-sm hover:bg-surface-2"
+                  >
+                    {ticket.form_id ? "Change form…" : "Apply form…"}
+                  </button>
+                )}
                 {isAdmin && (
                   <button
                     onClick={() => { setShowMobileActions(false); setConfirm("merge"); }}
@@ -3370,6 +3388,7 @@ export default function TicketDetail() {
             ticket={ticket}
             canEdit={isAdmin}
             onUpdated={(cfs) => setTicket((t) => ({ ...t, custom_fields: cfs }))}
+            onApplyForm={isAdmin ? () => setConfirm("apply-form") : undefined}
           />
 
           {/* Blocker */}
@@ -3548,6 +3567,15 @@ export default function TicketDetail() {
             navigate(`/tickets/${winnerId}`);
           } catch (e) { toast.error(e.message); }
           finally { setConfirm(null); }
+        }}
+      />
+      <ApplyFormDialog
+        open={confirm === "apply-form"}
+        ticket={ticket}
+        onCancel={() => setConfirm(null)}
+        onApplied={async () => {
+          setConfirm(null);
+          await loadTicket();
         }}
       />
       <MoveDialog
