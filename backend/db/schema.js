@@ -2626,6 +2626,15 @@ async function initSchema() {
     await client.query(`ALTER TABLE kb_articles ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'article'
       CHECK (kind IN ('article','runbook'))`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_kb_articles_runbooks ON kb_articles(project_id) WHERE kind = 'runbook'`);
+    // Optional source PDF attached to a local KB article (e.g. a vendor
+    // manual). Served inline at /api/kb/articles/:id/pdf so links can carry
+    // #page=/#search= anchors; stored like ticket attachments (UPLOADS_DIR,
+    // encrypted at rest in standard mode).
+    await client.query(`ALTER TABLE kb_articles ADD COLUMN IF NOT EXISTS pdf_filename TEXT`);
+    await client.query(`ALTER TABLE kb_articles ADD COLUMN IF NOT EXISTS pdf_original_name TEXT`);
+    await client.query(`ALTER TABLE kb_articles ADD COLUMN IF NOT EXISTS pdf_size INTEGER`);
+    await client.query(`ALTER TABLE kb_articles ADD COLUMN IF NOT EXISTS pdf_encrypted BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`ALTER TABLE kb_articles ADD COLUMN IF NOT EXISTS pdf_uploaded_at TIMESTAMPTZ`);
 
     // Per-ticket runbook execution state. One row per (ticket, runbook)
     // — opening the same runbook on two tickets has independent

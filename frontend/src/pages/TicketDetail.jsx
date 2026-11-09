@@ -42,6 +42,9 @@ import CannedPicker from "../components/CannedPicker";
 import RunbookPanel from "../components/RunbookPanel";
 import TroveKbKnowledge from "../components/TroveKbKnowledge";
 import AssistBriefModal from "../components/AssistBriefModal";
+import KbLinkInserter from "../components/KbLinkInserter";
+import TargetLinksDialog from "../components/TargetLinksDialog";
+import { hasKbLink } from "../utils/kbLinks";
 import TroveKbRunbookPanel from "../components/TroveKbRunbookPanel";
 import NumberInput from "../components/NumberInput";
 
@@ -523,6 +526,9 @@ export default function TicketDetail() {
   // Trove KB knowledge brief (scope a response before rewriting it).
   const [troveKbStatus, setTroveKbStatus] = useState(null);
   const [briefOpen, setBriefOpen] = useState(false);
+  const [kbLinkOpen, setKbLinkOpen] = useState(false);
+  const [targetLinksOpen, setTargetLinksOpen] = useState(false);
+  const commentInsertRef = useRef(null);
   useEffect(() => {
     api.get("/api/trove-kb/status").then(setTroveKbStatus).catch(() => setTroveKbStatus({ enabled: false }));
   }, []);
@@ -2367,6 +2373,7 @@ export default function TicketDetail() {
                     <MarkdownEditor
                       aiSurface={shareWithVendor ? "comment_vendor" : "comment_internal"}
                       aiProjectId={ticket?.project_id || null}
+                      insertApiRef={commentInsertRef}
                       value={commentBody}
                       onChange={(e) => {
                         setCommentBody(e.target.value);
@@ -2394,6 +2401,47 @@ export default function TicketDetail() {
                       placeholder="Add a comment... (Ctrl+Enter to post)"
                       mentionProjectId={ticket?.project_id}
                     />
+                    {(isAdmin || canHandleNotes) && (
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <button
+                          type="button"
+                          onClick={() => setKbLinkOpen(true)}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded border border-border-strong text-fg-muted hover:text-fg hover:bg-surface-2"
+                          title="Search Trove KB and local articles, narrow to a PDF page or highlighted phrase, and insert the link"
+                        >
+                          🔗 Insert KB link
+                        </button>
+                        <KbLinkInserter
+                          open={kbLinkOpen}
+                          onClose={() => setKbLinkOpen(false)}
+                          projectId={ticket.project_id}
+                          onInsert={(md) => {
+                            if (commentInsertRef.current) commentInsertRef.current(md);
+                            else setCommentBody((cur) => (cur && cur.trim() ? `${cur} ${md}` : md));
+                          }}
+                        />
+                        {hasKbLink(commentBody) && (
+                          <button
+                            type="button"
+                            onClick={() => setTargetLinksOpen(true)}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded border border-border-strong text-fg-muted hover:text-fg hover:bg-surface-2"
+                            title="AI points the KB links in your reply at the exact PDF page / phrase, optionally as numbered steps"
+                          >
+                            🎯 Target KB links
+                          </button>
+                        )}
+                        <TargetLinksDialog
+                          open={targetLinksOpen}
+                          onClose={() => setTargetLinksOpen(false)}
+                          ticketId={ticket.id}
+                          text={commentBody}
+                          onApply={(t, r) => {
+                            setCommentBody(t);
+                            if (r?.ai?.log_id) setCommentAiLogId(r.ai.log_id);
+                          }}
+                        />
+                      </div>
+                    )}
                     {(isAdmin || canHandleNotes) && troveKbStatus?.enabled && (
                       <div className="flex flex-wrap items-center gap-2 text-xs">
                         <button

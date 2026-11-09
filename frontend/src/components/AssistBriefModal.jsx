@@ -3,6 +3,8 @@ import { createPortal } from "react-dom";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
 import MarkdownContent from "./MarkdownContent";
+import { buildKbUrl, hasKbLink } from "../utils/kbLinks";
+import TargetLinksDialog from "./TargetLinksDialog";
 
 // Knowledge brief: scope a response before anything rewrites it.
 //
@@ -200,6 +202,7 @@ export default function AssistBriefModal({ open, onClose, ticketId, draft, aiAva
                         <div className="text-xs font-medium text-fg flex flex-wrap items-center gap-2">
                           <a href={`/kb/article/${a.article_id}?ticket=${ticketId}`} target="_blank" rel="noreferrer" className="hover:underline">{a.title}</a>
                           <span className={`text-[9px] uppercase px-1 rounded ${a.scope === "public" ? "bg-emerald-500/15 text-emerald-600 dark:text-emerald-300" : "bg-amber-500/15 text-amber-600 dark:text-amber-300"}`}>{a.scope}</span>
+                          {a.pdf_url && <span className="text-[9px] uppercase px-1 rounded bg-brand/15 text-brand">PDF</span>}
                         </div>
                         <div className="text-[10px] text-fg-dim">{[a.collection_name, a.category, a.heading].filter(Boolean).join(" · ")}</div>
                         {a.snippet && <div className="text-[11px] text-fg-muted mt-1 line-clamp-4">{a.snippet}</div>}
@@ -212,6 +215,40 @@ export default function AssistBriefModal({ open, onClose, ticketId, draft, aiAva
                         placeholder="Note on this article (e.g. applies only to model X; step 3 is outdated)"
                         className="w-full bg-surface border border-border rounded px-2 py-1 text-[11px]"
                       />
+                    )}
+                    {a.included !== false && (a.pdf_url || a.public_url) && (
+                      <div className="flex flex-wrap items-center gap-1.5 text-[11px]">
+                        <a href={a.pdf_url || a.public_url} target="_blank" rel="noreferrer" className="text-brand hover:underline">
+                          Open {a.pdf_url ? "PDF" : "article"} ↗
+                        </a>
+                        {a.pdf_url && (
+                          <input
+                            value={a.page || ""}
+                            onChange={(e) => setArticle(a.article_id, { page: e.target.value.replace(/\D/g, "").slice(0, 6) })}
+                            inputMode="numeric"
+                            placeholder="Page"
+                            className="w-16 bg-surface border border-border rounded px-2 py-1"
+                          />
+                        )}
+                        <input
+                          value={a.search || ""}
+                          onChange={(e) => setArticle(a.article_id, { search: e.target.value })}
+                          maxLength={200}
+                          placeholder={a.pdf_url ? "Search term to highlight" : "Text to highlight"}
+                          className="flex-1 min-w-[8rem] bg-surface border border-border rounded px-2 py-1"
+                        />
+                        {(a.page || a.search) && (
+                          <a
+                            href={buildKbUrl(a.pdf_url || a.public_url, { pdf: !!a.pdf_url, page: a.page, search: a.search })}
+                            target="_blank"
+                            rel="noreferrer"
+                            className="text-fg-muted hover:text-fg"
+                            title="Open the narrowed link"
+                          >
+                            test ↗
+                          </a>
+                        )}
+                      </div>
                     )}
                   </div>
                 ))}
@@ -260,7 +297,7 @@ export default function AssistBriefModal({ open, onClose, ticketId, draft, aiAva
                 ) : (
                   <>
                     {result.ai?.note && <div className="rounded border border-amber-300 dark:border-amber-700 bg-amber-50 dark:bg-amber-950/40 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">{result.ai.note}</div>}
-                    <OutputBlock title="Reply to the user" md={result.reply_md} onUse={onUseReply ? () => { onUseReply(result.reply_md, { logId: result.ai?.log_id || null, mode: result.mode }); onClose(); } : null} useLabel="Use as comment" />
+                    <OutputBlock title="Reply to the user" md={result.reply_md} targetTicketId={aiAvailable ? ticketId : null} onUse={onUseReply ? (text) => { onUseReply(text, { logId: result.ai?.log_id || null, mode: result.mode }); onClose(); } : null} useLabel="Use as comment" />
                     <OutputBlock title="Resolution (internal record)" md={result.resolution_md} onUse={onUseResolution ? () => onUseResolution(result.resolution_md) : null} useLabel="Save as resolution" />
                     <div className="text-[10px] text-fg-dim">Brief #{result.brief_id} saved for audit · {result.mode === "ai" ? "AI rewrite" : "no AI"} · {result.articles_used?.length || 0} article{result.articles_used?.length === 1 ? "" : "s"} used</div>
                   </>
@@ -275,15 +312,19 @@ export default function AssistBriefModal({ open, onClose, ticketId, draft, aiAva
   );
 }
 
-function OutputBlock({ title, md, onUse, useLabel }) {
+function OutputBlock({ title, md, onUse, useLabel, targetTicketId }) {
   const [edit, setEdit] = useState(false);
   const [text, setText] = useState(md || "");
+  const [targeting, setTargeting] = useState(false);
   useEffect(() => { setText(md || ""); setEdit(false); }, [md]);
   return (
     <div className="rounded-md border border-border">
       <div className="flex items-center justify-between px-3 py-2 border-b border-border bg-surface-2/40">
         <div className="text-[11px] font-semibold uppercase tracking-wide text-fg-muted">{title}</div>
         <div className="flex items-center gap-2 text-xs">
+          {targetTicketId && hasKbLink(text) && (
+            <button onClick={() => setTargeting(true)} className="text-fg-muted hover:text-fg" title="Point the KB links at exact pages / phrases, as stepped links">🎯 Target links</button>
+          )}
           <button onClick={() => setEdit((v) => !v)} className="text-fg-muted hover:text-fg">{edit ? "Preview" : "Edit"}</button>
           <button onClick={() => navigator.clipboard?.writeText(text).then(() => toast.success("Copied")).catch(() => {})} className="text-fg-muted hover:text-fg">Copy</button>
           {onUse && <button onClick={() => onUse(text)} className="px-2 py-0.5 bg-brand text-white rounded">{useLabel}</button>}
@@ -298,6 +339,15 @@ function OutputBlock({ title, md, onUse, useLabel }) {
           <div className="text-fg-dim italic text-xs">Nothing produced.</div>
         )}
       </div>
+      {targetTicketId && (
+        <TargetLinksDialog
+          open={targeting}
+          onClose={() => setTargeting(false)}
+          ticketId={targetTicketId}
+          text={text}
+          onApply={(t) => setText(t)}
+        />
+      )}
     </div>
   );
 }

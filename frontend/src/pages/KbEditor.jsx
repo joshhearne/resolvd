@@ -6,6 +6,7 @@ import { BlockNoteView } from "@blocknote/mantine";
 import "@blocknote/core/fonts/inter.css";
 import "@blocknote/mantine/style.css";
 import { api } from "../utils/api";
+import KbPdfAttachment from "../components/KbPdfAttachment";
 import { useTheme } from "../context/ThemeContext";
 
 // Editor body must mount AFTER initialContent is known, otherwise
@@ -292,6 +293,13 @@ export default function KbEditor() {
             <span>Agent only</span>
           </label>
         </label>
+      </div>
+
+      <div className="rounded-md border border-border bg-surface px-3 py-2">
+        <KbPdfAttachment
+          article={article}
+          onChange={(patch) => setArticle((a) => (a ? { ...a, ...patch } : a))}
+        />
       </div>
 
       {!isNew && (
