@@ -10,9 +10,7 @@ const {
   fanoutNewComment,
   fanoutMention,
   fanoutNewTicket,
-  fanoutFollowerAdded,
 } = require('../services/notificationFanout');
-const { getRestrictionDefaults, effectiveFlag } = require('../services/restrictions');
 const { resolveMentions } = require('../services/mentions');
 const sla = require('../services/sla');
 const assignmentPolicies = require('../services/assignmentPolicies');
@@ -368,14 +366,14 @@ router.get('/', requireAuth, async (req, res) => {
 router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter'), async (req, res) => {
   try {
     const user = req.session.user;
-    const { project_id, title, description, impact = 2, urgency = 2, external_ticket_ref, assigned_to, contact_ids, submitted_by, form_id, custom_fields, follower_ids } = req.body;
+    const { project_id, title, description, impact = 2, urgency = 2, external_ticket_ref, assigned_to, contact_ids, submitted_by, form_id, custom_fields } = req.body;
 
     if (!project_id) return res.status(400).json({ error: 'project_id required' });
     if (!title) return res.status(400).json({ error: 'Title required' });
 
     // Verify project exists and is active
     const proj = await pool.query(
-      "SELECT id, default_assignee_id, restrict_followers_to_members FROM projects WHERE id = $1 AND status = 'active'",
+      "SELECT id, default_assignee_id FROM projects WHERE id = $1 AND status = 'active'",
       [project_id]
     );
     if (!proj.rows[0]) return res.status(404).json({ error: 'Project not found or archived' });
@@ -440,49 +438,6 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter
       );
       if (!targetUser.rows[0]) return res.status(400).json({ error: 'submitted_by user not found or inactive' });
       effectiveSubmitterId = targetUser.rows[0].id;
-    }
-
-    // CC followers at create time. Any filer (Submitter included) may pick
-    // other users to follow the ticket. Same gate as adding a follower
-    // later: when the project's effective restrict_followers_to_members is
-    // on, non-Admin targets must be project members (Admin filers bypass).
-    let ccFollowerIds = [];
-    if (follower_ids !== undefined && follower_ids !== null) {
-      if (!Array.isArray(follower_ids)) return res.status(400).json({ error: 'follower_ids must be an array' });
-      const ids = [...new Set(follower_ids.map(Number))];
-      if (ids.some((n) => !Number.isInteger(n) || n <= 0)) {
-        return res.status(400).json({ error: 'follower_ids must be positive integers' });
-      }
-      if (ids.length > 50) return res.status(400).json({ error: 'Too many followers (max 50)' });
-      // Submitter + filer are auto-followed below; no need to re-add.
-      ccFollowerIds = ids.filter((n) => n !== effectiveSubmitterId && n !== user.id);
-      if (ccFollowerIds.length) {
-        const found = await pool.query(
-          `SELECT id, role, display_name, email FROM users WHERE id = ANY($1::int[]) AND status = 'active'`,
-          [ccFollowerIds]
-        );
-        if (found.rows.length !== ccFollowerIds.length) {
-          return res.status(400).json({ error: 'One or more followers not found or inactive' });
-        }
-        const defaults = await getRestrictionDefaults();
-        const restrict = effectiveFlag(proj.rows[0].restrict_followers_to_members, defaults.followers);
-        if (restrict && user.role !== 'Admin') {
-          const candidates = found.rows.filter((r) => r.role !== 'Admin');
-          if (candidates.length) {
-            const mem = await pool.query(
-              `SELECT user_id FROM project_members WHERE project_id = $1 AND user_id = ANY($2::int[])`,
-              [Number(project_id), candidates.map((r) => r.id)]
-            );
-            const memberIds = new Set(mem.rows.map((r) => r.user_id));
-            const outsiders = candidates.filter((r) => !memberIds.has(r.id));
-            if (outsiders.length) {
-              return res.status(403).json({
-                error: `Not a member of this project: ${outsiders.map((r) => r.display_name || r.email).join(', ')}`,
-              });
-            }
-          }
-        }
-      }
     }
 
     const ticket = await transaction(async (client) => {
@@ -608,19 +563,6 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter
           [t.id, user.id]
         );
       }
-      // CC'd followers picked on the new-ticket form.
-      for (const fid of ccFollowerIds) {
-        await client.query(
-          'INSERT INTO ticket_followers (ticket_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
-          [t.id, fid]
-        );
-        await auditLog(client, {
-          ticketId: t.id, userId: user.id,
-          action: 'follower_added',
-          newValue: String(fid),
-          note: `Follower added at creation by ${user.displayName || user.email}`,
-        });
-      }
       // Attach any contacts selected at creation time.
       if (Array.isArray(contact_ids) && contact_ids.length) {
         for (const cid of contact_ids) {
@@ -687,25 +629,12 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter
     }
     // Broadcast to opted-in Admins/Managers. fanoutNewTicket excludes the
     // assignee + submitter so they don't double-notify.
-    // CC'd followers get a direct notice; drop them from the broadcast so
-    // an Admin/Manager who was CC'd isn't pinged twice.
-    const ccNotify = ccFollowerIds.filter((id) => id !== ticket.assigned_to);
     fanoutNewTicket(pool, {
       ticket,
       actorId: user.id,
       actorName: user.displayName,
       submitterId: ticket.submitted_by,
-      excludeUserIds: ccNotify,
     }).catch(err => console.error('fanoutNewTicket (create) failed:', err.message));
-    if (ccNotify.length) {
-      fanoutFollowerAdded(pool, {
-        ticket,
-        userIds: ccNotify,
-        actorId: user.id,
-        actorName: user.displayName,
-        atCreate: true,
-      }).catch(err => console.error('fanoutFollowerAdded (create) failed:', err.message));
-    }
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Database error' });

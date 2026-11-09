@@ -235,10 +235,10 @@ async function dispatchPerRecipient({ user, eventType, inApp, push, ticketId, ti
 // submitter (they obviously know they filed it). Default matrix has
 // email off so the firehose doesn't spam, but in_app shows up in the
 // tray for opted-in users.
-async function fanoutNewTicket(_unusedPool, { ticket, actorId, actorName, submitterId, excludeUserIds = [] }) {
+async function fanoutNewTicket(_unusedPool, { ticket, actorId, actorName, submitterId }) {
   if (!ticket || !ticket.id) return;
   if (await isTicketTerminal(ticket.id)) return;
-  const excludes = [actorId, ticket.assigned_to, submitterId, ...excludeUserIds].filter(x => x != null);
+  const excludes = [actorId, ticket.assigned_to, submitterId].filter(x => x != null);
   const r = await pool.query(
     `SELECT id, email, display_name, preferences FROM users
       WHERE role IN ('Admin','Manager') AND status = 'active'
@@ -462,49 +462,6 @@ async function fanoutMention(_unusedPool, { ticket, comment, commentId, mentione
   }
 }
 
-// Follower-added fanout. Fires when someone other than the user adds
-// them as a follower: CC'd at create time (atCreate) or added later from
-// the ticket's follower manager. Self-follows never notify.
-async function fanoutFollowerAdded(_unusedPool, { ticket, userIds, actorId, actorName, atCreate = false }) {
-  if (!ticket || !ticket.id || !Array.isArray(userIds) || !userIds.length) return;
-  if (await isTicketTerminal(ticket.id)) return;
-  const ticketRef = ticket.internal_ref;
-  const ticketTitle = ticket.title || '';
-  const seen = new Set();
-  for (const uid of userIds) {
-    if (!uid || uid === actorId || seen.has(uid)) continue;
-    seen.add(uid);
-    const user = await getUserById(uid);
-    if (!user) continue;
-    const payload = {
-      ticket_id: ticket.id,
-      ticket_ref: ticketRef,
-      ticket_title: ticketTitle,
-      actor_name: actorName || 'Someone',
-      at_create: !!atCreate,
-    };
-    const title = atCreate ? `CC'd on ${ticketRef}` : `Following ${ticketRef}`;
-    const msg = `${actorName || 'Someone'} added you as a follower${ticketTitle ? `: ${ticketTitle}` : '.'}`;
-    const matrix = await dispatchPerRecipient({
-      user,
-      eventType: 'follower_added',
-      ticketId: ticket.id,
-      ticketRef,
-      inApp: { title, body: msg },
-      push: {
-        title,
-        body: msg,
-        url: `/tickets/${ticket.id}`,
-        tag: `follower-${ticket.id}`,
-      },
-      payload,
-    });
-    if (matrix.email) {
-      await routeEmail({ user, eventType: 'follower_added', payload, ticketId: ticket.id, projectId: ticket.project_id });
-    }
-  }
-}
-
 async function fanoutPendingReview(_unusedPool, { ticket, actorId }) {
   if (await isTicketTerminal(ticket.id)) return;
   // Recipients = all active Admins minus the actor.
@@ -709,7 +666,6 @@ module.exports = {
   fanoutStatusChange,
   fanoutNewComment,
   fanoutMention,
-  fanoutFollowerAdded,
   fanoutPendingReview,
   fanoutFollowUp,
   fanoutSlaBreach,

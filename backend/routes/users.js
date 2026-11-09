@@ -348,22 +348,16 @@ router.get('/search', requireAuth, async (req, res) => {
     // restricts to project_members.is_agent=TRUE. Admins do NOT bypass
     // this — notes are agent-only by design, not by restriction toggle.
     const agentsOnly = req.query.agents_only === '1' || req.query.agents_only === 'true';
-    // purpose=followers (CC picker on new ticket) applies the project's
-    // restrict_followers_to_members flag instead of the mentions one, and
-    // lets global Admins through — mirroring the create-time gate.
-    const forFollowers = req.query.purpose === 'followers';
     let restrictToMembers = false;
     if (projectId) {
       const proj = await pool.query(
-        `SELECT restrict_mentions_to_members, restrict_followers_to_members FROM projects WHERE id = $1`,
+        `SELECT restrict_mentions_to_members FROM projects WHERE id = $1`,
         [projectId]
       );
       if (proj.rows[0]) {
         const { getRestrictionDefaults, effectiveFlag } = require('../services/restrictions');
         const def = await getRestrictionDefaults();
-        restrictToMembers = forFollowers
-          ? effectiveFlag(proj.rows[0].restrict_followers_to_members, def.followers)
-          : effectiveFlag(proj.rows[0].restrict_mentions_to_members, def.mentions);
+        restrictToMembers = effectiveFlag(proj.rows[0].restrict_mentions_to_members, def.mentions);
       }
     }
     let r;
@@ -374,22 +368,6 @@ router.get('/search', requireAuth, async (req, res) => {
           JOIN project_members pm ON pm.user_id = u.id AND pm.project_id = $2
          WHERE u.status = 'active'
            AND pm.is_agent = TRUE
-           AND (
-             LOWER(u.display_name) LIKE $1
-             OR LOWER(u.email) LIKE $1
-             OR LOWER(SPLIT_PART(u.email, '@', 1)) LIKE $1
-           )
-         ORDER BY u.display_name
-         LIMIT 8
-      `, [q, projectId]);
-    } else if (projectId && restrictToMembers && !isAdmin && forFollowers) {
-      r = await pool.query(`
-        SELECT u.id, u.display_name, u.email
-          FROM users u
-         WHERE u.status = 'active'
-           AND (u.role = 'Admin' OR EXISTS (
-             SELECT 1 FROM project_members pm WHERE pm.user_id = u.id AND pm.project_id = $2
-           ))
            AND (
              LOWER(u.display_name) LIKE $1
              OR LOWER(u.email) LIKE $1
