@@ -341,6 +341,14 @@ function visibleCollections(settings, handler) {
   return { ids: pub, scopeOf };
 }
 
+// Imported PDFs are served by Trove KB at <public article url>/original;
+// browser PDF viewers honour #page= / #search= on that URL. Public only:
+// that's the address a user replying from email can actually open.
+function pdfUrlFor(sourceType, publicUrl) {
+  if (String(sourceType || '').toLowerCase() !== 'pdf' || !publicUrl) return null;
+  return `${String(publicUrl).replace(/\/+$/, '')}/original`;
+}
+
 function articleUrls(settings, articleId, collectionId) {
   const scope = collectionId && settings.public_collection_ids.includes(collectionId) ? 'public' : 'internal';
   return {
@@ -383,6 +391,10 @@ async function listCollections({ settings } = {}) {
   }));
 }
 
+function withPdf(sourceType, urls) {
+  return { ...urls, pdf_url: pdfUrlFor(sourceType, urls.public_url) };
+}
+
 function plainSnippet(text) {
   return String(text || '').replace(/<\/?mark>/g, '').replace(/\s+/g, ' ').trim();
 }
@@ -404,7 +416,7 @@ function shapeHit(settings, hit) {
     date_modified: hit.date_modified || null,
     snippet: plainSnippet(hit.matched?.snippet),
     heading: hit.matched?.heading || null,
-    ...articleUrls(settings, id, collectionId),
+    ...withPdf(hit.source_type, articleUrls(settings, id, collectionId)),
   };
 }
 
@@ -434,6 +446,7 @@ function shapeArticle(settings, a) {
     staff_url: urls.staff_url,
     // Trove KB's own public address wins; fall back to ours for the same site.
     public_url: a.public_url || urls.public_url,
+    pdf_url: pdfUrlFor(a.source_type, a.public_url || urls.public_url),
   };
 }
 
@@ -795,6 +808,7 @@ async function testConnection() {
 }
 
 module.exports = {
+  pdfUrlFor,
   getSettings,
   patchSettings,
   setApiKey,

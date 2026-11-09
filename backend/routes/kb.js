@@ -2,6 +2,12 @@ const express = require('express');
 const { pool } = require('../db/pool');
 const { requireAuth } = require('../middleware/auth');
 const { isProjectHandler } = require('../services/ticketHelpers');
+const multer = require('multer');
+const { handleUploadErrors } = require('../middleware/upload');
+const kbPdf = require('../services/kbPdf');
+
+const MAX_PDF_BYTES = Number(process.env.MAX_UPLOAD_MB || 50) * 1024 * 1024;
+const pdfUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: MAX_PDF_BYTES } });
 
 const router = express.Router();
 
@@ -215,7 +221,7 @@ router.get('/projects/:projectId/articles/:slug', requireAuth, async (req, res) 
     }
     // bump view count (best-effort, don't block response)
     pool.query('UPDATE kb_articles SET view_count = view_count + 1 WHERE id = $1', [r.rows[0].id]).catch(() => {});
-    res.json(r.rows[0]);
+    res.json(publicArticle(r.rows[0]));
   } catch (err) {
     console.error('kb get article:', err);
     res.status(500).json({ error: 'Database error' });
@@ -265,7 +271,7 @@ router.post('/projects/:projectId/articles', requireAuth, async (req, res) => {
       [art.id, art.title, JSON.stringify(blocks), text, user.id]
     );
     await client.query('COMMIT');
-    res.status(201).json(art);
+    res.status(201).json(publicArticle(art));
   } catch (err) {
     await client.query('ROLLBACK');
     if (err.code === '23505') return res.status(409).json({ error: 'Slug already in use' });
@@ -347,7 +353,7 @@ router.patch('/articles/:id', requireAuth, async (req, res) => {
       );
     }
     await client.query('COMMIT');
-    res.json(nextArt);
+    res.json(publicArticle(nextArt));
   } catch (err) {
     await client.query('ROLLBACK');
     if (err.code === '23505') return res.status(409).json({ error: 'Slug already in use' });
@@ -486,7 +492,7 @@ router.post('/articles/:id/restore/:n', requireAuth, async (req, res) => {
       [id, vNo.rows[0].n, title, content_json, content_text, user.id, `Restored from v${n}`]
     );
     await client.query('COMMIT');
-    res.json(upd.rows[0]);
+    res.json(publicArticle(upd.rows[0]));
   } catch (err) {
     await client.query('ROLLBACK');
     console.error('kb restore:', err);
@@ -632,7 +638,7 @@ router.post('/from-ticket/:id', requireAuth, async (req, res) => {
       [ticket.id, article.id, user.id]
     );
     await client.query('COMMIT');
-    res.status(201).json(article);
+    res.status(201).json(publicArticle(article));
   } catch (err) {
     await client.query('ROLLBACK').catch(() => {});
     console.error('promote-to-kb:', err);
@@ -940,4 +946,213 @@ router.delete('/tickets/:ticketId/runbook-runs/:articleId', requireAuth, async (
   }
 });
 
+// ── KB link search (composer "Insert KB link") ─────────────────────────
+
+// GET /api/kb/link-search?q=&project_id= — Trove KB + local KB articles a
+// handler can link in a reply. Each row says whether it's a PDF (page/search
+// anchors) and whether a user could open it (`linkable`). Local URLs are
+// app-relative; the client makes them absolute.
+router.get('/link-search', requireAuth, async (req, res) => {
+  try {
+    const user = req.session.user;
+    const projectId = Number(req.query.project_id) || null;
+    const handler = ['Admin', 'Manager', 'Tech'].includes(user.role)
+      || (projectId && await canReadAgentOnly(user, projectId));
+    if (!handler) return res.status(403).json({ error: 'Only handlers can search KB links' });
+    const q = String(req.query.q || '').trim().slice(0, 200);
+    if (q.length < 2) return res.json([]);
+
+    const out = [];
+    // Trove KB (handler view: staff can see internal articles, flagged).
+    try {
+      const troveKb = require('../services/troveKb');
+      const settings = await troveKb.getSettings();
+      if (settings.enabled) {
+        let preferCollectionId = null;
+        if (projectId) {
+          const pr = await pool.query('SELECT trove_kb_collection_id FROM projects WHERE id = $1', [projectId]);
+          preferCollectionId = pr.rows[0]?.trove_kb_collection_id || null;
+        }
+        const hits = await troveKb.search({ q, limit: 10, handler: true, preferCollectionId, orFallback: true });
+        for (const h of hits) {
+          out.push({
+            source: 'trove',
+            id: h.article_id,
+            title: h.title,
+            subtitle: [h.collection_name, h.category].filter(Boolean).join(' · ') || null,
+            source_type: h.source_type || null,
+            pdf: !!h.pdf_url,
+            url: h.public_url || null,
+            pdf_url: h.pdf_url || null,
+            open_url: h.pdf_url || h.public_url || h.staff_url || `/kb/article/${h.article_id}`,
+            linkable: !!h.public_url,
+            scope: h.scope,
+          });
+        }
+      }
+    } catch (err) {
+      console.warn('kb link-search trove:', err.message);
+    }
+
+    // Local KB: published articles in projects the caller can read.
+    const params = [`%${q.toLowerCase()}%`];
+    const where = [`a.status = 'published'`, `(LOWER(a.title) LIKE $1 OR LOWER(a.content_text) LIKE $1)`];
+    if (user.role !== 'Admin' && user.role !== 'Manager') {
+      params.push(user.id);
+      where.push(`a.project_id IN (SELECT project_id FROM project_members WHERE user_id = $${params.length})`);
+    }
+    params.push(projectId || 0);
+    const local = await pool.query(
+      `SELECT a.id, a.project_id, a.slug, a.title, a.agent_only, a.pdf_filename IS NOT NULL AS has_pdf,
+              a.pdf_original_name, p.name AS project_name
+         FROM kb_articles a JOIN projects p ON p.id = a.project_id
+        WHERE ${where.join(' AND ')}
+        ORDER BY (a.project_id = $${params.length}) DESC, a.updated_at DESC
+        LIMIT 10`,
+      params
+    );
+    for (const a of local.rows) {
+      const url = `/kb/${a.project_id}/${a.slug}`;
+      const pdfUrl = a.has_pdf ? `/api/kb/articles/${a.id}/pdf` : null;
+      out.push({
+        source: 'local',
+        id: a.id,
+        title: a.title,
+        subtitle: [a.project_name, a.has_pdf ? a.pdf_original_name : null].filter(Boolean).join(' · ') || null,
+        source_type: a.has_pdf ? 'pdf' : null,
+        pdf: a.has_pdf,
+        url,
+        pdf_url: pdfUrl,
+        open_url: pdfUrl || url,
+        // Agent-only articles can't be opened by the ticket's submitter.
+        linkable: !a.agent_only,
+        scope: a.agent_only ? 'internal' : 'public',
+      });
+    }
+    res.json(out);
+  } catch (err) {
+    console.error('kb link-search:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// POST /api/kb/tickets/:id/target-links — AI refines the KB links in a
+// reply to exact pages / highlighted phrases (optionally as stepped links).
+// Body: { text, targets?: [{url, note}], stepped?: bool, instructions? }.
+// Project handlers only. See services/kbLinkTargeting.js for the safety model.
+router.post('/tickets/:id/target-links', requireAuth, async (req, res) => {
+  try {
+    const user = req.session.user;
+    const ticketId = Number(req.params.id);
+    const t = await pool.query('SELECT id, project_id FROM tickets WHERE id = $1', [ticketId]);
+    const ticket = t.rows[0];
+    if (!ticket) return res.status(404).json({ error: 'Ticket not found' });
+    const { canViewTicket } = require('../services/ticketVisibility');
+    if (!(await canViewTicket(user, ticket.id)) || !(await canReadAgentOnly(user, ticket.project_id))) {
+      return res.status(403).json({ error: 'Only project handlers can refine KB links' });
+    }
+    const out = await require('../services/kbLinkTargeting').targetLinks({
+      user,
+      ticket,
+      text: req.body?.text,
+      targets: req.body?.targets,
+      stepped: req.body?.stepped !== false,
+      instructions: req.body?.instructions || '',
+      loadLocalArticle: loadReadableArticle,
+    });
+    res.json(out);
+  } catch (err) {
+    if (err.httpStatus) return res.status(err.httpStatus).json({ error: err.message });
+    console.error('kb target-links:', err);
+    res.status(500).json({ error: err.friendly || 'Could not refine links' });
+  }
+});
+
+// ── Source PDF on a local article ──────────────────────────────────────
+
+// Strip the on-disk filename; expose has_pdf + the display name instead.
+function publicArticle(row) {
+  if (!row) return row;
+  const { pdf_filename, pdf_encrypted, ...rest } = row;
+  return { ...rest, has_pdf: !!pdf_filename };
+}
+
+// Load an article the caller may read (project membership + agent_only
+// gate). Returns null when missing or not visible (callers 404).
+async function loadReadableArticle(user, id) {
+  if (!Number.isInteger(id) || id <= 0) return null;
+  const r = await pool.query('SELECT * FROM kb_articles WHERE id = $1', [id]);
+  const art = r.rows[0];
+  if (!art) return null;
+  if (!(await userCanReadProject(user, art.project_id))) return null;
+  if (art.agent_only && !(await canReadAgentOnly(user, art.project_id))) return null;
+  return art;
+}
+
+// GET /api/kb/articles/:id/pdf — the attached PDF, inline, so browser PDF
+// viewers honour #page= / #search= in links.
+router.get('/articles/:id/pdf', requireAuth, async (req, res) => {
+  try {
+    const art = await loadReadableArticle(req.session.user, Number(req.params.id));
+    if (!art || !art.pdf_filename) return res.status(404).json({ error: 'Not found' });
+    const body = await kbPdf.readPdf(art);
+    if (!body) return res.status(404).json({ error: 'Not found' });
+    const name = String(art.pdf_original_name || `${art.slug}.pdf`).replace(/["\\\r\n]/g, '');
+    res.setHeader('Content-Type', 'application/pdf');
+    res.setHeader('Content-Disposition', `inline; filename="${name}"`);
+    res.setHeader('Cache-Control', 'private, max-age=300');
+    res.send(body);
+  } catch (err) {
+    console.error('kb pdf get:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// POST /api/kb/articles/:id/pdf — attach or replace (field "file"). Editors.
+router.post('/articles/:id/pdf', requireAuth,
+  handleUploadErrors(pdfUpload.single('file'), { maxBytes: MAX_PDF_BYTES }), async (req, res) => {
+    const user = req.session.user;
+    if (!canEdit(user.role)) return res.status(403).json({ error: 'Forbidden' });
+    try {
+      const art = await loadReadableArticle(user, Number(req.params.id));
+      if (!art) return res.status(404).json({ error: 'Not found' });
+      if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+      if (!kbPdf.isPdf(req.file.buffer)) return res.status(400).json({ error: 'File is not a PDF' });
+      const { filename, encrypted } = await kbPdf.writePdf(pool, req.file.buffer);
+      const name = String(req.file.originalname || 'document.pdf').slice(0, 255);
+      await pool.query(
+        `UPDATE kb_articles SET pdf_filename = $1, pdf_original_name = $2, pdf_size = $3,
+                pdf_encrypted = $4, pdf_uploaded_at = NOW(), last_edited_by = $5, updated_at = NOW()
+          WHERE id = $6`,
+        [filename, name, req.file.size, encrypted, user.id, art.id]
+      );
+      kbPdf.removePdfFile(art.pdf_filename); // replaced
+      res.json({ ok: true, has_pdf: true, pdf_original_name: name, pdf_size: req.file.size });
+    } catch (err) {
+      console.error('kb pdf upload:', err);
+      res.status(500).json({ error: 'Database error' });
+    }
+  });
+
+// DELETE /api/kb/articles/:id/pdf — detach. Editors.
+router.delete('/articles/:id/pdf', requireAuth, async (req, res) => {
+  const user = req.session.user;
+  if (!canEdit(user.role)) return res.status(403).json({ error: 'Forbidden' });
+  try {
+    const art = await loadReadableArticle(user, Number(req.params.id));
+    if (!art) return res.status(404).json({ error: 'Not found' });
+    await pool.query(
+      `UPDATE kb_articles SET pdf_filename = NULL, pdf_original_name = NULL, pdf_size = NULL,
+              pdf_encrypted = FALSE, pdf_uploaded_at = NULL, updated_at = NOW() WHERE id = $1`,
+      [art.id]
+    );
+    kbPdf.removePdfFile(art.pdf_filename);
+    res.json({ ok: true, has_pdf: false });
+  } catch (err) {
+    console.error('kb pdf delete:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
 module.exports = router;
+module.exports.loadReadableArticle = loadReadableArticle;

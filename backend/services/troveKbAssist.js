@@ -23,6 +23,7 @@ const troveKb = require('./troveKb');
 const resolution = require('./troveKbResolution');
 const aiRewrite = require('./aiRewrite');
 const { isProjectHandler } = require('./ticketHelpers');
+const kbLinks = require('./kbLinks');
 
 const SURFACE = 'comment_assisted';
 const MAX_ARTICLES = 6;
@@ -127,6 +128,8 @@ async function findArticles({ ticket, draft, collectionId }) {
     scope: h.scope,
     staff_url: h.staff_url,
     public_url: h.public_url,
+    pdf_url: h.pdf_url || null,
+    source_type: h.source_type || null,
     heading: h.heading,
     snippet: h.snippet,
     included: i < INCLUDED_BY_DEFAULT,
@@ -189,8 +192,12 @@ function normalizeBrief(raw) {
       public_url: a.public_url || null,
       heading: trimTo(a.heading, 300) || null,
       snippet: trimTo(a.snippet, 1500) || null,
+      pdf_url: a.pdf_url || null,
+      source_type: a.source_type || null,
       included: a.included !== false,
       note: trimTo(a.note, 1000),
+      page: kbLinks.cleanPage(a.page),
+      search: kbLinks.cleanTerm(a.search),
     })).filter((a) => /^[0-9a-f-]{36}$/.test(a.article_id)),
   };
 }
@@ -206,12 +213,27 @@ function reportedText(brief) {
   return parts.join('\n');
 }
 
+// The address to give a user for an article: the PDF original when Trove KB
+// has one (narrowed by the tech's page/term), else the public article page
+// (term becomes a text highlight). Null for internal-only articles.
+function replyUrl(a, full) {
+  const publicUrl = full?.public_url || a.public_url;
+  if (!publicUrl) return null;
+  const pdfUrl = full ? full.pdf_url : null;
+  return pdfUrl
+    ? kbLinks.buildKbUrl(pdfUrl, { pdf: true, page: a.page, search: a.search })
+    : kbLinks.buildKbUrl(publicUrl, { pdf: false, search: a.search });
+}
+
 function extractiveCompose({ brief, fullArticles }) {
   const included = brief.articles.filter((a) => a.included);
-  const publicOnes = included.filter((a) => a.public_url);
+  const byId = new Map(fullArticles.map((f) => [f.article_id, f]));
+  const links = included
+    .map((a) => ({ a, url: replyUrl(a, byId.get(a.article_id)) }))
+    .filter((x) => x.url);
   let reply = brief.draft.text.trim();
-  if (publicOnes.length) {
-    reply += `\n\nHelpful documentation:\n${publicOnes.map((a) => `- [${a.title}](${a.public_url})`).join('\n')}`;
+  if (links.length) {
+    reply += `\n\nHelpful documentation:\n${links.map(({ a, url }) => `- ${kbLinks.markdownLink(a.title, url)}`).join('\n')}`;
   }
   const res = [];
   const reported = brief.reported.summary || brief.ticket?.title || '';
@@ -230,7 +252,7 @@ function aiPrompt({ brief, fullArticles }) {
     'You help an IT helpdesk technician finish a reply to a user and record how the ticket was resolved.',
     'Facts you must treat as TRUE and never contradict: what the user reported, what the technician wrote, and the technician\'s corrections. Corrections override the user\'s wording wherever they conflict (users often leave out the real trigger).',
     'Procedure and settings come ONLY from the knowledge base articles provided. Do not invent steps, menu paths, commands, or values that are not in them. If an article does not cover the point, keep the technician\'s wording.',
-    'Articles marked INTERNAL must never be named, linked, or quoted in the Reply; they may inform the Resolution. Articles marked PUBLIC may be linked in the Reply by their URL.',
+    'Articles marked INTERNAL must never be named, linked, or quoted in the Reply; they may inform the Resolution. Articles marked PUBLIC may be linked in the Reply by their URL, copied exactly (including anything after #).',
     'Never include credentials, even if present in an article.',
     'Write for the recipient: the Reply addresses the user in plain language; the Resolution is a concise internal record for the next technician.',
     'Output exactly two Markdown sections and nothing else:',
@@ -252,7 +274,9 @@ function aiPrompt({ brief, fullArticles }) {
       const body = full?.steps?.length
         ? full.steps.map((s, j) => `${j + 1}. ${s.text}${s.note ? `\n   ${s.note}` : ''}`).join('\n')
         : String(full?.body || a.snippet || '').slice(0, 6000);
-      return `\n--- Article ${i + 1} [${a.scope.toUpperCase()}]: ${a.title}${a.category ? ` (${a.category})` : ''}${a.public_url ? `\nURL: ${a.public_url}` : ''}${a.note ? `\nTechnician's note on this article: ${a.note}` : ''} ---\n${body}`;
+      const url = replyUrl(a, full);
+      const isPdf = !!(full && full.pdf_url && url);
+      return `\n--- Article ${i + 1} [${a.scope.toUpperCase()}]: ${a.title}${a.category ? ` (${a.category})` : ''}${url ? `\nURL${isPdf ? ' (PDF)' : ''}: ${url}` : ''}${a.note ? `\nTechnician's note on this article: ${a.note}` : ''} ---\n${body}`;
     }),
     included.length ? '' : '(no articles included)',
   ].filter(Boolean).join('\n');
@@ -351,4 +375,4 @@ async function getBrief(ticketId, id) {
   return r.rows[0] || null;
 }
 
-module.exports = { buildBrief, compose, listBriefs, getBrief, keyTerms, splitSections };
+module.exports = { buildBrief, compose, listBriefs, getBrief, keyTerms, splitSections, replyUrl, extractiveCompose, normalizeBrief };
