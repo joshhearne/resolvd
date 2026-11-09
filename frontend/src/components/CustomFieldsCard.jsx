@@ -7,7 +7,7 @@ import { api } from "../utils/api";
 // per-field Save, plus a master "Save all" when there's more than one. This is
 // where agents fill agent-only fields (e.g. a temp password) after the ticket
 // is created. Non-handlers get a read-only list (sensitive values masked).
-export default function CustomFieldsCard({ ticket, canEdit, onUpdated }) {
+export default function CustomFieldsCard({ ticket, canEdit, onUpdated, onApplyForm }) {
   const [fields, setFields] = useState(null); // form's bound field defs
   const [draft, setDraft] = useState({}); // def_id -> value
   const [savingId, setSavingId] = useState(null); // def_id | 'all' | null
@@ -100,6 +100,20 @@ export default function CustomFieldsCard({ ticket, canEdit, onUpdated }) {
     return <input type={inputType} value={v ?? ""} onChange={(e) => setV(e.target.value)} className={cls} autoComplete={f.sensitive ? "new-password" : "off"} placeholder={f.help_text || ""} />;
   }
 
+  // ---- Handler, ticket filed without a form: offer to apply one ----
+  if (canEdit && !hasForm && onApplyForm) {
+    return (
+      <div className="bg-surface rounded-lg border border-dashed border-border shadow-sm p-4 space-y-2">
+        <h2 className="text-sm font-semibold text-fg">Request type</h2>
+        <p className="text-xs text-fg-muted">
+          Filed without a form. Apply one to add its fields and move the
+          ticket to the right project if it was filed in the wrong one.
+        </p>
+        <button onClick={onApplyForm} className="btn btn-secondary btn-sm">Apply form…</button>
+      </div>
+    );
+  }
+
   // ---- Handler editable panel ----
   if (canEdit && hasForm) {
     if (fields === null) return null; // still loading
@@ -114,7 +128,17 @@ export default function CustomFieldsCard({ ticket, canEdit, onUpdated }) {
     return (
       <div className="bg-surface rounded-lg border border-border shadow-sm p-4 space-y-3">
         <div className="flex items-center justify-between">
-          <h2 className="text-sm font-semibold text-fg">Custom Fields</h2>
+          <div className="min-w-0">
+            <h2 className="text-sm font-semibold text-fg">Custom Fields</h2>
+            {ticket.form_name && (
+              <p className="text-xs text-fg-muted truncate">
+                {ticket.form_category_name ? `${ticket.form_category_name} › ` : ""}{ticket.form_name}
+                {onApplyForm && (
+                  <button onClick={onApplyForm} className="ml-2 text-brand hover:underline">Change</button>
+                )}
+              </p>
+            )}
+          </div>
           {editable.length > 1 && (
             <button onClick={() => save(editable, "all")} disabled={!!savingId} className="text-xs text-brand hover:underline disabled:opacity-50">
               {savingId === "all" ? "Saving…" : "Save all"}
