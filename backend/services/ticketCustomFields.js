@@ -56,7 +56,7 @@ const aad = (ticketId, defId) => `custom_field_value:${ticketId}:${defId}`;
 async function loadFormFields(client, formId) {
   const r = await client.query(
     `SELECT ff.required,
-            d.id AS def_id, d.slug, d.label, d.type, d.options, d.sensitive, d.agent_only,
+            d.id AS def_id, d.slug, d.label, d.type, d.options, d.help_text, d.sensitive, d.agent_only,
             d.computed, d.formula
        FROM ticket_form_fields ff
        JOIN custom_field_defs d ON d.id = ff.field_def_id
@@ -65,6 +65,29 @@ async function loadFormFields(client, formId) {
     [formId]
   );
   return r.rows;
+}
+
+// The ticket's full editable field set: its form's bound fields (if any)
+// followed by fields a handler attached ad hoc. Each row carries
+// source: 'form' | 'adhoc'. Ad-hoc fields are never required; a def bound
+// both ways is reported once, as a form field.
+async function loadTicketFields(client, ticketId, formId) {
+  const formFields = formId ? await loadFormFields(client, formId) : [];
+  const seen = new Set(formFields.map((f) => f.def_id));
+  const r = await client.query(
+    `SELECT FALSE AS required,
+            d.id AS def_id, d.slug, d.label, d.type, d.options, d.help_text, d.sensitive, d.agent_only,
+            d.computed, d.formula
+       FROM ticket_adhoc_fields af
+       JOIN custom_field_defs d ON d.id = af.field_def_id
+      WHERE af.ticket_id = $1 AND d.archived = FALSE
+      ORDER BY af.id`,
+    [ticketId]
+  );
+  return [
+    ...formFields.map((f) => ({ ...f, source: 'form' })),
+    ...r.rows.filter((f) => !seen.has(f.def_id)).map((f) => ({ ...f, source: 'adhoc' })),
+  ];
 }
 
 // Validate the submitted values against the form. `input` is
@@ -168,17 +191,18 @@ async function readValues(client, ticketId, { reveal = false } = {}) {
 }
 
 // Agent-side edit of an existing ticket's custom fields (incl. agent-only).
-// `input` is [{ def_id, value }]; only defs bound to the ticket's form are
-// honored. Empty value clears the field. Returns the list of changed slugs.
+// `input` is [{ def_id, value }]; only defs bound to the ticket (its form or
+// attached ad hoc) are honored. Empty value clears the field. Returns the
+// list of changed slugs.
 async function applyTicketPatch(client, ticketId, formId, input) {
-  const fields = await loadFormFields(client, formId);
+  const fields = await loadTicketFields(client, ticketId, formId);
   const byId = new Map(fields.map((f) => [f.def_id, f]));
   const toWrite = [];
   const toClear = [];
   const changed = [];
   for (const it of Array.isArray(input) ? input : []) {
     const def = byId.get(Number(it && it.def_id));
-    if (!def) continue; // not bound to this ticket's form — ignore
+    if (!def) continue; // not bound to this ticket — ignore
     if (def.computed) continue; // value comes from the formula; ignore manual writes
     const c = coerceValue(it.value, def);
     if (c.error) { const e = new Error(`${def.slug}: ${c.error}`); e.status = 400; throw e; }
@@ -203,9 +227,8 @@ async function applyTicketPatch(client, ticketId, formId, input) {
 // context, NOT the output of another computed field on the same form.
 async function recomputeForTicket(client, ticketId) {
   const tr = await client.query('SELECT form_id FROM tickets WHERE id = $1', [ticketId]);
-  const formId = tr.rows[0]?.form_id;
-  if (!formId) return [];
-  const fields = await loadFormFields(client, formId);
+  if (!tr.rows[0]) return [];
+  const fields = await loadTicketFields(client, ticketId, tr.rows[0].form_id);
   const computed = fields.filter((f) => f.computed && f.formula);
   if (!computed.length) return [];
 
@@ -231,4 +254,4 @@ async function recomputeForTicket(client, ticketId) {
   return results;
 }
 
-module.exports = { validateForForm, writeValues, readValues, loadFormFields, applyTicketPatch, coerceValue, recomputeForTicket };
+module.exports = { validateForForm, writeValues, readValues, loadFormFields, loadTicketFields, applyTicketPatch, coerceValue, recomputeForTicket };

@@ -841,7 +841,7 @@ router.get('/:id', requireAuth, async (req, res) => {
 
 // PATCH /api/tickets/:id/custom-fields — agent-side fill/update of custom
 // field values (including agent-only fields that are hidden from the
-// submitter form). Handlers only. Body: [{def_id, value}] or
+// submitter form, and fields attached ad hoc). Handlers only. Body: [{def_id, value}] or
 // { custom_fields: [...] }; an empty value clears the field. Returns the
 // refreshed (revealed) custom_fields.
 router.patch('/:id/custom-fields', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
@@ -849,7 +849,6 @@ router.patch('/:id/custom-fields', numericId, requireAuth, requireRole('Admin', 
     const ticketId = Number(req.params.id);
     const tk = await pool.query('SELECT id, form_id FROM tickets WHERE id = $1', [ticketId]);
     if (!tk.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
-    if (!tk.rows[0].form_id) return res.status(400).json({ error: 'Ticket has no form; no custom fields to edit' });
     const items = Array.isArray(req.body) ? req.body
       : (Array.isArray(req.body?.custom_fields) ? req.body.custom_fields : null);
     if (!items) return res.status(400).json({ error: 'expected array of {def_id, value}' });
@@ -879,6 +878,133 @@ router.patch('/:id/custom-fields', numericId, requireAuth, requireRole('Admin', 
   }
 });
 
+// GET /api/tickets/:id/fields — the ticket's editable field set (form
+// fields + ad-hoc fields), each tagged source: 'form' | 'adhoc'. Handlers.
+router.get('/:id/fields', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+  try {
+    const ticketId = Number(req.params.id);
+    const tk = await pool.query('SELECT id, form_id FROM tickets WHERE id = $1', [ticketId]);
+    if (!tk.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
+    res.json(await ticketCustomFields.loadTicketFields(pool, ticketId, tk.rows[0].form_id));
+  } catch (err) {
+    console.error('ticket fields list:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// POST /api/tickets/:id/fields — attach individual custom fields to a ticket
+// without a form (pick-and-choose). Body: { def_ids: [..] }. Eligible defs:
+// ticket entity, not archived, shared (project_id NULL) or local to the
+// ticket's project. Optional custom_fields [{def_id, value}] fills them in
+// the same call. Handlers only.
+router.post('/:id/fields', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+  try {
+    const user = req.session.user;
+    const ticketId = Number(req.params.id);
+    const raw = req.body?.def_ids;
+    if (!Array.isArray(raw) || !raw.length) return res.status(400).json({ error: 'def_ids required' });
+    const defIds = [...new Set(raw.map(Number))];
+    if (defIds.some((n) => !Number.isInteger(n) || n <= 0)) return res.status(400).json({ error: 'def_ids must be positive integers' });
+    if (defIds.length > 50) return res.status(400).json({ error: 'Too many fields (max 50)' });
+
+    const tk = await pool.query('SELECT id, project_id, form_id FROM tickets WHERE id = $1', [ticketId]);
+    const ticket = tk.rows[0];
+    if (!ticket) return res.status(404).json({ error: 'Ticket not found' });
+    const defs = await pool.query(
+      `SELECT id, label FROM custom_field_defs
+        WHERE id = ANY($1::int[]) AND entity_type = 'ticket' AND archived = FALSE
+          AND (project_id IS NULL OR project_id = $2)`,
+      [defIds, ticket.project_id]
+    );
+    if (defs.rows.length !== defIds.length) {
+      return res.status(400).json({ error: 'One or more fields not found, archived, or not available in this project' });
+    }
+
+    let badReq = null;
+    await transaction(async (client) => {
+      const existing = new Set((await ticketCustomFields.loadTicketFields(client, ticketId, ticket.form_id)).map((f) => f.def_id));
+      const added = [];
+      for (const d of defs.rows) {
+        if (existing.has(d.id)) continue; // already on the ticket via form or ad hoc
+        await client.query(
+          `INSERT INTO ticket_adhoc_fields (ticket_id, field_def_id, added_by) VALUES ($1, $2, $3)
+           ON CONFLICT DO NOTHING`,
+          [ticketId, d.id, user.id]
+        );
+        added.push(d.label);
+      }
+      if (added.length) {
+        await auditLog(client, {
+          ticketId, userId: user.id, action: 'custom_field_added', oldValue: '', newValue: added.join(', '),
+        });
+      }
+      if (Array.isArray(req.body?.custom_fields) && req.body.custom_fields.length) {
+        try {
+          await ticketCustomFields.applyTicketPatch(client, ticketId, ticket.form_id, req.body.custom_fields);
+        } catch (e) {
+          if (e.status === 400) badReq = e.message;
+          throw e;
+        }
+      }
+    }).catch((e) => { if (!badReq) throw e; });
+    if (badReq) return res.status(400).json({ error: badReq });
+
+    try { await ticketCustomFields.recomputeForTicket(pool, ticketId); }
+    catch (e) { console.error('recompute (add fields) failed:', e.message); }
+
+    res.json({
+      ok: true,
+      fields: await ticketCustomFields.loadTicketFields(pool, ticketId, ticket.form_id),
+      custom_fields: await ticketCustomFields.readValues(pool, ticketId, { reveal: true }),
+    });
+  } catch (err) {
+    console.error('ticket fields add:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// DELETE /api/tickets/:id/fields/:defId — detach an ad-hoc field and clear
+// its value. Form-bound fields can't be removed this way. Handlers only.
+router.delete('/:id/fields/:defId', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+  try {
+    const ticketId = Number(req.params.id);
+    const defId = Number(req.params.defId);
+    if (!Number.isInteger(defId) || defId <= 0) return res.status(400).json({ error: 'invalid field id' });
+    const tk = await pool.query('SELECT id, form_id FROM tickets WHERE id = $1', [ticketId]);
+    if (!tk.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
+    if (tk.rows[0].form_id) {
+      const bound = await pool.query(
+        'SELECT 1 FROM ticket_form_fields WHERE form_id = $1 AND field_def_id = $2',
+        [tk.rows[0].form_id, defId]
+      );
+      if (bound.rows[0]) return res.status(400).json({ error: 'Field belongs to the ticket\'s form and can\'t be removed' });
+    }
+    let removed = false;
+    await transaction(async (client) => {
+      const del = await client.query(
+        `DELETE FROM ticket_adhoc_fields WHERE ticket_id = $1 AND field_def_id = $2
+         RETURNING (SELECT label FROM custom_field_defs WHERE id = $2) AS label`,
+        [ticketId, defId]
+      );
+      if (!del.rows[0]) return;
+      removed = true;
+      await client.query('DELETE FROM custom_field_values WHERE ticket_id = $1 AND def_id = $2', [ticketId, defId]);
+      await auditLog(client, {
+        ticketId, userId: req.session.user.id, action: 'custom_field_removed', oldValue: del.rows[0].label, newValue: '',
+      });
+    });
+    if (!removed) return res.status(404).json({ error: 'Field is not attached to this ticket' });
+    res.json({
+      ok: true,
+      fields: await ticketCustomFields.loadTicketFields(pool, ticketId, tk.rows[0].form_id),
+      custom_fields: await ticketCustomFields.readValues(pool, ticketId, { reveal: true }),
+    });
+  } catch (err) {
+    console.error('ticket fields remove:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
 // POST /api/tickets/:id/recompute-fields — re-evaluate the ticket's computed
 // (formula) custom fields against the current ticket context and persist the
 // results. Handlers only. Use after editing the human inputs a formula reads.
@@ -888,7 +1014,6 @@ router.post('/:id/recompute-fields', numericId, requireAuth, requireRole('Admin'
     const ticketId = Number(req.params.id);
     const tk = await pool.query('SELECT id, form_id FROM tickets WHERE id = $1', [ticketId]);
     if (!tk.rows[0]) return res.status(404).json({ error: 'Ticket not found' });
-    if (!tk.rows[0].form_id) return res.status(400).json({ error: 'Ticket has no form; nothing to recompute' });
 
     let results = [];
     await transaction(async (client) => {

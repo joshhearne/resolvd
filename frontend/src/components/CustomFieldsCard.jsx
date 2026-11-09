@@ -6,30 +6,80 @@ import { api } from "../utils/api";
 // always-editable panel — each bound field renders with its current value, a
 // per-field Save, plus a master "Save all" when there's more than one. This is
 // where agents fill agent-only fields (e.g. a temp password) after the ticket
-// is created. Non-handlers get a read-only list (sensitive values masked).
+// is created. Handlers can also attach individual fields ad hoc ("+ Add
+// field") with or without a form, and remove ad-hoc ones again.
+// Non-handlers get a read-only list (sensitive values masked).
 export default function CustomFieldsCard({ ticket, canEdit, onUpdated, onApplyForm }) {
-  const [fields, setFields] = useState(null); // form's bound field defs
+  const [fields, setFields] = useState(null); // ticket's field set (form + ad hoc)
   const [draft, setDraft] = useState({}); // def_id -> value
   const [savingId, setSavingId] = useState(null); // def_id | 'all' | null
+  const [adding, setAdding] = useState(false);
+  const [available, setAvailable] = useState([]); // eligible defs for "+ Add field"
+  const [addId, setAddId] = useState("");
 
   const values = Array.isArray(ticket.custom_fields) ? ticket.custom_fields : [];
   const hasForm = !!ticket.form_id;
 
-  // Load the form's full field set once (handlers only). Seed the draft from
-  // current values; after a save we update the draft from the response rather
-  // than refetching, so this effect only depends on the ticket/form identity.
+  // Load the ticket's full field set (form + ad hoc) once (handlers only).
+  // Seed the draft from current values; after a save we update the draft from
+  // the response rather than refetching, so this effect only depends on the
+  // ticket/form/project identity.
   useEffect(() => {
-    if (!canEdit || !hasForm) { setFields(null); return; }
+    if (!canEdit) { setFields(null); return; }
     let alive = true;
-    api.get(`/api/forms/${ticket.form_id}`).then((r) => {
+    api.get(`/api/tickets/${ticket.id}/fields`).then((f) => {
       if (!alive) return;
-      const f = r.fields || [];
-      setFields(f);
-      setDraft(seedFrom(f, ticket.custom_fields));
+      setFields(f || []);
+      setDraft(seedFrom(f || [], ticket.custom_fields));
     }).catch(() => { if (alive) setFields(null); });
     return () => { alive = false; };
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [ticket.id, ticket.form_id, canEdit]);
+  }, [ticket.id, ticket.form_id, ticket.project_id, canEdit]);
+
+  // Eligible defs for "+ Add field": shared + this project's local ticket
+  // fields, fetched when the picker opens.
+  useEffect(() => {
+    if (!adding) return;
+    let alive = true;
+    api.get(`/api/custom-fields?entity_type=ticket&project_id=${ticket.project_id}`)
+      .then((defs) => { if (alive) setAvailable(defs || []); })
+      .catch(() => { if (alive) setAvailable([]); });
+    return () => { alive = false; };
+  }, [adding, ticket.project_id]);
+
+  function applyResponse(r) {
+    const nextFields = r.fields || fields || [];
+    const nextVals = r.custom_fields || [];
+    setFields(nextFields);
+    onUpdated?.(nextVals);
+    setDraft(seedFrom(nextFields, nextVals));
+  }
+
+  async function addField() {
+    if (!addId) return;
+    setSavingId("add");
+    try {
+      const r = await api.post(`/api/tickets/${ticket.id}/fields`, { def_ids: [Number(addId)] });
+      applyResponse(r);
+      const def = available.find((d) => String(d.id) === String(addId));
+      toast.success(`${def?.label || "Field"} added`);
+      setAddId("");
+      setAdding(false);
+    } catch (e) { toast.error(e.message); }
+    finally { setSavingId(null); }
+  }
+
+  async function removeField(f) {
+    const hasValue = values.some((v) => v.def_id === f.def_id && v.value != null && v.value !== "");
+    if (hasValue && !window.confirm(`Remove "${f.label}" from this ticket? Its value will be cleared.`)) return;
+    setSavingId(`rm-${f.def_id}`);
+    try {
+      const r = await api.delete(`/api/tickets/${ticket.id}/fields/${f.def_id}`);
+      applyResponse(r);
+      toast.success(`${f.label} removed`);
+    } catch (e) { toast.error(e.message); }
+    finally { setSavingId(null); }
+  }
 
   function seedFrom(f, vals) {
     const cur = Array.isArray(vals) ? vals : [];
@@ -100,24 +150,11 @@ export default function CustomFieldsCard({ ticket, canEdit, onUpdated, onApplyFo
     return <input type={inputType} value={v ?? ""} onChange={(e) => setV(e.target.value)} className={cls} autoComplete={f.sensitive ? "new-password" : "off"} placeholder={f.help_text || ""} />;
   }
 
-  // ---- Handler, ticket filed without a form: offer to apply one ----
-  if (canEdit && !hasForm && onApplyForm) {
-    return (
-      <div className="bg-surface rounded-lg border border-dashed border-border shadow-sm p-4 space-y-2">
-        <h2 className="text-sm font-semibold text-fg">Request type</h2>
-        <p className="text-xs text-fg-muted">
-          Filed without a form. Apply one to add its fields and move the
-          ticket to the right project if it was filed in the wrong one.
-        </p>
-        <button onClick={onApplyForm} className="btn btn-secondary btn-sm">Apply form…</button>
-      </div>
-    );
-  }
-
-  // ---- Handler editable panel ----
-  if (canEdit && hasForm) {
+  // ---- Handler editable panel (form fields + ad-hoc fields) ----
+  if (canEdit) {
     if (fields === null) return null; // still loading
-    if (!fields.length && !values.length) return null;
+    const present = new Set(fields.map((f) => f.def_id));
+    const addable = available.filter((d) => !present.has(d.id));
     const editable = fields.filter((f) => !f.computed);
     const derived = fields.filter((f) => f.computed);
     // Current value of a computed field, read from the ticket's stored values.
@@ -130,11 +167,18 @@ export default function CustomFieldsCard({ ticket, canEdit, onUpdated, onApplyFo
         <div className="flex items-center justify-between">
           <div className="min-w-0">
             <h2 className="text-sm font-semibold text-fg">Custom Fields</h2>
-            {ticket.form_name && (
+            {hasForm ? (
               <p className="text-xs text-fg-muted truncate">
                 {ticket.form_category_name ? `${ticket.form_category_name} › ` : ""}{ticket.form_name}
                 {onApplyForm && (
                   <button onClick={onApplyForm} className="ml-2 text-brand hover:underline">Change</button>
+                )}
+              </p>
+            ) : (
+              <p className="text-xs text-fg-muted">
+                No request type
+                {onApplyForm && (
+                  <button onClick={onApplyForm} className="ml-2 text-brand hover:underline">Apply form…</button>
                 )}
               </p>
             )}
@@ -151,12 +195,24 @@ export default function CustomFieldsCard({ ticket, canEdit, onUpdated, onApplyFo
               {f.label}{f.required && <span className="text-red-500"> *</span>}
               {f.agent_only && <span className="ml-1">(agent)</span>}
               {f.sensitive && <span className="ml-1">🔒</span>}
+              {f.source === "adhoc" && <span className="ml-1 text-fg-dim">(added)</span>}
             </label>
             <div className="flex items-center gap-2">
               <div className="flex-1 min-w-0">{control(f)}</div>
               <button onClick={() => save([f], f.def_id)} disabled={!!savingId} className="btn btn-secondary btn-sm shrink-0">
                 {savingId === f.def_id ? "…" : "Save"}
               </button>
+              {f.source === "adhoc" && (
+                <button
+                  onClick={() => removeField(f)}
+                  disabled={!!savingId}
+                  className="text-fg-dim hover:text-red-500 text-sm shrink-0 px-1"
+                  title={`Remove ${f.label} from this ticket`}
+                  aria-label={`Remove ${f.label}`}
+                >
+                  ×
+                </button>
+              )}
             </div>
           </div>
         ))}
@@ -182,7 +238,39 @@ export default function CustomFieldsCard({ ticket, canEdit, onUpdated, onApplyFo
             })}
           </div>
         )}
-        {!fields.length && <p className="text-sm text-fg-muted">This form has no fields.</p>}
+        {!fields.length && !adding && (
+          <p className="text-xs text-fg-muted">No fields yet. Apply a form, or add individual fields.</p>
+        )}
+
+        <div className="pt-2 border-t border-border">
+          {adding ? (
+            <div className="flex items-center gap-2">
+              <select
+                autoFocus
+                value={addId}
+                onChange={(e) => setAddId(e.target.value)}
+                className="flex-1 min-w-0 border border-border-strong rounded-md px-2 py-1.5 text-sm"
+              >
+                <option value="">{addable.length ? "Choose a field…" : "No other fields available"}</option>
+                {addable.map((d) => (
+                  <option key={d.id} value={d.id}>
+                    {d.label}{d.project_id ? "" : " · shared"}
+                  </option>
+                ))}
+              </select>
+              <button onClick={addField} disabled={!addId || !!savingId} className="btn btn-primary btn-sm shrink-0">
+                {savingId === "add" ? "…" : "Add"}
+              </button>
+              <button onClick={() => { setAdding(false); setAddId(""); }} className="btn btn-secondary btn-sm shrink-0">
+                Cancel
+              </button>
+            </div>
+          ) : (
+            <button onClick={() => setAdding(true)} className="text-xs text-brand hover:underline">
+              + Add field
+            </button>
+          )}
+        </div>
       </div>
     );
   }

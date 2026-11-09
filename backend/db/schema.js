@@ -1777,6 +1777,19 @@ async function initSchema() {
     // Which form filed a ticket (for display + reporting). NULL for legacy /
     // alert / email-ingested tickets that never went through a form.
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS form_id INTEGER REFERENCES ticket_forms(id) ON DELETE SET NULL`);
+    // Ad-hoc field bindings: individual custom fields a handler attached to
+    // one ticket outside of any form (pick-and-choose). The ticket's editable
+    // field set = its form's fields ∪ these. Never required.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ticket_adhoc_fields (
+        id SERIAL PRIMARY KEY,
+        ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+        field_def_id INTEGER NOT NULL REFERENCES custom_field_defs(id) ON DELETE CASCADE,
+        added_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(ticket_id, field_def_id)
+      )
+    `);
 
     // Audit + dedup log. UNIQUE(source_id, external_event_id) blocks Zabbix
     // resends from spawning duplicate tickets even if the mapper logic
