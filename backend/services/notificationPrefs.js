@@ -10,7 +10,6 @@ const EVENT_TYPES = [
   'status_change',
   'pending_review',
   'follow_up',
-  'follower_added',
 ];
 
 // Server-side override: regardless of stored prefs, these events always
@@ -34,9 +33,6 @@ const DEFAULT_NOTIFICATION_PREFS = Object.freeze({
   status_change:  { in_app: true, email: true,  push: false },
   pending_review: { in_app: true, email: true,  push: false },
   follow_up:      { in_app: true, email: true,  push: false },
-  // follower_added — someone else added me as a follower (CC on create,
-  // or added from the ticket's follower manager).
-  follower_added: { in_app: true, email: true,  push: false },
 });
 
 const DEFAULT_EMAIL_DIGEST = 'instant';

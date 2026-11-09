@@ -1,4 +1,4 @@
-import React, { useState, useEffect, useMemo } from "react";
+import React, { useState, useEffect } from "react";
 import { useNavigate, useSearchParams, useParams } from "react-router-dom";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
@@ -13,7 +13,6 @@ import DuplicateWarningModal from "../components/DuplicateWarningModal";
 import MarkdownEditor from "../components/MarkdownEditor";
 import AiRewriteButton from "../components/AiRewriteButton";
 import PageShell from "../components/PageShell";
-import FollowerPicker from "../components/FollowerPicker";
 
 export default function NewTicket() {
   const navigate = useNavigate();
@@ -43,12 +42,6 @@ export default function NewTicket() {
   const [pendingFiles, setPendingFiles] = useState([]);
   const [projectContacts, setProjectContacts] = useState([]);
   const [selectedContactIds, setSelectedContactIds] = useState([]);
-  // CC'd followers ({ id, display_name, email }) — reset on project change
-  // since the project's follower restriction decides who is eligible.
-  const [ccFollowers, setCcFollowers] = useState([]);
-  // Automatic followers (you, plus the submitter when filing on behalf)
-  // show as chips too; removing one opts them out of the auto-follow.
-  const [removedAutoIds, setRemovedAutoIds] = useState([]);
   const [users, setUsers] = useState([]);
   const [onBehalfOfId, setOnBehalfOfId] = useState("");
   const canFileOnBehalf = ["Admin", "Manager"].includes(user?.role);
@@ -106,8 +99,6 @@ export default function NewTicket() {
   const hasExternalVendor = selectedProject
     ? selectedProject.has_external_vendor !== false
     : true;
-
-  useEffect(() => { setCcFollowers([]); }, [form.project_id]);
 
   useEffect(() => {
     if (!form.project_id) { setProjectContacts([]); setSelectedContactIds([]); return; }
@@ -247,27 +238,6 @@ export default function NewTicket() {
     );
   }
 
-  const autoFollowers = useMemo(() => {
-    const list = [];
-    if (onBehalfOfId) {
-      const u = users.find((x) => String(x.id) === String(onBehalfOfId));
-      if (u) list.push({ id: u.id, display_name: u.display_name, email: u.email, tag: "submitter" });
-    }
-    if (user?.id) list.push({ id: user.id, display_name: user.displayName, email: user.email, tag: "you" });
-    return list;
-  }, [onBehalfOfId, users, user]);
-  const autoIds = autoFollowers.map((a) => a.id);
-  const followerChips = [
-    ...autoFollowers.filter((a) => !removedAutoIds.includes(a.id)),
-    ...ccFollowers,
-  ];
-  function setFollowerChips(next) {
-    // Re-picking a removed auto follower restores the auto-follow rather
-    // than duplicating them as a CC.
-    setCcFollowers(next.filter((x) => !autoIds.includes(x.id)));
-    setRemovedAutoIds(autoIds.filter((id) => !next.some((x) => x.id === id)));
-  }
-
   function toggleContact(id) {
     setSelectedContactIds(prev =>
       prev.includes(id) ? prev.filter(x => x !== id) : [...prev, id]
@@ -338,10 +308,6 @@ export default function NewTicket() {
         urgency: Number(form.urgency),
         external_ticket_ref: form.external_ticket_ref.trim() || null,
         contact_ids: selectedContactIds,
-        ...(ccFollowers.length ? { follower_ids: ccFollowers.map((f) => f.id) } : {}),
-        ...(removedAutoIds.some((id) => autoIds.includes(id))
-          ? { exclude_follower_ids: removedAutoIds.filter((id) => autoIds.includes(id)) }
-          : {}),
         submitted_by: onBehalfOfId ? Number(onBehalfOfId) : undefined,
         ...(aiLogId ? { ai_rewrite_log_id: aiLogId } : {}),
         ...(formId ? { form_id: Number(formId) } : {}),
@@ -648,22 +614,6 @@ export default function NewTicket() {
             )}
           </div>
         )}
-
-        <div>
-          <label className="block text-sm font-medium text-fg mb-1">
-            CC / Followers{" "}
-            <span className="text-fg-dim font-normal">(optional)</span>
-          </label>
-          <FollowerPicker
-            projectId={form.project_id || null}
-            value={followerChips}
-            onChange={setFollowerChips}
-          />
-          <p className="text-xs text-fg-dim mt-1">
-            Followers get updates on this ticket; anyone you add is notified now.
-            Remove a chip, including your own, to leave that person off.
-          </p>
-        </div>
 
         <div>
           <label className="block text-sm font-medium text-fg mb-1">

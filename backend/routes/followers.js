@@ -2,8 +2,6 @@ const express = require('express');
 const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { getRestrictionDefaults, effectiveFlag } = require('../services/restrictions');
-const { fanoutFollowerAdded } = require('../services/notificationFanout');
-const { decryptRow } = require('../services/fields');
 
 const router = express.Router({ mergeParams: true });
 
@@ -85,7 +83,7 @@ router.post('/followers', requireAuth, requireRole('Admin', 'Manager', 'Tech'), 
       }
     }
 
-    const ins = await pool.query(
+    await pool.query(
       'INSERT INTO ticket_followers (ticket_id, user_id) VALUES ($1, $2) ON CONFLICT DO NOTHING',
       [req.params.ticketId, userId]
     );
@@ -95,24 +93,6 @@ router.post('/followers', requireAuth, requireRole('Admin', 'Manager', 'Tech'), 
       [req.params.ticketId, req.session.user.id, String(userId), `Follower added by ${req.session.user.displayName || req.session.user.email}`]
     );
     res.json({ ok: true });
-
-    // Notify the added user — only on a fresh add, never for adding yourself.
-    if (ins.rowCount > 0 && userId !== req.session.user.id) {
-      try {
-        const t = await pool.query(`SELECT * FROM tickets WHERE id = $1`, [req.params.ticketId]);
-        if (t.rows[0]) {
-          await decryptRow('tickets', t.rows[0]);
-          await fanoutFollowerAdded(pool, {
-            ticket: t.rows[0],
-            userIds: [userId],
-            actorId: req.session.user.id,
-            actorName: req.session.user.displayName,
-          });
-        }
-      } catch (err) {
-        console.error('fanoutFollowerAdded (manual add) failed:', err.message);
-      }
-    }
   } catch (err) {
     console.error('add follower error:', err);
     res.status(500).json({ error: 'Database error' });
