@@ -1,0 +1,21 @@
+# Build the backend and frontend from this checkout instead of pulling the
+# published images:
+#
+#   ./scripts/build-with-version.sh          # build, stamped with the git version
+#   docker compose -f docker-compose.yml -f docker-compose.build.yml up -d
+#
+# Images built this way are tagged resolvd-*:local, so they never collide
+# with (or get replaced by) the published ones.
+services:
+  backend:
+    image: resolvd-backend:local
+    build:
+      context: ./backend
+      args:
+        APP_VERSION: ${APP_VERSION:-dev}
+        APP_COMMIT: ${APP_COMMIT:-unknown}
+        BUILT_AT: ${BUILT_AT:-}
+
+  frontend:
+    image: resolvd-frontend:local
+    build: ./frontend

@@ -97,6 +97,22 @@ describe('addBusinessMinutes — holidays', () => {
     expect(out.toISOString()).toBe('2026-06-09T15:00:00.000Z');
   });
 
+  it('skips every day of a multi-day holiday', () => {
+    // Thanksgiving Thu 11-26 + Fri 11-27 2026. Wed 11-25 4pm CST (22:00Z)
+    // + 2h → Mon 11-30 10am CST (16:00Z).
+    const bh = { ...BH_MF95_CT, holidays: [{ kind: 'nth_weekday', month: 11, weekday: 4, nth: 4, span_days: 2 }] };
+    const out = addBusinessMinutes(new Date('2026-11-25T22:00:00Z'), 120, bh);
+    expect(out.toISOString()).toBe('2026-11-30T16:00:00.000Z');
+  });
+
+  it('ends the day at an early close', () => {
+    // Early out at noon Wed 11-25. 11am CST (17:00Z) + 2h: one hour to
+    // noon, the other Thu 9–10am CST (16:00Z).
+    const bh = { ...BH_MF95_CT, holidays: [{ date: '2026-11-25', closes_at: '12:00' }] };
+    const out = addBusinessMinutes(new Date('2026-11-25T17:00:00Z'), 120, bh);
+    expect(out.toISOString()).toBe('2026-11-26T16:00:00.000Z');
+  });
+
   it('ignores holidays outside the window and malformed entries', () => {
     const bh = { ...BH_MF95_CT, holidays: [{ date: '2026-06-06' }, { date: 'nope' }, null] };
     const out = addBusinessMinutes(new Date('2026-06-05T21:00:00Z'), 120, bh);

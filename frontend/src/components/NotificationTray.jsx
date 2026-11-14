@@ -1,6 +1,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { useNavigate } from "react-router-dom";
 import { api } from "../utils/api";
+import { openWhatsNew } from "./WhatsNew";
 
 const POLL_MS = 30_000;
 
@@ -32,7 +33,12 @@ export default function NotificationTray() {
   useEffect(() => {
     load();
     const id = setInterval(load, POLL_MS);
-    return () => clearInterval(id);
+    // Closing the What's new pop-up marks its bell entries read.
+    window.addEventListener("resolvd:notifications-changed", load);
+    return () => {
+      clearInterval(id);
+      window.removeEventListener("resolvd:notifications-changed", load);
+    };
   }, []);
 
   useEffect(() => {
@@ -61,7 +67,10 @@ export default function NotificationTray() {
 
   function handleAction(item) {
     if (!item.read_at) markRead(item.id);
-    if (item.data?.ticket_id) {
+    if (item.type === "system_update" && item.data?.release_id) {
+      openWhatsNew(item.data.release_id);
+      setOpen(false);
+    } else if (item.data?.ticket_id) {
       const state = item.data.comment_id ? { highlightComment: item.data.comment_id } : undefined;
       navigate(`/tickets/${item.data.ticket_id}`, { state });
       setOpen(false);
@@ -122,7 +131,7 @@ export default function NotificationTray() {
               <div
                 key={item.id}
                 onClick={() => handleAction(item)}
-                className={`px-3 py-2.5 border-b border-border last:border-0 ${!item.read_at ? "bg-brand/5" : ""} ${item.data?.ticket_id || item.type === "unmatched_cc" || item.type === "user_auto_provisioned" || item.type === "contract_block_alert" ? "cursor-pointer hover:bg-surface-2" : ""}`}
+                className={`px-3 py-2.5 border-b border-border last:border-0 ${!item.read_at ? "bg-brand/5" : ""} ${item.data?.ticket_id || item.type === "unmatched_cc" || item.type === "user_auto_provisioned" || item.type === "contract_block_alert" || item.type === "system_update" ? "cursor-pointer hover:bg-surface-2" : ""}`}
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0 flex-1">

@@ -1,0 +1,16 @@
+# Template: installed by deploy/install-updater.sh as
+# /etc/systemd/system/resolvd-update.timer.
+#
+# Checks every 10 minutes. The update itself only happens at the admin's
+# update hour (Admin → System health) or when they press "Update now";
+# other runs just report what's available.
+[Unit]
+Description=Resolvd update check every 10 minutes
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=10min
+RandomizedDelaySec=60
+
+[Install]
+WantedBy=timers.target

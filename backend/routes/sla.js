@@ -50,7 +50,8 @@ router.get('/business-hours', requireAuth, requireRole('Admin', 'Manager'), asyn
                SELECT json_agg(json_build_object(
                         'id', h.id, 'kind', h.kind, 'date', to_char(h.holiday_date, 'YYYY-MM-DD'),
                         'name', h.name, 'recurring', h.recurring, 'month', h.month,
-                        'weekday', h.weekday, 'nth', h.nth, 'observed', h.observed)
+                        'weekday', h.weekday, 'nth', h.nth, 'observed', h.observed,
+                        'span_days', h.span_days, 'closes_at', to_char(h.closes_at, 'HH24:MI'))
                       ORDER BY COALESCE(EXTRACT(MONTH FROM h.holiday_date)::int, h.month), h.id)
                  FROM business_hours_holidays h WHERE h.business_hours_id = b.id
              ), '[]'::json) AS holidays
@@ -172,8 +173,10 @@ function localToday(tz) {
 }
 
 // POST /api/sla/business-hours/:id/holidays
-//   { kind: 'date', date: 'YYYY-MM-DD', recurring?, name?, observed? }
-//   { kind: 'nth_weekday', month: 1-12, weekday: 0-6, nth: 1-5 | -1, name?, observed? }
+//   { kind: 'date', date: 'YYYY-MM-DD', recurring?, name?, observed?, span_days?, closes_at? }
+//   { kind: 'nth_weekday', month: 1-12, weekday: 0-6, nth: 1-5 | -1, name?, observed?, span_days?, closes_at? }
+// span_days 1-14 (default 1) closes consecutive days; closes_at 'HH:MM'
+// makes a single day an early close instead of a full day off.
 router.post('/business-hours/:id/holidays', requireAuth, requireRole('Admin'), async (req, res) => {
   const b = req.body || {};
   const kind = b.kind || 'date';
@@ -181,9 +184,20 @@ router.post('/business-hours/:id/holidays', requireAuth, requireRole('Admin'), a
   if (kind === 'date' && (!/^\d{4}-\d{2}-\d{2}$/.test(String(b.date || '')) || Number.isNaN(Date.parse(`${b.date}T00:00:00Z`)))) {
     return res.status(400).json({ error: 'date must be YYYY-MM-DD' });
   }
+  const spanDays = b.span_days == null || b.span_days === '' ? 1 : Number(b.span_days);
+  if (!Number.isInteger(spanDays) || spanDays < 1 || spanDays > holidays.MAX_SPAN) {
+    return res.status(400).json({ error: `span_days must be 1–${holidays.MAX_SPAN}` });
+  }
+  const closesAt = b.closes_at ? String(b.closes_at).slice(0, 5) : null;
+  if (closesAt && !/^([01]\d|2[0-3]):[0-5]\d$/.test(closesAt)) {
+    return res.status(400).json({ error: 'closes_at must be HH:MM' });
+  }
+  if (closesAt && spanDays !== 1) {
+    return res.status(400).json({ error: 'an early close is a single day — use span_days 1' });
+  }
   const rule = kind === 'date'
-    ? { kind, date: b.date, recurring: !!b.recurring }
-    : { kind, month: b.month, weekday: b.weekday, nth: b.nth };
+    ? { kind, date: b.date, recurring: !!b.recurring, span_days: spanDays, closes_at: closesAt }
+    : { kind, month: b.month, weekday: b.weekday, nth: b.nth, span_days: spanDays, closes_at: closesAt };
   if (!holidays.validRule(rule)) {
     return res.status(400).json({ error: 'nth_weekday needs month 1–12, weekday 0–6 (Sun–Sat) and nth 1–5 or -1 (last)' });
   }
@@ -193,10 +207,12 @@ router.post('/business-hours/:id/holidays', requireAuth, requireRole('Admin'), a
   try {
     const r = await pool.query(
       `INSERT INTO business_hours_holidays
-         (business_hours_id, kind, holiday_date, recurring, month, weekday, nth, observed, name)
-       VALUES ($1, $2, $3::date, $4, $5, $6, $7, $8, $9)
+         (business_hours_id, kind, holiday_date, recurring, month, weekday, nth, observed, name,
+          span_days, closes_at)
+       VALUES ($1, $2, $3::date, $4, $5, $6, $7, $8, $9, $10, $11::time)
        RETURNING id, kind, to_char(holiday_date, 'YYYY-MM-DD') AS date, recurring,
-                 month, weekday, nth, observed, name`,
+                 month, weekday, nth, observed, name, span_days,
+                 to_char(closes_at, 'HH24:MI') AS closes_at`,
       [
         Number(req.params.id), kind,
         kind === 'date' ? b.date : null,
@@ -206,6 +222,7 @@ router.post('/business-hours/:id/holidays', requireAuth, requireRole('Admin'), a
         kind === 'nth_weekday' ? b.nth : null,
         !!b.observed,
         b.name ? String(b.name).trim().slice(0, 120) : null,
+        spanDays, closesAt,
       ]
     );
     res.status(201).json(r.rows[0]);
@@ -512,6 +529,11 @@ async function getAccessibleProjectIds(user) {
 // project so the user can see where their pain is.
 router.get('/dashboard', requireAuth, async (req, res) => {
   try {
+    // Team-wide SLA analytics are hidden from Submitters (#102); their
+    // curated dashboard is /api/dashboard/mine.
+    if (req.session.user.role === 'Submitter') {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
     const accessible = await getAccessibleProjectIds(req.session.user);
     // Caller-requested project narrow (comma-separated). Intersects
     // with `accessible` so a member can never widen past their scope.
@@ -540,6 +562,8 @@ router.get('/dashboard', requireAuth, async (req, res) => {
         mtd_by_project: [],
         at_risk: [],
         breached: [],
+        paused_now: [],
+        mtd_late: [],
       });
     }
 
@@ -560,8 +584,10 @@ router.get('/dashboard', requireAuth, async (req, res) => {
     // terminal (Closed) and NOT in the resolved_pending_close grace window.
     // Without this guard the breach/open counts swept in legacy Closed tickets
     // that never got sla_first_response_at stamped — inflating "Open w/ SLA
-    // clock" with hundreds of done tickets. Pause-second accumulators below
-    // are intentionally left unguarded (historical totals).
+    // clock" with hundreds of done tickets. Pause time is in-flight only:
+    // the current pause on live tickets that are paused right now. The
+    // historical sla_*_seconds accumulators summed thousands of days of
+    // long-finished waits, which wasn't actionable.
     const live = `(s.is_terminal IS NOT TRUE AND COALESCE(s.semantic_tag,'') <> 'resolved_pending_close')`;
     const counts = await pool.query(`
       SELECT
@@ -581,18 +607,14 @@ router.get('/dashboard', requireAuth, async (req, res) => {
               (sla_response_breached = TRUE AND sla_first_response_at IS NULL)
            OR (sla_resolve_breached  = TRUE AND resolved_at IS NULL)
         ) THEN 1 ELSE 0 END)::int AS breached_clock,
-        SUM(
-          sla_vendor_wait_seconds
-          + CASE WHEN sla_pause_kind = 'vendor' AND sla_paused_at IS NOT NULL
-                 THEN GREATEST(0, EXTRACT(EPOCH FROM (NOW() - sla_paused_at))::int)
-                 ELSE 0 END
-        )::bigint AS vendor_wait_seconds,
-        SUM(
-          sla_internal_hold_seconds
-          + CASE WHEN sla_pause_kind = 'internal' AND sla_paused_at IS NOT NULL
-                 THEN GREATEST(0, EXTRACT(EPOCH FROM (NOW() - sla_paused_at))::int)
-                 ELSE 0 END
-        )::bigint AS internal_hold_seconds
+        COALESCE(SUM(CASE WHEN ${live} AND sla_pause_kind = 'vendor' AND sla_paused_at IS NOT NULL
+                 THEN GREATEST(0, EXTRACT(EPOCH FROM (NOW() - sla_paused_at))::bigint)
+                 ELSE 0 END), 0)::bigint AS vendor_wait_seconds,
+        COALESCE(SUM(CASE WHEN ${live} AND sla_pause_kind = 'internal' AND sla_paused_at IS NOT NULL
+                 THEN GREATEST(0, EXTRACT(EPOCH FROM (NOW() - sla_paused_at))::bigint)
+                 ELSE 0 END), 0)::bigint AS internal_hold_seconds,
+        SUM(CASE WHEN ${live} AND sla_pause_kind = 'vendor'   AND sla_paused_at IS NOT NULL THEN 1 ELSE 0 END)::int AS vendor_paused_count,
+        SUM(CASE WHEN ${live} AND sla_pause_kind = 'internal' AND sla_paused_at IS NOT NULL THEN 1 ELSE 0 END)::int AS internal_paused_count
       FROM tickets t
       LEFT JOIN statuses s ON s.kind = 'internal' AND s.name = t.internal_status
       WHERE 1=1 ${scopeWhere}
@@ -628,47 +650,130 @@ router.get('/dashboard', requireAuth, async (req, res) => {
       ) DESC
     `, scopeParams);
 
-    // At-risk + breached samples (capped) for inline drill-down.
+    // Actionable ticket lists. Each row carries owner + project + status
+    // so the card can say *what* is stuck and *who* has it. All scoped to
+    // live tickets (not Closed / not in the resolved grace window).
+    const tScope = scopeWhere ? 'AND t.project_id = ANY($1)' : '';
+    const ticketCols = `t.id, t.internal_ref, t.title, t.title_enc, t.effective_priority,
+             t.internal_status, t.project_id, p.prefix AS project_prefix,
+             asgn.display_name AS assigned_to_name`;
+    const ticketJoins = `LEFT JOIN statuses s ON s.kind = 'internal' AND s.name = t.internal_status
+        LEFT JOIN projects p ON p.id = t.project_id
+        LEFT JOIN users asgn ON asgn.id = t.assigned_to`;
+
+    // Due soon: response within 1h, resolve within 4h, clock running.
     const atRisk = await pool.query(`
-      SELECT id, internal_ref, title, title_enc, effective_priority, sla_response_due_at, sla_resolve_due_at,
-             sla_first_response_at, resolved_at, sla_paused_at, project_id
-        FROM tickets
-       WHERE sla_paused_at IS NULL
+      SELECT ${ticketCols},
+             CASE WHEN t.sla_response_due_at IS NOT NULL AND t.sla_first_response_at IS NULL
+                       AND t.sla_response_breached = FALSE
+                       AND t.sla_response_due_at < NOW() + INTERVAL '1 hour'
+                  THEN 'response' ELSE 'resolve' END AS clock,
+             LEAST(
+               CASE WHEN t.sla_first_response_at IS NULL AND t.sla_response_breached = FALSE THEN t.sla_response_due_at END,
+               CASE WHEN t.resolved_at IS NULL AND t.sla_resolve_breached = FALSE THEN t.sla_resolve_due_at END
+             ) AS due_at
+        FROM tickets t
+        ${ticketJoins}
+       WHERE ${live}
+         AND t.sla_paused_at IS NULL
          AND (
-           (sla_response_due_at IS NOT NULL AND sla_first_response_at IS NULL AND sla_response_breached = FALSE
-              AND sla_response_due_at < NOW() + INTERVAL '1 hour')
+           (t.sla_response_due_at IS NOT NULL AND t.sla_first_response_at IS NULL AND t.sla_response_breached = FALSE
+              AND t.sla_response_due_at < NOW() + INTERVAL '1 hour')
            OR
-           (sla_resolve_due_at IS NOT NULL AND resolved_at IS NULL AND sla_resolve_breached = FALSE
-              AND sla_resolve_due_at < NOW() + INTERVAL '4 hours')
+           (t.sla_resolve_due_at IS NOT NULL AND t.resolved_at IS NULL AND t.sla_resolve_breached = FALSE
+              AND t.sla_resolve_due_at < NOW() + INTERVAL '4 hours')
          )
-         ${scopeWhere}
-       ORDER BY LEAST(COALESCE(sla_response_due_at, 'infinity'), COALESCE(sla_resolve_due_at, 'infinity')) ASC
-       LIMIT 25
+         ${tScope}
+       ORDER BY due_at ASC NULLS LAST
+       LIMIT 15
     `, scopeParams);
     await decryptRows('tickets', atRisk.rows);
 
+    // Breached and still owed — the "we're late right now" list, most
+    // overdue first.
     const breached = await pool.query(`
-      SELECT id, internal_ref, title, title_enc, effective_priority, sla_response_due_at, sla_resolve_due_at,
-             sla_response_breached, sla_resolve_breached, sla_first_response_at, resolved_at, project_id
-        FROM tickets
-       WHERE ((sla_response_breached = TRUE AND sla_first_response_at IS NULL)
-           OR (sla_resolve_breached  = TRUE AND resolved_at IS NULL))
-         ${scopeWhere}
-       ORDER BY GREATEST(
-           COALESCE(sla_response_due_at, '-infinity'),
-           COALESCE(sla_resolve_due_at,  '-infinity')
-       ) DESC
-       LIMIT 25
+      SELECT ${ticketCols},
+             (t.sla_response_breached = TRUE AND t.sla_first_response_at IS NULL) AS response_breached,
+             (t.sla_resolve_breached  = TRUE AND t.resolved_at IS NULL)           AS resolve_breached,
+             t.sla_paused_at IS NOT NULL AS paused,
+             GREATEST(
+               CASE WHEN t.sla_response_breached = TRUE AND t.sla_first_response_at IS NULL
+                    THEN EXTRACT(EPOCH FROM (NOW() - t.sla_response_due_at)) END,
+               CASE WHEN t.sla_resolve_breached = TRUE AND t.resolved_at IS NULL
+                    THEN EXTRACT(EPOCH FROM (NOW() - t.sla_resolve_due_at)) END
+             )::bigint AS overdue_seconds
+        FROM tickets t
+        ${ticketJoins}
+       WHERE ${live}
+         AND ((t.sla_response_breached = TRUE AND t.sla_first_response_at IS NULL)
+           OR (t.sla_resolve_breached  = TRUE AND t.resolved_at IS NULL))
+         ${tScope}
+       ORDER BY overdue_seconds DESC NULLS LAST
+       LIMIT 15
     `, scopeParams);
     await decryptRows('tickets', breached.rows);
 
-    // Per-vendor breakdown of live vendor wait. A ticket attributes
-    // its entire vendor_wait_seconds to the FIRST vendor contact's
-    // company (earliest added_at, tiebreaker by contact id). When the
-    // ticket has no vendor contact, the time sits under
-    // (unattributed) so the dashboard total still reconciles with
-    // the per-vendor sum. Includes the live in-flight pause delta so
-    // a currently-paused ticket shows up before the next status flip.
+    // Paused right now — what we're stuck on (vendor or in-house) and for
+    // how long, longest first. Vendor = first vendor contact's company.
+    const pausedNow = await pool.query(`
+      SELECT ${ticketCols},
+             t.sla_pause_kind AS pause_kind,
+             t.sla_paused_at  AS paused_at,
+             GREATEST(0, EXTRACT(EPOCH FROM (NOW() - t.sla_paused_at)))::bigint AS paused_seconds,
+             co.name AS vendor_name, co.name_enc AS vendor_name_enc
+        FROM tickets t
+        ${ticketJoins}
+        LEFT JOIN LATERAL (
+          SELECT c.company_id
+            FROM ticket_contacts tc
+            JOIN contacts c ON c.id = tc.contact_id
+            JOIN companies vco ON vco.id = c.company_id AND vco.kind = 'vendor'
+           WHERE tc.ticket_id = t.id
+           ORDER BY tc.added_at ASC NULLS LAST, c.id ASC
+           LIMIT 1
+        ) tv ON t.sla_pause_kind = 'vendor'
+        LEFT JOIN companies co ON co.id = tv.company_id
+       WHERE ${live}
+         AND t.sla_paused_at IS NOT NULL
+         ${tScope}
+       ORDER BY t.sla_paused_at ASC
+       LIMIT 15
+    `, scopeParams);
+    await decryptRows('tickets', pausedNow.rows);
+
+    // Late this month — every SLA clock that breached since the 1st, one
+    // row per clock, with how late it was (or still is). Answers "what
+    // were we late delivering?".
+    const mtdLate = await pool.query(`
+      WITH late AS (
+        SELECT t.id AS ticket_id, 'response' AS clock,
+               t.sla_response_due_at AS due_at,
+               t.sla_first_response_at AS met_at,
+               EXTRACT(EPOCH FROM (COALESCE(t.sla_first_response_at, NOW()) - t.sla_response_due_at))::bigint AS late_seconds
+          FROM tickets t
+         WHERE t.sla_response_breached_at >= date_trunc('month', NOW()) ${tScope}
+        UNION ALL
+        SELECT t.id, 'resolve',
+               t.sla_resolve_due_at,
+               t.resolved_at,
+               EXTRACT(EPOCH FROM (COALESCE(t.resolved_at, NOW()) - t.sla_resolve_due_at))::bigint
+          FROM tickets t
+         WHERE t.sla_resolve_breached_at >= date_trunc('month', NOW()) ${tScope}
+      )
+      SELECT ${ticketCols}, l.clock, l.due_at, l.met_at, l.late_seconds
+        FROM late l
+        JOIN tickets t ON t.id = l.ticket_id
+        ${ticketJoins}
+       ORDER BY (l.met_at IS NULL) DESC, l.late_seconds DESC NULLS LAST
+       LIMIT 20
+    `, scopeParams);
+    await decryptRows('tickets', mtdLate.rows);
+
+    // Per-vendor breakdown of in-flight vendor wait: live tickets paused
+    // on a vendor right now, attributed to the FIRST vendor contact's
+    // company (earliest added_at, tiebreaker by contact id). No vendor
+    // contact → (unattributed), so the per-vendor sum reconciles with
+    // the card total.
     const vendorWaitByVendor = await pool.query(`
       WITH ticket_vendor AS (
         SELECT t.id AS ticket_id,
@@ -685,23 +790,15 @@ router.get('/dashboard', requireAuth, async (req, res) => {
       SELECT tv.vendor_company_id,
              co.name AS vendor_name,
              co.name_enc AS vendor_name_enc,
-             SUM(
-               t.sla_vendor_wait_seconds
-               + CASE WHEN t.sla_pause_kind = 'vendor' AND t.sla_paused_at IS NOT NULL
-                      THEN GREATEST(0, EXTRACT(EPOCH FROM (NOW() - t.sla_paused_at))::int)
-                      ELSE 0 END
-             )::bigint AS vendor_wait_seconds,
-             COUNT(*) FILTER (
-               WHERE t.sla_pause_kind = 'vendor' AND t.sla_paused_at IS NOT NULL
-             )::int AS active_paused_tickets
+             SUM(GREATEST(0, EXTRACT(EPOCH FROM (NOW() - t.sla_paused_at)))::bigint)::bigint AS vendor_wait_seconds,
+             COUNT(*)::int AS active_paused_tickets
         FROM tickets t
         JOIN ticket_vendor tv ON tv.ticket_id = t.id
         LEFT JOIN companies co ON co.id = tv.vendor_company_id
+        LEFT JOIN statuses s ON s.kind = 'internal' AND s.name = t.internal_status
        WHERE 1=1 ${scopeWhere ? 'AND t.project_id = ANY($1)' : ''}
-         AND (
-           t.sla_vendor_wait_seconds > 0
-           OR (t.sla_pause_kind = 'vendor' AND t.sla_paused_at IS NOT NULL)
-         )
+         AND ${live}
+         AND t.sla_pause_kind = 'vendor' AND t.sla_paused_at IS NOT NULL
        GROUP BY tv.vendor_company_id, co.name, co.name_enc
        ORDER BY vendor_wait_seconds DESC
     `, scopeParams);
@@ -719,9 +816,21 @@ router.get('/dashboard', requireAuth, async (req, res) => {
       delete row.vendor_name_enc;
     }
 
+    for (const row of pausedNow.rows) {
+      if (row.vendor_name_enc && !row.vendor_name) {
+        try {
+          const { decrypt } = require('../services/crypto');
+          row.vendor_name = await decrypt(row.vendor_name_enc, 'companies.name');
+        } catch { /* leave null */ }
+      }
+      delete row.vendor_name_enc;
+    }
+
     res.json({
       scope: accessible === null ? 'all' : 'project_member',
       live: counts.rows[0],
+      paused_now: pausedNow.rows,
+      mtd_late: mtdLate.rows,
       mtd_total: mtdTotal.rows[0],
       mtd_by_project: mtdByProject.rows,
       vendor_wait_by_vendor: vendorWaitByVendor.rows,
@@ -755,6 +864,9 @@ router.get('/dashboard', requireAuth, async (req, res) => {
 //   until      — ISO8601 upper bound for entered_at (optional).
 router.get('/time-in-status', requireAuth, async (req, res) => {
   try {
+    if (req.session.user.role === 'Submitter') {
+      return res.status(403).json({ error: 'Forbidden' });
+    }
     const accessible = await getAccessibleProjectIds(req.session.user);
     if (accessible !== null && accessible.length === 0) {
       return res.json({ scope: 'project_member', rows: [] });

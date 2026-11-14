@@ -11,6 +11,7 @@ const { buildWritePatch, decryptRow, decryptRows, getMode } = require('../servic
 const { encrypt, decrypt } = require('../services/crypto');
 const { logSupportRead } = require('../middleware/supportAccess');
 const { sendVendorEmail } = require('../services/vendorOutbound');
+const { canViewTicket } = require('../services/ticketVisibility');
 
 const UPLOADS_DIR = process.env.UPLOADS_DIR || '/data/uploads';
 
@@ -178,6 +179,7 @@ router.get('/attachments/:id/view', requireAuth, async (req, res) => {
     const result = await pool.query('SELECT * FROM attachments WHERE id = $1', [req.params.id]);
     const attachment = result.rows[0];
     if (!attachment) return res.status(404).end();
+    if (!(await canViewTicket(req.session.user, attachment.ticket_id))) return res.status(404).end();
     await decryptRow('attachments', attachment);
     const filePath = path.join(UPLOADS_DIR, attachment.filename);
     if (!fs.existsSync(filePath)) return res.status(404).end();
@@ -197,6 +199,9 @@ router.get('/attachments/:id', requireAuth, async (req, res) => {
     const result = await pool.query('SELECT * FROM attachments WHERE id = $1', [req.params.id]);
     const attachment = result.rows[0];
     if (!attachment) return res.status(404).json({ error: 'Not found' });
+    if (!(await canViewTicket(req.session.user, attachment.ticket_id))) {
+      return res.status(404).json({ error: 'Not found' });
+    }
     await decryptRow('attachments', attachment);
 
     const filePath = path.join(UPLOADS_DIR, attachment.filename);

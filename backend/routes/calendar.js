@@ -27,6 +27,7 @@ const { decryptRows } = require('../services/fields');
 const sched = require('../services/ticketSchedules');
 const { buildCalendar } = require('../services/ics');
 const holidays = require('../services/holidays');
+const { utcFromTzWall } = require('../services/businessHours');
 
 const router = express.Router();
 
@@ -98,30 +99,50 @@ function feedLinks(token, user, projects, holidayCals = []) {
   };
 }
 
-// All-day events for a policy's holidays, last year through two years
-// ahead. UIDs are stable per rule + date so calendar apps update in place.
+// A policy's holidays, last year through two years ahead: all-day events
+// (spanning several days where the holiday does), and for an early close
+// a timed event from the close to the end of the business day. UIDs are
+// stable per rule + date so calendar apps update in place.
 async function holidayEvents(bhId) {
-  const r = await pool.query(
-    `SELECT id, kind, to_char(holiday_date, 'YYYY-MM-DD') AS date, recurring,
-            month, weekday, nth, observed, name, created_at
-       FROM business_hours_holidays WHERE business_hours_id = $1`,
-    [bhId]
-  );
+  const [r, pol] = await Promise.all([
+    pool.query(
+      `SELECT id, kind, to_char(holiday_date, 'YYYY-MM-DD') AS date, recurring,
+              month, weekday, nth, observed, name, span_days,
+              to_char(closes_at, 'HH24:MI') AS closes_at, created_at
+         FROM business_hours_holidays WHERE business_hours_id = $1`,
+      [bhId]
+    ),
+    pool.query(`SELECT tz, to_char(end_time, 'HH24:MI') AS end_time FROM business_hours_policies WHERE id = $1`, [bhId]),
+  ]);
+  const tz = pol.rows[0]?.tz || 'UTC';
+  const endTime = pol.rows[0]?.end_time || '17:00';
   const year = new Date().getUTCFullYear();
   return holidays.occurrences(r.rows, year - 1, year + 2).map((o) => {
     const [y, m, d] = o.date.split('-').map(Number);
-    const next = new Date(Date.UTC(y, m - 1, d + 1)).toISOString().slice(0, 10);
     const name = o.holiday.name || holidays.describeRule(o.holiday);
-    return {
+    const observed = o.date !== o.actual;
+    const base = {
       uid: `holiday-${bhId}-${o.holiday.id}-${o.date}@${siteHost()}`,
-      start: o.date,
-      end: next,
-      allDay: true,
       transparent: true,
-      summary: o.date !== o.actual ? `${name} (observed)` : name,
-      description: o.date !== o.actual ? `Falls on ${o.actual}; taken ${o.date}.` : undefined,
+      description: observed ? `Falls on ${o.actual}; taken ${o.date}.` : undefined,
       categories: ['Holiday'],
       updated: o.holiday.created_at,
+    };
+    if (o.holiday.closes_at) {
+      const [ch, cm] = o.holiday.closes_at.split(':').map(Number);
+      const [eh, em] = endTime.split(':').map(Number);
+      const start = utcFromTzWall(tz, y, m, d, ch, cm);
+      let end = utcFromTzWall(tz, y, m, d, eh, em);
+      if (end <= start) end = new Date(start.getTime() + 60 * 60000);
+      return { ...base, start, end, summary: `${name} (closes ${o.holiday.closes_at})${observed ? ' (observed)' : ''}` };
+    }
+    const [ly, lm, ld] = o.last.split('-').map(Number);
+    return {
+      ...base,
+      start: o.date,
+      end: new Date(Date.UTC(ly, lm - 1, ld + 1)).toISOString().slice(0, 10),
+      allDay: true,
+      summary: observed ? `${name} (observed)` : name,
     };
   });
 }

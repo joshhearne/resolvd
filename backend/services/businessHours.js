@@ -10,11 +10,12 @@
 //
 // Holidays: a policy may carry holidays[] (rows of business_hours_holidays
 // — a date, a yearly date, or an "nth weekday of month" rule; see
-// holidays.js). A holiday is a closed day in the policy's tz — the clock
-// skips it like a weekend.
+// holidays.js). A holiday closes one or more whole days in the policy's tz
+// — the clock skips them like a weekend — or, with closes_at, ends that
+// day's window early.
 
 const { pool } = require('../db/pool');
-const { holidayMatcher } = require('./holidays');
+const { holidayMatcher, holidayClosures } = require('./holidays');
 
 // Attach holidays[] to a policy row (no-op for null). DATE is read as
 // text so node-pg doesn't shift it through the server's local tz.
@@ -22,7 +23,8 @@ async function withHolidays(db, row) {
   if (!row) return null;
   const r = await db.query(
     `SELECT kind, to_char(holiday_date, 'YYYY-MM-DD') AS date, recurring,
-            month, weekday, nth, observed
+            month, weekday, nth, observed, span_days,
+            to_char(closes_at, 'HH24:MI') AS closes_at
        FROM business_hours_holidays
       WHERE business_hours_id = $1`,
     [row.id]
@@ -119,7 +121,8 @@ function utcFromTzWall(tz, year, month, day, hour, minute) {
   return new Date(naive.getTime() + (naive.getTime() - naiveOfLocal));
 }
 
-// True when `date` falls on one of the policy's holidays in its tz.
+// True when `date` falls on a day one of the policy's holidays closes all
+// day, in its tz (an early-close day is not a holiday here).
 function isHoliday(date, bh) {
   if (!bh?.holidays?.length) return false;
   const p = partsInTz(date instanceof Date ? date : new Date(date), bh.tz);
@@ -149,19 +152,25 @@ function addBusinessMinutes(start, minutes, bh) {
     return new Date(startDate.getTime() + minutes * 60_000);
   }
 
-  const closed = holidayMatcher(bh.holidays);
+  const closure = holidayClosures(bh.holidays);
   let cursor = startDate;
   let remaining = minutes;
   // Hard cap on iterations — enough for ~3 years of pure business-day
   // walk. If we hit this, something is wrong (config corruption).
   for (let i = 0; remaining > 0 && i < 2000; i++) {
     const p = partsInTz(cursor, bh.tz);
-    if (!allowedDays.has(p.weekday) || closed(p.year, p.month, p.day)) {
+    const shut = closure(p.year, p.month, p.day);
+    if (!allowedDays.has(p.weekday) || (shut && !shut.closesAt)) {
       cursor = utcFromTzWall(bh.tz, p.year, p.month, p.day + 1, 0, 0);
       continue;
     }
     const winStart = utcFromTzWall(bh.tz, p.year, p.month, p.day, tStart.hour, tStart.minute);
-    const winEnd = utcFromTzWall(bh.tz, p.year, p.month, p.day, tEnd.hour, tEnd.minute);
+    let winEnd = utcFromTzWall(bh.tz, p.year, p.month, p.day, tEnd.hour, tEnd.minute);
+    if (shut?.closesAt) {
+      const early = parseTime(shut.closesAt);
+      const closeAt = utcFromTzWall(bh.tz, p.year, p.month, p.day, early.hour, early.minute);
+      if (closeAt < winEnd) winEnd = closeAt;
+    }
     if (cursor < winStart) {
       cursor = winStart;
       continue;
@@ -183,4 +192,4 @@ function addBusinessMinutes(start, minutes, bh) {
   return cursor;
 }
 
-module.exports = { addBusinessMinutes, isHoliday, policyFor, policyById, policyForSla };
+module.exports = { addBusinessMinutes, isHoliday, policyFor, policyById, policyForSla, utcFromTzWall };

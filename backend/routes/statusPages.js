@@ -1,6 +1,8 @@
 // Status pages: admin-curated views over monitored items (Uptime Kuma
-// monitors and any other source that tracks items). Every logged-in
-// user can read them; Admin / Manager curate.
+// monitors and any other source that tracks items). Public pages are
+// readable by every logged-in user, private pages by Admin / Manager /
+// Tech only; Admin / Manager curate. Users can subscribe to email
+// alerts (services/statusPageNotifier.js).
 //
 // A page shows each item's live state (maintenance when a Resolvd
 // maintenance window covers it), uptime and response time, the
@@ -12,12 +14,41 @@ const { pool, transaction } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { decryptRows } = require('../services/fields');
 const { rollupServiceState } = require('../services/monitoredItems');
+const timeline = require('../services/statusTimeline');
+const notifier = require('../services/statusPageNotifier');
 
 const router = express.Router();
 router.use(requireAuth);
 
 const CURATORS = ['Admin', 'Manager'];
 const HISTORY_DAYS = 14;
+const BUCKET_HOURS = 6; // 14 days → 56 pips per bar
+
+const access = require('../services/statusPageAccess');
+
+// Replace a page's project restriction. ids: int[] (empty = no limit).
+async function setPageProjects(client, pageId, ids) {
+  const clean = [...new Set((ids || []).map(Number).filter((n) => Number.isInteger(n) && n > 0))];
+  await client.query(`DELETE FROM status_page_projects WHERE page_id = $1`, [pageId]);
+  if (clean.length) {
+    await client.query(
+      `INSERT INTO status_page_projects (page_id, project_id)
+       SELECT $1, p.id FROM projects p WHERE p.id = ANY($2::int[])`,
+      [pageId, clean]
+    );
+  }
+}
+
+// Page row + project_ids/projects for the response.
+async function withProjects(page) {
+  const r = await pool.query(
+    `SELECT p.id, p.name, p.prefix FROM status_page_projects spp
+       JOIN projects p ON p.id = spp.project_id
+      WHERE spp.page_id = $1 ORDER BY p.name`,
+    [page.id]
+  );
+  return { ...page, project_ids: r.rows.map((x) => x.id), projects: r.rows };
+}
 const UPCOMING_DAYS = 30;
 
 function slugify(s) {
@@ -87,13 +118,142 @@ async function loadPageItems(pageIds) {
   return items.rows;
 }
 
+// Per-item state timelines over the history window, from
+// alert_item_state_changes + maintenance windows. Services with
+// components are rolled up from them (same rule as the live state).
+// Mutates items: adds timeline (bucket array) + uptime_14d to every
+// item and component. Returns outage episodes (down / partial runs,
+// including ones that never became an incident) with any ticketed
+// incidents that overlap them.
+async function buildTimelines(items, incidents) {
+  const end = Date.now();
+  const start = end - HISTORY_DAYS * 86400000;
+  const bucketMs = BUCKET_HOURS * 3600000;
+  const startIso = new Date(start).toISOString();
+  const allIds = [...new Set(items.flatMap((i) => [i.item_id, ...i.components.map((c) => c.item_id)]))];
+  if (!allIds.length) return { start, end, bucketMs, outages: [], matchedIncidentIds: new Set() };
+
+  const [changes, prior, meta, windows] = await Promise.all([
+    pool.query(
+      `SELECT item_id, from_state, to_state, changed_at FROM alert_item_state_changes
+        WHERE item_id = ANY($1::int[]) AND changed_at >= $2 ORDER BY changed_at ASC`,
+      [allIds, startIso]
+    ),
+    pool.query(
+      `SELECT DISTINCT ON (item_id) item_id, to_state FROM alert_item_state_changes
+        WHERE item_id = ANY($1::int[]) AND changed_at < $2
+        ORDER BY item_id, changed_at DESC`,
+      [allIds, startIso]
+    ),
+    pool.query(
+      `SELECT id, first_seen_at, last_state, parent_item_id FROM alert_monitored_items WHERE id = ANY($1::int[])`,
+      [allIds]
+    ),
+    pool.query(
+      `SELECT mi.item_id, w.starts_at, w.ends_at
+         FROM maintenance_window_items mi JOIN maintenance_windows w ON w.id = mi.window_id
+        WHERE w.ends_at > $1 AND w.starts_at < NOW()`,
+      [startIso]
+    ),
+  ]);
+  const changesBy = new Map();
+  for (const c of changes.rows) {
+    if (!changesBy.has(c.item_id)) changesBy.set(c.item_id, []);
+    changesBy.get(c.item_id).push(c);
+  }
+  const priorBy = new Map(prior.rows.map((r) => [r.item_id, r.to_state]));
+  const metaBy = new Map(meta.rows.map((r) => [r.id, r]));
+  const windowsFor = (id) => {
+    const parent = metaBy.get(id)?.parent_item_id;
+    return windows.rows.filter((w) => w.item_id === id || (parent && w.item_id === parent));
+  };
+  const segmentsFor = (id) => {
+    const m = metaBy.get(id) || {};
+    return timeline.itemSegments({
+      changes: changesBy.get(id) || [],
+      priorState: priorBy.get(id) || null,
+      currentState: m.last_state || null,
+      firstSeenAt: m.first_seen_at || null,
+      maintenance: windowsFor(id),
+      start,
+      end,
+    });
+  };
+  const pack = (segs) => timeline.bucketize(segs, start, end, bucketMs).map((b) => ({
+    s: b.state, d: b.down_s, p: b.partial_s, g: b.degraded_s, m: b.maint_s, k: b.known_s,
+  }));
+
+  const outages = [];
+  const matchedIncidentIds = new Set();
+  for (const it of items) {
+    let serviceSegs;
+    const compSegs = it.components.map((c) => ({ c, segments: segmentsFor(c.item_id) }));
+    for (const { c, segments } of compSegs) {
+      c.timeline = pack(segments);
+      c.uptime_14d = timeline.uptimeRatio(segments);
+    }
+    if (compSegs.length) {
+      serviceSegs = timeline.rollupSegments(
+        compSegs.map(({ c, segments }) => ({ is_primary: c.is_primary, segments })), start, end
+      );
+    } else {
+      serviceSegs = segmentsFor(it.item_id);
+    }
+    it.timeline = pack(serviceSegs);
+    it.uptime_14d = timeline.uptimeRatio(serviceSegs);
+
+    const name = it.display_name || it.label;
+    const memberIds = new Set([it.item_id, ...it.components.map((c) => c.item_id)]);
+    for (const ep of timeline.episodes(serviceSegs, end)) {
+      const epEnd = ep.end ?? end;
+      const affected = compSegs
+        .filter(({ segments }) => segments.some((sg) => sg.state === 'down' && sg.start < epEnd && sg.end > ep.start))
+        .map(({ c }) => c.label);
+      const tickets = [];
+      for (const inc of incidents) {
+        if (!memberIds.has(inc.item_id)) continue;
+        const iStart = new Date(inc.first_seen_at).getTime();
+        const iEnd = inc.recovered_at ? new Date(inc.recovered_at).getTime() : end;
+        if (iStart < epEnd && iEnd > ep.start) {
+          if (inc.state === 'recovered') matchedIncidentIds.add(inc.id);
+          if (inc.ticket_id && !tickets.some((t) => t.id === inc.ticket_id)) {
+            tickets.push({ id: inc.ticket_id, ref: inc.ticket_ref, status: inc.ticket_status });
+          }
+        }
+      }
+      outages.push({
+        page_item_id: it.page_item_id,
+        item_id: it.item_id,
+        name,
+        section: it.section || null,
+        state: ep.state,
+        started_at: new Date(ep.start).toISOString(),
+        ended_at: ep.end ? new Date(ep.end).toISOString() : null,
+        // Already down when the window opened; real start is earlier.
+        start_clipped: ep.start <= start,
+        components: affected,
+        tickets,
+      });
+    }
+  }
+  outages.sort((a, b) => new Date(b.started_at) - new Date(a.started_at));
+  return { start, end, bucketMs, outages, matchedIncidentIds };
+}
+
 // GET /api/status-pages — pages with a down/maintenance summary.
-router.get('/', async (_req, res) => {
+router.get('/', async (req, res) => {
   try {
-    const r = await pool.query(
-      `SELECT id, name, slug, description, sort_order FROM status_pages
-        ORDER BY sort_order ASC, name ASC`
+    const all = await pool.query(
+      `SELECT p.id, p.name, p.slug, p.description, p.sort_order, p.is_public,
+              (s.id IS NOT NULL) AS subscribed,
+              COALESCE(ARRAY(SELECT project_id FROM status_page_projects WHERE page_id = p.id ORDER BY project_id), '{}') AS project_ids
+         FROM status_pages p
+         LEFT JOIN status_page_subscriptions s ON s.page_id = p.id AND s.user_id = $1
+        ORDER BY p.sort_order ASC, p.name ASC`,
+      [req.session.user.id]
     );
+    const viewer = await access.viewerFor(req.session.user);
+    const r = { rows: all.rows.filter((p) => access.canViewPage(viewer, p)) };
     const items = await loadPageItems(r.rows.map((p) => p.id));
     for (const page of r.rows) {
       const mine = items.filter((i) => i.page_id === page.id);
@@ -132,8 +292,11 @@ router.get('/_meta/items', requireRole('Admin', 'Manager', 'Tech'), async (_req,
 router.get('/:slug', async (req, res) => {
   try {
     const p = await pool.query(`SELECT * FROM status_pages WHERE slug = $1`, [req.params.slug]);
-    const page = p.rows[0];
-    if (!page) return res.status(404).json({ error: 'Status page not found' });
+    const page = p.rows[0] ? await withProjects(p.rows[0]) : null;
+    // Pages the viewer can't see 404 (not 403) so they can't be probed.
+    if (!page || !access.canViewPage(await access.viewerFor(req.session.user), page)) {
+      return res.status(404).json({ error: 'Status page not found' });
+    }
 
     const items = await loadPageItems([page.id]);
     // Incidents and maintenance cover service components too.
@@ -178,12 +341,24 @@ router.get('/:slug', async (req, res) => {
        ORDER BY w.starts_at DESC
     `, [itemIds, HISTORY_DAYS, UPCOMING_DAYS]);
 
+    const tl = await buildTimelines(items, inc.rows);
+
+    const sub = await pool.query(
+      `SELECT notify_state, notify_changes FROM status_page_subscriptions WHERE page_id = $1 AND user_id = $2`,
+      [page.id, req.session.user.id]
+    );
+
     res.json({
       page,
       items,
-      incidents: inc.rows,
+      // Recovered incidents already shown under an outage are dropped
+      // here so the history doesn't list them twice.
+      incidents: inc.rows.filter((i) => !tl.matchedIncidentIds.has(i.id)),
+      outages: tl.outages,
       maintenance: mw.rows,
       history_days: HISTORY_DAYS,
+      timeline: { start: tl.start, end: tl.end, bucket_ms: tl.bucketMs },
+      subscription: sub.rows[0] || null,
     });
   } catch (err) {
     console.error('status page detail:', err);
@@ -211,17 +386,19 @@ router.post('/', requireRole(...CURATORS), async (req, res) => {
     const row = await transaction(async (client) => {
       const slug = await uniqueSlug(client, slugify(body.slug || body.name));
       const r = await client.query(
-        `INSERT INTO status_pages (name, slug, description, sort_order, created_by)
-         VALUES ($1, $2, $3, $4, $5) RETURNING *`,
+        `INSERT INTO status_pages (name, slug, description, sort_order, created_by, is_public)
+         VALUES ($1, $2, $3, $4, $5, $6) RETURNING *`,
         [
           String(body.name).trim(), slug, body.description || null,
           Number.isFinite(Number(body.sort_order)) ? Number(body.sort_order) : 100,
           req.session.user.id,
+          body.is_public !== false,
         ]
       );
+      if (Array.isArray(body.project_ids)) await setPageProjects(client, r.rows[0].id, body.project_ids);
       return r.rows[0];
     });
-    res.status(201).json(row);
+    res.status(201).json(await withProjects(row));
   } catch (e) {
     console.error('status page create:', e);
     res.status(500).json({ error: 'Database error' });
@@ -247,6 +424,9 @@ router.patch('/:id', requireRole(...CURATORS), async (req, res) => {
       if (Object.prototype.hasOwnProperty.call(body, 'sort_order')) {
         sets.push(`sort_order = $${p++}`); vals.push(Number(body.sort_order) || 100);
       }
+      if (Object.prototype.hasOwnProperty.call(body, 'is_public')) {
+        sets.push(`is_public = $${p++}`); vals.push(body.is_public !== false);
+      }
       if (body.slug) {
         sets.push(`slug = $${p++}`); vals.push(await uniqueSlug(client, slugify(body.slug), id));
       }
@@ -256,10 +436,11 @@ router.patch('/:id', requireRole(...CURATORS), async (req, res) => {
         `UPDATE status_pages SET ${sets.join(', ')} WHERE id = $${p} RETURNING *`,
         vals
       );
+      if (r.rows[0] && Array.isArray(body.project_ids)) await setPageProjects(client, id, body.project_ids);
       return r.rows[0];
     });
     if (!row) return res.status(404).json({ error: 'Status page not found' });
-    res.json(row);
+    res.json(await withProjects(row));
   } catch (e) {
     console.error('status page patch:', e);
     res.status(500).json({ error: 'Database error' });
@@ -274,9 +455,13 @@ router.put('/:id/items', requireRole(...CURATORS), async (req, res) => {
   if (list.length > 500) return res.status(400).json({ error: 'too many items (max 500)' });
   const id = Number(req.params.id);
   try {
+    let added = [];
     const count = await transaction(async (client) => {
       const page = await client.query(`SELECT id FROM status_pages WHERE id = $1 FOR UPDATE`, [id]);
       if (!page.rows[0]) return null;
+      const before = await client.query(`SELECT item_id FROM status_page_items WHERE page_id = $1`, [id]);
+      const had = new Set(before.rows.map((r) => r.item_id));
+      added = [...new Set(list.map((it) => Number(it.item_id)).filter((n) => Number.isInteger(n) && !had.has(n)))];
       await client.query(`DELETE FROM status_page_items WHERE page_id = $1`, [id]);
       let n = 0;
       for (const [idx, it] of list.entries()) {
@@ -299,9 +484,61 @@ router.put('/:id/items', requireRole(...CURATORS), async (req, res) => {
       return n;
     });
     if (count === null) return res.status(404).json({ error: 'Status page not found' });
-    res.json({ ok: true, items: count });
+    res.json({ ok: true, items: count, added: added.length });
+    // Page-change emails for subscribers (after commit, never blocks).
+    if (added.length) {
+      notifier.notifyPageChanged(id, added)
+        .catch((err) => console.error('status page change notify:', err.message));
+    }
   } catch (e) {
     console.error('status page items:', e);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// PUT /api/status-pages/:id/subscription — subscribe (or update) the
+// caller. body: { notify_state?: bool, notify_changes?: bool }. Both
+// false = unsubscribe.
+router.put('/:id/subscription', async (req, res) => {
+  try {
+    const id = Number(req.params.id);
+    const p = await pool.query(`SELECT id, is_public FROM status_pages WHERE id = $1`, [id]);
+    const pg = p.rows[0] ? await withProjects(p.rows[0]) : null;
+    if (!pg || !access.canViewPage(await access.viewerFor(req.session.user), pg)) {
+      return res.status(404).json({ error: 'Status page not found' });
+    }
+    const body = req.body || {};
+    const notifyState = body.notify_state !== false;
+    const notifyChanges = body.notify_changes !== false;
+    if (!notifyState && !notifyChanges) {
+      await pool.query(`DELETE FROM status_page_subscriptions WHERE page_id = $1 AND user_id = $2`, [id, req.session.user.id]);
+      return res.json({ subscription: null });
+    }
+    const r = await pool.query(
+      `INSERT INTO status_page_subscriptions (page_id, user_id, notify_state, notify_changes)
+       VALUES ($1, $2, $3, $4)
+       ON CONFLICT (page_id, user_id) DO UPDATE
+         SET notify_state = EXCLUDED.notify_state, notify_changes = EXCLUDED.notify_changes, updated_at = NOW()
+       RETURNING notify_state, notify_changes`,
+      [id, req.session.user.id, notifyState, notifyChanges]
+    );
+    res.json({ subscription: r.rows[0] });
+  } catch (e) {
+    console.error('status page subscribe:', e);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// DELETE /api/status-pages/:id/subscription — unsubscribe the caller.
+router.delete('/:id/subscription', async (req, res) => {
+  try {
+    await pool.query(
+      `DELETE FROM status_page_subscriptions WHERE page_id = $1 AND user_id = $2`,
+      [Number(req.params.id), req.session.user.id]
+    );
+    res.json({ subscription: null });
+  } catch (e) {
+    console.error('status page unsubscribe:', e);
     res.status(500).json({ error: 'Database error' });
   }
 });

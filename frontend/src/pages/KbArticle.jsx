@@ -157,6 +157,16 @@ export default function KbArticle() {
           )}
         </div>
         <h1 className="text-3xl font-bold tracking-tight text-fg">{article.title}</h1>
+        {article.has_pdf && (
+          <a
+            href={`/api/kb/articles/${article.id}/pdf`}
+            target="_blank"
+            rel="noreferrer"
+            className="inline-flex items-center gap-1.5 text-sm text-brand hover:underline w-fit"
+          >
+            📄 {article.pdf_original_name || "Source PDF"} <span aria-hidden>↗</span>
+          </a>
+        )}
         {article.tags?.length > 0 && (
           <div className="flex flex-wrap gap-1.5 mt-1">
             {article.tags.map((t) => (

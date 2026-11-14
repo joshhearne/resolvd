@@ -35,6 +35,13 @@ describe('hoursClass', () => {
     expect(hoursClass('2026-10-21T15:00:00Z', hol)).toBe('weekend');    // Wed 10:00 CDT, holiday
     expect(hoursClass('2026-10-22T15:00:00Z', hol)).toBe('business');   // Thu unaffected
   });
+  it('after an early close is after-hours; spans are weekend every day', () => {
+    const early = { ...bh, holidays: [{ date: '2026-10-21', closes_at: '12:00' }] };
+    expect(hoursClass('2026-10-21T16:00:00Z', early)).toBe('business');     // Wed 11:00 CDT
+    expect(hoursClass('2026-10-21T18:00:00Z', early)).toBe('after_hours');  // Wed 13:00 CDT, closed at noon
+    const span = { ...bh, holidays: [{ date: '2026-10-21', span_days: 2 }] };
+    expect(hoursClass('2026-10-22T15:00:00Z', span)).toBe('weekend');       // Thu, 2nd day
+  });
   it('without a policy, only Sat/Sun count (in the org zone)', () => {
     expect(hoursClass('2026-10-21T23:30:00Z', null, 'America/Chicago')).toBe('business');
     expect(hoursClass('2026-10-25T03:00:00Z', null, 'America/Chicago')).toBe('weekend'); // Sat 22:00 CDT

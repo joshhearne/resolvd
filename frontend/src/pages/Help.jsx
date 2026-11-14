@@ -112,7 +112,7 @@ function SectionOverview({ role }) {
               ["Admin",     "Full system access including user management, encryption, and all admin settings."],
               ["Manager",   "Full ticket and project access; most admin settings. Cannot manage users or encryption."],
               ["Tech",      "Handler tier (v0.7.0). Edit any ticket in their projects, manage inventory assets, edit Knowledge Base articles, post handler-only notes, receive escalation pages. No org-config access."],
-              ["Submitter", "Can submit tickets, comment, and view their own submissions. No admin or status controls."],
+              ["Submitter", "Can submit tickets, comment, and view their own submissions plus tickets they follow. Sees a personal dashboard instead of the team dashboard. A project role override (e.g. Tech) or agent flag opens that one project's full board."],
               ["Viewer",    "Read-only access to tickets. Cannot submit, comment, or take any action."],
               ["Support",   "Read-only access gated by a time-limited grant issued by an Admin. Every access is audit-logged."],
             ].map(([r, desc]) => (
@@ -364,6 +364,10 @@ function SectionTicketDetail({ role }) {
         <Feature name="Insert canned response" roles={["Admin","Manager","Tech","Submitter"]} note="📋 popover next to the composer. Tags like {ticket.ref}, {submitter.firstName} render server-side at insert time." />
         <Feature name="Post & <any status>" roles={HANDLER} note="(v0.10.0) The Post & menu lists every internal status the ticket can transition to, including custom ones, and falls back to the full list when no transitions are configured. Admins curate it per status via the Post & menu toggle in Admin → Statuses." />
         <Feature name="Scope with knowledge (brief)" roles={HANDLER} note="(v0.10.0) Button on the composer assembles what the user reported, what the team said, your draft, project context, and matched Trove KB articles into a reviewable brief. Builds without AI by default; rewrite with AI when AI Assist allows it. Admin-managed noise rules keep SLA notices, moves, merges, and auto-replies out." />
+        <Feature name="Insert KB link" roles={HANDLER} note="Button under the comment box. Search Trove KB and local articles, open the document in a new tab, then narrow the link: a page number (PDFs, digits only) and/or a search term to highlight. PDFs link to the original file with #page=N&search=term (Trove KB serves imported PDFs at /original; local articles use their attached PDF); web articles get a #:~:text= highlight. Insert writes a markdown link titled with the article name. Internal articles are flagged because the submitter can't open them." />
+        <Feature name="Target KB links (AI)" roles={HANDLER} note="Appears when your reply (or the brief's Reply) contains KB links. Pick which links to refine and add context per link; AI points each one at the exact page and phrase, optionally rewriting a procedure as numbered steps with a link per step. The AI never writes URLs: the server reads the real document (PDFs page by page), verifies every page and phrase, corrects a wrong page to where the phrase is, drops anything it can't find, and unlinks any link that wasn't in your reply." />
+        <Feature name="PDF links in knowledge briefs" roles={HANDLER} note="Matched Trove KB articles that were imported from a PDF link to the PDF itself. Each included article has optional Page / Search term fields, so Build writes narrowed links." />
+        <Feature name="Source PDF on local KB articles" roles={HANDLER} note="KB editor → Source PDF: attach, replace or remove a PDF (e.g. a vendor manual). It shows on the article page and makes the article linkable as a PDF with page and search anchors. Stored like ticket attachments (encrypted at rest in standard mode); readable by anyone who can read the article." />
         <Feature name="Show original email" roles={HANDLER} note="(v0.10.0) Inbound descriptions and comments keep the stripped source (signature, quoted history, M365 banners) behind a lazy-fetched toggle." />
         <Feature name="Edit a posted comment" roles={["Admin","Manager","Tech","Submitter"]} note="Author can edit own; Admin / Manager can edit anyone's. System comments and inbound vendor replies are locked. The Edit action only appears on the most recent non-system comment — once anyone posts a reply, the prior comment is frozen (post a follow-up correction instead). Editing clears AI provenance and is audited as comment_edited. The '(edited)' indicator only appears once a non-author has either viewed the original in the UI or been fanned out to via email — quick edits before anyone sees the comment stay silent. Vendor outbound is not re-sent." />
         <Feature name="Mute / delete comments" roles={PRIV} note="Muting hides vendor replies without deleting." />
@@ -404,6 +408,9 @@ function SectionTicketDetail({ role }) {
       <div className="space-y-0">
         <Feature name="Follow / unfollow ticket" roles={["Admin","Manager","Submitter"]} note="Followers receive email on new comments." />
         <Feature name="Manage followers (add/remove others)" roles={PRIV} />
+        <Feature name="CC followers when creating a ticket" roles="all" note="The New Ticket form has a CC / Followers picker. CC'd users are added as followers and get an 'Added as a follower' notification (its own row in the notifications matrix; also fires when an agent adds a follower from the ticket page). When the project restricts followers to members, only project members (and Admins) can be picked; Admin filers can CC anyone. You (and the submitter, when filing on behalf) appear as automatic follower chips; remove a chip to leave that person off." />
+        <Feature name="Apply / change form on an existing ticket" roles={PRIV} note="Apply form… (ticket header, or the Request type card on tickets filed without one) converts a ticket to a request type. Pick project → category → form and optionally fill fields; if the form belongs to another project the ticket moves there (new ref, vendor contacts detached). The original title and description are kept. A system note records the conversion and move and quotes the form's template text. Required fields left blank can be filled later from Custom Fields. Audited as form_applied." />
+        <Feature name="Add individual custom fields to a ticket" roles={HANDLER} note="'+ Add field' on the Custom Fields card attaches any shared ticket field, or one local to the ticket's project, without applying a form (works on tickets with or without one). Added fields are marked (added), are never required, and can be removed again with × (which clears the value). Audited as custom_field_added / custom_field_removed." />
         <Feature name="Move ticket to another project" roles={["Admin","Manager","Submitter"]} note="Re-issues a new ref from the target project." />
         <Feature name="Merge ticket into another" roles={PRIV} note="Reassigns all comments and history then closes this ticket." />
         <Feature name="Delete ticket" roles={["Admin"]} />
@@ -492,7 +499,7 @@ function SectionAdmin({ role }) {
           <Feature name="AI Assist — provider, model, project context" roles={PRIV} note="BYO-AI org config + per-user keys; rewrite surfaces on comments, descriptions, canned responses." />
           <Feature name="Authentication — MFA policy, SSO / Azure AD" roles={["Admin"]} />
           <Feature name="Branding — logo, site name, colors, locale defaults" roles={PRIV} />
-          <Feature name="System health — scheduler heartbeats + DB / queue stats" roles={PRIV} note="Auto-refreshes every 30s; shows ok / stale / error / never_ran per scheduled job. Build info card at the top displays the running version / commit / built-at with a manual 'Check for updates' button that polls GitHub releases for the latest published tag (admin-triggered only — no background phone-home)." />
+          <Feature name="System health — scheduler heartbeats + DB / queue stats" roles={PRIV} note="Auto-refreshes every 30s; shows ok / stale / error / never_ran per scheduled job. Build info card at the top displays the running version / commit / built-at. Admins also get the Updates panel: update channel (Production / Development / Manual), update hour, what's running vs. available, recent updates, and a preview of the changes in the next update. Docker installs only update when the host updater is installed; see the README's Updates section." />
           <Feature name="Login security — failed-login forensics" roles={["Admin"]} note="Raw + per-IP / per-email aggregates. Backed by the per-IP block + dwell timer + honeypot pipeline." />
           <Feature name="Support — issue JIT access grants" roles={["Admin"]} note="Time-limited read grants for Support role users." />
           <Feature name="Export — full data export" roles={PRIV} />
@@ -512,7 +519,7 @@ function SectionNotifications({ role }) {
         : <PartialAccess note="You will receive in-app notifications if mentioned, but cannot post comments that would generate them for others." />
       }
       <p className="text-sm text-fg leading-relaxed">
-        Notifications fan out across three channels — in-app (the bell tray), email, and browser push — for six event types: assignment, mention, comment, status change, pending review, follow-up reminder. A 6×3 matrix in <strong>Account → Preferences → Notifications</strong> lets you toggle each channel per event independently.
+        Notifications fan out across three channels — in-app (the bell tray), email, and browser push — for each event type: new ticket, assignment, mention, comment, status change, pending review, follow-up reminder, and added as a follower. A matrix in <strong>Account → Preferences → Notifications</strong> lets you toggle each channel per event independently.
       </p>
       <HelpScreenshot src="/help/notifications-matrix.png?v=2" alt="Account → Preferences → Notifications — 6 event rows × 3 channel columns (in-app, email, push). Pending review and follow-up rows are greyed (always on)." />
       <p className="text-sm text-fg leading-relaxed">
@@ -540,11 +547,12 @@ function SectionNotifications({ role }) {
         <Feature name="Daily digest delivery hour" roles="all" note="Pick the 24-hour local hour the daily digest fires (defaults to 09:00). Honors your timezone override if set." />
       </div>
       <div className="space-y-0">
-        <Feature name="6×3 channel matrix" roles="all" note="Per-event toggles for in-app / email / push. Account → Preferences → Notifications." />
+        <Feature name="Per-event channel matrix" roles="all" note="Per-event toggles for in-app / email / push. Account → Preferences → Notifications." />
         <Feature name="Email digest cadence" roles="all" note="Instant / hourly / 12h / daily / off. Pending review + follow-up bypass." />
         <Feature name="In-app tray with all 6 event types" roles="all" note="Bell icon. Mention rows scroll-and-flash to the specific comment. (v0.10.0) Mention emails deep-link to the response too." />
         <Feature name="New-ticket fanout to Admins / Managers" roles={PRIV} note="(v0.10.0) Every create path — form, inbound email, alert promotion — notifies active Admins and Managers. In-app on, email off by default." />
         <Feature name="Browser push (opt-in)" roles="all" note="Requires permission per device. Mention defaults on; other events default off." />
+        <Feature name="What's new after an update" roles="all" note="A pop-up lists what changed in the update: new features (blue), improvements (green), fixes (orange). It stays in the bell as &quot;Resolvd was updated&quot;. Admins, Managers and Techs see every change; everyone else sees only the changes that affect them." />
         <Feature name="Mark all read" roles="all" />
         <Feature name="Auto-follow on comment + mention" roles={["Admin","Manager","Submitter"]} note="Posting a comment subscribes you to the ticket; being mentioned subscribes you." />
       </div>

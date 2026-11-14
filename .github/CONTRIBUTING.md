@@ -28,6 +28,9 @@ PRs without DCO sign-off on every commit will be flagged automatically.
 - Keep changes focused. One concern per PR is easier to review and to revert
   if anything goes sideways.
 - Update the README or in-app docs when you change behaviour.
+- Add a change file in `backend/changes/` for anything users will notice
+  (see the README there). Builds without a new file don't show the
+  "What's new" pop-up or the "Resolvd was updated" bell entry.
 - Add or update tests where it's reasonable. Backend tests live alongside
   the affected services; frontend changes generally need a manual smoke-
   test through the dev server.

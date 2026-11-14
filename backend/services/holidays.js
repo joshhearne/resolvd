@@ -12,8 +12,13 @@
 // Either may set observed: a holiday landing on Saturday is taken the
 // Friday before, one on Sunday the Monday after.
 //
-// Callers match local calendar parts in the policy's tz, so a holiday is
-// a whole local day. Date math here is on calendar dates only (Date.UTC
+// Either may also set:
+//   span_days: 1-14  — closed this many consecutive days from the date it's
+//                      taken (Thanksgiving Thu + Fri = 4th Thursday, 2 days)
+//   closes_at: 'HH:MM' — a partial day: open as normal until this local
+//                      time, closed after (an early out). Single-day only.
+//
+// Callers match local calendar parts in the policy's tz. Date math here is on calendar dates only (Date.UTC
 // arithmetic), never wall-clock instants.
 
 const pad = (n) => String(n).padStart(2, '0');
@@ -44,8 +49,17 @@ function nthWeekdayDay(y, m, weekday, nth) {
   return day <= daysInMonth(y, m) ? day : null;
 }
 
+const MAX_SPAN = 14;
+const spanOf = (h) => (h.span_days == null ? 1 : Number(h.span_days));
+const TIME_RE = /^([01]\d|2[0-3]):[0-5]\d$/;
+
 function validRule(h) {
   if (!h) return false;
+  const span = spanOf(h);
+  if (!Number.isInteger(span) || span < 1 || span > MAX_SPAN) return false;
+  if (h.closes_at != null) {
+    if (!TIME_RE.test(String(h.closes_at)) || span !== 1) return false;
+  }
   if ((h.kind || 'date') === 'date') return /^\d{4}-\d{2}-\d{2}$/.test(String(h.date || ''));
   return h.kind === 'nth_weekday'
     && Number.isInteger(h.month) && h.month >= 1 && h.month <= 12
@@ -72,10 +86,11 @@ function observedDate([y, m, d]) {
   return [y, m, d];
 }
 
-// Closed days for a set of rules between two years inclusive, by the
-// date they're taken. [{ date, actual, holiday }], sorted by date. An
-// observed shift can cross a year boundary (Sat Jan 1 → Fri Dec 31), so
-// neighbouring years are computed and filtered.
+// Occurrences for a set of rules between two years inclusive, by the
+// date they're taken (the first day of a span). [{ date, actual, last,
+// holiday }], sorted by date; `last` is the final closed day (= date for
+// a single day). An observed shift can cross a year boundary (Sat Jan 1
+// → Fri Dec 31), so neighbouring years are computed and filtered.
 function occurrences(holidays, fromYear, toYear) {
   const out = [];
   for (const h of holidays || []) {
@@ -85,29 +100,56 @@ function occurrences(holidays, fromYear, toYear) {
       if (!actual) continue;
       const taken = h.observed ? observedDate(actual) : actual;
       if (taken[0] < fromYear || taken[0] > toYear) continue;
-      out.push({ date: iso(...taken), actual: iso(...actual), holiday: h });
+      const last = shiftDate(...taken, spanOf(h) - 1);
+      out.push({ date: iso(...taken), actual: iso(...actual), last: iso(...last), holiday: h });
     }
   }
   return out.sort((a, b) => (a.date < b.date ? -1 : a.date > b.date ? 1 : 0));
 }
 
-// (year, month, day) → closed? Cached per year.
-function holidayMatcher(holidays) {
+// (year, month, day) → null (open) | { closesAt: null } (closed all day)
+// | { closesAt: 'HH:MM' } (early close). Where rules overlap, a whole day
+// beats an early close and the earlier close wins. Cached per year.
+function holidayClosures(holidays) {
   const rules = (holidays || []).filter(validRule);
-  if (!rules.length) return () => false;
+  if (!rules.length) return () => null;
   const byYear = new Map();
-  return (year, month, day) => {
-    if (!byYear.has(year)) {
-      byYear.set(year, new Set(occurrences(rules, year, year).map((o) => o.date)));
+  const build = (year) => {
+    const days = new Map();
+    // Spans that start late in the previous year can run into this one.
+    for (const o of occurrences(rules, year - 1, year)) {
+      const [y, m, d] = o.date.split('-').map(Number);
+      for (let i = 0; i < spanOf(o.holiday); i++) {
+        const day = iso(...shiftDate(y, m, d, i));
+        if (Number(day.slice(0, 4)) !== year) continue;
+        const closesAt = o.holiday.closes_at || null;
+        const prev = days.get(day);
+        if (!prev) days.set(day, { closesAt });
+        else if (prev.closesAt && (!closesAt || closesAt < prev.closesAt)) prev.closesAt = closesAt;
+      }
     }
-    return byYear.get(year).has(iso(year, month, day));
+    return days;
+  };
+  return (year, month, day) => {
+    if (!byYear.has(year)) byYear.set(year, build(year));
+    return byYear.get(year).get(iso(year, month, day)) || null;
   };
 }
 
-// Next date (>= today, 'YYYY-MM-DD') the rule is taken, or null.
+// (year, month, day) → closed all day? (Early-close days are open.)
+function holidayMatcher(holidays) {
+  const closure = holidayClosures(holidays);
+  return (year, month, day) => {
+    const c = closure(year, month, day);
+    return !!c && !c.closesAt;
+  };
+}
+
+// Start date of the next (or current, for a span under way) occurrence
+// of the rule, 'YYYY-MM-DD', or null.
 function nextOccurrence(h, today) {
   const year = Number(String(today).slice(0, 4));
-  const hit = occurrences([h], year, year + 1).find((o) => o.date >= today);
+  const hit = occurrences([h], year - 1, year + 1).find((o) => o.last >= today);
   return hit ? hit.date : null;
 }
 
@@ -116,11 +158,20 @@ const WEEKDAYS = ['Sunday', 'Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Frida
 const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August',
   'September', 'October', 'November', 'December'];
 
-// "4th Thursday of November", "every 12-25", "2026-06-08".
+// "4th Thursday of November", "Every December 25", "2026-06-08", plus
+// " · 2 days" for a span or " · closes 12:00" for an early close.
 function describeRule(h) {
-  if (h.kind === 'nth_weekday') return `${ORDINALS[h.nth]} ${WEEKDAYS[h.weekday]} of ${MONTHS[h.month - 1]}`;
-  const d = String(h.date || '');
-  return h.recurring ? `Every ${MONTHS[Number(d.slice(5, 7)) - 1]} ${Number(d.slice(8, 10))}` : d;
+  let base;
+  if (h.kind === 'nth_weekday') base = `${ORDINALS[h.nth]} ${WEEKDAYS[h.weekday]} of ${MONTHS[h.month - 1]}`;
+  else {
+    const d = String(h.date || '');
+    base = h.recurring ? `Every ${MONTHS[Number(d.slice(5, 7)) - 1]} ${Number(d.slice(8, 10))}` : d;
+  }
+  if (spanOf(h) > 1) return `${base} · ${spanOf(h)} days`;
+  if (h.closes_at) return `${base} · closes ${h.closes_at}`;
+  return base;
 }
 
-module.exports = { holidayMatcher, occurrences, nextOccurrence, describeRule, validRule, nthWeekdayDay };
+module.exports = {
+  holidayMatcher, holidayClosures, occurrences, nextOccurrence, describeRule, validRule, nthWeekdayDay, MAX_SPAN,
+};

@@ -31,6 +31,10 @@ icon-preview.svg
 docker-compose.override.yml
 backups/
 
+# Host updater runtime files (deploy/resolvd-update.sh)
+.resolvd-update.lock
+.resolvd-update.failed
+
 # DB backups / dumps
 backup-*.sql
 *.dump

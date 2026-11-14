@@ -1,7 +1,9 @@
 import React, { useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
+import { useAuth } from "../context/AuthContext";
 import HybridTime from "../components/HybridTime";
+import ChangeList, { ChangeKey } from "../components/ChangeList";
 
 function fmtBytes(n) {
   if (!n) return "—";
@@ -33,24 +35,8 @@ function HealthDot({ health }) {
   );
 }
 
-// Parse a tag like "v0.8.0" or "v0.8.0-3-gabcdef" into [major, minor,
-// patch]. Returns null for non-semver strings ("dev", "unknown", etc).
-function parseSemver(s) {
-  const m = /^v?(\d+)\.(\d+)\.(\d+)/.exec(String(s || ''));
-  return m ? [+m[1], +m[2], +m[3]] : null;
-}
-
-function compareSemver(a, b) {
-  for (let i = 0; i < 3; i++) {
-    if (a[i] !== b[i]) return a[i] < b[i] ? -1 : 1;
-  }
-  return 0;
-}
-
 function BuildInfoCard() {
   const [info, setInfo] = useState(null);
-  const [checking, setChecking] = useState(false);
-  const [check, setCheck] = useState(null);
 
   useEffect(() => {
     fetch('/api/version', { credentials: 'include' })
@@ -58,39 +44,6 @@ function BuildInfoCard() {
       .then(setInfo)
       .catch(() => setInfo({ version: 'unknown', commit: 'unknown', built_at: null }));
   }, []);
-
-  async function checkForUpdates() {
-    setChecking(true);
-    setCheck(null);
-    try {
-      const r = await fetch('https://api.github.com/repos/joshhearne/resolvd/releases/latest', {
-        headers: { Accept: 'application/vnd.github+json' },
-      });
-      if (!r.ok) throw new Error(`GitHub returned ${r.status}`);
-      const j = await r.json();
-      const remoteTag = j.tag_name || '';
-      const remoteVer = parseSemver(remoteTag);
-      const localVer = parseSemver(info?.version);
-      let status = 'unknown';
-      if (!localVer) status = 'local_unparseable';
-      else if (!remoteVer) status = 'remote_unparseable';
-      else {
-        const cmp = compareSemver(localVer, remoteVer);
-        status = cmp < 0 ? 'behind' : cmp === 0 ? 'current' : 'ahead';
-      }
-      setCheck({
-        status,
-        remoteTag,
-        remoteName: j.name || remoteTag,
-        remoteUrl: j.html_url,
-        publishedAt: j.published_at,
-      });
-    } catch (e) {
-      setCheck({ status: 'error', error: e.message });
-    } finally {
-      setChecking(false);
-    }
-  }
 
   if (!info) {
     return (
@@ -102,16 +55,8 @@ function BuildInfoCard() {
 
   return (
     <section className="bg-surface border border-border rounded-lg overflow-hidden">
-      <div className="px-4 py-2.5 border-b border-border bg-surface-2 flex items-center justify-between gap-3 flex-wrap">
+      <div className="px-4 py-2.5 border-b border-border bg-surface-2">
         <h2 className="text-sm font-semibold text-fg">Build info</h2>
-        <button
-          type="button"
-          onClick={checkForUpdates}
-          disabled={checking}
-          className="btn btn-secondary btn-sm"
-        >
-          {checking ? 'Checking…' : 'Check for updates'}
-        </button>
       </div>
       <div className="p-4 grid grid-cols-1 sm:grid-cols-3 gap-3 text-sm">
         <div>
@@ -129,34 +74,220 @@ function BuildInfoCard() {
           </div>
         </div>
       </div>
-      {check && (
-        <div className="border-t border-border px-4 py-3 text-sm">
-          {check.status === 'current' && (
-            <p className="text-emerald-700 dark:text-emerald-300">✓ Up to date with the latest release <code className="font-mono text-xs">{check.remoteTag}</code>.</p>
+    </section>
+  );
+}
+
+const CHANNELS = [
+  { value: "production", label: "Production", hint: "Installs each new release (main) at the update hour." },
+  { value: "development", label: "Development", hint: "Installs the latest dev build each night. For test and staging servers." },
+  { value: "manual", label: "Manual", hint: "Never updates on its own. Run the update commands on the server." },
+];
+
+const REPORT_TONE = {
+  updated: "text-emerald-700 dark:text-emerald-300",
+  up_to_date: "text-emerald-700 dark:text-emerald-300",
+  waiting: "text-fg-muted",
+  manual: "text-fg-muted",
+  rolled_back: "text-amber-700 dark:text-amber-300",
+  failed: "text-red-700 dark:text-red-400",
+};
+
+const EVENT_LABEL = { updated: "Updated", rolled_back: "Rolled back", failed: "Failed" };
+
+// The host updater (deploy/resolvd-update.sh) checks in every 10 minutes.
+const HOST_STALE_MS = 30 * 60 * 1000;
+
+function UpdatesCard() {
+  const [u, setU] = useState(null);
+  const [saving, setSaving] = useState(false);
+
+  async function load() {
+    try {
+      setU(await api.get("/api/system-updates"));
+    } catch (e) {
+      toast.error(e.message);
+    }
+  }
+
+  useEffect(() => {
+    load();
+    const t = setInterval(load, 30 * 1000);
+    return () => clearInterval(t);
+  }, []);
+
+  async function save(patch) {
+    setSaving(true);
+    setU((prev) => ({ ...prev, ...patch })); // show the choice right away
+    try {
+      const r = await api.put("/api/system-updates", patch);
+      setU((prev) => ({ ...prev, ...r }));
+      toast.success("Update settings saved");
+    } catch (e) {
+      toast.error(e.message);
+      load();
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  async function updateNow() {
+    try {
+      const r = await api.post("/api/system-updates/update-now", {});
+      setU((prev) => ({ ...prev, ...r }));
+      toast.success("Update requested. The server picks it up within 10 minutes.");
+    } catch (e) {
+      toast.error(e.message);
+    }
+  }
+
+  if (!u) {
+    return (
+      <section className="bg-surface border border-border rounded-lg p-4">
+        <div className="text-sm text-fg-dim">Loading update settings…</div>
+      </section>
+    );
+  }
+
+  const report = u.last_report;
+  const hostSeen = u.host_last_seen_at ? new Date(u.host_last_seen_at) : null;
+  const hostStale = hostSeen && Date.now() - hostSeen.getTime() > HOST_STALE_MS;
+  const tz = report?.host_tz ? ` (${report.host_tz})` : "";
+
+  return (
+    <section className="bg-surface border border-border rounded-lg overflow-hidden">
+      <div className="px-4 py-2.5 border-b border-border bg-surface-2 flex items-center justify-between gap-3 flex-wrap">
+        <h2 className="text-sm font-semibold text-fg">Updates</h2>
+        {u.channel !== "manual" && (
+          <button
+            type="button"
+            onClick={updateNow}
+            disabled={!!u.update_requested_at || !hostSeen}
+            className="btn btn-secondary btn-sm"
+          >
+            {u.update_requested_at ? "Update requested…" : "Update now"}
+          </button>
+        )}
+      </div>
+
+      {(!u.updater_configured || !hostSeen || hostStale) && (
+        <div className="px-4 py-3 border-b border-border text-sm text-amber-700 dark:text-amber-300">
+          {!u.updater_configured ? (
+            <>
+              The host updater isn't installed, so this server only updates manually. On the server, run{" "}
+              <code className="font-mono text-xs">sudo deploy/install-updater.sh</code> from the Resolvd folder.
+            </>
+          ) : !hostSeen ? (
+            <>The host updater hasn't checked in yet. It runs every 10 minutes once installed (<code className="font-mono text-xs">systemctl list-timers resolvd-update.timer</code>).</>
+          ) : (
+            <>
+              The host updater last checked in <HybridTime value={u.host_last_seen_at} />. Check it on the server with{" "}
+              <code className="font-mono text-xs">journalctl -u resolvd-update.service</code>.
+            </>
           )}
-          {check.status === 'behind' && (
-            <p className="text-amber-700 dark:text-amber-300">
-              ⚠ New release available:{' '}
-              <a href={check.remoteUrl} target="_blank" rel="noopener noreferrer" className="underline font-mono">
-                {check.remoteTag}
-              </a>
-              {check.publishedAt && (
-                <> · published <HybridTime value={check.publishedAt} /></>
+        </div>
+      )}
+
+      <div className="p-4 grid grid-cols-1 md:grid-cols-2 gap-6 text-sm">
+        <fieldset className="space-y-2" disabled={saving}>
+          <legend className="text-[10px] uppercase tracking-wide text-fg-dim mb-1">Channel</legend>
+          {CHANNELS.map((c) => (
+            <label key={c.value} className="flex items-start gap-2 cursor-pointer">
+              <input
+                type="radio"
+                name="update-channel"
+                className="mt-1"
+                checked={u.channel === c.value}
+                onChange={() => save({ channel: c.value })}
+              />
+              <span>
+                <span className="font-medium text-fg">{c.label}</span>
+                <span className="block text-xs text-fg-muted">{c.hint}</span>
+              </span>
+            </label>
+          ))}
+          {u.channel !== "manual" && (
+            <div className="pt-2">
+              <label htmlFor="update-hour" className="text-[10px] uppercase tracking-wide text-fg-dim block mb-1">
+                Update hour{tz}
+              </label>
+              <select
+                id="update-hour"
+                value={u.update_hour}
+                onChange={(e) => save({ update_hour: Number(e.target.value) })}
+                className="border border-border-strong rounded-md px-2 py-1 text-sm"
+              >
+                {Array.from({ length: 24 }, (_, h) => (
+                  <option key={h} value={h}>{String(h).padStart(2, "0")}:00</option>
+                ))}
+              </select>
+              <p className="text-xs text-fg-muted mt-1">Server time. A short restart happens during the update.</p>
+            </div>
+          )}
+        </fieldset>
+
+        <div className="space-y-3">
+          <div className="grid grid-cols-2 gap-3">
+            <div>
+              <div className="text-[10px] uppercase tracking-wide text-fg-dim">Running</div>
+              <div className="font-mono text-fg break-all">{u.running.version}</div>
+            </div>
+            <div>
+              <div className="text-[10px] uppercase tracking-wide text-fg-dim">Latest available</div>
+              <div className="font-mono text-fg break-all">{report?.available_version || <span className="text-fg-dim">unknown</span>}</div>
+            </div>
+          </div>
+          {report && (
+            <div>
+              <div className="text-[10px] uppercase tracking-wide text-fg-dim">Last check</div>
+              <p className={REPORT_TONE[report.status] || "text-fg"}>{report.message}</p>
+              {hostSeen && <p className="text-xs text-fg-dim"><HybridTime value={u.host_last_seen_at} /></p>}
+            </div>
+          )}
+          {u.channel === "manual" && (
+            <div>
+              <div className="text-[10px] uppercase tracking-wide text-fg-dim mb-1">Update by hand</div>
+              <pre className="bg-surface-2 rounded p-2 text-xs font-mono whitespace-pre-wrap">{`git fetch --tags && git checkout <release tag>
+# set RESOLVD_IMAGE_TAG=<release tag> in .env
+docker compose pull && docker compose up -d`}</pre>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {u.pending_changes?.total > 0 && (
+        <div className="border-t border-border px-4 py-3">
+          <details open={u.pending_changes.total <= 10}>
+            <summary className="cursor-pointer text-[10px] uppercase tracking-wide text-fg-dim">
+              Coming in <span className="font-mono normal-case">{report?.available_version || "the next update"}</span>
+              {" "}· {u.pending_changes.total} change{u.pending_changes.total === 1 ? "" : "s"}
+            </summary>
+            <div className="mt-3 space-y-3">
+              <ChangeList entries={u.pending_changes.entries} />
+              {u.pending_changes.total > u.pending_changes.entries.length && (
+                <p className="text-xs text-fg-dim">
+                  …and {u.pending_changes.total - u.pending_changes.entries.length} more.
+                </p>
               )}
-            </p>
-          )}
-          {check.status === 'ahead' && (
-            <p className="text-fg-muted">You're ahead of the latest published release ({check.remoteTag}). Pre-release or local build.</p>
-          )}
-          {check.status === 'local_unparseable' && (
-            <p className="text-fg-muted">Local version <code className="font-mono">{info.version}</code> isn't a release tag — built outside the release flow. Latest on main channel: <a href={check.remoteUrl} target="_blank" rel="noopener noreferrer" className="underline font-mono">{check.remoteTag}</a>.</p>
-          )}
-          {check.status === 'remote_unparseable' && (
-            <p className="text-fg-muted">Couldn't parse remote tag {check.remoteTag}.</p>
-          )}
-          {check.status === 'error' && (
-            <p className="text-red-700 dark:text-red-400">Couldn't reach GitHub: {check.error}</p>
-          )}
+              <ChangeKey />
+              <p className="text-xs text-fg-dim">Only admins see this preview. Everyone sees the changes that concern them after the update installs.</p>
+            </div>
+          </details>
+        </div>
+      )}
+
+      {u.events?.length > 0 && (
+        <div className="border-t border-border px-4 py-3">
+          <div className="text-[10px] uppercase tracking-wide text-fg-dim mb-2">Recent updates</div>
+          <ul className="space-y-1 text-xs">
+            {u.events.map((e) => (
+              <li key={`${e.at}-${e.to_version}`} className="flex flex-wrap gap-x-2">
+                <span className={`font-medium ${REPORT_TONE[e.status] || ""}`}>{EVENT_LABEL[e.status] || e.status}</span>
+                <span className="font-mono text-fg-muted">{e.from_version || "?"} → {e.to_version || "?"}</span>
+                <span className="text-fg-dim"><HybridTime value={e.at} /></span>
+              </li>
+            ))}
+          </ul>
         </div>
       )}
     </section>
@@ -174,6 +305,7 @@ function StatCard({ label, value, sub }) {
 }
 
 export default function AdminSystemHealth() {
+  const { user } = useAuth();
   const [data, setData] = useState(null);
   const [loading, setLoading] = useState(true);
   const [refreshing, setRefreshing] = useState(false);
@@ -232,6 +364,7 @@ export default function AdminSystemHealth() {
       </div>
 
       <BuildInfoCard />
+      {user?.role === "Admin" && <UpdatesCard />}
 
       {/* Top-line counters */}
       <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-6 gap-3">

@@ -1,6 +1,7 @@
 const express = require('express');
 const { pool } = require('../db/pool');
 const { requireAuth } = require('../middleware/auth');
+const { getTicketScope, scopeClause, isSubmitterRole } = require('../services/ticketVisibility');
 
 const router = express.Router();
 
@@ -27,43 +28,27 @@ function parseSince(v) {
   return d.toISOString();
 }
 
-// Project visibility: Admin/Manager see everything. Anyone else is
-// limited to project_members. Returns null = unrestricted, [] = none.
-async function getAccessibleProjectIds(user) {
-  if (['Admin', 'Manager'].includes(user.role)) return null;
-  const r = await pool.query(
-    'SELECT project_id FROM project_members WHERE user_id = $1',
-    [user.id],
-  );
-  return r.rows.map((row) => row.project_id);
-}
-
 // Build the SQL fragment + params for the dashboard's filter intersection.
-// Combines (a) requested project_id filter, (b) the caller's accessible
-// projects (Submitter/Viewer scope), (c) requested status filter, (d)
-// requested since cutoff. table = "tickets" or alias used in the query.
+// Combines (a) requested project_id filter, (b) the caller's visibility
+// scope (services/ticketVisibility — Submitters: own + followed only),
+// (c) requested status filter, (d) requested since cutoff. alias = the
+// tickets alias used in the query.
 async function buildTicketFilter(user, query, alias = 't') {
-  const accessible = await getAccessibleProjectIds(user);
+  const scope = await getTicketScope(user);
   const requested = parseInts(query.project_id);
-  let projectFilter = null;
-  if (accessible !== null && requested !== null) {
-    // Intersect — caller can only narrow within their accessible set.
-    projectFilter = requested.filter((id) => accessible.includes(id));
-    if (projectFilter.length === 0) return { sql: 'FALSE', params: [], empty: true };
-  } else if (accessible !== null) {
-    projectFilter = accessible;
-    if (projectFilter.length === 0) return { sql: 'FALSE', params: [], empty: true };
-  } else if (requested !== null) {
-    projectFilter = requested;
-  }
 
   const statuses = parseCsv(query.status);
   const since = parseSince(query.since);
   const params = [];
   const where = [];
-  if (projectFilter) {
-    params.push(projectFilter);
+  if (requested) {
+    params.push(requested);
     where.push(`${alias}.project_id = ANY($${params.length}::int[])`);
+  }
+  if (!scope.unrestricted) {
+    const c = scopeClause(scope, alias, params.length + 1);
+    params.push(...c.params);
+    where.push(c.sql);
   }
   if (statuses) {
     params.push(statuses);
@@ -77,8 +62,23 @@ async function buildTicketFilter(user, query, alias = 't') {
     sql: where.length ? where.join(' AND ') : 'TRUE',
     params,
     empty: false,
+    restricted: !scope.unrestricted,
   };
 }
+
+// Audit actions a Submitter may see in their activity feed. Anything
+// handler-internal (time logs, custom-field recomputes, mute toggles,
+// alert plumbing) stays off the submitter view.
+const SUBMITTER_ACTIVITY_ACTIONS = [
+  'ticket_created',
+  'ticket_created_from_alert',
+  'submitted_on_behalf',
+  'status_change',
+  'external_status_update',
+  'reopened',
+  'assignment_change',
+  'ticket_moved',
+];
 
 // GET /api/dashboard/stats — accepts ?project_id=N,M&status=A,B&since=ISO.
 // Filters constrain ticket counts and priority distribution. Without
@@ -175,13 +175,26 @@ router.get('/activity', requireAuth, async (req, res) => {
       sinceClause = `AND a.created_at >= $${params.length}`;
     }
 
+    // Global (ticket-less) audit rows are admin/system activity — only
+    // unrestricted callers see them. Submitters additionally only see a
+    // curated set of ticket-lifecycle actions.
+    const ticketScope = f.restricted
+      ? `(a.ticket_id IS NOT NULL AND ${f.sql})`
+      : `(a.ticket_id IS NULL OR ${f.sql})`;
+    let actionClause = '';
+    if (isSubmitterRole(req.session.user)) {
+      params.push(SUBMITTER_ACTIVITY_ACTIONS);
+      actionClause = `AND a.action = ANY($${params.length}::text[])`;
+    }
+
     const result = await pool.query(
       `SELECT a.*, u.display_name AS user_name, t.internal_ref,
               t.title AS ticket_title, t.title_enc AS ticket_title_enc
          FROM audit_log a
          LEFT JOIN users u ON a.user_id = u.id
          LEFT JOIN tickets t ON a.ticket_id = t.id
-        WHERE (a.ticket_id IS NULL OR ${f.sql})
+        WHERE ${ticketScope}
+          ${actionClause}
           ${sinceClause}
         ORDER BY a.created_at DESC
         LIMIT 10`,
@@ -193,6 +206,74 @@ router.get('/activity', requireAuth, async (req, res) => {
     res.json(result.rows);
   } catch (err) {
     console.error('dashboard activity:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// GET /api/dashboard/mine — curated dashboard for Submitters (#102).
+// Only the caller's own submissions + tickets they follow, regardless of
+// project membership or elevation. Available to every role (it's a
+// personal view), but the frontend shows it in place of the team
+// dashboard for global Submitters.
+router.get('/mine', requireAuth, async (req, res) => {
+  try {
+    const { decryptRows } = require('../services/fields');
+    const uid = req.session.user.id;
+
+    // Live = non-terminal and not in the resolved grace window; mirrors
+    // the "active" definition used by the team dashboard.
+    const liveExpr = `(s.is_terminal IS NOT TRUE
+                       AND COALESCE(s.semantic_tag,'') <> 'resolved_pending_close')`;
+    const awaitingExpr = `(t.internal_status IN ('Awaiting Input','On Hold'))`;
+    const resolvedExpr = `(s.is_terminal = TRUE
+                           OR COALESCE(s.semantic_tag,'') = 'resolved_pending_close')`;
+
+    const counts = await pool.query(
+      `SELECT
+         COUNT(*) FILTER (WHERE t.submitted_by = $1 AND ${liveExpr})::int  AS my_open,
+         COUNT(*) FILTER (WHERE t.submitted_by = $1 AND ${liveExpr} AND ${awaitingExpr})::int AS my_awaiting,
+         COUNT(*) FILTER (WHERE t.submitted_by = $1 AND ${resolvedExpr})::int AS my_resolved,
+         COUNT(*) FILTER (WHERE t.submitted_by IS DISTINCT FROM $1 AND ${liveExpr})::int AS following_open
+         FROM tickets t
+         LEFT JOIN statuses s ON s.kind = 'internal' AND s.name = t.internal_status
+        WHERE t.submitted_by = $1
+           OR EXISTS (SELECT 1 FROM ticket_followers tf
+                       WHERE tf.ticket_id = t.id AND tf.user_id = $1)`,
+      [uid],
+    );
+
+    const listSql = (where) => `
+      SELECT t.id, t.internal_ref, t.title, t.title_enc, t.internal_status,
+             t.effective_priority, t.priority_override, t.computed_priority,
+             t.updated_at, t.created_at,
+             proj.name AS project_name, proj.prefix AS project_prefix,
+             asgn.display_name AS assigned_to_name,
+             ${liveExpr} AS is_live
+        FROM tickets t
+        LEFT JOIN projects proj ON proj.id = t.project_id
+        LEFT JOIN users asgn ON asgn.id = t.assigned_to
+        LEFT JOIN statuses s ON s.kind = 'internal' AND s.name = t.internal_status
+       WHERE ${where}
+       ORDER BY ${liveExpr} DESC, t.updated_at DESC
+       LIMIT 15`;
+
+    const mine = await pool.query(listSql('t.submitted_by = $1'), [uid]);
+    const following = await pool.query(
+      listSql(`t.submitted_by IS DISTINCT FROM $1
+               AND EXISTS (SELECT 1 FROM ticket_followers tf
+                            WHERE tf.ticket_id = t.id AND tf.user_id = $1)`),
+      [uid],
+    );
+    await decryptRows('tickets', mine.rows);
+    await decryptRows('tickets', following.rows);
+
+    res.json({
+      counts: counts.rows[0],
+      my_tickets: mine.rows,
+      following: following.rows,
+    });
+  } catch (err) {
+    console.error('dashboard mine:', err);
     res.status(500).json({ error: 'Database error' });
   }
 });

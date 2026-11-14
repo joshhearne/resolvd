@@ -38,6 +38,7 @@ export function fmtDuration(fromIso, toIso) {
   if (!fromIso) return "";
   const ms = (toIso ? new Date(toIso) : new Date()) - new Date(fromIso);
   const mins = Math.max(0, Math.round(ms / 60000));
+  if (ms > 0 && ms < 60000) return "<1m";
   if (mins < 60) return `${mins}m`;
   const h = Math.floor(mins / 60);
   if (h < 48) return `${h}h ${mins % 60}m`;

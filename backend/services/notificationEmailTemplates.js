@@ -99,6 +99,20 @@ const RENDERERS = {
     return { subject, body };
   },
 
+  follower_added(payload) {
+    const { ticket_id, ticket_ref, ticket_title, actor_name, at_create } = payload;
+    const subject = at_create
+      ? `[${ticket_ref}] You were CC'd on a new ticket`
+      : `[${ticket_ref}] You were added as a follower`;
+    const body = `
+      <p style="color:#374151;font-size:14px;margin:0 0 12px">
+        <strong>${esc(actor_name || 'Someone')}</strong> added you as a follower on <strong>${esc(ticket_ref)}</strong>. You'll get updates as the ticket progresses.
+      </p>
+      <p style="color:#374151;font-size:14px;margin:0 0 16px"><strong>${esc(ticket_title || '')}</strong></p>
+      ${viewButton(ticketUrl(ticket_id))}`;
+    return { subject, body };
+  },
+
   pending_review(payload) {
     const { ticket_id, ticket_ref, ticket_title, breach_kind, warning_kind } = payload;
     // pending_review is reused by SLA breach + SLA warning fanouts (see
@@ -180,6 +194,8 @@ function eventLineLabel(eventType, payload) {
     }
     case 'mention':
       return `${esc(payload.actor_name || 'Someone')} mentioned you`;
+    case 'follower_added':
+      return `${esc(payload.actor_name || 'Someone')} added you as a follower`;
     default:
       return esc(eventType);
   }

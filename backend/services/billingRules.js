@@ -21,7 +21,7 @@
 // Money is integer cents throughout.
 
 const tt = require('./timeTrackingRules');
-const { holidayMatcher } = require('./holidays');
+const { holidayClosures } = require('./holidays');
 
 const BEHAVIORS = ['hourly', 'prepaid_block', 'covered', 'non_billable'];
 const WEEKDAY = { Sun: 0, Mon: 1, Tue: 2, Wed: 3, Thu: 4, Fri: 5, Sat: 6 };
@@ -66,8 +66,9 @@ function wallParts(date, tz) {
 }
 
 // 'business' | 'after_hours' | 'weekend' for an instant. With a business-
-// hours policy: a day outside its days, or one of its holidays, is
-// weekend; outside its window is after-hours. Without one: Sat/Sun (in `tz`) are weekend, nothing is
+// hours policy: a day outside its days, or a whole-day holiday, is
+// weekend; outside its window (or after an early-close holiday's
+// closes_at) is after-hours. Without one: Sat/Sun (in `tz`) are weekend, nothing is
 // after-hours.
 function hoursClass(date, bh, tz) {
   const zone = (bh && bh.enabled !== false && bh.tz) || tz || 'UTC';
@@ -76,11 +77,17 @@ function hoursClass(date, bh, tz) {
   if (!bh || bh.enabled === false) return p.weekday === 0 || p.weekday === 6 ? 'weekend' : 'business';
   const days = Array.isArray(bh.days) ? bh.days.map(Number) : [1, 2, 3, 4, 5];
   if (!days.includes(p.weekday)) return 'weekend';
-  if (holidayMatcher(bh.holidays)(p.year, p.month, p.day)) return 'weekend';
+  const shut = holidayClosures(bh.holidays)(p.year, p.month, p.day);
+  if (shut && !shut.closesAt) return 'weekend';
   const [sh, sm] = String(bh.start_time || '09:00').split(':').map(Number);
   const [eh, em] = String(bh.end_time || '17:00').split(':').map(Number);
+  let end = eh * 60 + (em || 0);
+  if (shut?.closesAt) {
+    const [ch, cm] = shut.closesAt.split(':').map(Number);
+    end = Math.min(end, ch * 60 + cm);
+  }
   const mins = p.hour * 60 + p.minute;
-  return mins >= sh * 60 + (sm || 0) && mins < eh * 60 + (em || 0) ? 'business' : 'after_hours';
+  return mins >= sh * 60 + (sm || 0) && mins < end ? 'business' : 'after_hours';
 }
 
 function multiplierFor(card, cls) {

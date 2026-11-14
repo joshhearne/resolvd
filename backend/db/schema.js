@@ -1777,6 +1777,19 @@ async function initSchema() {
     // Which form filed a ticket (for display + reporting). NULL for legacy /
     // alert / email-ingested tickets that never went through a form.
     await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS form_id INTEGER REFERENCES ticket_forms(id) ON DELETE SET NULL`);
+    // Ad-hoc field bindings: individual custom fields a handler attached to
+    // one ticket outside of any form (pick-and-choose). The ticket's editable
+    // field set = its form's fields ∪ these. Never required.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ticket_adhoc_fields (
+        id SERIAL PRIMARY KEY,
+        ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+        field_def_id INTEGER NOT NULL REFERENCES custom_field_defs(id) ON DELETE CASCADE,
+        added_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(ticket_id, field_def_id)
+      )
+    `);
 
     // Audit + dedup log. UNIQUE(source_id, external_event_id) blocks Zabbix
     // resends from spawning duplicate tickets even if the mapper logic
@@ -2068,6 +2081,21 @@ async function initSchema() {
     `);
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_business_hours_holidays_rule
       ON business_hours_holidays(business_hours_id, month, weekday, nth) WHERE kind = 'nth_weekday'`);
+    // Multi-day spans and partial days. span_days closes that many
+    // consecutive days from the date a holiday is taken; closes_at makes it
+    // an early close (open until then, closed after) and is single-day only.
+    await client.query(`ALTER TABLE business_hours_holidays ADD COLUMN IF NOT EXISTS span_days INTEGER NOT NULL DEFAULT 1`);
+    await client.query(`ALTER TABLE business_hours_holidays ADD COLUMN IF NOT EXISTS closes_at TIME`);
+    await client.query(`
+      DO $$
+      BEGIN
+        IF NOT EXISTS (SELECT 1 FROM pg_constraint WHERE conname = 'business_hours_holidays_span') THEN
+          ALTER TABLE business_hours_holidays ADD CONSTRAINT business_hours_holidays_span CHECK (
+            span_days BETWEEN 1 AND 14 AND (closes_at IS NULL OR span_days = 1)
+          );
+        END IF;
+      END $$
+    `);
 
     // Per-location business hours. A location-scoped row (location_id
     // set, project_id NULL) replaces the SLA policy's pinned window for
@@ -2389,6 +2417,9 @@ async function initSchema() {
     // pref at apply time) can override admin_only/self_and_admin upward to
     // org-wide visibility for that single comment.
     await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS ai_disclosure_audience TEXT NOT NULL DEFAULT 'self_and_admin' CHECK (ai_disclosure_audience IN ('self_and_admin','admin_only','all_users'))`);
+    // Org-wide default project (e.g. Incident). A user's own
+    // users.default_project_id overrides it; NULL there = use this.
+    await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS default_project_id INTEGER REFERENCES projects(id) ON DELETE SET NULL`);
 
     // Per-rewrite log. Every successful /api/ai/rewrite call writes a
     // row. When the user clicks 'Apply' in the modal, the consuming
@@ -2595,6 +2626,15 @@ async function initSchema() {
     await client.query(`ALTER TABLE kb_articles ADD COLUMN IF NOT EXISTS kind TEXT NOT NULL DEFAULT 'article'
       CHECK (kind IN ('article','runbook'))`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_kb_articles_runbooks ON kb_articles(project_id) WHERE kind = 'runbook'`);
+    // Optional source PDF attached to a local KB article (e.g. a vendor
+    // manual). Served inline at /api/kb/articles/:id/pdf so links can carry
+    // #page=/#search= anchors; stored like ticket attachments (UPLOADS_DIR,
+    // encrypted at rest in standard mode).
+    await client.query(`ALTER TABLE kb_articles ADD COLUMN IF NOT EXISTS pdf_filename TEXT`);
+    await client.query(`ALTER TABLE kb_articles ADD COLUMN IF NOT EXISTS pdf_original_name TEXT`);
+    await client.query(`ALTER TABLE kb_articles ADD COLUMN IF NOT EXISTS pdf_size INTEGER`);
+    await client.query(`ALTER TABLE kb_articles ADD COLUMN IF NOT EXISTS pdf_encrypted BOOLEAN NOT NULL DEFAULT FALSE`);
+    await client.query(`ALTER TABLE kb_articles ADD COLUMN IF NOT EXISTS pdf_uploaded_at TIMESTAMPTZ`);
 
     // Per-ticket runbook execution state. One row per (ticket, runbook)
     // — opening the same runbook on two tickets has independent
@@ -2835,6 +2875,45 @@ async function initSchema() {
         display_name TEXT,
         sort_order INTEGER NOT NULL DEFAULT 100,
         UNIQUE(page_id, item_id)
+      )
+    `);
+    // Visibility: public pages are readable by every logged-in user;
+    // private pages only by Admin / Manager / Tech. Existing pages stay
+    // public (prior behaviour).
+    await client.query(`ALTER TABLE status_pages ADD COLUMN IF NOT EXISTS is_public BOOLEAN NOT NULL DEFAULT TRUE`);
+    // Email subscriptions: notify_state = up/down alerts for the page's
+    // services; notify_changes = page changes (a service added).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS status_page_subscriptions (
+        id SERIAL PRIMARY KEY,
+        page_id INTEGER NOT NULL REFERENCES status_pages(id) ON DELETE CASCADE,
+        user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+        notify_state BOOLEAN NOT NULL DEFAULT TRUE,
+        notify_changes BOOLEAN NOT NULL DEFAULT TRUE,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        UNIQUE(page_id, user_id)
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_status_page_subs_user ON status_page_subscriptions(user_id)`);
+    // Optional project restriction: when a page has rows here, only
+    // members of at least one of these projects see it (Admin / Manager
+    // always do). See services/statusPageAccess.js.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS status_page_projects (
+        page_id INTEGER NOT NULL REFERENCES status_pages(id) ON DELETE CASCADE,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        PRIMARY KEY (page_id, project_id)
+      )
+    `);
+    // Notifier cursor over alert_item_state_changes (single row). NULL
+    // last_change_id = not started; first tick jumps to the current max
+    // so history is never emailed.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS status_page_notifier_state (
+        id SMALLINT PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+        last_change_id BIGINT,
+        last_run_at TIMESTAMPTZ
       )
     `);
 
@@ -3657,6 +3736,66 @@ Thanks,
     await client.query(`ALTER TABLE time_entries ADD COLUMN IF NOT EXISTS approved_by INTEGER REFERENCES users(id) ON DELETE SET NULL`);
     // Overlap checks scan a tech's entries by time range.
     await client.query(`CREATE INDEX IF NOT EXISTS idx_time_entries_user_span ON time_entries(user_id, started_at, ended_at)`);
+
+    // ── Automatic updates (Admin → System health) ───────────────────────
+    // The admin's update policy, read by the host updater
+    // (deploy/resolvd-update.sh) over /api/system-updates/policy. The app
+    // never runs Docker itself; it only stores the choice and the reports
+    // the host sends back. Defaults to manual: nothing updates until an
+    // admin opts in.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS update_settings (
+        id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+        channel TEXT NOT NULL DEFAULT 'manual'
+          CHECK (channel IN ('production', 'development', 'manual')),
+        update_hour INTEGER NOT NULL DEFAULT 3 CHECK (update_hour BETWEEN 0 AND 23),
+        update_requested_at TIMESTAMPTZ,
+        host_last_seen_at TIMESTAMPTZ,
+        last_report JSONB,
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`INSERT INTO update_settings (id) VALUES (1) ON CONFLICT DO NOTHING`);
+    // Updates, rollbacks and failures the host reported (routine "checked,
+    // nothing new" reports only refresh update_settings.last_report).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS update_events (
+        id BIGSERIAL PRIMARY KEY,
+        at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        status TEXT NOT NULL,
+        channel TEXT,
+        from_version TEXT,
+        to_version TEXT,
+        message TEXT
+      )
+    `);
+    // Change files (backend/changes/*.md) from the build the host is about
+    // to install, sent by the updater so admins can preview what's coming.
+    await client.query(`ALTER TABLE update_settings ADD COLUMN IF NOT EXISTS pending_changes JSONB`);
+
+    // ── What's new (services/whatsNew.js) ───────────────────────────────
+    // A release is the set of change files a build brought in for the
+    // first time; each entry is one change file. The user's pointer marks
+    // the newest release whose pop-up they've closed.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS change_releases (
+        id SERIAL PRIMARY KEY,
+        version TEXT,
+        commit TEXT,
+        deployed_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS change_entries (
+        id TEXT PRIMARY KEY,
+        release_id INTEGER NOT NULL REFERENCES change_releases(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK (kind IN ('feature', 'improvement', 'fix')),
+        audience TEXT NOT NULL CHECK (audience IN ('everyone', 'staff')),
+        items JSONB NOT NULL
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS change_entries_release_idx ON change_entries (release_id)`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS whats_new_seen_release_id INTEGER`);
 
     await client.query('COMMIT');
   } catch (err) {

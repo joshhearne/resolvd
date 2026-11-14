@@ -292,6 +292,35 @@ async function rest(path, { method = 'GET', body, settings, headers } = {}) {
   return json;
 }
 
+// The document an article was imported from (e.g. the PDF), through the
+// API with the key — GET /api/v1/kb/articles/:id/original. Not every Trove KB
+// version has that route; a 404 / 405 means "not available here" and the
+// caller can fall back to the public /pub/.../original address.
+// Returns a Buffer, or throws httpError with a reason worth showing.
+async function fetchOriginal(articleId, { maxBytes = 80 * 1024 * 1024, timeoutMs = 25000 } = {}) {
+  const cfg = await getSettings({ withKey: true });
+  if (!cfg.enabled || !cfg.base_url || !cfg._apiKey) throw httpError(503, 'Trove KB is not configured');
+  const id = String(articleId || '').toLowerCase();
+  if (!/^[0-9a-f-]{36}$/.test(id)) throw httpError(404, 'Article not found');
+  let res;
+  try {
+    res = await fetch(`${cfg.base_url}/api/v1/kb/articles/${id}/original`, {
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: { Authorization: `Bearer ${cfg._apiKey}`, 'User-Agent': 'Resolvd-TroveKb/2', Accept: 'application/pdf, */*' },
+    });
+  } catch (err) {
+    throw httpError(502, err.name === 'TimeoutError' ? 'Trove KB did not answer in time' : `Could not reach Trove KB: ${err.message}`);
+  }
+  if (res.status === 404 || res.status === 405) throw httpError(404, "Trove KB's API has no original-file route for this article (needs a Trove KB update, or the article has no original)");
+  if (res.status === 401 || res.status === 403) throw httpError(502, 'Trove KB refused the API key for the original file');
+  if (!res.ok) throw httpError(502, `Trove KB answered HTTP ${res.status} for the original file`);
+  const len = Number(res.headers.get('content-length') || 0);
+  if (len > maxBytes) throw httpError(413, 'The original file is too large');
+  const buf = Buffer.from(await res.arrayBuffer());
+  if (buf.length > maxBytes) throw httpError(413, 'The original file is too large');
+  return buf;
+}
+
 // Ids of every collection the key can read, cached briefly, so a search
 // over "all mapped collections" can be one unfiltered call instead of a
 // fan-out when the mapping covers everything the key sees.
@@ -341,6 +370,14 @@ function visibleCollections(settings, handler) {
   return { ids: pub, scopeOf };
 }
 
+// Imported PDFs are served by Trove KB at <public article url>/original;
+// browser PDF viewers honour #page= / #search= on that URL. Public only:
+// that's the address a user replying from email can actually open.
+function pdfUrlFor(sourceType, publicUrl) {
+  if (String(sourceType || '').toLowerCase() !== 'pdf' || !publicUrl) return null;
+  return `${String(publicUrl).replace(/\/+$/, '')}/original`;
+}
+
 function articleUrls(settings, articleId, collectionId) {
   const scope = collectionId && settings.public_collection_ids.includes(collectionId) ? 'public' : 'internal';
   return {
@@ -383,6 +420,10 @@ async function listCollections({ settings } = {}) {
   }));
 }
 
+function withPdf(sourceType, urls) {
+  return { ...urls, pdf_url: pdfUrlFor(sourceType, urls.public_url) };
+}
+
 function plainSnippet(text) {
   return String(text || '').replace(/<\/?mark>/g, '').replace(/\s+/g, ' ').trim();
 }
@@ -404,7 +445,7 @@ function shapeHit(settings, hit) {
     date_modified: hit.date_modified || null,
     snippet: plainSnippet(hit.matched?.snippet),
     heading: hit.matched?.heading || null,
-    ...articleUrls(settings, id, collectionId),
+    ...withPdf(hit.source_type, articleUrls(settings, id, collectionId)),
   };
 }
 
@@ -434,6 +475,7 @@ function shapeArticle(settings, a) {
     staff_url: urls.staff_url,
     // Trove KB's own public address wins; fall back to ours for the same site.
     public_url: a.public_url || urls.public_url,
+    pdf_url: pdfUrlFor(a.source_type, a.public_url || urls.public_url),
   };
 }
 
@@ -795,6 +837,8 @@ async function testConnection() {
 }
 
 module.exports = {
+  pdfUrlFor,
+  fetchOriginal,
   getSettings,
   patchSettings,
   setApiKey,

@@ -1,0 +1,14 @@
+# Template: deploy/install-updater.sh fills in @DIR@ and @USER@ and installs
+# this as /etc/systemd/system/resolvd-update.service.
+[Unit]
+Description=Resolvd update check
+Wants=network-online.target
+After=network-online.target docker.service
+
+[Service]
+Type=oneshot
+User=@USER@
+WorkingDirectory=@DIR@
+ExecStart=@DIR@/deploy/resolvd-update.sh
+# A full update (backup, pull, restart, health check) fits well inside this.
+TimeoutStartSec=30min

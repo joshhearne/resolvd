@@ -15,7 +15,9 @@ import HybridTime from "../components/HybridTime";
 import SlaTimer from "../components/SlaTimer";
 import TimeTracker from "../components/TimeTracker";
 import AiUsageBadge from "../components/AiUsageBadge";
+import AiRewriteButton from "../components/AiRewriteButton";
 import CustomFieldsCard from "../components/CustomFieldsCard";
+import ApplyFormDialog from "../components/ApplyFormDialog";
 import MentionTextarea from "../components/MentionTextarea";
 import {
   useStatuses,
@@ -40,6 +42,9 @@ import CannedPicker from "../components/CannedPicker";
 import RunbookPanel from "../components/RunbookPanel";
 import TroveKbKnowledge from "../components/TroveKbKnowledge";
 import AssistBriefModal from "../components/AssistBriefModal";
+import KbLinkInserter from "../components/KbLinkInserter";
+import TargetLinksDialog from "../components/TargetLinksDialog";
+import { hasKbLink } from "../utils/kbLinks";
 import TroveKbRunbookPanel from "../components/TroveKbRunbookPanel";
 import NumberInput from "../components/NumberInput";
 
@@ -521,6 +526,9 @@ export default function TicketDetail() {
   // Trove KB knowledge brief (scope a response before rewriting it).
   const [troveKbStatus, setTroveKbStatus] = useState(null);
   const [briefOpen, setBriefOpen] = useState(false);
+  const [kbLinkOpen, setKbLinkOpen] = useState(false);
+  const [targetLinksOpen, setTargetLinksOpen] = useState(false);
+  const commentInsertRef = useRef(null);
   useEffect(() => {
     api.get("/api/trove-kb/status").then(setTroveKbStatus).catch(() => setTroveKbStatus({ enabled: false }));
   }, []);
@@ -1806,6 +1814,15 @@ export default function TicketDetail() {
             </button>
             {isAdmin && (
               <button
+                onClick={() => setConfirm("apply-form")}
+                className="btn-secondary btn btn-sm whitespace-nowrap"
+                title="Convert this ticket to a request type (moves it to the form's project if needed)"
+              >
+                {ticket.form_id ? "Change form…" : "Apply form…"}
+              </button>
+            )}
+            {isAdmin && (
+              <button
                 onClick={() => setConfirm("merge")}
                 className="btn-secondary btn btn-sm whitespace-nowrap"
                 title="Merge this ticket into another (closes this one, reassigns comments/attachments/etc.)"
@@ -1850,6 +1867,14 @@ export default function TicketDetail() {
                 >
                   Move…
                 </button>
+                {isAdmin && (
+                  <button
+                    onClick={() => { setShowMobileActions(false); setConfirm("apply-form"); }}
+                    className="w-full text-left px-3 py-2 text-sm hover:bg-surface-2"
+                  >
+                    {ticket.form_id ? "Change form…" : "Apply form…"}
+                  </button>
+                )}
                 {isAdmin && (
                   <button
                     onClick={() => { setShowMobileActions(false); setConfirm("merge"); }}
@@ -2348,6 +2373,7 @@ export default function TicketDetail() {
                     <MarkdownEditor
                       aiSurface={shareWithVendor ? "comment_vendor" : "comment_internal"}
                       aiProjectId={ticket?.project_id || null}
+                      insertApiRef={commentInsertRef}
                       value={commentBody}
                       onChange={(e) => {
                         setCommentBody(e.target.value);
@@ -2375,6 +2401,47 @@ export default function TicketDetail() {
                       placeholder="Add a comment... (Ctrl+Enter to post)"
                       mentionProjectId={ticket?.project_id}
                     />
+                    {(isAdmin || canHandleNotes) && (
+                      <div className="flex flex-wrap items-center gap-2 text-xs">
+                        <button
+                          type="button"
+                          onClick={() => setKbLinkOpen(true)}
+                          className="inline-flex items-center gap-1 px-2 py-1 rounded border border-border-strong text-fg-muted hover:text-fg hover:bg-surface-2"
+                          title="Search Trove KB and local articles, narrow to a PDF page or highlighted phrase, and insert the link"
+                        >
+                          🔗 Insert KB link
+                        </button>
+                        <KbLinkInserter
+                          open={kbLinkOpen}
+                          onClose={() => setKbLinkOpen(false)}
+                          projectId={ticket.project_id}
+                          onInsert={(md) => {
+                            if (commentInsertRef.current) commentInsertRef.current(md);
+                            else setCommentBody((cur) => (cur && cur.trim() ? `${cur} ${md}` : md));
+                          }}
+                        />
+                        {hasKbLink(commentBody) && (
+                          <button
+                            type="button"
+                            onClick={() => setTargetLinksOpen(true)}
+                            className="inline-flex items-center gap-1 px-2 py-1 rounded border border-border-strong text-fg-muted hover:text-fg hover:bg-surface-2"
+                            title="AI points the KB links in your reply at the exact PDF page / phrase, optionally as numbered steps"
+                          >
+                            🎯 Target KB links
+                          </button>
+                        )}
+                        <TargetLinksDialog
+                          open={targetLinksOpen}
+                          onClose={() => setTargetLinksOpen(false)}
+                          ticketId={ticket.id}
+                          text={commentBody}
+                          onApply={(t, r) => {
+                            setCommentBody(t);
+                            if (r?.ai?.log_id) setCommentAiLogId(r.ai.log_id);
+                          }}
+                        />
+                      </div>
+                    )}
                     {(isAdmin || canHandleNotes) && troveKbStatus?.enabled && (
                       <div className="flex flex-wrap items-center gap-2 text-xs">
                         <button
@@ -3369,6 +3436,7 @@ export default function TicketDetail() {
             ticket={ticket}
             canEdit={isAdmin}
             onUpdated={(cfs) => setTicket((t) => ({ ...t, custom_fields: cfs }))}
+            onApplyForm={isAdmin ? () => setConfirm("apply-form") : undefined}
           />
 
           {/* Blocker */}
@@ -3547,6 +3615,15 @@ export default function TicketDetail() {
             navigate(`/tickets/${winnerId}`);
           } catch (e) { toast.error(e.message); }
           finally { setConfirm(null); }
+        }}
+      />
+      <ApplyFormDialog
+        open={confirm === "apply-form"}
+        ticket={ticket}
+        onCancel={() => setConfirm(null)}
+        onApplied={async () => {
+          setConfirm(null);
+          await loadTicket();
         }}
       />
       <MoveDialog

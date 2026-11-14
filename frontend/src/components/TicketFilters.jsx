@@ -37,6 +37,8 @@ export const DEFAULT_TICKET_FILTERS = {
   statuses: [],
   priorities: [],
   mine: false,
+  submittedByMe: false, // tickets I submitted
+  following: false, // tickets I follow
   flagged: false,
   hasFix: null, // null = ignore, true = with fix, false = without
   excludeClosed: true,
@@ -78,6 +80,8 @@ export function buildTicketQs(filters, extras = {}) {
   if (filters.statuses?.length) parts.push(`internal_status=${encodeURIComponent(filters.statuses.join(","))}`);
   if (filters.priorities?.length) parts.push(`effective_priority=${filters.priorities.join(",")}`);
   if (filters.mine) parts.push(`assigned_to=me`);
+  if (filters.submittedByMe) parts.push(`submitted_by=me`);
+  if (filters.following) parts.push(`following=1`);
   if (filters.flagged) parts.push(`flagged_for_review=true`);
   if (filters.hasFix === true) parts.push(`has_fix=1`);
   if (filters.hasFix === false) parts.push(`has_fix=0`);
@@ -108,6 +112,8 @@ export function summarizeFilters(filters, projects, statuses) {
   // Short human label like "Active · last 60d · 2 projects · P1 · Mine"
   const parts = [];
   if (filters.mine) parts.push("Mine");
+  if (filters.submittedByMe) parts.push("Submitted by me");
+  if (filters.following) parts.push("Following");
   if (filters.excludeClosed) parts.push("Active");
   if (filters.flagged) parts.push("Flagged");
   if (filters.hasFix === true) parts.push("With fix");
@@ -211,6 +217,20 @@ export function TicketFiltersModal({ open, filters, setFilters, projects, status
                 label="Mine (assigned to me)"
                 active={draft.mine}
                 onClick={() => setDraft((d) => ({ ...d, mine: !d.mine }))}
+              />
+              <Toggle
+                label="Submitted by me"
+                active={draft.submittedByMe}
+                onClick={() => setDraft((d) => (d.submittedByMe
+                  ? { ...d, submittedByMe: false }
+                  : { ...d, submittedByMe: true, excludeClosed: false }))}
+              />
+              <Toggle
+                label="Following"
+                active={draft.following}
+                onClick={() => setDraft((d) => (d.following
+                  ? { ...d, following: false }
+                  : { ...d, following: true, excludeClosed: false }))}
               />
               <Toggle
                 label="Active only (hide Closed)"

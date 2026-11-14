@@ -61,6 +61,16 @@ export default function AdminUsers() {
     }
   }
 
+  async function viewAs(u) {
+    if (!confirm(`View Resolvd as ${u.display_name || u.email} (${u.role})?\n\nYou'll see exactly what they see until you click Release (auto-releases after 2 hours). Start and release are audit-logged.`)) return;
+    try {
+      await api.post(`/api/impersonate/${u.id}`, {});
+      window.location.href = "/dashboard";
+    } catch (err) {
+      toast.error(err.message);
+    }
+  }
+
   async function changeStatus(userId, status) {
     setSaving(userId);
     try {
@@ -490,6 +500,11 @@ export default function AdminUsers() {
                       <RowMenu
                         buttonAriaLabel={`Actions for ${u.email}`}
                         items={[
+                          {
+                            label: "View as this user",
+                            onClick: () => viewAs(u),
+                            hidden: !isSuperAdmin || u.status !== "active" || u.role === "Admin",
+                          },
                           {
                             label: saving === u.id ? "Refreshing…" : "Refresh from directory",
                             onClick: () => enrichUser(u.id),

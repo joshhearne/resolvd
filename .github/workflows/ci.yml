@@ -2,9 +2,9 @@ name: CI
 
 on:
   push:
-    branches: [main]
+    branches: [main, dev]
   pull_request:
-    branches: [main]
+    branches: [main, dev]
 
 jobs:
   backend:
@@ -51,6 +51,10 @@ jobs:
       - name: Install
         working-directory: frontend
         run: npm ci
+
+      - name: Check for undefined components / identifiers
+        working-directory: frontend
+        run: npm run check:undefined
 
       - name: Build
         working-directory: frontend

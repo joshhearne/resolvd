@@ -23,6 +23,7 @@ const attachmentRoutes = require('./routes/attachments');
 const brandingRoutes = require('./routes/branding');
 const exportRoutes = require('./routes/export');
 const followerRoutes = require('./routes/followers');
+const { requireTicketVisible } = require('./services/ticketVisibility');
 const statusRoutes = require('./routes/statuses');
 const supportRoutes = require('./routes/support');
 const companyRoutes = require('./routes/companies');
@@ -117,6 +118,11 @@ app.use(session({
 }));
 
 // Routes
+// Admin masquerade: auto-expire stale masquerades and refuse
+// account-sensitive writes while an Admin is viewing as someone else.
+const impersonationRoutes = require('./routes/impersonation');
+app.use(impersonationRoutes.expireImpersonation);
+app.use(impersonationRoutes.blockWhileImpersonating);
 app.use('/auth', authRoutes);
 // Webhook receivers authenticate via URL token, not session. Mount before
 // the support JIT guard since they aren't tied to any user principal.
@@ -134,10 +140,18 @@ app.use('/api/support', supportRoutes);
 
 // JIT guard: blocks role='Support' on every other /api/* path unless they
 // have an active, non-expired grant. No-op for non-Support users.
+// Mounted before the Support JIT guard so an Admin viewing as a Support
+// user can always release.
+app.use('/api/impersonate', impersonationRoutes);
 app.use('/api', requireSupportAccessIfSupport);
 
 app.use('/api/invites', inviteRoutes);
 app.use('/api/auth-settings', authSettingsRoutes);
+// Ticket visibility guard: every /api/tickets/<id>/... route (detail,
+// comments, notes, attachments, followers, time) 404s when the caller
+// can't see that ticket. Submitter-scoped users are limited to their own
+// + followed tickets (see services/ticketVisibility.js).
+app.use('/api/tickets/:ticketId', requireTicketVisible('ticketId'));
 app.use('/api/tickets', ticketRoutes);
 app.use('/api/tickets', commentRoutes);
 app.use('/api/tickets', ticketNoteRoutes);
@@ -162,6 +176,8 @@ app.use('/api/email-backends', emailBackendRoutes);
 app.use('/api/notifications', notificationRoutes);
 app.use('/api/push', pushRoutes);
 app.use('/api/system-health', systemHealthRoutes);
+app.use('/api/system-updates', require('./routes/systemUpdates'));
+app.use('/api/whats-new', require('./routes/whatsNew'));
 app.use('/api/alert-sources', alertSourceRoutes);
 app.use('/api/alerts', alertRoutes);
 app.use('/api/status-pages', statusPageRoutes);
@@ -195,7 +211,18 @@ app.use('/api/billing', require('./routes/billing'));
 app.get('/health', (req, res) => res.json({ ok: true }));
 
 initSchema()
-  .then(() => {
+  .then(async () => {
+    // What's new: record change files this build brings in (and notify),
+    // or drop ones a rollback took away. Never blocks startup.
+    try {
+      const r = await require('./services/whatsNew').syncChanges({
+        version: process.env.APP_VERSION,
+        commit: process.env.APP_COMMIT,
+      });
+      if (r.added || r.removed) console.log(`[whats-new] ${r.added} new change(s), ${r.removed} removed`);
+    } catch (err) {
+      console.error('[whats-new] sync failed:', err);
+    }
     // Scheduled jobs: muted-vendor digest fires at the configured local
     // time once per day (cadence checked every 5 min).
     require('./services/mutedDigest').startScheduler();
@@ -227,6 +254,9 @@ initSchema()
     // Prepaid block alerts (MSP mode): every 30 min, warn Admins/Managers
     // when a customer's block crosses its alert line or is used up.
     require('./services/billing').startScheduler();
+    // Status page subscriptions: every minute, email subscribers about
+    // services going down / recovering.
+    require('./services/statusPageNotifier').startScheduler();
     app.listen(PORT, () => {
       console.log(`Resolvd backend running on port ${PORT}`);
     });

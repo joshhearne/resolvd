@@ -60,6 +60,7 @@ function brandingPayload(row) {
     ai_disclosure_audience: row.ai_disclosure_audience || 'self_and_admin',
     logo_url: row.logo_filename ? '/api/branding/logo' : null,
     favicon_url: row.favicon_filename ? '/api/branding/favicon' : null,
+    default_project_id: row.default_project_id ?? null,
   };
 }
 
@@ -99,6 +100,7 @@ router.patch('/', requireAuth, requireRole('Admin'), async (req, res) => {
       ai_assist_enabled,
       ai_project_context_enabled,
       ai_disclosure_audience,
+      default_project_id,
     } = req.body;
     const updates = {};
     if (site_name !== undefined) updates.site_name = site_name.trim() || 'Resolvd';
@@ -149,6 +151,17 @@ router.patch('/', requireAuth, requireRole('Admin'), async (req, res) => {
         return res.status(400).json({ error: 'invalid ai_disclosure_audience' });
       }
       updates.ai_disclosure_audience = ai_disclosure_audience;
+    }
+
+    if (default_project_id !== undefined) {
+      if (default_project_id === null || default_project_id === '') {
+        updates.default_project_id = null;
+      } else {
+        const pid = Number(default_project_id);
+        const p = await pool.query(`SELECT id FROM projects WHERE id = $1 AND status = 'active'`, [pid]);
+        if (!p.rows[0]) return res.status(400).json({ error: 'default_project_id must be an active project' });
+        updates.default_project_id = pid;
+      }
     }
 
     if (Object.keys(updates).length === 0) {
