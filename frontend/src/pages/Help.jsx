@@ -146,6 +146,10 @@ function SectionOverview({ role }) {
               ["Assign tickets",            "✓","✓","✓","✗","✗","✗"],
               ["Edit Knowledge Base",       "✓","✓","✓","✗","✗","✗"],
               ["Manage inventory assets",   "✓","✓","✓","✗","✗","✗"],
+              ["Track time on tickets",     "✓","✓","✓","✗","✗","✗"],
+              ["Approve billable time",     "✓","✓","✗","✗","✗","✗"],
+              ["Log maintenance",           "✓","✓","✓","✗","✗","✗"],
+              ["Edit status pages",         "✓","✓","✗","✗","✗","✗"],
               ["Vendor contact management", "✓","✓","✗","✗","✗","✗"],
               ["Send vendor emails",        "✓","✓","✗","✗","✗","✗"],
               ["Manage projects",           "✓","✓","✗","✗","✗","✗"],
@@ -181,6 +185,27 @@ function SectionOverview({ role }) {
           if a Tech-level member should not receive assignments on this project.
         </p>
       </div>
+
+      <div className="bg-surface-2 border border-border rounded-lg p-3 text-xs text-fg-muted space-y-1">
+        <p className="font-semibold text-fg">Submitters see their own tickets (v0.11.0)</p>
+        <p>
+          A Submitter sees tickets they submitted plus tickets they follow, and lands on <em>My Dashboard</em>:
+          My open tickets, Waiting on me, Resolved / closed, Following (open), My submissions, Following, and recent
+          updates on their tickets. No team-wide counts or SLA analytics. The ticket list has My submissions and
+          Following toggles instead of Mine.
+        </p>
+      </div>
+
+      {role === "Admin" && (
+        <div className="bg-surface-2 border border-border rounded-lg p-3 text-xs text-fg-muted space-y-1">
+          <p className="font-semibold text-fg">Check what a role sees: View as (v0.11.0)</p>
+          <p>
+            Admin → Users → a user's row menu → <em>View as this user</em> shows Resolvd exactly as that user sees it.
+            Use <em>Release</em> on the bar at the bottom of the screen to switch back. Works for active non-Admin users;
+            see Admin Panel for the limits.
+          </p>
+        </div>
+      )}
 
       <div className="bg-surface-2 border border-border rounded-lg p-3 text-xs text-fg-muted space-y-1">
         <p className="font-semibold text-fg">Support role &amp; JIT access</p>
@@ -222,7 +247,8 @@ function SectionDashboard({ role }) {
         <Feature name="My tasks card" roles="all" note="(v0.10.0) Overdue / Due today / Tomorrow from your personal tasks, with an inline complete checkbox. See Schedules + Tasks." />
         <Feature name="Vendor wait — per-vendor breakdown" roles={HANDLER} note="(v0.10.0) Hover the Vendor wait stat for each vendor's share; a pulsing dot marks vendors with a ticket currently paused on them." />
         <Feature name="Priority distribution bar chart" roles="all" />
-        <Feature name="SLA — Month to date card" roles="all" note="MTD breach counts, currently breached, open w/ SLA clock, per-project breakdown. (v0.10.0) Live counts exclude closed legacy tickets and no longer double-count a ticket owing both response and resolve." />
+        <Feature name="SLA — Month to date card" roles="all" note="MTD breach counts, currently breached, open w/ SLA clock, per-project breakdown. (v0.10.0) Live counts exclude closed legacy tickets and no longer double-count a ticket owing both response and resolve. (v0.11.0) Adds ticket lists with owner: Breached now, Due soon, Paused right now, Late this month. See SLA tracker." />
+        <Feature name="My Dashboard (Submitters)" roles={["Submitter"]} note="(v0.11.0) Submitters get their own dashboard instead of the team view: their open tickets, tickets waiting on them, resolved / closed, tickets they follow, and recent updates on their tickets." />
         <Feature name="Active alerts widget" roles={HANDLER} note="Top 8 firing alerts from configured monitoring sources." />
         <Feature name="Time-in-status report" roles="all" note="Total + average + entry count per status, sourced from status_change audit." />
         <Feature name="Recent activity feed" roles="all" />
@@ -386,6 +412,8 @@ function SectionTicketDetail({ role }) {
         <Feature name="Assign ticket" roles={HANDLER} note="(v0.10.0) Inline picker on the ticket header: assign to me, change, clear. Pool matches the project's assignment-policy pool." />
         <Feature name="Custom Fields card" roles={HANDLER} note="(v0.10.0) Form fields captured at create plus agent-only fields handlers fill in. Per-field or save-all. Sensitive values are revealed only to the handler editing them." />
         <Feature name="Trove KB block (when enabled)" roles="all" note="(v0.10.0) Linked articles (title + collection snapshotted), title-based suggestions from the project's mapped collection, search-to-link, and a Resolution draft built from matched passages + runbook steps. Internal articles are visible to project handlers only." />
+        <Feature name="Time tracker" roles={HANDLER} note="(v0.11.0) When time tracking is on, a timer bar sits under Follow in the ticket header: start / pause / resume, Log work with a required note (private by default), and Log & <status> to log and move the ticket at once. See Time + Billing." />
+        <Feature name="External status advances on vendor ref" roles="all" note="(v0.11.0) The first time a vendor ticket ref is saved on a ticket still in the initial external status (e.g. Unacknowledged), the external status moves to its next transition (or Acknowledged). A Mirror mapping carries the internal status along when transitions allow. Choosing an external status yourself in the same save wins. Admins can turn this off under Admin → Statuses → Workflow automation." />
         <Feature name="Vendor-reply auto-status" roles="all" note="(v0.10.0) On externally-engaged tickets an inbound vendor ack moves the external status to In Progress; a 'completed / resolved' reply moves external to Resolved and internal to Pending Review. Internal status is otherwise untouched so the ticket stays on your queue." />
         <Feature name="Print consumable delivery label" roles={HANDLER} note="(v0.10.0) Pick a consumable from the ticket (auto-matched from the alert tag or ticket text; ↻ Rescan re-runs the match). First print allocates one unit and logs the movement; reprints don't decrement. Refused at zero stock with a restock prompt." />
         <Feature name="Set blocker" roles={HANDLER} note="Block on another ticket or flag as awaiting team input." />
@@ -471,6 +499,12 @@ function SectionAdmin({ role }) {
         <HelpScreenshot src="/help/admin-left-rail-nav.png?v=2" alt="Admin panel left-rail navigation grouped into People, Workflow, Integrations, Site, and Data" />
         <div className="space-y-0">
           <Feature name="Users — invite, deactivate, reset passwords" roles={["Admin"]} note="Manager role cannot manage other users. (v0.10.0) Bulk select bar (refresh from directory, enable, disable), bulk Entra import, and auto-provision via Graph then Google Directory. auth_settings.allow_email_unknown_users gates the local fallback." />
+          <Feature name="Users — View as this user" roles={["Admin"]} note="(v0.11.0) From a user's row menu, see Resolvd exactly as that user does (role, projects, dashboard). Active non-Admin users only. A bar at the bottom shows who you're viewing as, with Release to switch back. Password, MFA, profile, preference and calendar changes are blocked while viewing as someone, start and release are audited, and it ends on its own after 2 hours." />
+          <Feature name="Time tracking — timers, work notes, billing" roles={["Admin"]} note="(v0.11.0) Enable, auto-start, discard and warning rules, work-note visibility, timesheet lock, work types, export. With MSP mode on, also billable rules, rate cards, bill types and utilization. See Time + Billing." />
+          <Feature name="On-call rotations" roles={PRIV} note="(v0.11.0) Rotations, shift length, handoff, overrides. See On-call rotations." />
+          <Feature name="Statuses — Workflow automation" roles={["Admin"]} note="(v0.11.0) Advance external status when a vendor ref is added (on by default). The first time a vendor ticket ref is saved on a ticket still in the initial external status, it moves to that status's next transition, or to Acknowledged when none is drawn. If a Mirror mapping links the new external status to an internal one, the internal status follows when its transitions allow. Picking an external status by hand in the same save wins." />
+          <Feature name="Inbound — likely unblocks hint" roles={PRIV} note="(v0.11.0) When reviewing an unmatched message, the detail pane lists waiting tickets it probably answers: ticket ref in the subject, the vendor's ref, or the sender is a contact on the ticket. Use fills in the ticket; matching moves the ticket out of its waiting status." />
+          <Feature name="Branding — MSP mode + default project" roles={["Admin"]} note="(v0.11.0) Customer companies (MSP mode), off by default, turns on customer companies, contracts and billing. Default project sets the org-wide project preselected on New Ticket; users can override it in Account → Preferences." />
           <Feature name="Forms / Fields — categories, forms, custom fields" roles={["Admin"]} note="(v0.10.0) Project-scoped category → form → field model. Per-form required flags, agent-only + sensitive fields, multiselect, computed (formula) fields, {field.<slug>} tags, deep-link builder. See the Forms + Fields section." />
           <Feature name="Schedules — recurring ticket templates" roles={["Admin"]} note="(v0.10.0) Daily / weekly / monthly / yearly presets or raw cron, timezone-aware, with an end condition. Each fire creates a real ticket; optionally starts a runbook run. See Schedules + Tasks." />
           <Feature name="Trove KB — knowledge base integration" roles={["Admin"]} note="(v0.10.0) Optional. Base URL, public URL, API key, per-collection Internal / Public / Hidden, webhook secret, hourly collection sync, Check for changes now, noise rules for briefs. Replace local KB is a separate, optional step — the built-in KB keeps working beside it. See Knowledge Base." />
@@ -499,12 +533,16 @@ function SectionAdmin({ role }) {
           <Feature name="AI Assist — provider, model, project context" roles={PRIV} note="BYO-AI org config + per-user keys; rewrite surfaces on comments, descriptions, canned responses." />
           <Feature name="Authentication — MFA policy, SSO / Azure AD" roles={["Admin"]} />
           <Feature name="Branding — logo, site name, colors, locale defaults" roles={PRIV} />
-          <Feature name="System health — scheduler heartbeats + DB / queue stats" roles={PRIV} note="Auto-refreshes every 30s; shows ok / stale / error / never_ran per scheduled job. Build info card at the top displays the running version / commit / built-at. Admins also get the Updates panel: update channel (Production / Development / Manual), update hour, what's running vs. available, recent updates, and a preview of the changes in the next update. Docker installs only update when the host updater is installed; see the README's Updates section." />
+          <Feature name="System health — scheduler heartbeats + DB / queue stats" roles={PRIV} note="Auto-refreshes every 30s; shows ok / stale / error / never_ran per scheduled job. Build info card at the top displays the running version / commit / built-at." />
+          <Feature name="System health — Updates" roles={["Admin"]} note="(v0.11.0) Channel: Production (installs each new release at the update hour), Development (installs the latest dev build each night, for test and staging servers), or Manual (never updates on its own; the panel shows the commands to run). Update hour (server time; a short restart happens), Update now (picked up within 10 minutes), running vs. latest available version, last check, Recent updates (Updated / Rolled back / Failed), and a preview of what's coming in the next update. Automatic updates need the host updater: run sudo deploy/install-updater.sh from the Resolvd folder on the server. The panel warns if it isn't installed or hasn't checked in." />
           <Feature name="Login security — failed-login forensics" roles={["Admin"]} note="Raw + per-IP / per-email aggregates. Backed by the per-IP block + dwell timer + honeypot pipeline." />
           <Feature name="Support — issue JIT access grants" roles={["Admin"]} note="Time-limited read grants for Support role users." />
           <Feature name="Export — full data export" roles={PRIV} />
           <Feature name="Encryption — field-level encryption keys" roles={["Admin"]} />
         </div>
+        {isAdmin && (
+          <HelpScreenshot src="/help/admin-updates.png" alt="Admin → System health → Updates panel with channel, update hour, running and latest versions, recent updates, and the coming-in-next-update preview" />
+        )}
       </>}
     </div>
   );
@@ -553,6 +591,9 @@ function SectionNotifications({ role }) {
         <Feature name="New-ticket fanout to Admins / Managers" roles={PRIV} note="(v0.10.0) Every create path — form, inbound email, alert promotion — notifies active Admins and Managers. In-app on, email off by default." />
         <Feature name="Browser push (opt-in)" roles="all" note="Requires permission per device. Mention defaults on; other events default off." />
         <Feature name="What's new after an update" roles="all" note="A pop-up lists what changed in the update: new features (blue), improvements (green), fixes (orange). It stays in the bell as &quot;Resolvd was updated&quot;. Admins, Managers and Techs see every change; everyone else sees only the changes that affect them." />
+        <Feature name="Unlogged-time warning" roles={HANDLER} note="(v0.11.0) One in-app notification when your ticket timer has run past the admin-set limit with no work logged." />
+        <Feature name="Prepaid block alerts" roles={PRIV} note="(v0.11.0) MSP mode. Notifies Admins and Managers when a customer's prepaid block reaches the set percentage, and again when it's used up." />
+        <Feature name="Status page email alerts" roles="all" note="(v0.11.0) Subscribe on a status page for up / down alerts and page changes. See Status + Maintenance." />
         <Feature name="Mark all read" roles="all" />
         <Feature name="Auto-follow on comment + mention" roles={["Admin","Manager","Submitter"]} note="Posting a comment subscribes you to the ticket; being mentioned subscribes you." />
       </div>
@@ -588,6 +629,21 @@ function SectionSla({ role }) {
       <p className="text-sm text-fg leading-relaxed">
         Both clocks pause when the ticket transitions into a status tagged <code className="bg-surface px-1 rounded text-xs">awaiting_input</code> or <code className="bg-surface px-1 rounded text-xs">on_hold</code> — vendor / customer wait time doesn't count against you. Resume on transition out shifts due-ats forward by the paused duration.
       </p>
+      <h3 className="text-sm font-semibold text-fg mt-3">Business hours, locations + holidays (v0.11.0)</h3>
+      <p className="text-sm text-fg leading-relaxed">
+        Business-hours policies live on <b>Admin → SLA policies → Business hours</b> and are pinned to an SLA policy via
+        its <b>Business hours</b> column. A policy can cover the org, one project, or a <b>location</b>: a location row
+        overrides the pinned hours for tickets at that site (24/7 SLA policies stay 24/7). Open <b>Holidays</b> on a
+        policy to add the days it's closed; SLA clocks and escalation delays skip them like a weekend.
+      </p>
+      <HelpScreenshot src="/help/sla-holidays.png" alt="Admin → SLA policies → Business hours with the Holidays editor open: a date holiday, a weekday rule, a multi-day span and an early close" />
+      <ul className="text-sm text-fg leading-relaxed list-disc ml-5 space-y-0.5">
+        <li><strong>On a date</strong>, optionally <strong>Every year</strong>, or a <strong>Weekday rule</strong> for holidays that move (e.g. the last Monday of May).</li>
+        <li><strong>Closed all day</strong> for one or more days (e.g. Thanksgiving Thursday + Friday), or <strong>Early close</strong>: open as usual until the time you set, closed after.</li>
+        <li><strong>Observed</strong> moves a Saturday holiday to the Friday before and a Sunday holiday to the Monday after.</li>
+        <li>Everyone can subscribe to the holiday list from <strong>Account Settings → Calendar</strong>.</li>
+      </ul>
+
       <h3 className="text-sm font-semibold text-fg mt-3">Breach + dashboard card</h3>
       <p className="text-sm text-fg leading-relaxed">
         A 5-minute scheduler flips the breached flag, stamps the breach timestamp, and fans out a notification (in-app + immediate email; bypasses digest cadence) to the assignee, followers, and submitter. The Dashboard <strong>SLA — Month to date</strong> card shows MTD response/resolve breach counts, current breaches, open clocks, plus a per-project breakdown. Admin/Manager see all projects; Submitter/Viewer see only their member projects.
@@ -602,6 +658,9 @@ function SectionSla({ role }) {
         <Feature name="No response breach during Resolved grace" roles="all" note="(v0.10.0) Tickets that resolved before a manual reply no longer trip the response breach every tick." />
         <Feature name="Submitter breach notifications are opt-in" roles={["Admin"]} note="(v0.10.0) auth_settings.sla_notify_submitter_default is off by default; per-priority chains can opt in with a notify_submitter action." />
         <Feature name="Inbound + alert tickets stamp SLA on create" roles="all" note="(v0.10.0) Email- and alert-created tickets get their SLA policy and assignment inside the create transaction, honoring business hours." />
+        <Feature name="SLA card ticket lists" roles="all" note="(v0.11.0) The card lists what's stuck and who has it: Breached now (most overdue first), Due soon (response within 1h, resolve within 4h), Paused right now (vendor or internal waits, longest first), and Late this month (each breached clock and how late). Closed and resolved tickets are left out. Pause totals count only waits that are happening now." />
+        <Feature name="Holidays + per-location hours" roles={["Admin"]} note="(v0.11.0) Admin → SLA policies → Business hours. Date or weekday-rule holidays, observed dates, multi-day spans, early closes; location rows override project / org hours." />
+        <Feature name="Breach notifications (webhooks)" roles={["Admin"]} note="(v0.11.0) Admin → SLA policies → Breach notifications. Post to Slack, Microsoft Teams, PagerDuty, or any JSON endpoint when a ticket breaches (Response breached, Resolve breached) or is at risk (Response at risk, Resolve at risk), filtered by project and priority. Send test and a delivery log per webhook. PagerDuty incidents resolve automatically when the ticket is resolved. Generic webhooks can be signed with a secret." />
       </div>
     </div>
   );
@@ -811,6 +870,24 @@ function SectionAccount({ role }) {
         <Feature name="Preferences — behavior toggles" roles="all" note="Compact mode, Ctrl+Enter to post, auto-follow on comment, email notification preferences." />
         <Feature name="Preferences — comment signature" roles="all" note="Markdown sign-off appended to your comments; scope vendor-only (default) or all. 2000-char cap with a live counter." />
         <Feature name="Sessions + SSO return" roles="all" note="(v0.10.0) Sessions are a 30-day rolling window instead of a fixed 8 hours. After a Microsoft login you land on the page you asked for, not the dashboard." />
+        <Feature name="Preferences — default project" roles={["Admin","Manager","Tech","Submitter"]} note="(v0.11.0) The project preselected when you create a new ticket. Leave it on Organization default to follow the Admin's choice (Admin → Branding → Default project), or pick a project to use your own." />
+        <Feature name="Calendar — calendar feeds" roles="all" note="(v0.11.0) Subscribe to scheduled work and holidays in Outlook or Google Calendar. See below." />
+      </div>
+
+      <h3 className="text-sm font-semibold text-fg pt-1">Calendar feeds (v0.11.0)</h3>
+      <p className="text-sm text-fg leading-relaxed">
+        <b>Account Settings → Calendar</b> gives you read-only calendar links for maintenance windows, recurring tickets,
+        and company holidays. Click <b>Create my calendar links</b>, then copy a link into Outlook (Calendar → Add
+        calendar → Subscribe from web) or Google Calendar (Other calendars → + → From URL). Outlook and Google decide how
+        often to refresh, usually every few hours (Google can take up to a day), so check Resolvd for last-minute changes.
+      </p>
+      <HelpScreenshot src="/help/account-calendar.png" alt="Account Settings → Calendar with My scheduled work, project calendars, holiday calendars, and How to subscribe" />
+      <div className="space-y-0">
+        <Feature name="My scheduled work" roles="all" note="Maintenance windows and recurring tickets assigned to you." />
+        <Feature name="All scheduled work" roles={HANDLER} note="Every project." />
+        <Feature name="Project calendars" roles="all" note="One feed per project you're a member of (Admins and Managers get every active project)." />
+        <Feature name="Holiday calendars" roles="all" note="Holidays and early closes from each business-hours policy that has them." />
+        <Feature name="Make new links / Turn off" roles="all" note="The links work without signing in, so treat them like a password. Make new links cuts off every calendar using the old ones; Turn off disables them." />
       </div>
     </div>
   );
@@ -1058,10 +1135,27 @@ function SectionAlerts({ role }) {
         <Feature name="Auto-promotion via alert rules" roles={PRIV} note="Admin / Manager configure rules per source: severity threshold + optional title regex → promote_ticket / notify_only / ignore." />
         <Feature name="Dashboard 'Active alerts' widget" roles={HANDLER} note="Top 8 firing alerts on the dashboard for quick triage." />
       </div>
+
+      <h3 className="text-sm font-semibold text-fg">Uptime Kuma + monitored items (v0.11.0)</h3>
+      <p className="text-sm text-fg leading-relaxed">
+        Uptime Kuma is a built-in integration (<b>Admin → Integrations</b>). Kuma posts DOWN / UP events to the source's
+        webhook URL: DOWN opens a ticket, UP resolves it, and Kuma sends nothing during its own maintenance windows. With a
+        Kuma API key and <b>Poll live status from Kuma</b> ticked, Resolvd also reads live state and uptime about once a
+        minute, which feeds status pages and monitored-item discovery.
+      </p>
+      <HelpScreenshot src="/help/alerts-kuma.png" alt="Admin → Integrations → Uptime Kuma source with the setup box and the Monitored items table showing state, uptime, service and project pin" />
+      <div className="space-y-0">
+        <Feature name="Uptime Kuma setup" roles={PRIV} note="Attach the Kuma webhook notification to individual monitors, not groups, or a group and its child will each open a ticket. Optional Kuma web URL adds Open in Uptime Kuma links." />
+        <Feature name="Monitored items" roles={PRIV} note="Discovered automatically the first time an alert arrives for them. The table shows state, last seen, 24h uptime, alert count, service, and project, with a filter (All items, Not in a service, Services, Components, Not up). Forget removes an item until its next alert." />
+        <Feature name="Services + components" roles={PRIV} note="Kuma groups are services; components join them automatically on their first alert, or set them here. Mark a component primary so it going down takes the service down." />
+        <Feature name="Project pins" roles={PRIV} note="Pin an item to a project to send its tickets there instead of the source default. A pin beats any rule's project override; a service's pin covers its components unless they have their own." />
+        <Feature name="Maintenance suppresses tickets" roles={HANDLER} note="While a Resolvd maintenance window covers an item, its alerts are recorded but don't open tickets. See Status + Maintenance." />
+      </div>
       <div className="bg-surface-2 border border-border rounded-lg p-3 text-xs text-fg-muted space-y-1">
         <p className="font-semibold text-fg">Integration registry</p>
         <p>
-          Built-in adapters: Zabbix (webhook + optional REST backfill), Action1 (REST poll + 429 retry + token bucket).
+          Built-in adapters: Zabbix (webhook + optional REST backfill), Action1 (REST poll + 429 retry + token bucket),
+          Uptime Kuma (webhook + optional live-status poll).
           Anything else uses the generic webhook intake with a tabular field-map editor — map inbound JSON paths
           to Resolvd ticket fields with optional value-map lookups. No code change required to onboard a new vendor.
         </p>
@@ -1088,6 +1182,7 @@ function SectionEscalations({ role }) {
         <Feature name="notify_role / notify_assignee / notify_user" roles="all" note="DMs the targeted user(s). notify_role is scoped to the ticket's project so Org-Wide steps don't broadcast across every project." />
         <Feature name="reassign_role / reassign_user" roles={PRIV} note="Sets assigned_to to a role's first active agent on the project, or a specific user." />
         <Feature name="reassign_agent (assignment policy)" roles={PRIV} note="Defers to the project's assignment policy — round-robin / lowest-case-load — excluding the current assignee. Falls back to any other active agent if no policy or pool is empty." />
+        <Feature name="Notify on-call / Reassign to on-call" roles={PRIV} note="(v0.11.0) Page everyone currently on call, or assign the ticket to whoever is on call, from a project's rotation or the org-wide one. See On-call rotations." />
         <Feature name="bump_priority (cascade-safe)" roles={PRIV} note="Raises urgency by N tiers (clamped to a floor). Snapshots original priority into escalation_priority_snapshot so a bumped P3 → P2 still matches P3 chain rows on the next tick — no cascade into the new tier's chain." />
       </div>
       <div className="bg-surface-2 border border-border rounded-lg p-3 text-xs text-fg-muted space-y-1">
@@ -1100,6 +1195,141 @@ function SectionEscalations({ role }) {
           policy pins business hours, the delay walks through the window — a 30-minute step on a 4:55 PM breach
           fires the next business morning, not at 5:25 PM.
         </p>
+      </div>
+    </div>
+  );
+}
+
+function SectionTime({ role }) {
+  const isAdmin = role === "Admin";
+  const isPriv = PRIV.includes(role);
+  const isHandler = HANDLER.includes(role);
+  return (
+    <div className="space-y-4">
+      {isAdmin
+        ? <FullAccess />
+        : isPriv
+          ? <PartialAccess note="Managers track time, see any tech's timesheet, approve billable time, and edit customer contracts. The settings at Admin → Time tracking (rules, work types, rate cards, bill types) are Admin-only." />
+          : isHandler
+            ? <PartialAccess note="You can run timers, log work on tickets, and see your own timesheet. Billing, approvals, and settings are Admin / Manager only." />
+            : <NoAccess note="Time tracking is for handlers (Admin, Manager, Tech). It doesn't appear on tickets for your role." />}
+      <p className="text-sm text-fg leading-relaxed">
+        (v0.11.0) Handlers run a timer while they work a ticket and log the time with a note describing what they did.
+        An Admin turns it on at <b>Admin → Time tracking</b> (<b>Enable time tracking</b>). Your logged time lives on
+        the <b>Time</b> page in the left rail.
+      </p>
+      <HelpScreenshot src="/help/time-tracking.png" alt="Ticket page with the timer bar docked under Follow, and the Log work panel open with start, duration, stop, work type and note" />
+
+      <h3 className="text-sm font-semibold text-fg">Timer on the ticket</h3>
+      <div className="space-y-0">
+        <Feature name="Timer bar" roles={HANDLER} note="On desktop it sits under the Follow button in the ticket header; on smaller screens it shows inline. Start timer, Pause, Resume, Log work, Discard, plus a running total of time logged on the ticket. Starting a timer pauses any other timer you have running." />
+        <Feature name="Auto-start" roles={HANDLER} note="Admin-controlled: a timer can start when you take a ticket (assign it to yourself) and/or when you open one. Only fires when you're solo on the ticket: it's unassigned or yours, and nobody else has a timer running on it. The bar shows 'auto-started'." />
+        <Feature name="Pauses on hold or resolve" roles={HANDLER} note="Moving the ticket to an on-hold or resolved status pauses the timer, and the bar says why. Nothing resumes it automatically, not even a requester reply; resume it when you pick the ticket back up." />
+        <Feature name="Untouched timers are discarded" roles={HANDLER} note="Depending on the admin setting, leaving a ticket without changing its status or logging work throws the timer away (auto-started timers only, all timers, or never). Otherwise the clock keeps running after you leave." />
+        <Feature name="Header timer pill" roles={HANDLER} note="Shows your running timer, or how many are paused, so a clock left on another ticket is never out of sight." />
+        <Feature name="Unlogged-time warning" roles={HANDLER} note="After the admin-set number of minutes with no work logged, the bar turns amber and you get one in-app notification." />
+      </div>
+
+      <h3 className="text-sm font-semibold text-fg">Logging work</h3>
+      <div className="space-y-0">
+        <Feature name="Log work panel" roles={HANDLER} note="Start, duration, and stop: fill in any two and the third is worked out. A note is required (the admin sets a minimum length) and has the ✨ AI rewrite button. Pick a work type if the admin has defined any." />
+        <Feature name="Log & <status>" roles={HANDLER} note="Next to the Log button, the same status menu as Post &: log the time and move the ticket in one step." />
+        <Feature name="Private by default" roles={HANDLER} note="Work notes are saved as private notes only handlers can see, so they never reach the requester or vendors. The admin picks the default (private note or public comment) and whether techs can choose per entry or only Admins and Managers can." />
+        <Feature name="Overlapping time" roles={HANDLER} note="Logging time that overlaps your other entries warns and asks you to confirm, is blocked, or is allowed, depending on the admin setting." />
+        <Feature name="Edit / delete entries" roles={HANDLER} note="Click the logged total on the timer bar to see every entry. You can edit and delete your own; Admins and Managers can edit anyone's, and Admins can delete anyone's. Entries older than the timesheet lock (or approved) show 🔒 and only Admins and Managers can change them." />
+      </div>
+
+      <h3 className="text-sm font-semibold text-fg">Time page</h3>
+      <div className="space-y-0">
+        <Feature name="Timesheet" roles={HANDLER} note="One week at a time (Monday start) with ‹ › and a date picker. Totals for the week, billable time, and entry count; entries grouped by day with Non-billable, Pending, Approved, Invoiced, and Public pills." />
+        <Feature name="See another tech's timesheet" roles={PRIV} note="A person picker next to the week (defaults to Me)." />
+        <Feature name="Approvals tab" roles={PRIV} note="Only when MSP mode is on. One queue for billable time across every ticket: By ticket or By entry, date range, Waiting for approval / Approved, not invoiced, ticket state (Resolved / closed, Still open, Any status), tech, and customer. Select rows and Approve (or Un-approve). 'Review / edit on ticket' opens the ticket." />
+        <Feature name="Time on this asset" roles={HANDLER} note="Inventory → asset detail shows time logged on tickets linked to the asset: last 30 days, last 90 days, all time, a by-month chart, and a per-tech breakdown. With billing on, Admins and Managers also see the amount billed to date." />
+        <Feature name="Export time (CSV)" roles={["Admin"]} note="Admin → Time tracking → Export time. Every entry that ended in the range, with logged and billable minutes. Ticket-minimum top-ups are their own rows. With MSP mode on, it can be limited to approved time." />
+      </div>
+
+      <h3 className="text-sm font-semibold text-fg">Billing (MSP mode)</h3>
+      <p className="text-sm text-fg leading-relaxed">
+        Billing settings show only when <b>Customer companies (MSP mode)</b> is on in <b>Admin → Branding</b> (off by default).
+        Billable rules, rate cards, and bill types live on <b>Admin → Time tracking</b>; contracts live on each customer
+        at <b>Admin → Companies → (customer) → Billing</b>. Billable is separate from visibility: a public note isn't
+        automatically billable, and a private one isn't excluded from billing.
+      </p>
+      <HelpScreenshot src="/help/billing.png" alt="Admin → Time tracking billing cards: billable hours rules with preview, rate cards with after-hours and weekend multipliers, and bill types" />
+      <div className="space-y-0">
+        <Feature name="Billable hours rules" roles={["Admin"]} note="Whether new entries start billable; round each session to an increment (up, nearest, or down); minimum per session; minimum per ticket, once per ticket or once per day of work; currency. A preview shows how sample sessions bill. When the rules change, either re-price all time not yet invoiced or keep each entry at the rules in force when it was logged." />
+        <Feature name="Work types" roles={["Admin"]} note="Optional labels techs pick when logging (Remote, Onsite, Travel…). With MSP mode on, a type decides whether new entries of that type start billable, and rate cards can price types differently." />
+        <Feature name="Rate cards" roles={["Admin"]} note="A base rate per hour, an after-hours multiplier (time that starts outside the ticket's business hours), and a weekend multiplier (non-working days). Overrides price a work type, a tech, or a tech doing a work type; the most specific match wins. The first card is the default; customers without a contract use it." />
+        <Feature name="Bill types" roles={["Admin"]} note="Hourly (billable time × the rate card), Prepaid block (draws down a block of hours; the rest bills as overage), Covered (tracked and counted but bills at $0), Non-billable. Each can carry an external code for an accounting system." />
+        <Feature name="Contracts per customer" roles={PRIV} note="Name, bill type, rate card, external reference, start and end dates, notes, active. Prepaid block contracts add block hours and whether the block resets every month or never (one block for the whole term). The contract in force is marked, and block contracts show usage (Nearly used, Used up). Tickets bill to a customer when their project is linked to it, or when the ticket is pointed there directly." />
+        <Feature name="Billing on the ticket" roles={PRIV} note="In the ticket's entries list: who the time bills to (Bills to), billable and covered minutes and the amount after rules, rate card and contract, a billable checkbox per entry, and approve / unapprove per entry or for the whole ticket." />
+        <Feature name="Approval" roles={["Admin"]} note="Optional: billable time needs Admin / Manager approval. Approved time locks for techs." />
+        <Feature name="Prepaid block alert" roles={PRIV} note="Admins and Managers get one notification per block period when a customer's block reaches the set percentage, and another when it's used up (0 = only when used up)." />
+        <Feature name="Timesheets & utilization" roles={["Admin"]} note="Card on Admin → Time tracking: per tech, entries, logged, billable, non-billable, utilization, and the billed amount for a date range (defaults to last week)." />
+      </div>
+    </div>
+  );
+}
+
+function SectionStatusPages({ role }) {
+  const isPriv = PRIV.includes(role);
+  const isHandler = HANDLER.includes(role);
+  return (
+    <div className="space-y-4">
+      {isPriv
+        ? <FullAccess />
+        : isHandler
+          ? <PartialAccess note="You can see every status page you have access to, including staff-only pages, and log maintenance. Creating and editing status pages, and deleting maintenance, is Admin / Manager only." />
+          : <PartialAccess note="You can see status pages open to everyone (and any limited to projects you belong to), and subscribe to email alerts. Staff-only pages and the Maintenance log are for Admin / Manager / Tech." />}
+      <p className="text-sm text-fg leading-relaxed">
+        (v0.11.0) <b>Status</b> in the left rail shows curated pages of the services you monitor, with their live state.
+        Items come from a monitoring integration such as Uptime Kuma (see Alerts). <b>Maintenance</b> is the log of
+        planned work on those items.
+      </p>
+
+      <h3 className="text-sm font-semibold text-fg">Status pages</h3>
+      <HelpScreenshot src="/help/status-pages.png" alt="Status page with the overall banner, services and components with 14-day history bars, active incidents, scheduled maintenance, and past outages" />
+      <div className="space-y-0">
+        <Feature name="View a status page" roles="all" note="A banner at the top (e.g. All systems operational), then sections of services. Each service shows its state, response time, TLS certificate expiry, and 24-hour / 30-day uptime, and expands to show its components. Pages refresh every minute." />
+        <Feature name="14-day history bars" roles="all" note="One bar per service and component showing the last 14 days." />
+        <Feature name="Active incidents, maintenance, outage history" roles="all" note="Active incidents (with their ticket, or 'No ticket yet'), scheduled and in-progress maintenance, and a list of past outages, incidents and maintenance. Outages that recovered without becoming a ticket are marked No ticket." />
+        <Feature name="Components roll up into services" roles="all" note="A primary component down takes its service down; any other component down is a partial outage." />
+        <Feature name="Subscribe to email alerts" roles="all" note="Subscribe on any page you can see. Choose Up / down alerts (a service or component goes down or recovers) and/or Page changes (a new service is added). Alerts are sent from Resolvd's mail server, so if that system is down, emails can't go out." />
+        <Feature name="Create / edit pages" roles={PRIV} note="Name, URL slug, description, Visible to (Everyone, or Staff only: Admin, Manager, Tech), optional Limit to project members, and the items on the page. Drag to reorder sections and items; a display name overrides the monitor name." />
+        <Feature name="Limit to project members" roles={PRIV} note="When any project is ticked, only members of those projects see the page (Admins and Managers always do). Combines with Visible to. The page header shows which projects it's limited to." />
+      </div>
+
+      <h3 className="text-sm font-semibold text-fg">Maintenance windows</h3>
+      <HelpScreenshot src="/help/maintenance.png" alt="Maintenance page with In progress / Scheduled / Completed tabs and the Log maintenance form" />
+      <div className="space-y-0">
+        <Feature name="Maintenance log" roles={HANDLER} note="In progress, Scheduled, and Completed tabs. While a window is active, alerts for its items are recorded but don't open tickets." />
+        <Feature name="Log maintenance" roles={HANDLER} note="Title, starts / ends (End now on an existing window), optional related ticket, project calendar, scheduled techs, affected items, plan / reason, and What was done (Markdown, fill in as you go or afterwards)." />
+        <Feature name="Shown on status pages" roles="all" note="A window appears on every status page that carries one of its items, with its plan and What was done notes." />
+        <Feature name="On calendars" roles={HANDLER} note="Windows go on the project calendar feed and on the calendar feeds of the scheduled techs. Subscribe opens Account Settings → Calendar." />
+        <Feature name="Delete a window" roles={PRIV} />
+      </div>
+    </div>
+  );
+}
+
+function SectionOnCall({ role }) {
+  const isPriv = PRIV.includes(role);
+  return (
+    <div className="space-y-4">
+      {isPriv
+        ? <FullAccess />
+        : <PartialAccess note="You may be paged or assigned tickets while you're on call, but only Admin / Manager set up rotations." />}
+      <p className="text-sm text-fg leading-relaxed">
+        (v0.11.0) <b>On-call rotations</b> decide who escalations reach out of hours. Configure at
+        <b> Admin → On-call rotations</b>. Members take turns, one shift each, starting at the first handoff.
+      </p>
+      <HelpScreenshot src="/help/oncall.png" alt="Admin → On-call rotations with a rotation's members, who is on call now, upcoming shifts, and overrides" />
+      <div className="space-y-0">
+        <Feature name="Create a rotation" roles={PRIV} note="Name, scope (one project, or Org-wide for any project without its own rotation), shift length (Daily, Weekly, Every 2 weeks, or a number of hours), first handoff (member 1 starts here, in your local time), and members in rotation order." />
+        <Feature name="On call now + upcoming shifts" roles={PRIV} note="Each rotation shows who is on call and the next shifts." />
+        <Feature name="Overrides" roles={PRIV} note="Put someone else on call for a window (swaps, leave cover), with an optional note." />
+        <Feature name="Notify on-call / Reassign to on-call" roles={PRIV} note="Escalation step actions (Admin → Escalations). A project's own rotations answer for its tickets; otherwise the org-wide ones do. With several rotations in a scope (primary and secondary), notify pages everyone on call and reassign picks the first." />
+        <Feature name="Nobody on call" roles="all" note="A step with nobody on call waits and retries until someone is." />
       </div>
     </div>
   );
@@ -1118,11 +1348,14 @@ const SECTIONS = [
   { id: "kb",             label: "Knowledge Base",       icon: "📚" },
   { id: "forms",          label: "Forms + Fields",       icon: "🧾" },
   { id: "schedules",      label: "Schedules + Tasks",    icon: "🔁" },
+  { id: "time",           label: "Time + Billing",       icon: "⌛" },
+  { id: "status-pages",   label: "Status + Maintenance", icon: "📶" },
   { id: "alerts",         label: "Alerts",               icon: "🚨" },
   { id: "admin",          label: "Admin Panel",          icon: "⚙" },
   { id: "notifications",  label: "Notifications",        icon: "🔔" },
   { id: "sla",            label: "SLA tracker",          icon: "⏱" },
   { id: "escalations",    label: "Escalation chains",    icon: "⛓" },
+  { id: "oncall",         label: "On-call rotations",    icon: "📟" },
   { id: "ai-assist",      label: "AI Assist",            icon: "✨" },
   { id: "mentions",       label: "@Mentions",            icon: "@" },
   { id: "markdown",       label: "Markdown Formatting",  icon: "✏" },
@@ -1145,11 +1378,14 @@ function renderSection(id, role) {
     case "kb":            return <SectionKb role={role} />;
     case "forms":         return <SectionForms role={role} />;
     case "schedules":     return <SectionSchedules role={role} />;
+    case "time":          return <SectionTime role={role} />;
+    case "status-pages":  return <SectionStatusPages role={role} />;
     case "alerts":        return <SectionAlerts role={role} />;
     case "admin":         return <SectionAdmin role={role} />;
     case "notifications": return <SectionNotifications role={role} />;
     case "sla":           return <SectionSla role={role} />;
     case "escalations":   return <SectionEscalations role={role} />;
+    case "oncall":        return <SectionOnCall role={role} />;
     case "ai-assist":     return <SectionAiAssist role={role} />;
     case "mentions":      return <SectionMentions role={role} />;
     case "markdown":      return <SectionMarkdown role={role} />;
