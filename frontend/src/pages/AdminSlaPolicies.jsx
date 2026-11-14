@@ -634,7 +634,8 @@ function BusinessHoursSection({ bhList, projects, locations, onChange }) {
       {bhList.length === 0 ? (
         <div className="text-sm text-fg-muted">No business hours policies yet.</div>
       ) : (
-        <table className="w-full text-sm">
+        <div className="overflow-x-auto">
+          <table className="w-full text-sm">
           <thead className="text-xs text-fg-muted">
             <tr>
               <th className="text-left py-1">Name</th>
@@ -724,7 +725,8 @@ function BusinessHoursSection({ bhList, projects, locations, onChange }) {
               );
             })}
           </tbody>
-        </table>
+          </table>
+        </div>
       )}
     </div>
   );

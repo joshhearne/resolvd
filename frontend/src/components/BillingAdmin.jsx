@@ -3,7 +3,7 @@ import toast from "react-hot-toast";
 import { api } from "../utils/api";
 
 // MSP billing setup cards for Admin → Time tracking: rate cards, bill
-// types, and the utilisation report. Rendered only in MSP mode.
+// types, and the utilization report. Rendered only in MSP mode.
 
 export function formatMoney(cents, currency = "USD") {
   const n = (Number(cents) || 0) / 100;
@@ -300,7 +300,7 @@ export function BillingTypesCard() {
   );
 }
 
-// --- Utilisation report -------------------------------------------------------
+// --- Utilization report -------------------------------------------------------
 
 function ymd(d) {
   const p = (n) => String(n).padStart(2, "0");
@@ -349,7 +349,7 @@ export function UtilisationCard() {
 
   return (
     <div className="bg-surface border border-border rounded-lg p-4">
-      <h3 className="text-sm font-semibold text-fg mb-1">Timesheets &amp; utilisation</h3>
+      <h3 className="text-sm font-semibold text-fg mb-1">Timesheets &amp; utilization</h3>
       <p className="text-xs text-fg-muted mb-3">
         Per tech: time logged, how much was billable, and the billed amount
         after rates and contracts. Defaults to last week.
@@ -372,7 +372,7 @@ export function UtilisationCard() {
                 <th className="py-1 pr-3 font-medium text-right">Logged</th>
                 <th className="py-1 pr-3 font-medium text-right">Billable</th>
                 <th className="py-1 pr-3 font-medium text-right">Non-billable</th>
-                <th className="py-1 pr-3 font-medium text-right">Utilisation</th>
+                <th className="py-1 pr-3 font-medium text-right">Utilization</th>
                 <th className="py-1 font-medium text-right">Billed</th>
               </tr>
             </thead>
