@@ -2,4 +2,5 @@
 type: improvement
 audience: staff
 ---
-When a vendor replies to a ticket escalated to them, Resolvd moves its status for you: "acknowledged" marks it In Progress on their side, and "completed" sends it back to you for review. Inbound replies that likely unblock a ticket are flagged too.
+- When you add a vendor's ticket reference to an escalated ticket, its external status moves forward on its own (toggle under Admin → Statuses → Workflow automation).
+- Inbound review lists the waiting tickets a message likely unblocks, with a one-click **Use**.

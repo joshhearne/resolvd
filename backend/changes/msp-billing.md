@@ -2,4 +2,4 @@
 type: feature
 audience: staff
 ---
-**MSP billing:** set up rate cards, contracts and bill types, approve billable time before it goes out, and track utilization per contract.
+**MSP billing:** turn on MSP mode to set up rate cards, bill types and contracts per customer, with prepaid blocks, optional approval of billable time, and a utilization report.
