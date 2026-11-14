@@ -2,4 +2,4 @@
 type: feature
 audience: everyone
 ---
-**Status pages:** publish the status of your services, fed live by Uptime Kuma monitors, and schedule maintenance windows that show on the page and in your calendar feed.
+**Status pages:** see the live state of the services your team runs, fed by Uptime Kuma. Planned maintenance shows on the page, and techs can subscribe to their maintenance windows from Account settings → Calendar in Outlook or Google Calendar.
