@@ -208,73 +208,6 @@ function datepart(v, fmt) {
   }
 }
 
-// ───────────────────────── random generators ─────────────────────────
-
-const crypto = require('crypto');
-const wordlist = require('./wordlist');
-
-const DEFAULT_SPECIALS = '!@#$%&*?-+=';
-// Functions whose output is random. Used to make minlen() retry and to mark a
-// formula volatile so recompute doesn't re-roll stored values.
-const RANDOM_FUNCS = new Set(['word', 'num', 'special', 'rand', 'pick']);
-const MINLEN_TRIES = 200;
-
-// Integer argument within [lo, hi] or a clear error.
-function INT(v, fn, what, lo, hi) {
-  const n = N(v);
-  if (!Number.isInteger(n) || n < lo || n > hi) throw err(`${fn}: ${what} must be a whole number ${lo}–${hi}, got ${v}`);
-  return n;
-}
-
-const randIdx = (n) => crypto.randomInt(n);
-
-function genWord(min, max) {
-  const lo = min === undefined ? wordlist.MIN_LEN : INT(min, 'word', 'min length', 1, 64);
-  const hi = max === undefined ? (min === undefined ? wordlist.MAX_LEN : lo) : INT(max, 'word', 'max length', 1, 64);
-  if (hi < lo) throw err(`word: max length ${hi} is less than min ${lo}`);
-  const pool = wordlist.wordsBetween(lo, hi);
-  if (!pool.length) throw err(`word: no library words are ${lo === hi ? lo : `${lo}–${hi}`} letters (library has ${wordlist.MIN_LEN}–${wordlist.MAX_LEN})`);
-  return pool[randIdx(pool.length)];
-}
-
-function genNum(count) {
-  const k = INT(count, 'num', 'digit count', 1, 32);
-  let out = '';
-  for (let i = 0; i < k; i++) out += String(randIdx(10));
-  return out;
-}
-
-function genSpecial(count, charset) {
-  const k = count === undefined ? 1 : INT(count, 'special', 'count', 1, 32);
-  const set = charset === undefined ? DEFAULT_SPECIALS : S(charset);
-  if (!set) throw err('special: character set is empty');
-  const chars = Array.from(set);
-  let out = '';
-  for (let i = 0; i < k; i++) out += chars[randIdx(chars.length)];
-  return out;
-}
-
-function genRand(a, b) {
-  const lo = INT(a, 'rand', 'min', -1e9, 1e9), hi = INT(b, 'rand', 'max', -1e9, 1e9);
-  if (hi < lo) throw err(`rand: max ${hi} is less than min ${lo}`);
-  return lo + crypto.randomInt(hi - lo + 1);
-}
-
-// upper/lower: n omitted or 0 = whole string; n>0 = only the first n chars.
-function caseN(fn, s, n, conv) {
-  const str = S(s);
-  const k = n === undefined ? 0 : INT(n, fn, 'character count', 0, 1e6);
-  return k === 0 ? conv(str) : conv(str.slice(0, k)) + str.slice(k);
-}
-
-// Does this AST (sub)tree call any random generator?
-function treeIsVolatile(node) {
-  if (!node || typeof node !== 'object') return false;
-  if (node.k === 'call' && RANDOM_FUNCS.has(node.name)) return true;
-  if (node.args && node.args.some(treeIsVolatile)) return true;
-  return treeIsVolatile(node.a) || treeIsVolatile(node.b);
-}
-
 // ───────────────────────── function table ─────────────────────────
 // Each receives already-evaluated argument values (JS string/number/bool).
 
@@ -285,8 +218,8 @@ const FUNCS = {
   },
   left: (s, n) => S(s).slice(0, N(n)),
   right: (s, n) => { const str = S(s); const k = N(n); return k <= 0 ? '' : str.slice(-k); },
-  upper: (s, n) => caseN('upper', s, n, (x) => x.toUpperCase()),
-  lower: (s, n) => caseN('lower', s, n, (x) => x.toLowerCase()),
+  upper: (s) => S(s).toUpperCase(),
+  lower: (s) => S(s).toLowerCase(),
   cap: (s) => { const str = S(s); return str ? str[0].toUpperCase() + str.slice(1) : ''; },
   trim: (s) => S(s).trim(),
   len: (s) => S(s).length,
@@ -313,21 +246,13 @@ const FUNCS = {
   default: (a, b) => (S(a) === '' ? b : a),
   if: (cond, a, b) => (truthy(cond) ? a : b),
   datepart,
-  word: genWord,
-  num: genNum,
-  special: genSpecial,
-  rand: genRand,
-  pick: (...args) => args[randIdx(args.length)],
-  minlen: () => { throw err('minlen is evaluated lazily'); }, // handled in evalNode
 };
 const ARG_CHECK = {
   // name -> [min, max] arity (max Infinity for variadic)
-  slice: [2, 3], left: [2, 2], right: [2, 2], upper: [1, 2], lower: [1, 2],
+  slice: [2, 3], left: [2, 2], right: [2, 2], upper: [1, 1], lower: [1, 1],
   cap: [1, 1], trim: [1, 1], len: [1, 1], pad: [2, 4], digits: [1, 1],
   replace: [3, 4], match: [2, 3], concat: [0, Infinity], default: [2, 2],
   if: [3, 3], datepart: [2, 2],
-  word: [0, 2], num: [1, 1], special: [0, 2], rand: [2, 2], pick: [1, Infinity],
-  minlen: [2, 3],
 };
 
 // ───────────────────────── evaluator ─────────────────────────
@@ -376,23 +301,6 @@ function evalNode(node, ctx) {
       if (node.name === 'if') {
         return truthy(evalNode(node.args[0], ctx)) ? evalNode(node.args[1], ctx) : evalNode(node.args[2], ctx);
       }
-      // minlen(expr, min[, max]) is lazy too: re-evaluate expr until its
-      // length fits. A non-random expr gets one try (re-rolling can't help).
-      if (node.name === 'minlen') {
-        const min = INT(evalNode(node.args[1], ctx), 'minlen', 'min', 0, 1024);
-        const max = node.args[2] === undefined ? Infinity : INT(evalNode(node.args[2], ctx), 'minlen', 'max', 0, 1024);
-        if (max < min) throw err(`minlen: max ${max} is less than min ${min}`);
-        const tries = treeIsVolatile(node.args[0]) ? MINLEN_TRIES : 1;
-        let v = '';
-        for (let i = 0; i < tries; i++) {
-          v = S(evalNode(node.args[0], ctx));
-          if (v.length >= min && v.length <= max) return v;
-        }
-        const want = max === Infinity ? `at least ${min}` : `${min}–${max}`;
-        throw err(tries > 1
-          ? `minlen: couldn't produce a value of ${want} chars in ${tries} tries — widen the word()/num() lengths`
-          : `minlen: value is ${v.length} chars, needs ${want}`);
-      }
       return fn(...node.args.map((a) => evalNode(a, ctx)));
     }
   }
@@ -426,17 +334,10 @@ function evaluate(src, ctx, { safe = false } = {}) {
   }
 }
 
-// True when the formula calls a random generator (word/num/special/rand/pick),
-// i.e. evaluating it twice gives different answers. Invalid formulas → false.
-function isVolatile(src) {
-  try { return treeIsVolatile(compile(src)); }
-  catch { return false; }
-}
-
 // Validate a formula's syntax without a context. Returns { ok, error }.
 function validate(src) {
   try { compile(src); return { ok: true }; }
   catch (e) { return { ok: false, error: e.message }; }
 }
 
-module.exports = { evaluate, validate, compile, tokenize, isVolatile, FUNCS, DEFAULT_SPECIALS };
+module.exports = { evaluate, validate, compile, tokenize, FUNCS };

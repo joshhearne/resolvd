@@ -602,9 +602,6 @@ export default function AdminForms() {
                       <span className="text-xs text-fg-muted block">
                         Formula — derive this field's value from form inputs. Click a tag to insert; concatenate with <code>~</code>.
                         Functions: <code>slice, left, right, upper, lower, cap, pad, trim, len, digits, replace, match, datepart, if, default</code>.
-                        Generators: <code>word(min,max)</code>, <code>num(n)</code>, <code>special(n)</code>, <code>rand(a,b)</code>, <code>pick(…)</code>;
-                        <code>upper(s,n)</code>/<code>lower(s,n)</code> change the first n chars; <code>minlen(expr,min[,max])</code> re-rolls until the length fits.
-                        e.g. <code>minlen(upper(word(4,8),1) ~ word(4,8) ~ num(2) ~ special(1), 12)</code>. Generated values are kept on Recompute — mark password fields sensitive.
                         Computed fields are always agent-only and stored as text.
                       </span>
                       <FormulaField

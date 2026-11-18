@@ -225,12 +225,7 @@ async function applyTicketPatch(client, ticketId, formId, input) {
 //
 // v1 is single-pass: a computed field reads human inputs + ticket/user
 // context, NOT the output of another computed field on the same form.
-//
-// Volatile formulas (ones that call word()/num()/special()/rand()/pick(),
-// e.g. a generated password) keep their stored value on recompute, so they
-// aren't silently re-rolled after the password has been handed out. Pass
-// `regenerate: true` (all) or an array of slugs to re-roll on purpose.
-async function recomputeForTicket(client, ticketId, { regenerate = false } = {}) {
+async function recomputeForTicket(client, ticketId) {
   const tr = await client.query('SELECT form_id FROM tickets WHERE id = $1', [ticketId]);
   if (!tr.rows[0]) return [];
   const fields = await loadTicketFields(client, ticketId, tr.rows[0].form_id);
@@ -244,13 +239,7 @@ async function recomputeForTicket(client, ticketId, { regenerate = false } = {})
 
   const toWrite = [];
   const results = [];
-  const reroll = (slug) => regenerate === true || (Array.isArray(regenerate) && regenerate.includes(slug));
   for (const def of computed) {
-    if (formula.isVolatile(def.formula) && !reroll(def.slug)) {
-      const has = await client.query(
-        'SELECT 1 FROM custom_field_values WHERE ticket_id = $1 AND def_id = $2', [ticketId, def.def_id]);
-      if (has.rows.length) continue; // keep the existing generated value
-    }
     const value = formula.evaluate(def.formula, ctx, { safe: true });
     results.push({ slug: def.slug, value });
     if (value === '') {
