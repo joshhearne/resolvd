@@ -75,6 +75,14 @@ router.delete('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
     await pool.query('DELETE FROM users WHERE id = $1', [req.params.id]);
     res.json({ ok: true });
   } catch (err) {
+    // 23503 = foreign_key_violation: the user still owns tickets,
+    // comments, attachments or audit entries. Keep the history and
+    // tell the admin to disable (and hide) the account instead.
+    if (err.code === '23503') {
+      return res.status(409).json({
+        error: 'This user has ticket history and can\'t be deleted. Disable the account instead; disabled users are hidden from the list by default.',
+      });
+    }
     console.error(err);
     res.status(500).json({ error: 'Database error' });
   }
