@@ -444,7 +444,7 @@ router.get('/tickets/:id/runbook-runs', async (req, res) => {
     const rows = await Promise.all(r.rows.map(async (run) => {
       try {
         const a = await troveKb.getArticle(run.trove_kb_article_id, { handler: true });
-        return { ...run, title: a.title, steps: a.steps, category: a.category, collection_name: a.collection_name, kind: a.kind, staff_url: a.staff_url, public_url: a.public_url };
+        return { ...run, title: a.title, steps: a.steps, expanded_steps: a.expanded_steps, category: a.category, collection_name: a.collection_name, kind: a.kind, staff_url: a.staff_url, public_url: a.public_url };
       } catch {
         return { ...run, title: run.trove_kb_title || 'Runbook (unavailable)', steps: [], unavailable: true };
       }
@@ -469,7 +469,7 @@ router.post('/tickets/:id/runbook-runs', async (req, res) => {
        RETURNING id, ticket_id, trove_kb_article_id, trove_kb_title, step_states, started_at, completed_at`,
       [ticket.id, a.article_id, a.title, req.session.user.id]
     );
-    res.status(201).json({ ...r.rows[0], title: a.title, steps: a.steps });
+    res.status(201).json({ ...r.rows[0], title: a.title, steps: a.steps, expanded_steps: a.expanded_steps });
   } catch (err) { fail(res, err, 'runbook run start'); }
 });
 
