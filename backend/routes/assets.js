@@ -6,6 +6,30 @@ const { decryptRows } = require('../services/fields');
 
 const router = express.Router();
 
+// An RMM-synced asset is "orphaned" once the integration that fed it is
+// gone (FK set NULL on delete) or no longer feeds inventory. Nothing will
+// update or remove it anymore, so the admin owns its lifecycle: it can be
+// deleted or detached into a manual asset. Expects assets aliased `a`.
+const ORPHANED_SQL = `(a.source_system <> 'manual' AND NOT EXISTS (
+  SELECT 1 FROM external_alert_source s
+   WHERE s.id = a.source_alert_source_id AND s.enabled AND s.affect_inventory))`;
+
+const BULK_MAX = 500;
+
+function parseIds(raw) {
+  if (!Array.isArray(raw)) return null;
+  const ids = [...new Set(raw.map(Number))].filter((n) => Number.isInteger(n) && n > 0);
+  if (!ids.length || ids.length > BULK_MAX) return null;
+  return ids;
+}
+
+async function auditAssets(client, userId, action, note) {
+  await client.query(
+    `INSERT INTO audit_log (ticket_id, user_id, action, note) VALUES (NULL, $1, $2, $3)`,
+    [userId, action, note]
+  );
+}
+
 // GET /api/assets — paginated list with optional search. Phase 1A
 // surface for smoke testing the Action1 sync before the dedicated UI
 // lands. project_id query param scopes results to assets eligible for
@@ -18,9 +42,13 @@ router.get('/', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req
     const projectId = req.query.project_id ? Number(req.query.project_id) : null;
     const offlineRaw = Number(req.query.offline_days);
     const offlineDays = Number.isFinite(offlineRaw) && offlineRaw > 0 ? Math.floor(offlineRaw) : null;
+    const source = (req.query.source || '').trim();
 
     const params = [];
     const conds = [];
+    if (source === 'orphaned') conds.push(ORPHANED_SQL);
+    else if (source === 'manual') conds.push(`a.source_system = 'manual'`);
+    else if (source === 'synced') conds.push(`a.source_system <> 'manual' AND NOT ${ORPHANED_SQL}`);
     if (offlineDays) {
       params.push(offlineDays);
       conds.push(`(a.last_seen_at IS NULL OR a.last_seen_at < NOW() - ($${params.length} || ' days')::interval)`);
@@ -64,7 +92,8 @@ router.get('/', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req
               a.missing_updates_critical, a.missing_updates_other,
               a.vulnerabilities_critical, a.vulnerabilities_other,
               a.update_status, a.vulnerability_status, a.reboot_required,
-              a.last_seen_at, a.updated_at
+              a.last_seen_at, a.updated_at,
+              ${ORPHANED_SQL} AS source_orphaned
          FROM assets a
          LEFT JOIN asset_types at ON at.id = a.asset_type_id
          ${where}
@@ -88,7 +117,8 @@ router.get('/:id', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech
     const r = await pool.query(
       `SELECT a.*, u.display_name AS linked_user_name, u.email AS linked_user_email,
               c.name AS company_name,
-              at.slug AS asset_type_slug, at.label AS asset_type_label
+              at.slug AS asset_type_slug, at.label AS asset_type_label,
+              ${ORPHANED_SQL} AS source_orphaned
          FROM assets a
          LEFT JOIN users u ON u.id = a.linked_user_id
          LEFT JOIN companies c ON c.id = a.company_id
@@ -236,22 +266,132 @@ router.patch('/:id', numericId, requireAuth, requireRole('Admin', 'Manager', 'Te
   }
 });
 
-// DELETE /api/assets/:id — only manual assets are deletable; RMM-
-// managed ones should disappear via their source's lifecycle. Tickets
+// DELETE /api/assets/:id — manual and orphaned assets are deletable;
+// assets still fed by a live integration would just be re-created on
+// the next pull, so they're refused. Tickets
 // linked to a deleted asset get asset_id = NULL (FK ON DELETE SET NULL).
 router.delete('/:id', numericId, requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
     const id = Number(req.params.id);
-    const r = await pool.query(`SELECT source_system FROM assets WHERE id = $1`, [id]);
+    const r = await pool.query(
+      `SELECT a.source_system, ${ORPHANED_SQL} AS orphaned FROM assets a WHERE a.id = $1`, [id]
+    );
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
-    if (r.rows[0].source_system !== 'manual') {
-      return res.status(400).json({ error: 'Only manual assets can be deleted directly' });
+    if (r.rows[0].source_system !== 'manual' && !r.rows[0].orphaned) {
+      return res.status(400).json({
+        error: 'This asset is still synced from an active integration and would come back on the next pull. Remove the integration or turn off its inventory feed first.',
+      });
     }
     await pool.query(`DELETE FROM assets WHERE id = $1`, [id]);
     res.json({ ok: true });
   } catch (err) {
     console.error('asset delete error:', err);
     res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// POST /api/assets/bulk-delete { ids } — deletes manual + orphaned
+// assets in one transaction; still-synced ones are skipped and counted.
+// Checkouts, software rows and custom field values cascade; linked
+// tickets keep their history with asset_id cleared.
+router.post('/bulk-delete', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+  const ids = parseIds(req.body?.ids);
+  if (!ids) return res.status(400).json({ error: `ids must be 1-${BULK_MAX} asset ids` });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const del = await client.query(
+      `DELETE FROM assets a
+        WHERE a.id = ANY($1::int[])
+          AND (a.source_system = 'manual' OR ${ORPHANED_SQL})
+        RETURNING a.id, a.hostname`,
+      [ids]
+    );
+    const deleted = del.rows.length;
+    if (deleted) {
+      await auditAssets(client, req.session.user.id, 'assets_bulk_delete',
+        `Deleted ${deleted} asset(s): ${del.rows.map((r) => r.hostname || `#${r.id}`).join(', ')}`.slice(0, 4000));
+    }
+    await client.query('COMMIT');
+    res.json({ ok: true, deleted, skipped: ids.length - deleted });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('asset bulk delete error:', err);
+    res.status(500).json({ error: 'Database error' });
+  } finally {
+    client.release();
+  }
+});
+
+// POST /api/assets/bulk-update { ids, fields: { asset_type_id?, company_id? } }
+// Cross-reference fields editable on every asset regardless of source.
+// null clears the value.
+const BULK_FIELDS = ['asset_type_id', 'company_id'];
+router.post('/bulk-update', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+  const ids = parseIds(req.body?.ids);
+  if (!ids) return res.status(400).json({ error: `ids must be 1-${BULK_MAX} asset ids` });
+  const fields = req.body?.fields || {};
+  const sets = [];
+  const values = [ids];
+  for (const f of BULK_FIELDS) {
+    if (!Object.prototype.hasOwnProperty.call(fields, f)) continue;
+    const v = fields[f];
+    if (v !== null && (!Number.isInteger(v) || v <= 0)) {
+      return res.status(400).json({ error: `${f} must be a positive integer or null` });
+    }
+    values.push(v);
+    sets.push(`${f} = $${values.length}`);
+  }
+  if (!sets.length) return res.status(400).json({ error: 'no updatable fields supplied' });
+  try {
+    const r = await pool.query(
+      `UPDATE assets SET ${sets.join(', ')}, updated_at = NOW() WHERE id = ANY($1::int[])`,
+      values
+    );
+    res.json({ ok: true, updated: r.rowCount });
+  } catch (err) {
+    if (err.code === '23503') return res.status(400).json({ error: 'Unknown asset type or company' });
+    console.error('asset bulk update error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// POST /api/assets/bulk-detach { ids } — turns orphaned RMM assets into
+// manual ones so every field becomes editable. The old source id is kept
+// in raw_data._detached_from for traceability; a fresh UUID keeps the
+// (source_system, source_external_id) key unique.
+router.post('/bulk-detach', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+  const ids = parseIds(req.body?.ids);
+  if (!ids) return res.status(400).json({ error: `ids must be 1-${BULK_MAX} asset ids` });
+  const client = await pool.connect();
+  try {
+    await client.query('BEGIN');
+    const r = await client.query(
+      `UPDATE assets a
+          SET raw_data = a.raw_data || jsonb_build_object('_detached_from', jsonb_build_object(
+                'source_system', a.source_system,
+                'source_external_id', a.source_external_id,
+                'detached_at', NOW())),
+              source_system = 'manual',
+              source_external_id = gen_random_uuid()::text,
+              source_alert_source_id = NULL,
+              updated_at = NOW()
+        WHERE a.id = ANY($1::int[]) AND ${ORPHANED_SQL}
+        RETURNING a.id`,
+      [ids]
+    );
+    if (r.rowCount) {
+      await auditAssets(client, req.session.user.id, 'assets_bulk_detach',
+        `Detached ${r.rowCount} orphaned asset(s) to manual`);
+    }
+    await client.query('COMMIT');
+    res.json({ ok: true, detached: r.rowCount, skipped: ids.length - r.rowCount });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('asset bulk detach error:', err);
+    res.status(500).json({ error: 'Database error' });
+  } finally {
+    client.release();
   }
 });
 
