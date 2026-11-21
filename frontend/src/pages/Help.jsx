@@ -969,7 +969,7 @@ function SectionInventory({ role }) {
         <Feature name="Vulnerability + patch counts" roles={HANDLER} note="Pulled from the source's reports endpoint when the source has the 'vulnerabilities' capability enabled." />
         <Feature name="CSV export" roles={HANDLER} />
         <Feature name="Bulk actions" roles={HANDLER} note="(v0.12.0) Tick assets in the list to set their type or company together. Admins and Managers can also delete them, or convert them to manual assets." />
-        <Feature name="Assets from a removed integration" roles={["Admin", "Manager"]} note="(v0.12.0) Assets whose integration was removed or disabled show as Integration removed (filter by source). Delete them, or convert them to manual so every field is editable and no sync matches them again." />
+        <Feature name="Assets from a removed integration" roles={["Admin", "Manager"]} note="(v0.12.0) Assets whose integration was removed or disabled are marked Source removed; pick Integration removed in the source filter to list them. Delete them, or convert them to manual so every field is editable and no sync matches them again." />
       </div>
       <div className="bg-surface-2 border border-border rounded-lg p-3 text-xs text-fg-muted space-y-1">
         <p className="font-semibold text-fg">Action1 / generic RMM sync</p>
