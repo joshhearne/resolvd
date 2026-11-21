@@ -1012,6 +1012,8 @@ router.delete('/:id/fields/:defId', numericId, requireAuth, requireRole('Admin',
 // POST /api/tickets/:id/recompute-fields — re-evaluate the ticket's computed
 // (formula) custom fields against the current ticket context and persist the
 // results. Handlers only. Use after editing the human inputs a formula reads.
+// Random formulas (generated passwords) keep their value unless the body
+// asks for { regenerate: true | [slug…] }.
 // Returns the refreshed (revealed) custom_fields plus the per-field results.
 router.post('/:id/recompute-fields', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
@@ -1021,7 +1023,11 @@ router.post('/:id/recompute-fields', numericId, requireAuth, requireRole('Admin'
 
     let results = [];
     await transaction(async (client) => {
-      results = await ticketCustomFields.recomputeForTicket(client, ticketId);
+      // Body { regenerate: true | [slug…] } re-rolls random (volatile)
+      // formulas such as generated passwords; otherwise they're kept.
+      const rg = req.body && req.body.regenerate;
+      const regenerate = rg === true ? true : (Array.isArray(rg) ? rg.map(String) : false);
+      results = await ticketCustomFields.recomputeForTicket(client, ticketId, { regenerate });
       if (results.length) {
         await auditLog(client, {
           ticketId, userId: req.session.user.id,
@@ -1434,9 +1440,12 @@ router.patch('/:id', requireAuth, async (req, res) => {
           bt.internal_ref as blocking_ticket_ref, bt.title as blocking_ticket_title,
           bt.title_enc as blocking_ticket_title_enc, bt.internal_status as blocking_ticket_status,
           ast.hostname as asset_hostname, ast.serial as asset_serial,
-          loc.name as location_name
+          loc.name as location_name,
+          tf.name as form_name, tfc.name as form_category_name
         FROM tickets t
         LEFT JOIN projects proj ON t.project_id = proj.id
+        LEFT JOIN ticket_forms tf ON tf.id = t.form_id
+        LEFT JOIN ticket_categories tfc ON tfc.id = tf.category_id
         LEFT JOIN users sub ON t.submitted_by = sub.id
         LEFT JOIN users asgn ON t.assigned_to = asgn.id
         LEFT JOIN tickets bt ON t.blocked_by_ticket = bt.id
@@ -1476,6 +1485,16 @@ router.patch('/:id', requireAuth, async (req, res) => {
       } catch (err) {
         console.warn('submitter enrich failed:', err.message);
       }
+    }
+
+    // The client replaces its ticket state with this response, so it must
+    // carry the same custom_fields as GET /:id — otherwise any status /
+    // assignee / priority edit blanks the custom-field values on screen.
+    try {
+      const reveal = ['Admin', 'Manager', 'Tech'].includes(user.role);
+      updated.custom_fields = await ticketCustomFields.readValues(pool, ticket.id, { reveal });
+    } catch (err) {
+      console.error('ticket patch: custom_fields read failed:', err.message);
     }
 
     res.json(updated);

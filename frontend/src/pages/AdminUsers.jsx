@@ -30,6 +30,30 @@ export default function AdminUsers() {
   });
   const [selected, setSelected] = useState(() => new Set());
   const [bulkBusy, setBulkBusy] = useState(false);
+  // Disabled accounts are hidden by default. They can't be deleted once
+  // they own tickets/comments, so hiding is how they leave the list.
+  // Remembered per browser; storage can throw in private windows.
+  const [showDisabled, setShowDisabled] = useState(() => {
+    try { return localStorage.getItem("adminUsers.showDisabled") === "1"; } catch { return false; }
+  });
+  function toggleShowDisabled(on) {
+    setShowDisabled(on);
+    try { localStorage.setItem("adminUsers.showDisabled", on ? "1" : "0"); } catch { /* ignore */ }
+    if (!on) {
+      // Drop hidden rows from the selection so bulk actions never touch
+      // users that are no longer on screen.
+      const disabledIds = new Set(users.filter((u) => u.status === "disabled").map((u) => u.id));
+      setSelected((prev) => new Set([...prev].filter((id) => !disabledIds.has(id))));
+    }
+  }
+  const disabledCount = useMemo(
+    () => users.filter((u) => u.status === "disabled").length,
+    [users],
+  );
+  const visibleUsers = useMemo(
+    () => (showDisabled ? users : users.filter((u) => u.status !== "disabled")),
+    [users, showDisabled],
+  );
 
   function refresh() {
     setLoading(true);
@@ -107,8 +131,8 @@ export default function AdminUsers() {
   // the header checkbox so a tenant with one admin still sees a
   // meaningful "select all" affordance.
   const selectableIds = useMemo(
-    () => users.filter((u) => u.id !== currentUser?.id).map((u) => u.id),
-    [users, currentUser?.id],
+    () => visibleUsers.filter((u) => u.id !== currentUser?.id).map((u) => u.id),
+    [visibleUsers, currentUser?.id],
   );
   const allSelected = selectableIds.length > 0
     && selectableIds.every((id) => selected.has(id));
@@ -164,6 +188,7 @@ export default function AdminUsers() {
       );
       const ok = results.filter((r) => r.status === "fulfilled").length;
       setUsers((prev) => prev.map((u) => (selected.has(u.id) ? { ...u, status } : u)));
+      if (status === "disabled" && !showDisabled) clearSelection();
       toast.success(`${status === "active" ? "Enabled" : "Disabled"} ${ok} user${ok === 1 ? "" : "s"}`);
     } catch (err) {
       toast.error(err.message);
@@ -219,12 +244,22 @@ export default function AdminUsers() {
     <div className="space-y-6">
       <div className="flex items-center justify-between">
         <h1 className="text-xl font-semibold text-fg">User Management</h1>
+        <div className="flex items-center gap-4">
+        <label className="flex items-center gap-2 text-sm text-fg-muted cursor-pointer select-none">
+          <input
+            type="checkbox"
+            checked={showDisabled}
+            onChange={(e) => toggleShowDisabled(e.target.checked)}
+          />
+          Show disabled{disabledCount ? ` (${disabledCount})` : ""}
+        </label>
         <button
           onClick={() => setShowInvite((v) => !v)}
           className="bg-brand hover:bg-brand-bright text-brand-fg text-sm font-medium px-3 py-1.5 rounded"
         >
           {showInvite ? "Cancel" : "Invite user"}
         </button>
+        </div>
       </div>
 
       {showInvite && (
@@ -416,7 +451,7 @@ export default function AdminUsers() {
             </tr>
           </thead>
           <tbody className="divide-y divide-border">
-            {users.map((u) => {
+            {visibleUsers.map((u) => {
               const isSelf = u.id === currentUser?.id;
               const isSel = selected.has(u.id);
               return (
@@ -536,8 +571,10 @@ export default function AdminUsers() {
             })}
           </tbody>
         </table>
-        {users.length === 0 && (
-          <p className="text-sm text-fg-dim text-center py-8">No users yet</p>
+        {visibleUsers.length === 0 && (
+          <p className="text-sm text-fg-dim text-center py-8">
+            {users.length === 0 ? "No users yet" : "No users to show. Turn on \u201cShow disabled\u201d to see disabled accounts."}
+          </p>
         )}
       </div>
     </div>

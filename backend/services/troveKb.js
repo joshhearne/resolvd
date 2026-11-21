@@ -458,6 +458,8 @@ function shapeArticle(settings, a) {
     kind: a.kind || 'article',
     source_type: a.source_type || null,
     steps: Array.isArray(a.steps) ? a.steps : [],
+    // A runbook's steps with each link to another runbook opened into its steps (newer Trove KB).
+    expanded_steps: Array.isArray(a.expanded_steps) ? a.expanded_steps : null,
     internal_only: a.internal_only === true,
     public: !!a.public_url,
     collection_id: collectionId,
