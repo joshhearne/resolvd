@@ -498,7 +498,7 @@ function SectionAdmin({ role }) {
         </p>
         <HelpScreenshot src="/help/admin-left-rail-nav.png?v=2" alt="Admin panel left-rail navigation grouped into People, Workflow, Integrations, Site, and Data" />
         <div className="space-y-0">
-          <Feature name="Users — invite, deactivate, reset passwords" roles={["Admin"]} note="Manager role cannot manage other users. (v0.10.0) Bulk select bar (refresh from directory, enable, disable), bulk Entra import, and auto-provision via Graph then Google Directory. auth_settings.allow_email_unknown_users gates the local fallback." />
+          <Feature name="Users — invite, deactivate, reset passwords" roles={["Admin"]} note="Manager role cannot manage other users. (v0.10.0) Bulk select bar (refresh from directory, enable, disable), bulk Entra import, and auto-provision via Graph then Google Directory. auth_settings.allow_email_unknown_users gates the local fallback. (v0.12.0) Disabled accounts are hidden behind a Show disabled toggle; a user with ticket history can't be deleted, so disable them instead." />
           <Feature name="Users — View as this user" roles={["Admin"]} note="(v0.11.0) From a user's row menu, see Resolvd exactly as that user does (role, projects, dashboard). Active non-Admin users only. A bar at the bottom shows who you're viewing as, with Release to switch back. Password, MFA, profile, preference and calendar changes are blocked while viewing as someone, start and release are audited, and it ends on its own after 2 hours." />
           <Feature name="Time tracking — timers, work notes, billing" roles={["Admin"]} note="(v0.11.0) Enable, auto-start, discard and warning rules, work-note visibility, timesheet lock, work types, export. With MSP mode on, also billable rules, rate cards, bill types and utilization. See Time + Billing." />
           <Feature name="On-call rotations" roles={PRIV} note="(v0.11.0) Rotations, shift length, handoff, overrides. See On-call rotations." />
@@ -968,6 +968,8 @@ function SectionInventory({ role }) {
         <Feature name="Cross-project ticket history" roles={HANDLER} note="Asset detail lists every ticket that linked this asset, across every project the viewer has access to." />
         <Feature name="Vulnerability + patch counts" roles={HANDLER} note="Pulled from the source's reports endpoint when the source has the 'vulnerabilities' capability enabled." />
         <Feature name="CSV export" roles={HANDLER} />
+        <Feature name="Bulk actions" roles={HANDLER} note="(v0.12.0) Tick assets in the list to set their type or company together. Admins and Managers can also delete them, or convert them to manual assets." />
+        <Feature name="Assets from a removed integration" roles={["Admin", "Manager"]} note="(v0.12.0) Assets whose integration was removed or disabled show as Integration removed (filter by source). Delete them, or convert them to manual so every field is editable and no sync matches them again." />
       </div>
       <div className="bg-surface-2 border border-border rounded-lg p-3 text-xs text-fg-muted space-y-1">
         <p className="font-semibold text-fg">Action1 / generic RMM sync</p>
