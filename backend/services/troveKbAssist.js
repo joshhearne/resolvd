@@ -54,6 +54,7 @@ function keyTerms(text, max = 8) {
 // the admin-managed noise rules (SLA notices, moves, auto-replies, named
 // accounts) in services/troveKbNoise.js decide.
 const noise = require('./troveKbNoise');
+const runbookSteps = require('./troveKbRunbookSteps');
 
 async function ticketComments(ticket) {
   const r = await pool.query(
@@ -271,8 +272,10 @@ function aiPrompt({ brief, fullArticles }) {
     '\nKNOWLEDGE BASE ARTICLES:',
     ...included.map((a, i) => {
       const full = fullArticles.find((f) => f.article_id === a.article_id);
-      const body = full?.steps?.length
-        ? full.steps.map((s, j) => `${j + 1}. ${s.text}${s.note ? `\n   ${s.note}` : ''}`).join('\n')
+      // A runbook as its numbered steps, nested runbooks opened under the step that links them.
+      const items = full ? runbookSteps.runbookItems(full) : [];
+      const body = items.length
+        ? runbookSteps.procedureText(items)
         : String(full?.body || a.snippet || '').slice(0, 6000);
       const url = replyUrl(a, full);
       const isPdf = !!(full && full.pdf_url && url);
