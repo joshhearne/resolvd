@@ -3,11 +3,15 @@ import { Link } from "react-router-dom";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
 import MarkdownContent from "./MarkdownContent";
+import { runbookItems, leafItems, leavesUnder } from "../utils/troveRunbook";
 
 // Runbooks from Trove KB on a ticket. Steps come live from Trove KB; checkbox
 // state lives in Resolvd per (ticket, runbook), keyed by Trove KB step id.
 // A step's `canned` (from "@canned:[Name]" in its text) becomes a pill
 // that renders the canned response into the comment composer.
+// A step that is only a link to another runbook opens into that runbook's
+// steps (Trove KB's `expanded_steps`), indented under it and numbered 2.1,
+// 2.2…; ticking it ticks them all, and it is done when they all are.
 //   GET    /api/trove-kb/runbooks?project_id=
 //   GET    /api/trove-kb/tickets/:id/runbook-runs
 //   POST   /api/trove-kb/tickets/:id/runbook-runs { article_id }
@@ -47,11 +51,13 @@ export default function TroveKbRunbookPanel({ ticket, user, onApplyCanned }) {
     } catch (e) { toast.error(e.message); }
     finally { setBusy(false); }
   }
-  async function toggle(run, stepId, checked) {
-    const next = { [stepId]: { checked, checked_by: user?.id ?? null, checked_at: new Date().toISOString() } };
+  // Ticks one step, or every step under a group, in one change.
+  async function toggle(run, stepIds, checked) {
+    const stamp = { checked, checked_by: user?.id ?? null, checked_at: new Date().toISOString() };
+    const next = Object.fromEntries(stepIds.map((id) => [id, stamp]));
     setRuns((all) => all.map((r) => (r.id === run.id ? { ...r, step_states: { ...(r.step_states || {}), ...next } } : r)));
     try {
-      const allChecked = (run.steps || []).every((s) => (s.id === stepId ? checked : run.step_states?.[s.id]?.checked));
+      const allChecked = leafItems(runbookItems(run)).every((s) => (stepIds.includes(s.id) ? checked : run.step_states?.[s.id]?.checked));
       await api.patch(`/api/trove-kb/tickets/${ticket.id}/runbook-runs/${run.trove_kb_article_id}`, { step_states: next, completed: allChecked });
       if (allChecked) await load();
     } catch (e) { toast.error(e.message); await load(); }
@@ -94,7 +100,8 @@ export default function TroveKbRunbookPanel({ ticket, user, onApplyCanned }) {
       {runs.length === 0 && <div className="text-xs text-fg-dim italic">No Trove KB runbook running on this ticket.</div>}
 
       {runs.map((run) => {
-        const steps = run.steps || [];
+        const items = runbookItems(run);
+        const steps = leafItems(items);
         const done = steps.filter((s) => run.step_states?.[s.id]?.checked).length;
         return (
           <div key={run.id} className="bg-surface border border-border rounded-lg p-3 space-y-2">
@@ -106,14 +113,23 @@ export default function TroveKbRunbookPanel({ ticket, user, onApplyCanned }) {
             </div>
             {run.unavailable && <div className="text-xs text-amber-500">This runbook is no longer readable in Trove KB.</div>}
             <ol className="space-y-1.5">
-              {steps.map((s, i) => {
-                const st = run.step_states?.[s.id];
+              {items.map((s) => {
+                const under = s.group ? leavesUnder(items, s) : null;
+                const checked = under ? under.length > 0 && under.every((u) => run.step_states?.[u.id]?.checked) : !!run.step_states?.[s.id]?.checked;
+                const partly = !!under && !checked && under.some((u) => run.step_states?.[u.id]?.checked);
                 const c = s.canned ? cannedByTitle.get(String(s.canned).toLowerCase()) : null;
                 return (
-                  <li key={s.id} className="flex items-start gap-2">
-                    <input type="checkbox" checked={!!st?.checked} onChange={(e) => toggle(run, s.id, e.target.checked)} className="mt-1" />
-                    <div className={`flex-1 min-w-0 text-sm ${st?.checked ? "text-fg-dim line-through" : "text-fg"}`}>
-                      <span className="text-fg-dim font-mono text-[11px] mr-1">{i + 1}.</span>
+                  <li key={s.id} className="flex items-start gap-2" style={{ paddingLeft: `${s.depth * 1.25}rem` }}>
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      ref={(box) => { if (box) box.indeterminate = partly; }}
+                      onChange={(e) => toggle(run, under ? under.map((u) => u.id) : [s.id], e.target.checked)}
+                      className="mt-1"
+                      aria-label={`Step ${s.label}`}
+                    />
+                    <div className={`flex-1 min-w-0 text-sm ${checked ? "text-fg-dim line-through" : "text-fg"} ${s.group ? "font-medium" : ""}`}>
+                      <span className="text-fg-dim font-mono text-[11px] mr-1">{s.label}.</span>
                       <span className="inline [&_p]:inline"><MarkdownContent>{String(s.text || "").replace(/@canned:\[[^\]]+\]/g, "").trim()}</MarkdownContent></span>
                       {s.canned && (
                         c ? (
@@ -121,6 +137,17 @@ export default function TroveKbRunbookPanel({ ticket, user, onApplyCanned }) {
                         ) : (
                           <span className="ml-2 text-[11px] text-fg-dim" title="No canned response with this title in this project">@canned:{s.canned} (?)</span>
                         )
+                      )}
+                      {s.includes && (
+                        <div className="text-[11px] text-fg-dim mt-0.5 no-underline">
+                          {s.includes.status === "expanded"
+                            ? `Runbook · ${under?.length ?? 0} step${(under?.length ?? 0) === 1 ? "" : "s"}, tick one by one or all at once`
+                            : s.includes.status === "unavailable"
+                              ? "A runbook this Resolvd can't read in Trove KB — tick this step when it's done"
+                              : s.includes.status === "loop"
+                                ? "Leads back to a runbook it is already inside, so it isn't opened again"
+                                : "Nested too deep to open here — open it in Trove KB"}
+                        </div>
                       )}
                       {s.note && <div className="text-xs text-fg-muted mt-1 pl-4 border-l border-border"><MarkdownContent>{s.note}</MarkdownContent></div>}
                     </div>

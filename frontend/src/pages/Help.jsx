@@ -498,7 +498,7 @@ function SectionAdmin({ role }) {
         </p>
         <HelpScreenshot src="/help/admin-left-rail-nav.png?v=2" alt="Admin panel left-rail navigation grouped into People, Workflow, Integrations, Site, and Data" />
         <div className="space-y-0">
-          <Feature name="Users — invite, deactivate, reset passwords" roles={["Admin"]} note="Manager role cannot manage other users. (v0.10.0) Bulk select bar (refresh from directory, enable, disable), bulk Entra import, and auto-provision via Graph then Google Directory. auth_settings.allow_email_unknown_users gates the local fallback." />
+          <Feature name="Users — invite, deactivate, reset passwords" roles={["Admin"]} note="Manager role cannot manage other users. (v0.10.0) Bulk select bar (refresh from directory, enable, disable), bulk Entra import, and auto-provision via Graph then Google Directory. auth_settings.allow_email_unknown_users gates the local fallback. (v0.12.0) Disabled accounts are hidden behind a Show disabled toggle; a user with ticket history can't be deleted, so disable them instead." />
           <Feature name="Users — View as this user" roles={["Admin"]} note="(v0.11.0) From a user's row menu, see Resolvd exactly as that user does (role, projects, dashboard). Active non-Admin users only. A bar at the bottom shows who you're viewing as, with Release to switch back. Password, MFA, profile, preference and calendar changes are blocked while viewing as someone, start and release are audited, and it ends on its own after 2 hours." />
           <Feature name="Time tracking — timers, work notes, billing" roles={["Admin"]} note="(v0.11.0) Enable, auto-start, discard and warning rules, work-note visibility, timesheet lock, work types, export. With MSP mode on, also billable rules, rate cards, bill types and utilization. See Time + Billing." />
           <Feature name="On-call rotations" roles={PRIV} note="(v0.11.0) Rotations, shift length, handoff, overrides. See On-call rotations." />
@@ -968,6 +968,8 @@ function SectionInventory({ role }) {
         <Feature name="Cross-project ticket history" roles={HANDLER} note="Asset detail lists every ticket that linked this asset, across every project the viewer has access to." />
         <Feature name="Vulnerability + patch counts" roles={HANDLER} note="Pulled from the source's reports endpoint when the source has the 'vulnerabilities' capability enabled." />
         <Feature name="CSV export" roles={HANDLER} />
+        <Feature name="Bulk actions" roles={HANDLER} note="(v0.12.0) Tick assets in the list to set their type or company together. Admins and Managers can also delete them, or convert them to manual assets." />
+        <Feature name="Assets from a removed integration" roles={["Admin", "Manager"]} note="(v0.12.0) Assets whose integration was removed or disabled show as Integration removed (filter by source). Delete them, or convert them to manual so every field is editable and no sync matches them again." />
       </div>
       <div className="bg-surface-2 border border-border rounded-lg p-3 text-xs text-fg-muted space-y-1">
         <p className="font-semibold text-fg">Action1 / generic RMM sync</p>
@@ -1023,6 +1025,7 @@ function SectionKb({ role }) {
         <Feature name="Resolution draft" roles={HANDLER} note="Extractive digest per linked article — matched passage, link, runbook steps — with an AI summary on top when you may use AI Assist." />
         <Feature name="Knowledge briefs" roles={HANDLER} note="Scope with knowledge on the comment composer. Every run is stored with its inputs + output. Internal articles never leak into a vendor-visible reply. Admin-managed noise rules keep SLA notices, moves, merges, and auto-replies out." />
         <Feature name="Runbooks from Trove KB" roles={HANDLER} note="kind: runbook articles carry steps with stable ids; step state is per ticket. A step's canned field becomes the 📋 pill. Schedules can start a run on every fire." />
+        <Feature name="Runbooks inside runbooks" roles={HANDLER} note="A Trove KB runbook step that is only a link to another runbook opens into that runbook's steps on the ticket Runbook tab, indented and numbered 2.1, 2.2…, as deep as Trove KB nests them. Tick the steps one by one, or tick the linked step to tick them all; the run completes when every step is done. Each nested step keeps its own state, even when one small runbook appears twice." />
         <Feature name="Replace local KB (optional)" roles={["Admin"]} note="Shows a plan first — each local article's twin in Trove KB, links, runs, step coverage — then moves links and runbook progress, archives local articles, and hides the local KB. Local tables stay one release for rollback. Skip it to keep both." />
         <Feature name="Links into the Trove KB staff UI" roles={["Admin"]} note="Edit / manage buttons open Trove KB directly. Everyone else stays inside Resolvd." />
       </div>
@@ -1074,6 +1077,7 @@ function SectionForms({ role }) {
         <Feature name="{field.<slug>} tags" roles={HANDLER} note="Resolve in canned responses and vendor email templates (hyphen-tolerant, HTML-escaped in HTML templates). Tag pickers insert at the caret and expose a project-scoped Custom fields chip group." />
         <Feature name="Deep links" roles="all" note="/tickets/new/<prefix>/<category>/<form>?<field>=<value> — resolves left to right; selects pre-fill by 1-based option number. Shareable-link builder on the admin page." />
         <Feature name="Computed fields" roles={["Admin"]} note="A safe formula over {field.*}, {ticket.*}, {submitter.*}, {assignee.*}, {actor.*}. Functions: slice left right upper lower cap pad trim len digits replace match concat default if datepart; ~ concatenates. No eval, no globals. Evaluated on create and via Recompute. Live preview in the editor." />
+        <Feature name="Generated passwords" roles={["Admin"]} note="Random generators for memorable passwords: word(min,max) picks a word of that many letters from the built-in word library, num(n) gives n digits, special(n) n symbols from !@#$%&*?-+= (or special(n, &quot;chars&quot;)), rand(a,b) an integer, pick(a,b,…) one option. upper(s,n) / lower(s,n) change only the first n characters (0 or omitted = all). minlen(expr, min[, max]) re-rolls expr until its length fits, e.g. minlen(upper(word(4,8),1) ~ word(4,8) ~ num(2) ~ special(1), 12) → Maplecanyon47#. Generated values stay put on Recompute; use ↻ New on the field to roll a fresh one." />
       </div>
       <div className="bg-surface-2 border border-border rounded-lg p-3 text-xs text-fg-muted space-y-1">
         <p className="font-semibold text-fg">Example — derive a UPN for HR onboarding</p>
