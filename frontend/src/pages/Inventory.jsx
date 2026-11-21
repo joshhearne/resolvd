@@ -1,8 +1,9 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useMemo, useState } from "react";
 import toast from "react-hot-toast";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../utils/api";
 import HybridTime from "../components/HybridTime";
+import { useAuth } from "../context/AuthContext";
 
 const SOURCE_LABELS = {
   action1: "Action1",
@@ -93,10 +94,25 @@ export default function Inventory() {
   const [creating, setCreating] = useState(false);
   const [types, setTypes] = useState([]);
   const [offlineOnly, setOfflineOnly] = useState(false);
+  const [sourceFilter, setSourceFilter] = useState("");
+  const [selected, setSelected] = useState(() => new Set());
+  const [bulkBusy, setBulkBusy] = useState(false);
+  const [companies, setCompanies] = useState([]);
+  const { user } = useAuth();
+  const canDelete = user?.role === "Admin" || user?.role === "Manager";
 
   useEffect(() => {
     api.get("/api/asset-types").then(setTypes).catch(() => setTypes([]));
+    api.get("/api/companies").then((r) => setCompanies(r || [])).catch(() => setCompanies([]));
   }, []);
+  const selectedItems = useMemo(
+    () => items.filter((a) => selected.has(a.id)),
+    [items, selected],
+  );
+  const selectedRemovable = selectedItems.filter((a) => a.source_system === "manual" || a.source_orphaned).length;
+  const selectedOrphaned = selectedItems.filter((a) => a.source_orphaned).length;
+  const allSelected = items.length > 0 && items.every((a) => selected.has(a.id));
+  const someSelected = selected.size > 0 && !allSelected;
   // List-mode data loaders. Declared above the detail-mode early
   // return so the hook count stays stable when the user toggles
   // between /inventory and /inventory/:id (Rules of Hooks).
@@ -104,7 +120,7 @@ export default function Inventory() {
   // eslint-disable-next-line react-hooks/exhaustive-deps
   useEffect(() => { if (!detailId) load("", false); }, []);
   // eslint-disable-next-line react-hooks/exhaustive-deps
-  useEffect(() => { if (!detailId) load(q, offlineOnly); }, [offlineOnly]);
+  useEffect(() => { if (!detailId) load(q, offlineOnly); }, [offlineOnly, sourceFilter]);
 
   if (detailId) {
     return <AssetDetailPage id={detailId} types={types} onBack={() => navigate("/inventory")} />;
@@ -114,6 +130,8 @@ export default function Inventory() {
     const parts = [];
     if (searchQ) parts.push(`q=${encodeURIComponent(searchQ)}`);
     if (offline) parts.push(`offline_days=${OFFLINE_DAYS}`);
+    if (sourceFilter) parts.push(`source=${encodeURIComponent(sourceFilter)}`);
+    parts.push("limit=500");
     return parts.length ? `?${parts.join("&")}` : "";
   }
 
@@ -123,6 +141,9 @@ export default function Inventory() {
       const r = await api.get(`/api/assets${buildQs(searchQ, offline)}`);
       setItems(r.items || []);
       setTotal(r.total || 0);
+      // Keep only selections that are still on screen after a reload.
+      const ids = new Set((r.items || []).map((a) => a.id));
+      setSelected((prev) => new Set([...prev].filter((id) => ids.has(id))));
     } catch (e) {
       toast.error(e.message);
     } finally {
@@ -133,6 +154,67 @@ export default function Inventory() {
   function handleSearch(e) {
     e.preventDefault();
     load(q.trim());
+  }
+
+  function toggleOne(id) {
+    setSelected((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id); else next.add(id);
+      return next;
+    });
+  }
+  function toggleAll() {
+    setSelected(allSelected ? new Set() : new Set(items.map((a) => a.id)));
+  }
+
+  async function bulkUpdate(field, raw) {
+    if (!selected.size || raw === "") return;
+    const value = raw === "none" ? null : Number(raw);
+    setBulkBusy(true);
+    try {
+      const r = await api.post("/api/assets/bulk-update", { ids: [...selected], fields: { [field]: value } });
+      toast.success(`Updated ${r.updated} asset${r.updated === 1 ? "" : "s"}`);
+      await load();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  async function bulkDetach() {
+    if (!selectedOrphaned) return;
+    if (!confirm(`Convert ${selectedOrphaned} asset(s) whose integration was removed into manual assets? Every field becomes editable, and they will no longer be matched to any integration.`)) return;
+    setBulkBusy(true);
+    try {
+      const r = await api.post("/api/assets/bulk-detach", { ids: [...selected] });
+      toast.success(`Converted ${r.detached} to manual${r.skipped ? ` (${r.skipped} skipped: not orphaned)` : ""}`);
+      await load();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setBulkBusy(false);
+    }
+  }
+
+  async function bulkDelete() {
+    if (!selectedRemovable) return;
+    const kept = selected.size - selectedRemovable;
+    const msg = `Permanently delete ${selectedRemovable} asset(s)?`
+      + (kept ? `\n\n${kept} selected asset(s) are still synced from an active integration and will be skipped.` : "")
+      + "\n\nCheckout history, software lists and custom field values for these assets are deleted too. Linked tickets keep their history. This cannot be undone.";
+    if (!confirm(msg)) return;
+    setBulkBusy(true);
+    try {
+      const r = await api.post("/api/assets/bulk-delete", { ids: [...selected] });
+      toast.success(`Deleted ${r.deleted} asset${r.deleted === 1 ? "" : "s"}${r.skipped ? ` (${r.skipped} skipped)` : ""}`);
+      setSelected(new Set());
+      await load();
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setBulkBusy(false);
+    }
   }
 
   return (
@@ -163,6 +245,17 @@ export default function Inventory() {
             />
             Offline only ({OFFLINE_DAYS}d+)
           </label>
+          <select
+            value={sourceFilter}
+            onChange={(e) => setSourceFilter(e.target.value)}
+            aria-label="Filter by source"
+            className="bg-surface-2 text-fg text-xs rounded-md border border-border px-2 py-1.5"
+          >
+            <option value="">All sources</option>
+            <option value="synced">Synced</option>
+            <option value="manual">Manual</option>
+            <option value="orphaned">Integration removed</option>
+          </select>
           <a
             href={`/api/assets/export.csv${buildQs(q, offlineOnly)}`}
             className="btn btn-secondary btn-sm"
@@ -190,19 +283,91 @@ export default function Inventory() {
         />
       )}
 
+      {selected.size > 0 && (
+        <div className="sticky top-0 z-30 flex flex-wrap items-center justify-between gap-2 bg-brand/10 border border-brand/40 rounded-md px-3 py-2 text-sm">
+          <div className="text-fg">
+            <span className="font-medium">{selected.size}</span> selected
+          </div>
+          <div className="flex flex-wrap items-center gap-2">
+            <select
+              value=""
+              disabled={bulkBusy}
+              onChange={(e) => bulkUpdate("asset_type_id", e.target.value)}
+              aria-label="Set type for selected assets"
+              className="bg-surface text-fg text-xs rounded border border-border px-2 py-1"
+            >
+              <option value="">Set type…</option>
+              {types.map((t) => <option key={t.id} value={t.id}>{t.label}</option>)}
+              <option value="none">Clear type</option>
+            </select>
+            <select
+              value=""
+              disabled={bulkBusy}
+              onChange={(e) => bulkUpdate("company_id", e.target.value)}
+              aria-label="Set company for selected assets"
+              className="bg-surface text-fg text-xs rounded border border-border px-2 py-1"
+            >
+              <option value="">Set company…</option>
+              {companies.map((c) => <option key={c.id} value={c.id}>{c.name}</option>)}
+              <option value="none">Clear company</option>
+            </select>
+            {canDelete && selectedOrphaned > 0 && (
+              <button
+                type="button"
+                onClick={bulkDetach}
+                disabled={bulkBusy}
+                className="px-2.5 py-1 rounded border border-border bg-surface hover:bg-surface-2 text-xs disabled:opacity-60"
+                title="Make these assets fully editable by converting them to manual assets"
+              >
+                Convert to manual ({selectedOrphaned})
+              </button>
+            )}
+            {canDelete && (
+              <button
+                type="button"
+                onClick={bulkDelete}
+                disabled={bulkBusy || !selectedRemovable}
+                className="px-2.5 py-1 rounded border border-red-300 dark:border-red-800 text-red-700 dark:text-red-300 bg-surface hover:bg-red-50 dark:hover:bg-red-950/30 text-xs disabled:opacity-60"
+                title={selectedRemovable ? "" : "Assets still synced from an active integration can't be deleted"}
+              >
+                Delete ({selectedRemovable})
+              </button>
+            )}
+            <button
+              type="button"
+              onClick={() => setSelected(new Set())}
+              className="px-2.5 py-1 text-fg-muted hover:text-fg text-xs"
+            >
+              Clear
+            </button>
+          </div>
+        </div>
+      )}
+
       <div className="flex flex-col gap-4 items-stretch">
         <section className="bg-surface border border-border rounded-lg overflow-hidden">
           {loading ? (
             <div className="p-6 text-sm text-fg-dim">Loading…</div>
           ) : items.length === 0 ? (
             <div className="p-6 text-sm text-fg-dim italic">
-              No assets yet. Enable inventory sync on an alert source.
+              {sourceFilter || q || offlineOnly
+                ? "No assets match these filters."
+                : "No assets yet. Enable inventory sync on an alert source, or add one with + New asset."}
             </div>
           ) : (
             <div className="overflow-x-auto">
               <table className="min-w-full divide-y divide-border text-sm">
                 <thead className="bg-surface-2">
                   <tr className="text-fg-muted text-xs uppercase tracking-wide">
+                    <th className="w-10 px-3 py-2">
+                      <input
+                        type="checkbox"
+                        aria-label="Select all assets"
+                        checked={allSelected}
+                        ref={(el) => { if (el) el.indeterminate = someSelected; }}
+                        onChange={toggleAll}
+                      />
+                    </th>
                     <th className="px-3 py-2 text-left font-medium">Hostname</th>
                     <th className="px-3 py-2 text-left font-medium">OS</th>
                     <th className="px-3 py-2 text-left font-medium">Model</th>
@@ -217,8 +382,16 @@ export default function Inventory() {
                     <tr
                       key={a.id}
                       onClick={() => navigate(`/inventory/${a.id}`)}
-                      className="cursor-pointer hover:bg-surface-2"
+                      className={`cursor-pointer hover:bg-surface-2 ${selected.has(a.id) ? "bg-brand/5" : ""}`}
                     >
+                      <td className="w-10 px-3 py-2" onClick={(e) => e.stopPropagation()}>
+                        <input
+                          type="checkbox"
+                          aria-label={`Select ${a.hostname || "asset"}`}
+                          checked={selected.has(a.id)}
+                          onChange={() => toggleOne(a.id)}
+                        />
+                      </td>
                       <td className="px-3 py-2 font-medium text-fg">
                         <div className="flex items-center gap-1.5">
                           <Link
@@ -234,6 +407,14 @@ export default function Inventory() {
                               title={`Last seen > ${OFFLINE_DAYS} days ago`}
                             >
                               offline
+                            </span>
+                          )}
+                          {a.source_orphaned && (
+                            <span
+                              className="text-[10px] uppercase tracking-wider px-1.5 py-0.5 rounded bg-surface-2 text-fg-muted border border-border"
+                              title={`Synced from ${SOURCE_LABELS[a.source_system] || a.source_system}, which is no longer connected. Delete it or convert it to manual.`}
+                            >
+                              source removed
                             </span>
                           )}
                         </div>
@@ -255,7 +436,7 @@ export default function Inventory() {
             </div>
           )}
           <div className="px-3 py-2 text-xs text-fg-dim border-t border-border">
-            {items.length} of {total} shown
+            {items.length} of {total} shown{selected.size ? ` · ${selected.size} selected` : ""}
           </div>
         </section>
       </div>
@@ -708,6 +889,9 @@ function AssetDetail({ detail, types, onBack, onReload, hideTicketsList, hideRaw
   }, [detail?.id]);
 
   const isManual = detail?.source_system === "manual";
+  const isOrphaned = !!detail?.source_orphaned;
+  const { user } = useAuth();
+  const canDelete = user?.role === "Admin" || user?.role === "Manager";
 
   function setField(k, v) {
     setEdits((prev) => ({ ...prev, [k]: v }));
@@ -733,10 +917,22 @@ function AssetDetail({ detail, types, onBack, onReload, hideTicketsList, hideRaw
   }
 
   async function del() {
-    if (!confirm("Delete this manual asset? Linked tickets will keep their history (asset reference cleared).")) return;
+    if (!confirm("Delete this asset? Checkout history, software and custom field values go with it. Linked tickets keep their history (asset reference cleared). This cannot be undone.")) return;
     try {
       await api.delete(`/api/assets/${detail.id}`);
       toast.success("Deleted");
+      if (onBack) onBack();
+      else if (onReload) await onReload();
+    } catch (e) {
+      toast.error(e.message || "Failed");
+    }
+  }
+
+  async function detach() {
+    if (!confirm("Convert this asset to a manual asset? Every field becomes editable, and it will no longer be matched to any integration.")) return;
+    try {
+      await api.post("/api/assets/bulk-detach", { ids: [detail.id] });
+      toast.success("Converted to manual");
       if (onReload) await onReload();
     } catch (e) {
       toast.error(e.message || "Failed");
@@ -766,7 +962,7 @@ function AssetDetail({ detail, types, onBack, onReload, hideTicketsList, hideRaw
     ["Organization", detail.organization],
     ["Company", detail.company_name || null],
     ["Linked user", detail.linked_user_name ? `${detail.linked_user_name} (${detail.linked_user_email})` : null],
-    ["Source", `${SOURCE_LABELS[detail.source_system] || detail.source_system} (${detail.source_external_id})`],
+    ["Source", `${SOURCE_LABELS[detail.source_system] || detail.source_system} (${detail.source_external_id})${isOrphaned ? " · integration removed" : ""}`],
   ];
   return (
     <div className="bg-surface border border-border rounded-lg p-4 space-y-3">
@@ -796,7 +992,12 @@ function AssetDetail({ detail, types, onBack, onReload, hideTicketsList, hideRaw
               </button>
             </>
           )}
-          {isManual && !editing && (
+          {canDelete && isOrphaned && !editing && (
+            <button onClick={detach} className="text-xs px-2 py-1 border border-border rounded hover:bg-surface-2">
+              Convert to manual
+            </button>
+          )}
+          {canDelete && (isManual || isOrphaned) && !editing && (
             <button onClick={del} className="text-xs px-2 py-1 text-red-600 hover:underline">Delete</button>
           )}
         </div>

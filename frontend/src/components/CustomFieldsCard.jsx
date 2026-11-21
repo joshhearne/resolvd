@@ -9,6 +9,12 @@ import { api } from "../utils/api";
 // is created. Handlers can also attach individual fields ad hoc ("+ Add
 // field") with or without a form, and remove ad-hoc ones again.
 // Non-handlers get a read-only list (sensitive values masked).
+
+// A computed field whose formula calls a random generator (mirrors
+// formula.isVolatile on the server). Recompute leaves these alone.
+const GENERATOR_RE = /\b(word|num|special|rand|pick)\s*\(/i;
+const isGenerated = (f) => !!f.computed && GENERATOR_RE.test(f.formula || "");
+
 export default function CustomFieldsCard({ ticket, canEdit, onUpdated, onApplyForm }) {
   const [fields, setFields] = useState(null); // ticket's field set (form + ad hoc)
   const [draft, setDraft] = useState({}); // def_id -> value
@@ -88,6 +94,9 @@ export default function CustomFieldsCard({ ticket, canEdit, onUpdated, onApplyFo
       const v = cur.find((x) => x.def_id === fld.def_id);
       if (fld.type === "multiselect") seed[fld.def_id] = v && Array.isArray(v.value) ? v.value : [];
       else if (fld.type === "bool") seed[fld.def_id] = v ? !!v.value : false;
+      // Stored as TIMESTAMPTZ → comes back as a full ISO timestamp, which a
+      // <input type="date"> can't display (it renders blank). Keep YYYY-MM-DD.
+      else if (fld.type === "date") seed[fld.def_id] = v && v.value ? String(v.value).slice(0, 10) : "";
       else seed[fld.def_id] = v ? (v.value ?? "") : "";
     });
     return seed;
@@ -101,21 +110,32 @@ export default function CustomFieldsCard({ ticket, canEdit, onUpdated, onApplyFo
       toast.success(items.length > 1 ? "Fields saved" : `${items[0].label} saved`);
       const next = r.custom_fields || [];
       onUpdated?.(next);
-      if (fields) setDraft(seedFrom(fields, next));
+      // Refresh only the fields just saved. Reseeding the whole draft would
+      // throw away unsaved edits in the other fields (edit A + B, Save A → B
+      // silently reverted).
+      if (fields) {
+        const fresh = seedFrom(items, next);
+        setDraft((p) => ({ ...p, ...fresh }));
+      }
     } catch (e) { toast.error(e.message); }
     finally { setSavingId(null); }
   }
 
   // Re-run the form's computed (formula) fields against the ticket's current
   // inputs and refresh their displayed values.
-  async function recompute() {
-    setSavingId("recompute");
+  // Random (generated) formulas — e.g. a password — keep their stored value
+  // on a plain Recompute; pass `regenerate: [slug]` to roll a new one.
+  async function recompute(regenField) {
+    if (regenField && !window.confirm(`Generate a new value for "${regenField.label}"? The current one will be replaced.`)) return;
+    setSavingId(regenField ? `regen-${regenField.def_id}` : "recompute");
     try {
-      const r = await api.post(`/api/tickets/${ticket.id}/recompute-fields`, {});
+      const body = regenField ? { regenerate: [regenField.slug] } : {};
+      const r = await api.post(`/api/tickets/${ticket.id}/recompute-fields`, body);
       const next = r.custom_fields || [];
-      toast.success(r.recomputed ? `Recomputed ${r.recomputed} field${r.recomputed > 1 ? "s" : ""}` : "Nothing to recompute");
+      toast.success(regenField ? `${regenField.label} regenerated`
+        : r.recomputed ? `Recomputed ${r.recomputed} field${r.recomputed > 1 ? "s" : ""}` : "Nothing to recompute");
       onUpdated?.(next);
-      if (fields) setDraft(seedFrom(fields, next));
+      // Computed fields aren't in the editable draft; leave unsaved edits alone.
     } catch (e) { toast.error(e.message); }
     finally { setSavingId(null); }
   }
@@ -221,7 +241,7 @@ export default function CustomFieldsCard({ ticket, canEdit, onUpdated, onApplyFo
           <div className="pt-2 border-t border-border space-y-2">
             <div className="flex items-center justify-between">
               <span className="text-xs font-medium text-fg-muted">Derived (auto)</span>
-              <button onClick={recompute} disabled={!!savingId} className="text-xs text-brand hover:underline disabled:opacity-50">
+              <button onClick={() => recompute()} disabled={!!savingId} className="text-xs text-brand hover:underline disabled:opacity-50">
                 {savingId === "recompute" ? "Recomputing…" : "↻ Recompute"}
               </button>
             </div>
@@ -229,7 +249,15 @@ export default function CustomFieldsCard({ ticket, canEdit, onUpdated, onApplyFo
               const cv = curVal(f);
               return (
                 <div key={f.def_id} className="flex flex-col">
-                  <span className="text-xs text-fg-muted">{f.label}{f.sensitive && <span className="ml-1">🔒</span>}</span>
+                  <span className="text-xs text-fg-muted flex items-center gap-2">
+                    <span>{f.label}{f.sensitive && <span className="ml-1">🔒</span>}</span>
+                    {isGenerated(f) && (
+                      <button onClick={() => recompute(f)} disabled={!!savingId} className="text-brand hover:underline disabled:opacity-50"
+                        title="This field is randomly generated — Recompute keeps it. Click to generate a new value.">
+                        {savingId === `regen-${f.def_id}` ? "…" : "↻ New"}
+                      </button>
+                    )}
+                  </span>
                   <code className="text-sm text-fg break-all font-mono">
                     {cv == null || cv === "" ? <span className="text-fg-dim font-sans">—</span> : String(cv)}
                   </code>
@@ -290,7 +318,7 @@ export default function CustomFieldsCard({ ticket, canEdit, onUpdated, onApplyFo
                 : cf.value == null || cf.value === ""
                 ? <span className="text-fg-dim">—</span>
                 : cf.type === "bool" ? (cf.value ? "Yes" : "No")
-                : cf.type === "date" ? new Date(cf.value).toLocaleDateString()
+                : cf.type === "date" ? new Date(cf.value).toLocaleDateString(undefined, { timeZone: "UTC" })
                 : String(cf.value)}
             </dd>
           </div>
