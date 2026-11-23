@@ -21,13 +21,16 @@ function loadPdfjs() {
 async function extractPages(buffer) {
   const pdfjs = await loadPdfjs();
   const data = buffer instanceof Uint8Array ? new Uint8Array(buffer) : new Uint8Array(Buffer.from(buffer));
-  const doc = await pdfjs.getDocument({
+  // Keep the loading task: since pdfjs 6 `destroy()` lives only there
+  // (PDFDocumentProxy#destroy was removed); it also exists in 4.x.
+  const loadingTask = pdfjs.getDocument({
     data,
     isEvalSupported: false,
     disableFontFace: true,
     useSystemFonts: false,
     verbosity: 0,
-  }).promise;
+  });
+  const doc = await loadingTask.promise;
   try {
     const n = Math.min(doc.numPages, MAX_PAGES);
     const pages = [];
@@ -41,7 +44,7 @@ async function extractPages(buffer) {
     }
     return pages;
   } finally {
-    await doc.destroy();
+    await loadingTask.destroy();
   }
 }
 
