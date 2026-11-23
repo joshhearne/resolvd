@@ -14,6 +14,21 @@ export function brandingLogoFilter(branding, resolvedTheme) {
   return null;
 }
 
+// Which logo to show in a given mode. A mode with its own logo shows it as
+// uploaded. Otherwise the light logo is used, smart-flipped per
+// `logo_designed_for`; with only a dark logo, it is shown as-is.
+export function brandingLogo(branding, resolvedTheme) {
+  if (!branding) return { src: null, filter: null };
+  if (resolvedTheme === 'dark' && branding.logo_dark_url) {
+    return { src: branding.logo_dark_url, filter: null };
+  }
+  if (branding.logo_url) {
+    return { src: branding.logo_url, filter: brandingLogoFilter(branding, resolvedTheme) };
+  }
+  if (branding.logo_dark_url) return { src: branding.logo_dark_url, filter: null };
+  return { src: null, filter: null };
+}
+
 export function priorityRowClass(p) {
   if (p === 1) return 'bg-red-500/[0.06] hover:bg-red-500/[0.12] dark:bg-red-500/10 dark:hover:bg-red-500/[0.18]';
   if (p === 2) return 'bg-orange-500/[0.06] hover:bg-orange-500/[0.12] dark:bg-orange-500/10 dark:hover:bg-orange-500/[0.18]';

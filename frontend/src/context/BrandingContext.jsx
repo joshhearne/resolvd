@@ -1,15 +1,9 @@
 import React, { createContext, useContext, useEffect, useState } from "react";
 import { setActiveLocale } from "../utils/helpers";
+import { brandCss } from "../utils/brandColors";
 import { useAuth } from "./AuthContext";
 
 const BrandingContext = createContext({});
-
-function hexToRgbTriplet(hex) {
-  const m = /^#([0-9a-fA-F]{6})$/.exec(hex || "");
-  if (!m) return null;
-  const v = parseInt(m[1], 16);
-  return `${(v >> 16) & 255} ${(v >> 8) & 255} ${v & 255}`;
-}
 
 export function BrandingProvider({ children }) {
   const [branding, setBranding] = useState({
@@ -22,6 +16,13 @@ export function BrandingProvider({ children }) {
     accent_override_enabled: false,
     phonetic_readback_enabled: true,
     logo_designed_for: "light",
+    accent_dark: null,
+    accent_fg_light: null,
+    accent_fg_dark: null,
+    logo_dark_url: null,
+    favicon_dark_url: null,
+    footer_name: "",
+    footer_url: "",
   });
 
   useEffect(() => {
@@ -35,26 +36,46 @@ export function BrandingProvider({ children }) {
       .catch(() => {});
   }, []);
 
+  // Per-mode accent: inject `:root` (light) and `.dark` rules so each mode
+  // gets its own accent and its own text-on-accent color.
   useEffect(() => {
-    const root = document.documentElement;
-    if (branding.accent_override_enabled && branding.primary_color) {
-      const triplet = hexToRgbTriplet(branding.primary_color);
-      if (triplet) {
-        root.style.setProperty("--color-brand", triplet);
-        root.style.setProperty("--color-brand-bright", triplet);
-        root.style.setProperty("--color-brand-dim", triplet);
-      }
-      root.style.setProperty("--brand-primary", branding.primary_color);
-    } else {
-      root.style.removeProperty("--color-brand");
-      root.style.removeProperty("--color-brand-bright");
-      root.style.removeProperty("--color-brand-dim");
-      root.style.setProperty(
+    let el = document.getElementById("brand-vars");
+    const css = brandCss(branding);
+    if (!css) {
+      el?.remove();
+      document.documentElement.style.setProperty(
         "--brand-primary",
         branding.primary_color || "#16a34a",
       );
+      return;
     }
-  }, [branding.accent_override_enabled, branding.primary_color]);
+    document.documentElement.style.removeProperty("--brand-primary");
+    if (!el) {
+      el = document.createElement("style");
+      el.id = "brand-vars";
+      document.head.appendChild(el);
+    }
+    el.textContent = css;
+  }, [
+    branding.accent_override_enabled, branding.primary_color,
+    branding.accent_dark, branding.accent_fg_light, branding.accent_fg_dark,
+  ]);
+
+  // Tab icon follows the browser's own color scheme (the tab strip is drawn
+  // by the browser, not by the app theme). Falls back to the light icon on
+  // the server when no dark one is uploaded.
+  useEffect(() => {
+    const link = document.querySelector('link[rel="icon"][data-brand]');
+    if (!link) return undefined;
+    const mq = window.matchMedia?.("(prefers-color-scheme: dark)");
+    const apply = () => {
+      const dark = mq?.matches && branding.favicon_dark_url;
+      link.href = dark ? branding.favicon_dark_url : branding.favicon_url || "/api/branding/favicon";
+    };
+    apply();
+    mq?.addEventListener?.("change", apply);
+    return () => mq?.removeEventListener?.("change", apply);
+  }, [branding.favicon_url, branding.favicon_dark_url]);
 
   // Push the configured locale into the helpers module so existing
   // formatDateTime callers automatically honor admin-set styles. Per-user

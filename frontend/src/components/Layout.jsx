@@ -3,13 +3,14 @@ import { Outlet, NavLink, Link, useNavigate, useLocation, useNavigationType } fr
 import { useAuth } from "../context/AuthContext";
 import { useBranding } from "../context/BrandingContext";
 import { useTheme } from "../context/ThemeContext";
-import { brandingLogoFilter } from "../utils/helpers";
+import { brandingLogo } from "../utils/helpers";
 import Avatar from "./Avatar";
 import NotificationTray from "./NotificationTray";
 import WhatsNew from "./WhatsNew";
 import ImpersonationBanner from "./ImpersonationBanner";
 import ActiveTimerPill from "./ActiveTimerPill";
 import NewMenu from "./NewMenu";
+import PoweredByFooter from "./PoweredByFooter";
 
 // Icon set — inline SVGs in the lucide-react visual style (stroke=2,
 // stroke-linecap/linejoin=round, 24x24 viewBox). Keeps bundle small and
@@ -514,7 +515,7 @@ export default function Layout() {
   // Ephemeral hover-open state. Not persisted — every page load starts
   // in the user's pinned mode. Only meaningful while collapsed=true.
   const [transientOpen, setTransientOpen] = useState(false);
-  const logoFilter = brandingLogoFilter(branding, resolved);
+  const logo = brandingLogo(branding, resolved);
   const { pathname } = useLocation();
   const navType = useNavigationType();
 
@@ -580,10 +581,10 @@ export default function Layout() {
               className="flex items-center gap-2 hover:opacity-90 transition-opacity min-w-0"
             >
               <img
-                src={branding.logo_url || "/icon.svg"}
+                src={logo.src || "/icon.svg"}
                 alt="Logo"
                 className="h-7 w-auto object-contain flex-shrink-0"
-                style={branding.logo_url && logoFilter ? { filter: logoFilter } : undefined}
+                style={logo.filter ? { filter: logo.filter } : undefined}
               />
               <span className="font-bold text-lg tracking-tight text-fg truncate hidden sm:block">
                 {branding.site_name || "Resolvd"}
@@ -645,16 +646,9 @@ export default function Layout() {
         <ImpersonationBanner user={user} />
       </div>
 
-      {branding.show_powered_by && (
-        <footer className="border-t border-border py-3 flex items-center justify-center gap-2 text-xs text-fg-dim">
-          <span>Powered by</span>
-          <a href="https://hearnetech.com/apps" target="_blank" rel="noopener noreferrer">
-            <img
-              src="/hearne-logo.png"
-              alt="Hearne Technologies"
-              className="h-4 w-auto object-contain opacity-70 hover:opacity-100 transition-opacity dark:brightness-0 dark:invert"
-            />
-          </a>
+      {(branding.show_powered_by || branding.footer_name) && (
+        <footer className="border-t border-border py-3 px-4">
+          <PoweredByFooter branding={branding} />
         </footer>
       )}
     </div>
