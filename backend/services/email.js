@@ -2,7 +2,7 @@ const msal = require('@azure/msal-node');
 const nodemailer = require('nodemailer');
 const { google } = require('googleapis');
 const { getAuthSettings } = require('./authSettings');
-const { getBranding } = require('./branding');
+const { getBranding, lightAccent } = require('./branding');
 
 const FALLBACK_FROM = process.env.MAIL_FROM || 'noreply@localhost';
 const APP_URL = (process.env.FRONTEND_URL || 'http://localhost:5173').replace(/\/$/, '');
@@ -368,17 +368,18 @@ async function sendViaGmailUser(account, { from, fromName, to, subject, html, he
 async function baseHtml(title, body) {
   let siteName = 'Resolvd';
   let primary = '#16a34a';
+  let onPrimary = '#ffffff';
   try {
     const b = await getBranding();
     if (b?.site_name) siteName = b.site_name;
-    if (b?.accent_override_enabled && b?.primary_color) primary = b.primary_color;
+    ({ accent: primary, fg: onPrimary } = lightAccent(b));
   } catch (_) {}
   return `<!DOCTYPE html>
 <html><head><meta charset="utf-8"></head>
 <body style="font-family:system-ui,-apple-system,sans-serif;background:#f9fafb;margin:0;padding:24px">
   <div style="max-width:560px;margin:0 auto;background:#fff;border-radius:8px;border:1px solid #e5e7eb;overflow:hidden">
     <div style="background:${primary};padding:16px 24px">
-      <span style="color:#fff;font-weight:700;font-size:16px">${siteName}</span>
+      <span style="color:${onPrimary};font-weight:700;font-size:16px">${siteName}</span>
     </div>
     <div style="padding:24px">
       <h2 style="margin:0 0 16px;font-size:16px;color:#111827">${title}</h2>

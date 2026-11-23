@@ -4,7 +4,8 @@ import toast from "react-hot-toast";
 import { useAuth } from "../context/AuthContext";
 import { useBranding } from "../context/BrandingContext";
 import { useTheme } from "../context/ThemeContext";
-import { brandingLogoFilter } from "../utils/helpers";
+import { brandingLogo } from "../utils/helpers";
+import PoweredByFooter from "../components/PoweredByFooter";
 
 export default function Login() {
   const {
@@ -17,7 +18,7 @@ export default function Login() {
   } = useAuth();
   const { branding } = useBranding();
   const { resolved } = useTheme();
-  const logoFilter = brandingLogoFilter(branding, resolved);
+  const logo = brandingLogo(branding, resolved);
   const navigate = useNavigate();
   const [params] = useSearchParams();
   // Where to land after login — set by ProtectedRoute when an unauthenticated
@@ -88,12 +89,12 @@ export default function Login() {
       <div className="min-h-screen flex flex-col items-center justify-center">
         <div className={cardClass}>
           <div className="mb-6 text-center">
-            {branding.logo_url && (
+            {logo.src && (
               <img
-                src={branding.logo_url}
+                src={logo.src}
                 alt="Logo"
                 className="h-14 w-auto object-contain mx-auto mb-3"
-                style={logoFilter ? { filter: logoFilter } : undefined}
+                style={logo.filter ? { filter: logo.filter } : undefined}
               />
             )}
             <h1 className="text-2xl font-bold text-fg tracking-tight">
@@ -151,7 +152,7 @@ export default function Login() {
             </button>
           </form>
         </div>
-        {branding.show_powered_by && <PoweredBy />}
+        <PoweredByFooter branding={branding} className="mt-6" />
       </div>
     );
   }
@@ -160,16 +161,12 @@ export default function Login() {
     <div className="min-h-screen flex flex-col items-center justify-center">
       <div className={cardClass}>
         <div className="mb-6 text-center">
-          {branding.logo_url && (
+          {logo.src && (
             <img
-              src={branding.logo_url}
+              src={logo.src}
               alt="Logo"
               className="h-14 w-auto object-contain mx-auto mb-3"
-              style={{
-                filter: branding.logo_on_dark
-                  ? "invert(1) hue-rotate(180deg)"
-                  : "none",
-              }}
+              style={logo.filter ? { filter: logo.filter } : undefined}
             />
           )}
           <h1 className="text-2xl font-bold text-fg tracking-tight">
@@ -297,26 +294,7 @@ export default function Login() {
           </p>
         )}
       </div>
-      {branding.show_powered_by && <PoweredBy />}
-    </div>
-  );
-}
-
-function PoweredBy() {
-  return (
-    <div className="mt-6 flex items-center gap-2 text-xs text-fg-dim">
-      <span>Powered by</span>
-      <a
-        href="https://hearnetech.com/apps"
-        target="_blank"
-        rel="noopener noreferrer"
-      >
-        <img
-          src="/hearne-logo.png"
-          alt="Hearne Technologies"
-          className="h-4 w-auto object-contain opacity-70 hover:opacity-100 transition-opacity dark:brightness-0 dark:invert"
-        />
-      </a>
+      <PoweredByFooter branding={branding} className="mt-6" />
     </div>
   );
 }
