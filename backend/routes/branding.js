@@ -32,10 +32,10 @@ function makeImageUpload(prefix) {
   });
 }
 
-const logoUpload = makeImageUpload('logo');
-const faviconUpload = makeImageUpload('favicon');
 
 const router = express.Router();
+
+const HEX = /^#[0-9a-fA-F]{6}$/;
 
 function brandingPayload(row) {
   return {
@@ -58,8 +58,15 @@ function brandingPayload(row) {
     ai_assist_enabled: row.ai_assist_enabled !== false,
     ai_project_context_enabled: row.ai_project_context_enabled !== false,
     ai_disclosure_audience: row.ai_disclosure_audience || 'self_and_admin',
+    accent_dark: row.accent_dark || null,
+    accent_fg_light: row.accent_fg_light || null,
+    accent_fg_dark: row.accent_fg_dark || null,
+    footer_name: row.footer_name || '',
+    footer_url: row.footer_url || '',
     logo_url: row.logo_filename ? '/api/branding/logo' : null,
+    logo_dark_url: row.logo_dark_filename ? '/api/branding/logo-dark' : null,
     favicon_url: row.favicon_filename ? '/api/branding/favicon' : null,
+    favicon_dark_url: row.favicon_dark_filename ? '/api/branding/favicon-dark' : null,
     default_project_id: row.default_project_id ?? null,
   };
 }
@@ -101,8 +108,31 @@ router.patch('/', requireAuth, requireRole('Admin'), async (req, res) => {
       ai_project_context_enabled,
       ai_disclosure_audience,
       default_project_id,
+      accent_dark,
+      accent_fg_light,
+      accent_fg_dark,
+      footer_name,
+      footer_url,
     } = req.body;
     const updates = {};
+    // Optional per-mode colors: '' / null clears (derive / auto).
+    for (const [key, val] of Object.entries({ accent_dark, accent_fg_light, accent_fg_dark })) {
+      if (val === undefined) continue;
+      if (val === null || val === '') updates[key] = null;
+      else if (typeof val === 'string' && HEX.test(val)) updates[key] = val.toLowerCase();
+      else return res.status(400).json({ error: `${key} must be a hex color like #1f6feb` });
+    }
+    if (footer_name !== undefined) {
+      updates.footer_name = typeof footer_name === 'string' && footer_name.trim()
+        ? footer_name.trim().slice(0, 120) : null;
+    }
+    if (footer_url !== undefined) {
+      const u = typeof footer_url === 'string' ? footer_url.trim() : '';
+      if (u && !/^https?:\/\/[^\s]+$/i.test(u)) {
+        return res.status(400).json({ error: 'footer_url must start with http:// or https://' });
+      }
+      updates.footer_url = u ? u.slice(0, 500) : null;
+    }
     if (site_name !== undefined) updates.site_name = site_name.trim() || 'Resolvd';
     if (tagline !== undefined) updates.tagline = tagline.trim();
     if (primary_color !== undefined && /^#[0-9a-fA-F]{6}$/.test(primary_color)) {
@@ -186,113 +216,73 @@ router.patch('/', requireAuth, requireRole('Admin'), async (req, res) => {
   }
 });
 
-// GET /api/branding/logo — public, serve logo file
-router.get('/logo', async (req, res) => {
-  try {
-    const result = await pool.query('SELECT logo_filename FROM branding WHERE id = 1');
-    const row = result.rows[0];
-    if (!row?.logo_filename) return res.status(404).end();
-    const filePath = path.join(UPLOADS_DIR, row.logo_filename);
-    if (!fs.existsSync(filePath)) return res.status(404).end();
-    res.sendFile(filePath);
-  } catch (err) {
-    res.status(500).end();
-  }
-});
+// Logo and tab-icon files, one pair of routes per mode:
+//   /logo, /logo-dark, /favicon, /favicon-dark  (GET public; POST/DELETE Admin)
+// A dark variant left empty falls back to the light one on GET, so links
+// to it always resolve. The light favicon falls back to /favicon.png.
+function imageRoutes({ route, column, field, prefix, fallback }) {
+  const upload = makeImageUpload(prefix);
 
-// POST /api/branding/logo — Admin only
-router.post('/logo', requireAuth, requireRole('Admin'), handleUploadErrors(logoUpload.single('logo'), { maxBytes: MAX_IMAGE_BYTES }), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-  try {
-    const old = await pool.query('SELECT logo_filename FROM branding WHERE id = 1');
-    if (old.rows[0]?.logo_filename) {
-      fs.unlink(path.join(UPLOADS_DIR, old.rows[0].logo_filename), () => {});
-    }
-    await pool.query(
-      'UPDATE branding SET logo_filename = $1, updated_at = NOW() WHERE id = 1',
-      [req.file.filename]
-    );
-    res.json({ logo_url: '/api/branding/logo' });
-  } catch (err) {
-    fs.unlink(req.file.path, () => {});
-    console.error(err);
-    res.status(500).json({ error: 'Database error' });
-  }
-});
-
-// DELETE /api/branding/logo — Admin only
-router.delete('/logo', requireAuth, requireRole('Admin'), async (req, res) => {
-  try {
-    const result = await pool.query('SELECT logo_filename FROM branding WHERE id = 1');
-    const filename = result.rows[0]?.logo_filename;
-    if (filename) {
-      fs.unlink(path.join(UPLOADS_DIR, filename), () => {});
-    }
-    await pool.query('UPDATE branding SET logo_filename = NULL, updated_at = NOW() WHERE id = 1');
-    res.json({ ok: true });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Database error' });
-  }
-});
-
-// GET /api/branding/favicon — public, serve favicon. Falls back to the
-// static /favicon.png so apple-touch-icon / manifest icon links always
-// resolve to a real image even when the admin hasn't uploaded one.
-router.get('/favicon', async (req, res) => {
-  try {
-    const result = await pool.query('SELECT favicon_filename FROM branding WHERE id = 1');
-    const filename = result.rows[0]?.favicon_filename;
-    if (filename) {
-      const filePath = path.join(UPLOADS_DIR, filename);
-      if (fs.existsSync(filePath)) {
-        res.setHeader('Cache-Control', 'public, max-age=300');
-        return res.sendFile(filePath);
+  router.get(`/${route}`, async (req, res) => {
+    try {
+      const result = await pool.query(`SELECT ${column} AS f FROM branding WHERE id = 1`);
+      const filename = result.rows[0]?.f;
+      if (filename) {
+        const filePath = path.join(UPLOADS_DIR, filename);
+        if (fs.existsSync(filePath)) {
+          if (route.startsWith('favicon')) res.setHeader('Cache-Control', 'public, max-age=300');
+          return res.sendFile(filePath);
+        }
       }
+      if (fallback) return res.redirect(302, fallback);
+      res.status(404).end();
+    } catch (err) {
+      if (fallback) return res.redirect(302, fallback);
+      res.status(500).end();
     }
-    res.redirect(302, '/favicon.png');
-  } catch (err) {
-    res.redirect(302, '/favicon.png');
-  }
-});
+  });
 
-// POST /api/branding/favicon — Admin only
-router.post('/favicon', requireAuth, requireRole('Admin'), handleUploadErrors(faviconUpload.single('favicon'), { maxBytes: MAX_IMAGE_BYTES }), async (req, res) => {
-  if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
-  try {
-    const old = await pool.query('SELECT favicon_filename FROM branding WHERE id = 1');
-    if (old.rows[0]?.favicon_filename) {
-      fs.unlink(path.join(UPLOADS_DIR, old.rows[0].favicon_filename), () => {});
+  router.post(`/${route}`, requireAuth, requireRole('Admin'), handleUploadErrors(upload.single(field), { maxBytes: MAX_IMAGE_BYTES }), async (req, res) => {
+    if (!req.file) return res.status(400).json({ error: 'No file uploaded' });
+    try {
+      const old = await pool.query(`SELECT ${column} AS f FROM branding WHERE id = 1`);
+      if (old.rows[0]?.f) {
+        fs.unlink(path.join(UPLOADS_DIR, old.rows[0].f), () => {});
+      }
+      await pool.query(
+        `UPDATE branding SET ${column} = $1, updated_at = NOW() WHERE id = 1`,
+        [req.file.filename]
+      );
+      invalidateBranding();
+      res.json({ url: `/api/branding/${route}` });
+    } catch (err) {
+      fs.unlink(req.file.path, () => {});
+      console.error(err);
+      res.status(500).json({ error: 'Database error' });
     }
-    await pool.query(
-      'UPDATE branding SET favicon_filename = $1, updated_at = NOW() WHERE id = 1',
-      [req.file.filename]
-    );
-    invalidateBranding();
-    res.json({ favicon_url: '/api/branding/favicon' });
-  } catch (err) {
-    fs.unlink(req.file.path, () => {});
-    console.error(err);
-    res.status(500).json({ error: 'Database error' });
-  }
-});
+  });
 
-// DELETE /api/branding/favicon — Admin only
-router.delete('/favicon', requireAuth, requireRole('Admin'), async (req, res) => {
-  try {
-    const result = await pool.query('SELECT favicon_filename FROM branding WHERE id = 1');
-    const filename = result.rows[0]?.favicon_filename;
-    if (filename) {
-      fs.unlink(path.join(UPLOADS_DIR, filename), () => {});
+  router.delete(`/${route}`, requireAuth, requireRole('Admin'), async (req, res) => {
+    try {
+      const result = await pool.query(`SELECT ${column} AS f FROM branding WHERE id = 1`);
+      const filename = result.rows[0]?.f;
+      if (filename) {
+        fs.unlink(path.join(UPLOADS_DIR, filename), () => {});
+      }
+      await pool.query(`UPDATE branding SET ${column} = NULL, updated_at = NOW() WHERE id = 1`);
+      invalidateBranding();
+      res.json({ ok: true });
+    } catch (err) {
+      console.error(err);
+      res.status(500).json({ error: 'Database error' });
     }
-    await pool.query('UPDATE branding SET favicon_filename = NULL, updated_at = NOW() WHERE id = 1');
-    invalidateBranding();
-    res.json({ ok: true });
-  } catch (err) {
-    console.error(err);
-    res.status(500).json({ error: 'Database error' });
-  }
-});
+  });
+}
+
+imageRoutes({ route: 'logo', column: 'logo_filename', field: 'logo', prefix: 'logo' });
+imageRoutes({ route: 'logo-dark', column: 'logo_dark_filename', field: 'logo', prefix: 'logo-dark', fallback: '/api/branding/logo' });
+imageRoutes({ route: 'favicon', column: 'favicon_filename', field: 'favicon', prefix: 'favicon', fallback: '/favicon.png' });
+imageRoutes({ route: 'favicon-dark', column: 'favicon_dark_filename', field: 'favicon', prefix: 'favicon-dark', fallback: '/api/branding/favicon' });
 
 // GET /api/branding/manifest — dynamic web app manifest. Drives the PWA
 // install prompt on Android and is referenced by index.html. Icons point

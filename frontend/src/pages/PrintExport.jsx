@@ -1,7 +1,8 @@
 import React, { useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import { useBranding } from "../context/BrandingContext";
-import { formatAbsoluteDate, formatAbsolute } from "../utils/helpers";
+import { formatAbsoluteDate, formatAbsolute, brandingLogo } from "../utils/helpers";
+import { lightAccentHex } from "../utils/brandColors";
 
 const PRIORITY_LABELS = {
   1: "P1 – Critical",
@@ -324,10 +325,10 @@ export default function PrintExport() {
   }, [statuses, projectIds, updatedFrom, updatedTo, externalStatuses, statusLogic, companyIds]);
 
   const siteName = branding.site_name || "Resolvd";
-  const primaryColor =
-    branding.accent_override_enabled && branding.primary_color
-      ? branding.primary_color
-      : "#16a34a";
+  // Exports print on white, so they use the light-mode accent and logo.
+  const primaryColor = lightAccentHex(branding);
+  const logo = brandingLogo(branding, "light");
+  const footerName = (branding.footer_name || "").trim();
 
   if (error) {
     return (
@@ -433,17 +434,15 @@ export default function PrintExport() {
           }}
         >
           <div>
-            {branding.logo_url && (
+            {logo.src && (
               <img
-                src={branding.logo_url}
+                src={logo.src}
                 alt="Logo"
                 style={{
                   height: "36px",
                   objectFit: "contain",
                   marginBottom: "6px",
-                  filter: branding.logo_on_dark
-                    ? "invert(1) hue-rotate(180deg)"
-                    : "none",
+                  filter: logo.filter || "none",
                 }}
               />
             )}
@@ -506,7 +505,7 @@ export default function PrintExport() {
         </div>
       )}
 
-      {branding.show_powered_by && (
+      {(branding.show_powered_by || footerName) && (
         <div
           style={{
             marginTop: "32px",
@@ -520,18 +519,24 @@ export default function PrintExport() {
             color: "#9ca3af",
           }}
         >
-          <span>Powered by</span>
-          <a
-            href="https://hearnetech.com/apps"
-            target="_blank"
-            rel="noopener noreferrer"
-          >
-            <img
-              src="/hearne-logo.png"
-              alt="Hearne Technologies"
-              style={{ height: "14px", width: "auto", objectFit: "contain" }}
-            />
-          </a>
+          {footerName && <span>{footerName}</span>}
+          {footerName && branding.show_powered_by && <span>·</span>}
+          {branding.show_powered_by && (
+            <>
+              <span>Powered by</span>
+              <a
+                href="https://hearnetech.com/apps"
+                target="_blank"
+                rel="noopener noreferrer"
+              >
+                <img
+                  src="/hearne-logo.png"
+                  alt="Hearne Technologies"
+                  style={{ height: "14px", width: "auto", objectFit: "contain" }}
+                />
+              </a>
+            </>
+          )}
         </div>
       )}
     </div>
