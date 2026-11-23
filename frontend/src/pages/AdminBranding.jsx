@@ -1,17 +1,23 @@
-import React, { useState, useRef, useEffect } from "react";
+import React, { useState, useEffect } from "react";
 import toast from "react-hot-toast";
 import { useBranding } from "../context/BrandingContext";
 import SaveBar, { useSavedBaseline } from "../components/SaveBar";
+import BrandingThemeEditor from "../components/BrandingThemeEditor";
+import { isHex } from "../utils/brandColors";
 
 export default function AdminBranding() {
   const { branding, setBranding } = useBranding();
   const [form, setForm] = useState({
     site_name: branding.site_name || "",
     tagline: branding.tagline || "",
-    primary_color: branding.primary_color || "#16a34a",
+    // Light accent: '' = theme default (accent_override_enabled off).
+    accent_light: branding.accent_override_enabled ? branding.primary_color || "" : "",
+    accent_dark: branding.accent_dark || "",
+    accent_fg_light: branding.accent_fg_light || "",
+    accent_fg_dark: branding.accent_fg_dark || "",
     show_powered_by: branding.show_powered_by ?? true,
-    logo_on_dark: branding.logo_on_dark ?? false,
-    accent_override_enabled: branding.accent_override_enabled ?? false,
+    footer_name: branding.footer_name || "",
+    footer_url: branding.footer_url || "",
     phonetic_readback_enabled: branding.phonetic_readback_enabled ?? true,
     logo_designed_for: branding.logo_designed_for || "light",
     date_style: branding.date_style || "iso",
@@ -38,249 +44,57 @@ export default function AdminBranding() {
   const { dirty, markSaved, savedValue } = useSavedBaseline(form);
   // Baseline = the form as first shown.
   useEffect(() => { markSaved(form); }, []); // eslint-disable-line react-hooks/exhaustive-deps
-  const [uploading, setUploading] = useState(false);
-  const [uploadingFavicon, setUploadingFavicon] = useState(false);
-  const fileRef = useRef();
-  const faviconRef = useRef();
-
   async function saveSettings(e) {
     e?.preventDefault();
+    const colorKeys = ["accent_light", "accent_dark", "accent_fg_light", "accent_fg_dark"];
+    if (colorKeys.some((k) => form[k] && !isHex(form[k]))) {
+      toast.error("Colors must be 6-digit hex values like #1f6feb");
+      return;
+    }
     setSaving(true);
     try {
+      const { accent_light, ...rest } = form;
       const res = await fetch("/api/branding", {
         method: "PATCH",
         credentials: "include",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ ...form, default_project_id: form.default_project_id ? Number(form.default_project_id) : null }),
+        body: JSON.stringify({
+          ...rest,
+          accent_override_enabled: !!accent_light,
+          ...(accent_light ? { primary_color: accent_light } : {}),
+          default_project_id: form.default_project_id ? Number(form.default_project_id) : null,
+        }),
       });
-      if (!res.ok) throw new Error("Save failed");
+      if (!res.ok) {
+        const err = await res.json().catch(() => ({}));
+        throw new Error(err.error || "Failed to save branding");
+      }
       const data = await res.json();
       setBranding((prev) => ({ ...prev, ...data }));
       markSaved(form);
       toast.success("Branding saved");
-    } catch {
-      toast.error("Failed to save branding");
+    } catch (err) {
+      toast.error(err.message || "Failed to save branding");
     } finally {
       setSaving(false);
     }
   }
 
-  async function uploadLogo(file) {
-    if (!file) return;
-    setUploading(true);
-    const fd = new FormData();
-    fd.append("logo", file);
-    try {
-      const res = await fetch("/api/branding/logo", {
-        method: "POST",
-        credentials: "include",
-        body: fd,
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || "Logo upload failed");
-      setBranding((prev) => ({
-        ...prev,
-        logo_url: data.logo_url + "?t=" + Date.now(),
-      }));
-      toast.success("Logo uploaded");
-    } catch (err) {
-      toast.error(err.message);
-    } finally {
-      setUploading(false);
-    }
-  }
-
-  async function deleteLogo() {
-    if (!window.confirm("Remove logo?")) return;
-    try {
-      const res = await fetch("/api/branding/logo", {
-        method: "DELETE",
-        credentials: "include",
-      });
-      if (!res.ok) throw new Error();
-      setBranding((prev) => ({ ...prev, logo_url: null }));
-      toast.success("Logo removed");
-    } catch {
-      toast.error("Failed to remove logo");
-    }
-  }
-
-  async function uploadFavicon(file) {
-    if (!file) return;
-    setUploadingFavicon(true);
-    const fd = new FormData();
-    fd.append("favicon", file);
-    try {
-      const res = await fetch("/api/branding/favicon", {
-        method: "POST",
-        credentials: "include",
-        body: fd,
-      });
-      const data = await res.json().catch(() => ({}));
-      if (!res.ok) throw new Error(data.error || "Favicon upload failed");
-      setBranding((prev) => ({
-        ...prev,
-        favicon_url: data.favicon_url + "?t=" + Date.now(),
-      }));
-      toast.success("Favicon uploaded");
-    } catch (err) {
-      toast.error(err.message);
-    } finally {
-      setUploadingFavicon(false);
-    }
-  }
-
-  async function deleteFavicon() {
-    if (!window.confirm("Remove favicon?")) return;
-    try {
-      const res = await fetch("/api/branding/favicon", {
-        method: "DELETE",
-        credentials: "include",
-      });
-      if (!res.ok) throw new Error();
-      setBranding((prev) => ({ ...prev, favicon_url: null }));
-      toast.success("Favicon removed");
-    } catch {
-      toast.error("Failed to remove favicon");
-    }
-  }
-
   return (
-    <div className="max-w-2xl space-y-6">
+    <div className="max-w-5xl space-y-6">
       <h1 className="text-2xl font-bold text-fg">Branding</h1>
 
-      {/* Logo */}
-      <div className="bg-surface rounded-lg border border-border p-6 space-y-4">
-        <h2 className="text-base font-semibold text-fg">Logo</h2>
-        <div className="flex items-center gap-4">
-          {branding.logo_url ? (
-            <img
-              src={branding.logo_url}
-              alt="Logo"
-              className="h-16 w-auto object-contain rounded border border-border p-1 bg-surface-2"
-            />
-          ) : (
-            <div className="h-16 w-16 rounded border border-dashed border-border-strong flex items-center justify-center text-fg-dim text-xs">
-              No logo
-            </div>
-          )}
-          <div className="flex flex-col gap-2">
-            <input
-              ref={fileRef}
-              type="file"
-              accept="image/*"
-              className="hidden"
-              onChange={(e) => uploadLogo(e.target.files[0])}
-            />
-            <button
-              onClick={() => fileRef.current.click()}
-              disabled={uploading}
-              className="btn-secondary btn-sm btn"
-            >
-              {uploading ? "Uploading…" : "Upload Logo"}
-            </button>
-            {branding.logo_url && (
-              <button onClick={deleteLogo} className="btn-danger btn-sm btn">
-                Remove
-              </button>
-            )}
-          </div>
-        </div>
-        <p className="text-xs text-fg-muted">
-          PNG, SVG, JPG up to 5 MB. Displayed in nav and login page.
-        </p>
-        <div className="space-y-2">
-          <span className="block text-sm font-medium text-fg">
-            My logo works best with
-          </span>
-          <div className="inline-flex rounded-md bg-surface-2 p-0.5 border border-border">
-            {[
-              { v: "light", label: "Light Mode" },
-              { v: "dark", label: "Dark Mode" },
-            ].map((opt) => (
-              <button
-                key={opt.v}
-                type="button"
-                onClick={() =>
-                  setForm((f) => ({ ...f, logo_designed_for: opt.v }))
-                }
-                className={`text-xs px-3 py-1.5 rounded transition-colors ${
-                  form.logo_designed_for === opt.v
-                    ? "bg-surface text-fg shadow-sm"
-                    : "text-fg-muted hover:text-fg"
-                }`}
-              >
-                {opt.label}
-              </button>
-            ))}
-          </div>
-          <p className="text-xs text-fg-dim">
-            Logo will be smart-flipped when viewed in the opposite mode.
-          </p>
-        </div>
-      </div>
-
-      {/* Favicon / home-screen icon */}
-      <div className="bg-surface rounded-lg border border-border p-6 space-y-4">
-        <h2 className="text-base font-semibold text-fg">
-          Favicon & home-screen icon
-        </h2>
-        <div className="flex items-center gap-4">
-          {branding.favicon_url ? (
-            <img
-              src={branding.favicon_url}
-              alt="Favicon"
-              className="h-16 w-16 object-contain rounded border border-border p-1 bg-surface-2"
-            />
-          ) : (
-            <div className="h-16 w-16 rounded border border-dashed border-border-strong flex items-center justify-center text-fg-dim text-xs text-center">
-              Default
-            </div>
-          )}
-          <div className="flex flex-col gap-2">
-            <input
-              ref={faviconRef}
-              type="file"
-              accept="image/png,image/jpeg,image/webp"
-              className="hidden"
-              onChange={(e) => uploadFavicon(e.target.files[0])}
-            />
-            <button
-              onClick={() => faviconRef.current.click()}
-              disabled={uploadingFavicon}
-              className="btn-secondary btn-sm btn"
-            >
-              {uploadingFavicon ? "Uploading…" : "Upload Icon"}
-            </button>
-            {branding.favicon_url && (
-              <button onClick={deleteFavicon} className="btn-danger btn-sm btn">
-                Remove
-              </button>
-            )}
-          </div>
-        </div>
-        <div className="text-xs text-fg-muted space-y-1">
-          <p>
-            <span className="font-medium text-fg">Recommended:</span> square
-            PNG, <span className="font-mono">512 × 512</span> (minimum 192 × 192).
-            Solid background — iOS adds rounded corners automatically.
-          </p>
-          <p>
-            Used for the browser tab favicon, iOS home-screen icon (Safari →
-            Share → Add to Home Screen), and Android PWA install icon. Leave
-            ~10% padding around the artwork so Android's adaptive
-            (maskable) icon shape doesn't crop it.
-          </p>
-          <p className="text-fg-dim">
-            Max 5 MB. Removing reverts to the default Resolvd favicon.
-          </p>
-        </div>
-      </div>
+      <BrandingThemeEditor
+        branding={branding}
+        setBranding={setBranding}
+        form={form}
+        setForm={setForm}
+      />
 
       {/* Settings form */}
       <form
         onSubmit={saveSettings}
-        className="bg-surface rounded-lg border border-border p-6 space-y-4"
+        className="bg-surface rounded-lg border border-border p-6 space-y-4 max-w-2xl"
       >
         <h2 className="text-base font-semibold text-fg">Settings</h2>
 
@@ -310,67 +124,6 @@ export default function AdminBranding() {
             }
             className="w-full border border-border-strong rounded-md px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-brand/40"
           />
-        </div>
-
-        <div className="space-y-2">
-          <label className="flex items-center gap-2 cursor-pointer select-none">
-            <input
-              type="checkbox"
-              checked={form.accent_override_enabled}
-              onChange={(e) =>
-                setForm((f) => ({
-                  ...f,
-                  accent_override_enabled: e.target.checked,
-                }))
-              }
-              className="h-4 w-4 rounded border-border-strong text-brand focus:ring-brand/40"
-            />
-            <span className="text-sm font-medium text-fg">
-              Use custom accent color
-            </span>
-            <span className="text-xs text-fg-dim">
-              (off = default theme green)
-            </span>
-          </label>
-          <div
-            className={`flex items-center gap-3 ${form.accent_override_enabled ? "" : "opacity-50 pointer-events-none"}`}
-          >
-            <input
-              type="color"
-              value={form.primary_color}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, primary_color: e.target.value }))
-              }
-              className="h-9 w-12 rounded border border-border-strong cursor-pointer p-0.5"
-            />
-            <input
-              type="text"
-              value={form.primary_color}
-              onChange={(e) =>
-                setForm((f) => ({ ...f, primary_color: e.target.value }))
-              }
-              className="w-28 border border-border-strong rounded-md px-3 py-2 text-sm font-mono bg-surface text-fg focus:outline-none focus:ring-2 focus:ring-brand/40"
-              placeholder="#16a34a"
-            />
-            <span className="text-xs text-fg-muted">
-              Replaces brand color app-wide and in exports/email.
-            </span>
-          </div>
-        </div>
-
-        <div className="flex items-center gap-3">
-          <input
-            type="checkbox"
-            id="show_powered_by"
-            checked={form.show_powered_by}
-            onChange={(e) =>
-              setForm((f) => ({ ...f, show_powered_by: e.target.checked }))
-            }
-            className="h-4 w-4 rounded border-border-strong text-brand focus:ring-brand/40"
-          />
-          <label htmlFor="show_powered_by" className="text-sm text-fg">
-            Show "Powered by Hearne Technologies" footer
-          </label>
         </div>
 
         <div className="flex items-start gap-3">
@@ -727,7 +480,7 @@ export default function AdminBranding() {
         saving={saving}
         onSave={() => saveSettings()}
         onDiscard={() => setForm(savedValue)}
-        savedHint="logo and favicon save on upload"
+        savedHint="logos and tab icons save on upload"
       />
     </div>
   );

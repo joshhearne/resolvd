@@ -229,6 +229,17 @@ async function initSchema() {
     // Custom favicon doubles as the PWA / iOS home-screen icon. Stored as
     // a filename in UPLOADS_DIR; served at /api/branding/favicon.
     await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS favicon_filename TEXT`);
+    // Per-mode branding. primary_color (with accent_override_enabled) is the
+    // light-mode accent; the dark-mode accent and both text-on-accent colors
+    // are optional (NULL = derived from the other mode / auto black-or-white).
+    await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS accent_dark TEXT`);
+    await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS accent_fg_light TEXT`);
+    await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS accent_fg_dark TEXT`);
+    await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS logo_dark_filename TEXT`);
+    await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS favicon_dark_filename TEXT`);
+    // Custom footer credit shown alongside (or instead of) "Powered by".
+    await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS footer_name TEXT`);
+    await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS footer_url TEXT`);
     // Localization controls (admin-set, applies org-wide). UI uses these
     // to render dates/times; reports always use ISO regardless of style.
     await client.query(`ALTER TABLE branding ADD COLUMN IF NOT EXISTS date_style TEXT NOT NULL DEFAULT 'iso' CHECK (date_style IN ('iso','us','eu'))`);
