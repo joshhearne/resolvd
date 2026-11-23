@@ -10,22 +10,22 @@
     "test:watch": "vitest"
   },
   "dependencies": {
-    "@azure/msal-node": "^7.2.2",
+    "@azure/msal-node": "^7.2.3",
     "argon2": "^0.45.2",
     "connect-pg-simple": "^10.0.0",
     "cors": "^2.8.5",
-    "cron-parser": "^5.10.5",
-    "cronstrue": "^3.39.0",
+    "cron-parser": "^5.10.6",
+    "cronstrue": "^3.43.0",
     "csv-parse": "^7.0.3",
     "dotenv": "^18.0.10",
     "express": "^5.3.0",
-    "express-rate-limit": "^8.7.4",
+    "express-rate-limit": "^8.7.5",
     "express-session": "^1.18.0",
     "google-auth-library": "^11.3.4",
     "googleapis": "^190.0.0",
-    "marked": "^18.2.0",
+    "marked": "^18.2.1",
     "multer": "^2.5.0",
-    "nodemailer": "^10.5.0",
+    "nodemailer": "^10.6.0",
     "otplib": "^13.6.0",
     "pdfjs-dist": "4.10.38",
     "pg": "^8.23.1",
@@ -35,6 +35,6 @@
   },
   "devDependencies": {
     "nodemon": "^3.1.0",
-    "vitest": "^5.1.0"
+    "vitest": "^5.1.1"
   }
 }
