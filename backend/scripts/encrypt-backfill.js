@@ -59,6 +59,17 @@ const TARGETS = [
     ],
   },
   {
+    table: 'contacts',
+    pk: 'id',
+    cols: [
+      { plain: 'name',   enc: 'name_enc',   ctx: 'contacts.name' },
+      { plain: 'email',  enc: 'email_enc',  ctx: 'contacts.email' },
+      { plain: 'phone',  enc: 'phone_enc',  ctx: 'contacts.phone' },
+      { plain: 'mobile', enc: 'mobile_enc', ctx: 'contacts.mobile' },
+      { plain: 'notes',  enc: 'notes_enc',  ctx: 'contacts.notes' },
+    ],
+  },
+  {
     table: 'users',
     pk: 'id',
     cols: [
@@ -132,6 +143,15 @@ async function backfillTable(client, target, mode) {
         if (table === 'tickets' && col.plain === 'title' && mode === 'standard') {
           updates.push(`title_blind_idx = $${placeholderIdx++}`);
           values.push(blindIndex.buildIndex(plain));
+        }
+
+        // Contact emails are looked up by blind index (inbound mail
+        // matching, contact lookup) once the plaintext is gone. Contacts
+        // created through the API already have it; fill it for any row
+        // that doesn't, from the same normalised value.
+        if (table === 'contacts' && col.plain === 'email') {
+          updates.push(`email_blind_idx = COALESCE(email_blind_idx, $${placeholderIdx++})`);
+          values.push(blindIndex.hashWhole(plain));
         }
 
         // Under standard mode, NULL the plaintext alongside writing the
