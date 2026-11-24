@@ -58,6 +58,14 @@ const TARGETS = [
       { plain: 'original_name', enc: 'original_name_enc', ctx: 'attachments.original_name' },
     ],
   },
+  {
+    table: 'software_licenses',
+    pk: 'id',
+    cols: [
+      { plain: 'license_key', enc: 'license_key_enc', ctx: 'software_licenses.license_key' },
+      { plain: 'notes',       enc: 'notes_enc',       ctx: 'software_licenses.notes' },
+    ],
+  },
 ];
 
 async function backfillTable(client, target, mode) {

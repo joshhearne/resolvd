@@ -4,7 +4,7 @@
 // (software_aliases folds vendor spellings together), falling back to the
 // raw name, so one product shows once however many builds are out there.
 //
-//   GET /api/software                — titles: installs, versions, companies
+//   GET /api/software                — titles: installs, versions, companies, license coverage
 //       ?q=&company_id=&source=synced|manual|all&sort=name|installs|versions&dir=asc|desc&limit=&offset=
 //   GET /api/software/installs?key=  — the assets one title is installed on
 //       &company_id=&source=
@@ -56,6 +56,16 @@ function titleQuery(query, { paged = true } = {}) {
                  OR LOWER(COALESCE(s.vendor, '')) LIKE ${p} OR LOWER(COALESCE(s.canonical_vendor, '')) LIKE ${p})`);
   }
   const where = conds.length ? `WHERE ${conds.join(' AND ')}` : '';
+  // License coverage for the same scope: org-wide licenses always count;
+  // with a company filter, that company's licenses count too.
+  let licScope = '';
+  const companyId = Number(query.company_id);
+  if (Number.isInteger(companyId) && companyId > 0) {
+    params.push(companyId);
+    licScope = `AND (company_id IS NULL OR company_id = $${params.length})`;
+  } else if (query.company_id === 'none') {
+    licScope = 'AND company_id IS NULL';
+  }
   const sortCol = SORTS[query.sort] || SORTS.name;
   const dir = query.dir === 'desc' ? 'DESC' : 'ASC';
   let page = '';
@@ -66,7 +76,7 @@ function titleQuery(query, { paged = true } = {}) {
     page = `LIMIT $${params.length - 1} OFFSET $${params.length}`;
   }
   // One row per title. Display name / vendor: the most common spelling in
-  // the group. Versions: distinct, newest-seen first, capped for the list.
+  // the group. Versions: distinct (sorted as text), capped for the list.
   const sql = `
     WITH rows AS (
       SELECT ${KEY_SQL} AS key, ${NAME_SQL} AS name, ${VENDOR_SQL} AS vendor,
@@ -85,10 +95,21 @@ function titleQuery(query, { paged = true } = {}) {
              MAX(updated_at) AS last_seen_at
         FROM rows
        GROUP BY key
+    ), lic AS (
+      SELECT software_key,
+             COUNT(*)::int AS license_count,
+             SUM(seats)::int AS licensed_seats,
+             BOOL_OR(seats IS NULL) AS unlimited
+        FROM software_licenses
+       WHERE NOT archived AND software_key IS NOT NULL ${licScope}
+       GROUP BY software_key
     )
-    SELECT *, COUNT(*) OVER()::int AS total
-      FROM titles
-     ORDER BY ${sortCol} ${dir}, LOWER(name) ASC
+    SELECT t.*, COALESCE(lic.license_count, 0) AS license_count,
+           lic.licensed_seats, COALESCE(lic.unlimited, FALSE) AS unlimited,
+           COUNT(*) OVER()::int AS total
+      FROM titles t
+      LEFT JOIN lic ON lic.software_key = t.key
+     ORDER BY ${sortCol} ${dir}, LOWER(t.name) ASC
      ${page}`;
   return { sql, params };
 }

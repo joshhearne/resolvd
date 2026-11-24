@@ -1,5 +1,5 @@
 import React, { Fragment, useEffect, useState } from "react";
-import { Link } from "react-router-dom";
+import { Link, useSearchParams } from "react-router-dom";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
 import HybridTime from "../components/HybridTime";
@@ -74,9 +74,25 @@ function Installs({ titleKey, filters }) {
   );
 }
 
+// Seats licensed for a title vs devices it's on, linking to its licenses.
+function Licensed({ t }) {
+  if (!t.license_count) return <span className="text-fg-dim">—</span>;
+  const over = !t.unlimited && t.licensed_seats != null && t.installs > t.licensed_seats;
+  const label = t.unlimited ? "Unlimited" : `${t.licensed_seats ?? 0} seat${t.licensed_seats === 1 ? "" : "s"}`;
+  return (
+    <Link to={`/inventory/licenses?software=${encodeURIComponent(t.key)}`}
+      className={`whitespace-nowrap hover:underline ${over ? "text-red-600 dark:text-red-400 font-medium" : "text-brand"}`}
+      title={`${t.license_count} license${t.license_count === 1 ? "" : "s"}${over ? ` — ${t.installs - t.licensed_seats} more devices than seats` : ""}`}>
+      {label}{over ? ` · over by ${t.installs - t.licensed_seats}` : ""}
+    </Link>
+  );
+}
+
 export default function SoftwareInventory() {
-  const [q, setQ] = useState("");
-  const [search, setSearch] = useState("");
+  // ?q= pre-fills the search (links from Licenses land on their title).
+  const [params] = useSearchParams();
+  const [q, setQ] = useState(() => params.get("q") || "");
+  const [search, setSearch] = useState(() => params.get("q") || "");
   const [companyId, setCompanyId] = useState("");
   const [source, setSource] = useState("");
   const [sort, setSort] = useState("name");
@@ -188,6 +204,7 @@ export default function SoftwareInventory() {
                   <SortHeader label="Devices" col="installs" sort={sort} dir={dir} onSort={onSort} className="text-right" />
                   <SortHeader label="Versions" col="versions" sort={sort} dir={dir} onSort={onSort} className="text-left" />
                   <th className="px-3 py-2 text-right font-medium uppercase tracking-wide">Companies</th>
+                  <th className="px-3 py-2 text-left font-medium uppercase tracking-wide">Licensed</th>
                   <th className="px-3 py-2 text-left font-medium uppercase tracking-wide">Last reported</th>
                 </tr>
               </thead>
@@ -220,11 +237,12 @@ export default function SoftwareInventory() {
                           )}
                         </td>
                         <td className="px-3 py-2 text-right tabular-nums text-fg-muted">{t.company_count}</td>
+                        <td className="px-3 py-2"><Licensed t={t} /></td>
                         <td className="px-3 py-2 text-fg-muted">{t.last_seen_at ? <HybridTime value={t.last_seen_at} /> : "—"}</td>
                       </tr>
                       {isOpen && (
                         <tr>
-                          <td colSpan={6} className="bg-surface-2/30 p-0">
+                          <td colSpan={7} className="bg-surface-2/30 p-0">
                             <Installs titleKey={t.key} filters={filters} />
                           </td>
                         </tr>
