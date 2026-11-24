@@ -276,6 +276,38 @@ function MatrixSwitch({ checked, onChange, disabled }) {
   );
 }
 
+// Which app the ticket Contacts tab's call buttons open. Choices are the
+// apps an admin has turned on (Admin → Calling apps); "organization
+// default" follows whatever the admin sets.
+function CallingAppSetting({ value, onChange, disabled }) {
+  const [data, setData] = useState({ apps: [], default_id: null });
+  useEffect(() => {
+    api.get("/api/calling-apps").then((r) => setData({ apps: r?.apps || [], default_id: r?.default_id ?? null })).catch(() => {});
+  }, []);
+  if (!data.apps.length) return null;
+  const def = data.apps.find((a) => a.id === data.default_id);
+  const current = data.apps.some((a) => a.id === Number(value)) ? String(value) : "";
+  return (
+    <label className="flex items-start justify-between gap-4 py-3 border-t border-border first:border-t-0">
+      <span className="min-w-0">
+        <span className="block text-sm font-medium text-fg">Call with</span>
+        <span className="block text-xs text-fg-muted mt-0.5">
+          The app the call buttons on a ticket's Contacts tab open. If it isn't installed on a device, use the small "Phone app" link under each button.
+        </span>
+      </span>
+      <select
+        value={current}
+        disabled={disabled}
+        onChange={(e) => onChange(e.target.value ? Number(e.target.value) : null)}
+        className="shrink-0 border border-border-strong rounded-md px-2 py-1.5 text-sm bg-surface"
+      >
+        <option value="">Organization default{def ? ` (${def.name})` : ""}</option>
+        {data.apps.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+      </select>
+    </label>
+  );
+}
+
 const NOTIFICATION_EVENTS = [
   { key: "new_ticket", label: "New ticket filed", hint: "Any ticket gets created (REST, inbound email, alert promotion). Admin/Manager only." },
   { key: "assignment", label: "Assigned to me", hint: "Someone assigns a ticket to me." },
@@ -911,6 +943,9 @@ export default function AccountPreferences() {
         </p>
         <div className="mt-3">
           <DefaultProjectSetting user={user} busy={busy} />
+          {["Admin", "Manager", "Tech"].includes(user?.role) && (
+            <CallingAppSetting value={prefs.calling_app ?? null} onChange={(v) => set("calling_app", v)} disabled={busy} />
+          )}
           <Toggle
             label="New ticket scope follows the active filter"
             hint="When you click + New Ticket from a filtered list that isn't your default project, preselect that project on the form."

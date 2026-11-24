@@ -220,6 +220,11 @@ router.patch('/me/prefs', requireAuth, async (req, res) => {
     if (patch.email_digest !== undefined && !CADENCES.includes(patch.email_digest)) {
       return res.status(400).json({ error: 'Invalid email_digest' });
     }
+    // Click-to-call app (calling_apps.id); null = the organisation default.
+    if (patch.calling_app !== undefined && patch.calling_app !== null
+        && !(Number.isInteger(Number(patch.calling_app)) && Number(patch.calling_app) > 0)) {
+      return res.status(400).json({ error: 'Invalid calling_app' });
+    }
     if (patch.notification_digest_local_hour !== undefined) {
       const h = Number(patch.notification_digest_local_hour);
       if (!Number.isInteger(h) || h < 0 || h > 23) {

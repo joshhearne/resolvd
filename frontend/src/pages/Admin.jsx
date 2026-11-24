@@ -47,6 +47,7 @@ const NAV_GROUPS = [
       { to: "/admin/email-backends", label: "Email backends", keywords: ["smtp", "graph", "oauth", "gmail", "m365", "office 365"] },
       { to: "/admin/email-templates", label: "Email templates", keywords: ["notification body", "subject", "render"] },
       { to: "/admin/label-printer", label: "Label printer", keywords: ["consumables", "barcode", "print"] },
+      { to: "/admin/calling-apps", label: "Calling apps", keywords: ["click to call", "voip", "webex", "teams", "zoom", "phone", "dial"] },
     ],
   },
   {

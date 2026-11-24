@@ -2395,7 +2395,7 @@ router.get('/:id/people', requireAuth, requireRole('Admin', 'Manager', 'Tech'), 
       const r = await pool.query(
         `SELECT u.id, u.display_name, u.email, u.role,
                 u.phone_direct, u.phone_direct_enc, u.phone_extension, u.phone_mobile, u.phone_mobile_enc,
-                m.role_label, m.company_id, c.name AS company_name, c.name_enc AS company_name_enc,
+                m.role_label, m.company_id, c.kind AS company_kind, c.name AS company_name, c.name_enc AS company_name_enc,
                 l.name AS location_name, l.phone AS location_phone, l.use_extensions
            FROM users u
            LEFT JOIN LATERAL (
@@ -2412,6 +2412,9 @@ router.get('/:id/people', requireAuth, requireRole('Admin', 'Manager', 'Tech'), 
       if (u) {
         people.push({
           kind: 'requester', id: u.id, name: u.display_name || u.email, email: u.email,
+          // Internal users (members of an internal company) can be reached
+          // on their extension alone in apps that dial internal extensions.
+          internal: u.company_kind === 'internal',
           title: u.role_label || null, company_name: u.company_name || null,
           location_name: u.location_name || null, location_phone: u.location_phone || null,
           use_extensions: !!u.use_extensions, extension: u.phone_extension || null,
@@ -2436,7 +2439,7 @@ router.get('/:id/people', requireAuth, requireRole('Admin', 'Manager', 'Tech'), 
     await decryptRows('contacts', cs.rows, { aliases: { company_name: 'companies.name' } });
     for (const c of cs.rows) {
       people.push({
-        kind: 'contact', id: c.id, name: c.name || c.email, email: c.email,
+        kind: 'contact', id: c.id, name: c.name || c.email, email: c.email, internal: false,
         title: c.role_title || null, company_name: c.company_name || null,
         location_name: c.location_name || null, location_phone: c.location_phone || null,
         use_extensions: !!c.use_extensions, extension: c.extension || null,
