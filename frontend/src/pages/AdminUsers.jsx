@@ -1,4 +1,5 @@
 import React, { useEffect, useMemo, useState } from "react";
+import { Link } from "react-router-dom";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
 import { useAuth } from "../context/AuthContext";
@@ -253,6 +254,9 @@ export default function AdminUsers() {
           />
           Show disabled{disabledCount ? ` (${disabledCount})` : ""}
         </label>
+        <Link to="/admin/import" className="btn btn-secondary btn-sm" title="Add or update many users from a CSV file">
+          Import CSV
+        </Link>
         <button
           onClick={() => setShowInvite((v) => !v)}
           className="bg-brand hover:bg-brand-bright text-brand-fg text-sm font-medium px-3 py-1.5 rounded"

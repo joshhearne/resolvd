@@ -49,6 +49,7 @@ import SoftwareInventory from "./pages/SoftwareInventory";
 import SoftwareLicenses from "./pages/SoftwareLicenses";
 import CalendarPage from "./pages/CalendarPage";
 import AdminCallingApps from "./pages/AdminCallingApps";
+import AdminImport from "./pages/AdminImport";
 import Consumables from "./pages/Consumables";
 import Alerts from "./pages/Alerts";
 import AlertDetail from "./pages/AlertDetail";
@@ -281,6 +282,7 @@ function AppRoutes() {
           <Route path="branding" element={<AdminBranding />} />
           <Route path="export" element={<AdminExport />} />
           <Route path="companies" element={<AdminCompanies />} />
+          <Route path="import" element={<AdminImport />} />
           <Route path="email-templates" element={<AdminEmailTemplates />} />
           <Route path="inbound" element={<AdminInbound />} />
           <Route path="support" element={<AdminSupport />} />

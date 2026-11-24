@@ -1,15 +1,14 @@
 const express = require('express');
 const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
-const { getAuthSettings } = require('../services/authSettings');
-const { sendInviteEmail } = require('../services/email');
+const { issueInvite, inviteBaseUrl } = require('../services/invites');
 const local = require('../auth/providers/local');
-const { generateToken, hashToken } = require('../auth/tokens');
+const { hashToken } = require('../auth/tokens');
 const { loginUser, buildSessionUser } = require('../auth/session');
 
 const router = express.Router();
 
-const VALID_ROLES = ['Admin', 'Manager', 'Submitter', 'Viewer', 'Support'];
+const VALID_ROLES = ['Admin', 'Manager', 'Tech', 'Submitter', 'Viewer', 'Support'];
 const VALID_PROVIDERS = ['local', 'entra', 'google'];
 
 // POST /api/invites — admin invites a user
@@ -22,9 +21,6 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager'), async (req, res) 
     if (!VALID_ROLES.includes(role)) return res.status(400).json({ error: 'Invalid role' });
     if (role === 'Admin' && req.session.user.role !== 'Admin') return res.status(403).json({ error: 'Only Admins can invite as Admin' });
     if (!VALID_PROVIDERS.includes(intended_provider)) return res.status(400).json({ error: 'Invalid provider' });
-
-    const settings = await getAuthSettings();
-    const ttlHours = settings?.invite_ttl_hours || 168;
 
     // Pre-create the user row in 'invited' status so the email link can resolve it
     const existingUser = await pool.query('SELECT id, status FROM users WHERE LOWER(email) = LOWER($1)', [email]);
@@ -43,22 +39,11 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager'), async (req, res) 
       userId = ins.rows[0].id;
     }
 
-    const token = generateToken();
-    const tokenHash = hashToken(token);
-    const expiresAt = new Date(Date.now() + ttlHours * 60 * 60 * 1000);
-    await pool.query(
-      `INSERT INTO invite_tokens (token_hash, email, role, invited_by, intended_provider, expires_at)
-       VALUES ($1, $2, $3, $4, $5, $6)`,
-      [tokenHash, email, role, req.session.user.id, intended_provider, expiresAt]
-    );
-
-    const baseUrl = (process.env.FRONTEND_URL || `${req.protocol}://${req.hostname}`).replace(/\/$/, '');
-    const inviteUrl = `${baseUrl}/accept-invite/${token}`;
-    await sendInviteEmail({
-      to: email,
-      inviteUrl,
+    const { expiresAt } = await issueInvite({
+      email, role, provider: intended_provider,
+      invitedById: req.session.user.id,
       invitedByName: req.session.user.displayName,
-      role,
+      baseUrl: inviteBaseUrl(req),
     });
 
     res.json({ ok: true, userId, expiresAt });
