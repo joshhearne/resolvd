@@ -11,6 +11,10 @@ const express = require('express');
 const { pool } = require('../db/pool');
 const { requireAuth, requireRole } = require('../middleware/auth');
 const { numericId } = require('../middleware/params');
+const { decryptRows } = require('../services/fields');
+
+// Vendor company names are encrypted at rest when encryption is on.
+const VENDOR_ALIAS = { aliases: { vendor_company_name: 'companies.name' } };
 
 const router = express.Router();
 
@@ -32,12 +36,13 @@ router.get('/', requireAuth, requireRole(...HANDLER_ROLES), async (req, res) => 
       SELECT c.id, c.part_no, c.title, c.category, c.vendor_company_id,
              c.current_stock, c.low_stock_threshold, c.reorder_qty, c.is_archived,
              c.created_at, c.updated_at,
-             co.name AS vendor_company_name
+             co.name AS vendor_company_name, co.name_enc AS vendor_company_name_enc
         FROM consumables c
         LEFT JOIN companies co ON co.id = c.vendor_company_id
         ${where.length ? `WHERE ${where.join(' AND ')}` : ''}
         ORDER BY c.is_archived ASC, c.category NULLS LAST, c.part_no ASC`;
     const r = await pool.query(sql, params);
+    await decryptRows('consumables', r.rows, VENDOR_ALIAS);
     res.json(r.rows);
   } catch (err) {
     console.error('consumables list:', err);
@@ -49,13 +54,14 @@ router.get('/', requireAuth, requireRole(...HANDLER_ROLES), async (req, res) => 
 router.get('/:id', numericId, requireAuth, requireRole(...HANDLER_ROLES), async (req, res) => {
   try {
     const r = await pool.query(
-      `SELECT c.*, co.name AS vendor_company_name
+      `SELECT c.*, co.name AS vendor_company_name, co.name_enc AS vendor_company_name_enc
          FROM consumables c
          LEFT JOIN companies co ON co.id = c.vendor_company_id
         WHERE c.id = $1`,
       [Number(req.params.id)]
     );
     if (!r.rows[0]) return res.status(404).json({ error: 'not found' });
+    await decryptRows('consumables', r.rows, VENDOR_ALIAS);
     res.json(r.rows[0]);
   } catch (err) {
     console.error('consumable get:', err);

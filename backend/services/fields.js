@@ -141,8 +141,10 @@ async function buildWritePatch(client, table, plainObj) {
 // caller passes an alias map for those.
 async function decryptRow(table, row, opts = {}) {
   if (!row) return row;
-  const map = FIELD_MAP[table];
-  if (!map) return row;
+  // A table with no sensitive columns of its own (assets, consumables…)
+  // can still carry aliased ones from a join, so only the own-column pass
+  // is skipped when there's no map; aliases below always run.
+  const map = FIELD_MAP[table] || {};
 
   for (const [plainCol, encCol] of Object.entries(map)) {
     if (row[encCol]) {
@@ -174,6 +176,8 @@ async function decryptRow(table, row, opts = {}) {
           console.error(`decryptRow alias: failed ${alias}:`, err.message);
           row[alias] = null;
         }
+        delete row[encAlias];
+      } else if (encAlias in row) {
         delete row[encAlias];
       }
     }

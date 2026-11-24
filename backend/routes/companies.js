@@ -55,6 +55,13 @@ router.get('/', requireAuth, async (req, res) => {
       ORDER BY c.name ASC, c.created_at DESC
     `, params);
     await decryptRows('companies', result.rows);
+    // Re-sort after decrypting: with encryption on, c.name is NULL in SQL,
+    // so ORDER BY above can't sort by name. Stable sort keeps created_at DESC
+    // as the tie-break.
+    result.rows.sort((a, b) => {
+      if (!a.name || !b.name) return a.name ? -1 : b.name ? 1 : 0;
+      return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+    });
     res.json(result.rows);
   } catch (err) {
     console.error(err);

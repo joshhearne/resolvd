@@ -12,6 +12,9 @@ const { checkContactEmail } = require('../services/genericMailbox');
 
 const router = express.Router();
 
+// Case-insensitive name order, empty names last.
+const byName = (a, b) => (a ? (b ? a.localeCompare(b, undefined, { sensitivity: 'base' }) : -1) : (b ? 1 : 0));
+
 // GET /api/companies/:companyId/contacts
 router.get('/companies/:companyId/contacts', requireAuth, async (req, res) => {
   try {
@@ -183,6 +186,9 @@ router.get('/projects/:projectId/contacts', requireAuth, async (req, res) => {
        ORDER BY co.name, c.name
     `, [req.params.projectId]);
     await decryptRows('contacts', result.rows, { aliases: { company_name: 'companies.name' } });
+    // Re-sort after decrypting: with encryption on, the plaintext columns
+    // the SQL ORDER BY sees are NULL, so the database can't order by name.
+    result.rows.sort((a, b) => byName(a.company_name, b.company_name) || byName(a.name, b.name));
     res.json(result.rows);
   } catch (err) {
     console.error(err);
@@ -196,14 +202,14 @@ router.get('/contacts-lookup', requireAuth, requireRole('Admin', 'Manager'), asy
     if (!email) return res.status(400).json({ error: 'email required' });
     const blind = hashWhole(email);
     const result = await pool.query(
-      `SELECT c.*, co.name AS company_name, co.id AS company_id
+      `SELECT c.*, co.name AS company_name, co.name_enc AS company_name_enc, co.id AS company_id
          FROM contacts c
          JOIN companies co ON co.id = c.company_id
         WHERE c.email_blind_idx = $1 AND c.is_active = TRUE
         LIMIT 5`,
       [blind]
     );
-    await decryptRows('contacts', result.rows);
+    await decryptRows('contacts', result.rows, { aliases: { company_name: 'companies.name' } });
     res.json(result.rows);
   } catch (err) {
     console.error(err);
