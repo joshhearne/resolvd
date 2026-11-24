@@ -34,7 +34,14 @@ export default function NewTicket() {
     impact: 2,
     urgency: 2,
     external_ticket_ref: "",
+    // Agent-only: where the request came from, an optional due date
+    // (date + time, local), and whether to take it yourself.
+    source: "web",
+    due_date: "",
+    due_time: "17:00",
+    assign_to_me: false,
   });
+  const [sources, setSources] = useState([]);
   // Captured from the AI modal when the user accepts a description
   // rewrite. Sent up with the ticket POST + cleared on submit.
   const [aiLogId, setAiLogId] = useState(null);
@@ -52,6 +59,11 @@ export default function NewTicket() {
   const [users, setUsers] = useState([]);
   const [onBehalfOfId, setOnBehalfOfId] = useState("");
   const canFileOnBehalf = ["Admin", "Manager"].includes(user?.role);
+  const isAgentUser = ["Admin", "Manager", "Tech"].includes(user?.role);
+  useEffect(() => {
+    if (!isAgentUser) return;
+    api.get("/api/tickets/sources").then((all) => setSources((all || []).filter((x) => x.manual))).catch(() => setSources([]));
+  }, [isAgentUser]);
   // Project-scoped custom forms: category → request-type form → custom fields.
   const [categories, setCategories] = useState([]);
   const [projectForms, setProjectForms] = useState([]);
@@ -346,6 +358,11 @@ export default function NewTicket() {
         ...(aiLogId ? { ai_rewrite_log_id: aiLogId } : {}),
         ...(formId ? { form_id: Number(formId) } : {}),
         ...(formFields.length ? { custom_fields: formFields.map((f) => ({ def_id: f.def_id, value: cfValues[f.def_id] })) } : {}),
+        ...(isAgentUser ? {
+          source: form.source || "web",
+          ...(form.due_date ? { due_at: new Date(`${form.due_date}T${form.due_time || "17:00"}`).toISOString() } : {}),
+          ...(form.assign_to_me ? { assigned_to: user.id } : {}),
+        } : {}),
       });
 
       if (pendingFiles.length > 0) {
@@ -588,6 +605,54 @@ export default function NewTicket() {
             (Impact {form.impact} + Urgency {form.urgency})
           </span>
         </div>
+
+        {isAgentUser && (
+          <div className="grid grid-cols-1 sm:grid-cols-[1fr_1.6fr_auto] gap-3 items-end">
+            <label className="block">
+              <span className="block text-sm font-medium text-fg mb-1">Source</span>
+              <select
+                value={form.source}
+                onChange={(e) => set("source", e.target.value)}
+                className="w-full border border-border-strong rounded-md px-3 py-2 text-sm bg-surface focus:outline-none focus:ring-2 focus:ring-brand/40"
+              >
+                {(sources.length ? sources : [{ key: "web", label: "Web / portal" }]).map((x) => (
+                  <option key={x.key} value={x.key}>{x.label}</option>
+                ))}
+              </select>
+            </label>
+            <div>
+              <span className="block text-sm font-medium text-fg mb-1">
+                Due date <span className="text-fg-dim font-normal">(optional)</span>
+              </span>
+              <div className="flex gap-2">
+                <input
+                  type="date"
+                  aria-label="Due date"
+                  value={form.due_date}
+                  onChange={(e) => set("due_date", e.target.value)}
+                  className="min-w-0 flex-1 border border-border-strong rounded-md px-3 py-2 text-sm bg-surface focus:outline-none focus:ring-2 focus:ring-brand/40"
+                />
+                <input
+                  type="time"
+                  aria-label="Due time"
+                  value={form.due_time}
+                  disabled={!form.due_date}
+                  onChange={(e) => set("due_time", e.target.value)}
+                  className="w-28 border border-border-strong rounded-md px-2 py-2 text-sm bg-surface disabled:opacity-50 focus:outline-none focus:ring-2 focus:ring-brand/40"
+                />
+              </div>
+            </div>
+            <label className="flex items-center gap-2 text-sm text-fg sm:pb-2">
+              <input
+                type="checkbox"
+                checked={form.assign_to_me}
+                onChange={(e) => set("assign_to_me", e.target.checked)}
+                className="h-4 w-4 rounded border-border-strong"
+              />
+              Assign to me
+            </label>
+          </div>
+        )}
 
         {hasExternalVendor && (
           <div>

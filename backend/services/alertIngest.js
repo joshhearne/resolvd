@@ -382,7 +382,7 @@ async function promoteAlertToTicket(client, source, alertRow, rule, actingUserId
     'project_id', 'internal_ref', 'submitted_by', 'assigned_to',
     'impact', 'urgency', 'computed_priority', 'effective_priority',
     'external_ref', 'external_source', 'external_alert_source_id',
-    'external_ticket_ref', 'title_blind_idx',
+    'external_ticket_ref', 'title_blind_idx', 'source',
   ];
   const baseVals = [
     projectId, internalRef, resolvedUserId, assignedTo,
@@ -390,6 +390,7 @@ async function promoteAlertToTicket(client, source, alertRow, rule, actingUserId
     alertRow.external_ref, source.preset, source.id,
     event.vendor_ref || alertRow.vendor_ref || null,
     mode === 'standard' ? blindIndex.buildIndex(alertRow.title || '') : null,
+    'alert',
   ];
   const cols = [...baseCols, ...sensitivePatch.cols];
   const vals = [...baseVals, ...sensitivePatch.values];

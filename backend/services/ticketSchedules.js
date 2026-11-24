@@ -132,7 +132,7 @@ async function fireSchedule(scheduleRow) {
     const baseCols = [
       'project_id', 'internal_ref', 'submitted_by', 'assigned_to',
       'impact', 'urgency', 'computed_priority', 'effective_priority',
-      'title_blind_idx',
+      'title_blind_idx', 'source',
     ];
     const submitterId = scheduleRow.requestor_user_id || scheduleRow.created_by || null;
     const baseVals = [
@@ -143,6 +143,7 @@ async function fireSchedule(scheduleRow) {
       mode === 'standard' && scheduleRow.title
         ? blindIndex.buildIndex(scheduleRow.title)
         : null,
+      'scheduled',
     ];
 
     const cols = [...baseCols, ...sensitivePatch.cols];

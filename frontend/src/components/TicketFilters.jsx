@@ -36,6 +36,7 @@ export const DEFAULT_TICKET_FILTERS = {
   projectIds: [],
   statuses: [],
   priorities: [],
+  sources: [], // ticket sources (web, email, phone…); empty = any
   mine: false,
   submittedByMe: false, // tickets I submitted
   following: false, // tickets I follow
@@ -79,6 +80,7 @@ export function buildTicketQs(filters, extras = {}) {
   if (filters.projectIds?.length) parts.push(`project_id=${filters.projectIds.join(",")}`);
   if (filters.statuses?.length) parts.push(`internal_status=${encodeURIComponent(filters.statuses.join(","))}`);
   if (filters.priorities?.length) parts.push(`effective_priority=${filters.priorities.join(",")}`);
+  if (filters.sources?.length) parts.push(`source=${encodeURIComponent(filters.sources.join(","))}`);
   if (filters.mine) parts.push(`assigned_to=me`);
   if (filters.submittedByMe) parts.push(`submitted_by=me`);
   if (filters.following) parts.push(`following=1`);
@@ -140,6 +142,9 @@ export function summarizeFilters(filters, projects, statuses) {
     parts.push(filters.priorities.map((n) => `P${n}`).join("/"));
   }
 
+  if (filters.sources?.length === 1) parts.push(`via ${filters.sources[0]}`);
+  else if (filters.sources?.length > 1) parts.push(`${filters.sources.length} sources`);
+
   if (filters.statuses?.length === 1) {
     parts.push(filters.statuses[0]);
   } else if (filters.statuses?.length > 1) {
@@ -170,6 +175,12 @@ export function TicketFiltersModal({ open, filters, setFilters, projects, status
   }, [open, filters]);
 
   if (!open) return null;
+
+  const [sourceList, setSourceList] = useState([]);
+  useEffect(() => {
+    if (!open || sourceList.length) return;
+    api.get("/api/tickets/sources").then((r) => setSourceList(r || [])).catch(() => setSourceList([]));
+  }, [open]); // eslint-disable-line react-hooks/exhaustive-deps
 
   function toggleArr(key, value) {
     setDraft((d) => {
@@ -325,6 +336,32 @@ export function TicketFiltersModal({ open, filters, setFilters, projects, status
               ))}
             </div>
           </section>
+
+          {sourceList.length > 0 && (
+            <section>
+              <div className="flex items-center justify-between mb-2">
+                <h3 className="text-xs uppercase tracking-wider text-fg-dim">Source</h3>
+                {(draft.sources || []).length > 0 && (
+                  <button
+                    onClick={() => setDraft((d) => ({ ...d, sources: [] }))}
+                    className="text-xs text-fg-dim hover:text-fg"
+                  >
+                    clear
+                  </button>
+                )}
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {sourceList.map((x) => (
+                  <Toggle
+                    key={x.key}
+                    label={x.label}
+                    active={(draft.sources || []).includes(x.key)}
+                    onClick={() => toggleArr("sources", x.key)}
+                  />
+                ))}
+              </div>
+            </section>
+          )}
 
           <section>
             <div className="flex items-center justify-between mb-2">

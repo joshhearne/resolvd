@@ -451,7 +451,8 @@ export default function TicketList() {
     (filters.hasFix !== null ? 1 : 0) +
     filters.projectIds.length +
     filters.statuses.length +
-    filters.priorities.length;
+    filters.priorities.length +
+    (filters.sources?.length || 0);
 
   // Mobile drawer toggle for the Recently opened rail. Desktop hides
   // the hamburger and just renders the rail inline.

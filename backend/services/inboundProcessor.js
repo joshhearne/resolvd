@@ -667,17 +667,19 @@ async function tryAutoCreate({ subject, body, fromAddress, ccAddresses, attachme
       const mode = await getMode(c);
       const baseCols = ['project_id', 'internal_ref', 'submitted_by',
         'impact', 'urgency', 'computed_priority', 'effective_priority',
-        'title_blind_idx', 'source_inbound_email_id'];
+        'title_blind_idx', 'source_inbound_email_id', 'source'];
       const baseValues = [
         project.id, internalRef, submitter.id,
         2, 2, computed, computed,
         mode === 'standard' ? blindIndex.buildIndex(titleFromSubject) : null,
         queueRowId || null,
+        forwarderUser ? 'email_forwarded' : 'email',
       ];
-      // Forwarded-from-agent path: agent inherits the ticket as assignee.
+      // Forwarded-from-agent path: agent inherits the ticket as assignee,
+      // and counts as its creator (for the self-assigned SLA rule).
       if (forwarderUser) {
-        baseCols.push('assigned_to');
-        baseValues.push(forwarderUser.id);
+        baseCols.push('assigned_to', 'created_by');
+        baseValues.push(forwarderUser.id, forwarderUser.id);
       }
       const cols = [...baseCols, ...sensitivePatch.cols];
       const values = [...baseValues, ...sensitivePatch.values];

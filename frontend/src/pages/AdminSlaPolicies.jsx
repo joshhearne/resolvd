@@ -2,6 +2,7 @@ import { Fragment, useEffect, useState } from "react";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
 import NumberInput from "../components/NumberInput";
+import { useAuth } from "../context/AuthContext";
 
 // SLA policies admin: org-default + per-project (priority, target) rows,
 // plus a per-policy warning threshold (% of window elapsed before the
@@ -52,6 +53,100 @@ function parseDuration(s) {
 function fmtTime(t) {
   if (!t) return "";
   return String(t).slice(0, 5);
+}
+
+// Org-wide SLA rules. Each change saves straight away (Admin only; Managers
+// see the current setting). Applies to tickets created, or due dates set,
+// after the change.
+function SlaRulesSection() {
+  const { user } = useAuth();
+  const canEdit = user?.role === "Admin";
+  const [settings, setSettings] = useState(null);
+  const [sources, setSources] = useState([]);
+  const [saving, setSaving] = useState(false);
+
+  useEffect(() => {
+    api.get("/api/sla/settings").then(setSettings).catch((e) => toast.error(e.message));
+    api.get("/api/tickets/sources").then(setSources).catch(() => setSources([]));
+  }, []);
+
+  async function save(patch) {
+    setSaving(true);
+    try {
+      setSettings(await api.patch("/api/sla/settings", patch));
+      toast.success("SLA rule saved");
+    } catch (e) {
+      toast.error(e.message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  if (!settings) return null;
+  const picked = settings.self_assigned_sources || [];
+  function toggleSource(key) {
+    const next = picked.includes(key) ? picked.filter((k) => k !== key) : [...picked, key];
+    save({ self_assigned_sources: next });
+  }
+
+  return (
+    <div className="bg-surface border border-border rounded-lg p-4 space-y-4">
+      <div>
+        <h2 className="text-base font-semibold text-fg mb-1">SLA rules</h2>
+        <p className="text-xs text-fg-muted">
+          Apply to tickets created, or due dates set, after you change them. Existing SLA clocks aren't recalculated.
+        </p>
+      </div>
+
+      <label className="flex items-start gap-2">
+        <input type="checkbox" className="mt-0.5 h-4 w-4 rounded border-border-strong"
+          checked={!!settings.drop_resolve_when_due_date} disabled={!canEdit || saving}
+          onChange={(e) => save({ drop_resolve_when_due_date: e.target.checked })} />
+        <span className="text-sm text-fg">
+          Drop the resolve SLA when a ticket has a due date
+          <span className="block text-xs text-fg-muted mt-0.5">
+            The due date becomes the target instead. Clearing the due date puts the resolve SLA back.
+          </span>
+        </span>
+      </label>
+
+      <div className="space-y-2">
+        <label className="flex items-start gap-2">
+          <input type="checkbox" className="mt-0.5 h-4 w-4 rounded border-border-strong"
+            checked={!!settings.drop_response_self_assigned} disabled={!canEdit || saving}
+            onChange={(e) => save({ drop_response_self_assigned: e.target.checked })} />
+          <span className="text-sm text-fg">
+            Drop the response SLA when an agent creates a ticket and assigns it to themselves
+            <span className="block text-xs text-fg-muted mt-0.5">
+              They've already responded, for example on a phone call. Applies to Admins, Managers and Techs, and to
+              email an agent forwards in (it's assigned to them).
+            </span>
+          </span>
+        </label>
+        {settings.drop_response_self_assigned && (
+          <div className="ml-6">
+            <div className="text-xs text-fg-muted mb-1.5">
+              Only for these sources {picked.length === 0 && <span className="text-fg-dim">(none picked = any source)</span>}
+            </div>
+            <div className="flex flex-wrap gap-1.5">
+              {sources.filter((x) => !["scheduled", "alert"].includes(x.key)).map((x) => {
+                const on = picked.includes(x.key);
+                return (
+                  <button key={x.key} type="button" disabled={!canEdit || saving} onClick={() => toggleSource(x.key)}
+                    aria-pressed={on}
+                    className={`text-xs px-2.5 py-1 rounded-full border transition-colors ${on
+                      ? "bg-brand text-brand-fg border-brand"
+                      : "bg-surface text-fg-muted border-border hover:text-fg"} disabled:opacity-60`}>
+                    {x.label}
+                  </button>
+                );
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+    </div>
+  );
 }
 
 export default function AdminSlaPolicies() {
@@ -218,6 +313,7 @@ export default function AdminSlaPolicies() {
 
   return (
     <div className="space-y-5">
+      <SlaRulesSection />
       <BusinessHoursSection bhList={bhList} projects={projects} locations={locations} onChange={load} />
       <SlaWebhooksSection projects={projects} />
 

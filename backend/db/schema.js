@@ -3360,6 +3360,50 @@ Thanks,
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_ticket_schedule_runs_schedule
       ON ticket_schedule_runs(schedule_id, fired_at DESC)`);
+
+    // Ticket source, creator and due date.
+    //  - source: where the ticket came from (services/ticketSources.js).
+    //    Backfilled once from what older rows already record.
+    //  - created_by: who actually created it (submitted_by is who it's
+    //    filed for, which Admins/Managers may set to someone else). NULL
+    //    for system-created tickets (email, alerts, schedules).
+    //  - due_at: an optional hand-set due date. With the SLA setting
+    //    drop_resolve_when_due_date on, it replaces the resolve SLA.
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS created_by INTEGER REFERENCES users(id) ON DELETE SET NULL`);
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS due_at TIMESTAMPTZ`);
+    const hadSource = await client.query(
+      `SELECT 1 FROM information_schema.columns WHERE table_name = 'tickets' AND column_name = 'source'`
+    );
+    await client.query(`ALTER TABLE tickets ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'web'
+      CHECK (source IN ('web','email','email_forwarded','phone','sms','teams','scheduled','api','alert'))`);
+    if (!hadSource.rows.length) {
+      await client.query(`UPDATE tickets SET source = 'alert'
+        WHERE external_alert_source_id IS NOT NULL OR external_source IS NOT NULL`);
+      await client.query(`UPDATE tickets SET source = 'email'
+        WHERE source = 'web' AND source_inbound_email_id IS NOT NULL`);
+      await client.query(`UPDATE tickets t SET source = 'scheduled'
+        WHERE t.source = 'web' AND EXISTS (SELECT 1 FROM ticket_schedule_runs r WHERE r.ticket_id = t.id)`);
+    }
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_source ON tickets(source)`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_tickets_due_at ON tickets(due_at) WHERE due_at IS NOT NULL`);
+
+    // Org-wide SLA rules (single row).
+    //  - drop_resolve_when_due_date: a ticket with a due date has no
+    //    resolve SLA; the due date is the target instead.
+    //  - drop_response_self_assigned: when an agent creates a ticket and
+    //    assigns it to themselves, there's no response SLA (they already
+    //    responded, e.g. on the phone). self_assigned_sources limits it to
+    //    those sources; empty = any source.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS sla_settings (
+        id INTEGER PRIMARY KEY DEFAULT 1 CHECK (id = 1),
+        drop_resolve_when_due_date BOOLEAN NOT NULL DEFAULT FALSE,
+        drop_response_self_assigned BOOLEAN NOT NULL DEFAULT FALSE,
+        self_assigned_sources TEXT[] NOT NULL DEFAULT '{}',
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`INSERT INTO sla_settings (id) VALUES (1) ON CONFLICT DO NOTHING`);
     await client.query(`INSERT INTO system_jobs (name) VALUES ('ticket_schedule_tick') ON CONFLICT DO NOTHING`);
 
     // ── Personal tasks ────────────────────────────────────────────────

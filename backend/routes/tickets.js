@@ -15,6 +15,7 @@ const {
 const { getRestrictionDefaults, effectiveFlag } = require('../services/restrictions');
 const { resolveMentions } = require('../services/mentions');
 const sla = require('../services/sla');
+const { MANUAL_SOURCE_KEYS, isSource, TICKET_SOURCES } = require('../services/ticketSources');
 const assignmentPolicies = require('../services/assignmentPolicies');
 const { getMode, buildWritePatch, decryptRow, decryptRows } = require('../services/fields');
 const blindIndex = require('../services/blindIndex');
@@ -124,6 +125,11 @@ router.get('/counts', requireAuth, async (req, res) => {
   }
 });
 
+// GET /api/tickets/sources — the ticket source list (key, label, manual).
+router.get('/sources', requireAuth, (req, res) => {
+  res.json(TICKET_SOURCES);
+});
+
 // GET /api/tickets
 router.get('/', requireAuth, async (req, res) => {
   try {
@@ -163,6 +169,14 @@ router.get('/', requireAuth, async (req, res) => {
       where.push(c.sql);
       params.push(...c.params);
       p += c.params.length;
+    }
+    // Source facet — ?source=phone or ?source=phone,sms (unknown keys ignored).
+    if (req.query.source) {
+      const sources = String(req.query.source).split(',').map((v) => v.trim()).filter(isSource);
+      if (sources.length) {
+        where.push(`t.source = ANY($${p++}::text[])`);
+        params.push(sources);
+      }
     }
     // "Followed" facet — tickets the caller follows.
     if (req.query.following === '1' || req.query.following === 'true') {
@@ -368,10 +382,27 @@ router.get('/', requireAuth, async (req, res) => {
 router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter'), async (req, res) => {
   try {
     const user = req.session.user;
-    const { project_id, title, description, impact = 2, urgency = 2, external_ticket_ref, assigned_to, contact_ids, submitted_by, form_id, custom_fields, follower_ids, exclude_follower_ids } = req.body;
+    const { project_id, title, description, impact = 2, urgency = 2, external_ticket_ref, assigned_to, contact_ids, submitted_by, form_id, custom_fields, follower_ids, exclude_follower_ids, source, due_at } = req.body;
 
     if (!project_id) return res.status(400).json({ error: 'project_id required' });
     if (!title) return res.status(400).json({ error: 'Title required' });
+
+    // Source + due date are agent-set. Submitters always file as 'web'
+    // with no due date; an agent logging a call / SMS / chat picks it.
+    const isAgentFiler = ['Admin', 'Manager', 'Tech'].includes(user.role);
+    let ticketSource = 'web';
+    if (isAgentFiler && source != null && source !== '') {
+      if (!MANUAL_SOURCE_KEYS.includes(source)) {
+        return res.status(400).json({ error: `source must be one of ${MANUAL_SOURCE_KEYS.join(', ')}` });
+      }
+      ticketSource = source;
+    }
+    let ticketDueAt = null;
+    if (isAgentFiler && due_at != null && due_at !== '') {
+      const d = new Date(due_at);
+      if (isNaN(d.getTime())) return res.status(400).json({ error: 'due_at must be a date/time' });
+      ticketDueAt = d.toISOString();
+    }
 
     // Verify project exists and is active
     const proj = await pool.query(
@@ -504,7 +535,7 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter
       const mode = await getMode(client);
       const baseCols = ['project_id', 'internal_ref', 'submitted_by', 'assigned_to',
         'impact', 'urgency', 'computed_priority', 'effective_priority', 'external_ticket_ref',
-        'title_blind_idx', 'form_id'];
+        'title_blind_idx', 'form_id', 'source', 'created_by', 'due_at'];
       const baseValues = [
         Number(project_id), internalRef, effectiveSubmitterId,
         effectiveAssignee || null,
@@ -512,6 +543,7 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter
         external_ticket_ref || null,
         mode === 'standard' ? blindIndex.buildIndex(title) : null,
         formId,
+        ticketSource, user.id, ticketDueAt,
       ];
       const cols = [...baseCols, ...sensitivePatch.cols];
       const values = [...baseValues, ...sensitivePatch.values];
@@ -1371,6 +1403,29 @@ router.patch('/:id', requireAuth, async (req, res) => {
         await auditLog(client, { ticketId: ticket.id, userId: user.id, action: 'blocker_change', oldValue: oldBlocker, newValue: body.blocker_type || null });
       }
 
+      // Due date + source: handler-set. A due-date change re-applies the
+      // SLA due-date rule after the write (sla.applyDueDateRule).
+      let dueChanged = false;
+      if (isAdmin && body.due_at !== undefined) {
+        let next = null;
+        if (body.due_at !== null && body.due_at !== '') {
+          const d = new Date(body.due_at);
+          if (isNaN(d.getTime())) throw Object.assign(new Error('due_at must be a date/time'), { httpStatus: 400 });
+          next = d.toISOString();
+        }
+        const prev = ticket.due_at ? new Date(ticket.due_at).toISOString() : null;
+        if (prev !== next) {
+          updates.due_at = next;
+          dueChanged = true;
+          await auditLog(client, { ticketId: ticket.id, userId: user.id, action: 'due_date_change', oldValue: prev, newValue: next });
+        }
+      }
+      if (isAdmin && body.source !== undefined && body.source !== ticket.source) {
+        if (!isSource(body.source)) throw Object.assign(new Error('invalid source'), { httpStatus: 400 });
+        updates.source = body.source;
+        await auditLog(client, { ticketId: ticket.id, userId: user.id, action: 'source_change', oldValue: ticket.source, newValue: body.source });
+      }
+
       if (Object.keys(updates).length === 0) return ticket;
       updates.updated_at = new Date().toISOString();
 
@@ -1398,6 +1453,7 @@ router.patch('/:id', requireAuth, async (req, res) => {
         `UPDATE tickets SET ${setClauses} WHERE id = $${finalCols.length + 1}`,
         [...finalVals, ticket.id]
       );
+      if (dueChanged) await sla.applyDueDateRule(client, ticket.id);
 
       // Apply AI rewrite log if client passed one (description / title
       // was rewritten via the modal). Snapshot metadata onto the ticket

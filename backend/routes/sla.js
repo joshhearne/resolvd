@@ -14,6 +14,49 @@ const holidays = require('../services/holidays');
 
 const router = express.Router();
 
+// ─── Org-wide SLA rules ──────────────────────────────────────────────────
+// GET   /api/sla/settings  (Admin / Manager)
+// PATCH /api/sla/settings  (Admin) { drop_resolve_when_due_date,
+//        drop_response_self_assigned, self_assigned_sources: [source…] }
+// Rules apply to tickets created (or due dates changed) after saving;
+// existing SLA clocks aren't recalculated.
+const { getSlaSettings } = require('../services/sla');
+const { isSource } = require('../services/ticketSources');
+
+router.get('/settings', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+  try {
+    res.json(await getSlaSettings());
+  } catch (err) {
+    console.error('sla settings get:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+router.patch('/settings', requireAuth, requireRole('Admin'), async (req, res) => {
+  try {
+    const b = req.body || {};
+    const sets = [];
+    const vals = [];
+    for (const k of ['drop_resolve_when_due_date', 'drop_response_self_assigned']) {
+      if (b[k] !== undefined) { vals.push(!!b[k]); sets.push(`${k} = $${vals.length}`); }
+    }
+    if (b.self_assigned_sources !== undefined) {
+      if (!Array.isArray(b.self_assigned_sources) || !b.self_assigned_sources.every(isSource)) {
+        return res.status(400).json({ error: 'self_assigned_sources must be a list of ticket sources' });
+      }
+      vals.push([...new Set(b.self_assigned_sources)]);
+      sets.push(`self_assigned_sources = $${vals.length}::text[]`);
+    }
+    if (!sets.length) return res.status(400).json({ error: 'nothing to update' });
+    sets.push('updated_at = NOW()');
+    await pool.query(`UPDATE sla_settings SET ${sets.join(', ')} WHERE id = 1`, vals);
+    res.json(await getSlaSettings());
+  } catch (err) {
+    console.error('sla settings patch:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
 // ─── Policies ────────────────────────────────────────────────────────────
 
 // GET /api/sla/policies — list all policies (defaults + overrides).
