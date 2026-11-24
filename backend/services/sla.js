@@ -88,16 +88,69 @@ async function stampLocation(client, ticketId) {
   return cur.rows[0]?.location_id || null;
 }
 
+// ─── Org-wide SLA rules (sla_settings) ──────────────────────────────────
+
+const AGENT_ROLES = new Set(['Admin', 'Manager', 'Tech']);
+const SETTINGS_DEFAULTS = {
+  drop_resolve_when_due_date: false,
+  drop_response_self_assigned: false,
+  self_assigned_sources: [],
+};
+
+async function getSlaSettings(client) {
+  const r = await (client || pool).query(
+    `SELECT drop_resolve_when_due_date, drop_response_self_assigned, self_assigned_sources
+       FROM sla_settings WHERE id = 1`
+  ).catch(() => ({ rows: [] }));
+  return { ...SETTINGS_DEFAULTS, ...(r.rows[0] || {}) };
+}
+
+// Which SLA clocks a ticket skips under the org rules. Pure, for tests.
+//  - Resolve: dropped while the ticket has a due date (the due date is the
+//    target instead), when drop_resolve_when_due_date is on.
+//  - Response: dropped when an agent created the ticket and assigned it
+//    to themselves (they've already responded, e.g. on the phone), when
+//    drop_response_self_assigned is on, limited to self_assigned_sources
+//    if any are listed.
+function slaDrops(settings, ticket, creatorRole) {
+  const s = { ...SETTINGS_DEFAULTS, ...(settings || {}) };
+  const sources = s.self_assigned_sources || [];
+  const dropResponse = !!(
+    s.drop_response_self_assigned
+    && ticket.created_by
+    && ticket.assigned_to
+    && Number(ticket.created_by) === Number(ticket.assigned_to)
+    && AGENT_ROLES.has(creatorRole)
+    && (!sources.length || sources.includes(ticket.source))
+  );
+  const dropResolve = !!(s.drop_resolve_when_due_date && ticket.due_at);
+  return { dropResponse, dropResolve };
+}
+
+async function ticketForRules(client, ticketId) {
+  const r = await client.query(
+    `SELECT t.created_by, t.assigned_to, t.source, t.due_at, u.role AS creator_role
+       FROM tickets t LEFT JOIN users u ON u.id = t.created_by
+      WHERE t.id = $1`,
+    [ticketId]
+  );
+  return r.rows[0] || {};
+}
+
 // Stamp due-at + warn-at on a fresh ticket. Should be called from the
-// same transaction as the INSERT.
+// same transaction as the INSERT. Applies the org SLA rules (slaDrops):
+// a dropped clock gets no due / warn time, so warnings and breaches
+// never fire for it.
 async function applyPolicyOnCreate(client, { ticketId, priority, projectId, createdAt }) {
   const locationId = await stampLocation(client, ticketId);
   const policy = await policyForTicket(client, priority, projectId);
   if (!policy) return;
   const bh = await businessHours.policyForSla(client, policy, locationId);
   const base = createdAt ? new Date(createdAt) : new Date();
-  const responseDue = businessHours.addBusinessMinutes(base, policy.response_target_minutes, bh);
-  const resolveDue = businessHours.addBusinessMinutes(base, policy.resolve_target_minutes, bh);
+  const t = await ticketForRules(client, ticketId);
+  const { dropResponse, dropResolve } = slaDrops(await getSlaSettings(client), t, t.creator_role);
+  const responseDue = dropResponse ? null : businessHours.addBusinessMinutes(base, policy.response_target_minutes, bh);
+  const resolveDue = dropResolve ? null : businessHours.addBusinessMinutes(base, policy.resolve_target_minutes, bh);
   const threshold = policy.warning_threshold_percent ?? 80;
   const responseWarn = warnAtFromDue(responseDue, policy.response_target_minutes, threshold);
   const resolveWarn = warnAtFromDue(resolveDue, policy.resolve_target_minutes, threshold);
@@ -110,6 +163,49 @@ async function applyPolicyOnCreate(client, { ticketId, priority, projectId, crea
       WHERE id = $5`,
     [responseDue, resolveDue, responseWarn, resolveWarn, ticketId]
   );
+}
+
+// Re-apply the due-date rule after a ticket's due date is set or cleared.
+// With drop_resolve_when_due_date on: a due date clears the resolve SLA
+// (due / warn times and any warned / breached flags); clearing the due
+// date puts the resolve SLA back, measured from the ticket's creation the
+// way it was first stamped (time spent paused isn't added back). No-op
+// when the rule is off or the ticket is already resolved.
+async function applyDueDateRule(client, ticketId) {
+  const db = client || pool;
+  const settings = await getSlaSettings(db);
+  if (!settings.drop_resolve_when_due_date) return { changed: false };
+  const r = await db.query(
+    `SELECT id, due_at, resolved_at, created_at, effective_priority, project_id, location_id,
+            sla_resolve_due_at
+       FROM tickets WHERE id = $1`,
+    [ticketId]
+  );
+  const t = r.rows[0];
+  if (!t || t.resolved_at) return { changed: false };
+  if (t.due_at) {
+    if (t.sla_resolve_due_at == null) return { changed: false };
+    await db.query(
+      `UPDATE tickets
+          SET sla_resolve_due_at = NULL, sla_resolve_warn_at = NULL,
+              sla_resolve_warned = FALSE, sla_resolve_warned_at = NULL,
+              sla_resolve_breached = FALSE, sla_resolve_breached_at = NULL
+        WHERE id = $1`,
+      [ticketId]
+    );
+    return { changed: true, resolve: 'dropped' };
+  }
+  if (t.sla_resolve_due_at != null) return { changed: false };
+  const policy = await policyForTicket(db, t.effective_priority, t.project_id);
+  if (!policy) return { changed: false };
+  const bh = await businessHours.policyForSla(db, policy, t.location_id);
+  const due = businessHours.addBusinessMinutes(new Date(t.created_at), policy.resolve_target_minutes, bh);
+  const warn = warnAtFromDue(due, policy.resolve_target_minutes, policy.warning_threshold_percent ?? 80);
+  await db.query(
+    `UPDATE tickets SET sla_resolve_due_at = $1, sla_resolve_warn_at = $2 WHERE id = $3`,
+    [due, warn, ticketId]
+  );
+  return { changed: true, resolve: 'restored' };
 }
 
 // Returns null when the status isn't a pause status; otherwise returns
@@ -369,6 +465,9 @@ function startScheduler() {
 module.exports = {
   policyForTicket,
   applyPolicyOnCreate,
+  applyDueDateRule,
+  getSlaSettings,
+  slaDrops,
   pauseSla,
   resumeSla,
   onStatusChange,

@@ -11,6 +11,7 @@ const EVENT_TYPES = [
   'pending_review',
   'follow_up',
   'follower_added',
+  'license_renewal',
 ];
 
 // Server-side override: regardless of stored prefs, these events always
@@ -37,6 +38,9 @@ const DEFAULT_NOTIFICATION_PREFS = Object.freeze({
   // follower_added — someone else added me as a follower (CC on create,
   // or added from the ticket's follower manager).
   follower_added: { in_app: true, email: true,  push: false },
+  // license_renewal — Admins/Managers: a software license renews or
+  // expires in 30 / 7 days, or its renewal date has passed.
+  license_renewal: { in_app: true, email: true,  push: false },
 });
 
 const DEFAULT_EMAIL_DIGEST = 'instant';

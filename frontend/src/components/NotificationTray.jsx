@@ -86,6 +86,12 @@ export default function NotificationTray() {
     } else if (item.type === "contract_block_alert" && item.data?.company_id) {
       navigate(`/admin/companies?company=${item.data.company_id}&tab=billing`);
       setOpen(false);
+    } else if (item.type === "license_renewal") {
+      // Only follow in-app paths the server set; fall back to the list.
+      const link = typeof item.data?.link === "string" && item.data.link.startsWith("/inventory/licenses")
+        ? item.data.link : "/inventory/licenses";
+      navigate(link);
+      setOpen(false);
     }
   }
 
@@ -131,7 +137,7 @@ export default function NotificationTray() {
               <div
                 key={item.id}
                 onClick={() => handleAction(item)}
-                className={`px-3 py-2.5 border-b border-border last:border-0 ${!item.read_at ? "bg-brand/5" : ""} ${item.data?.ticket_id || item.type === "unmatched_cc" || item.type === "user_auto_provisioned" || item.type === "contract_block_alert" || item.type === "system_update" ? "cursor-pointer hover:bg-surface-2" : ""}`}
+                className={`px-3 py-2.5 border-b border-border last:border-0 ${!item.read_at ? "bg-brand/5" : ""} ${item.data?.ticket_id || item.type === "unmatched_cc" || item.type === "user_auto_provisioned" || item.type === "contract_block_alert" || item.type === "license_renewal" || item.type === "system_update" ? "cursor-pointer hover:bg-surface-2" : ""}`}
               >
                 <div className="flex items-start justify-between gap-2">
                   <div className="min-w-0 flex-1">

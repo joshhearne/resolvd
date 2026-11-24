@@ -11,12 +11,14 @@ const JOB_CADENCE_MS = {
   muted_digest: 5 * 60 * 1000,
   inbox_subscription_renewal: 60 * 60 * 1000,
   auto_close: 60 * 60 * 1000,
+  license_renewal_reminders: 60 * 60 * 1000,
 };
 
 const JOB_LABELS = {
   muted_digest: 'Muted-vendor digest',
   inbox_subscription_renewal: 'Inbox subscription renewal',
   auto_close: 'Auto-close + follow-up reminder',
+  license_renewal_reminders: 'License renewal reminders',
 };
 
 router.get('/', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {

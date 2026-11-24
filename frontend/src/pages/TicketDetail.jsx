@@ -488,6 +488,104 @@ function LocationField({ ticket, canEdit, saving, onSave }) {
   );
 }
 
+// Optional hand-set due date (date + time, local). With the SLA rule
+// "drop the resolve SLA when a ticket has a due date" on, it replaces
+// the resolve SLA; the server re-applies that on save.
+function pad2(n) { return String(n).padStart(2, "0"); }
+function localParts(iso) {
+  const d = new Date(iso);
+  return { date: `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`, time: `${pad2(d.getHours())}:${pad2(d.getMinutes())}` };
+}
+
+function DueDateField({ ticket, canEdit, saving, onSave }) {
+  const [editing, setEditing] = useState(false);
+  const [date, setDate] = useState("");
+  const [time, setTime] = useState("17:00");
+
+  function startEdit() {
+    const p = ticket.due_at ? localParts(ticket.due_at) : { date: "", time: "17:00" };
+    setDate(p.date);
+    setTime(p.time);
+    setEditing(true);
+  }
+
+  if (editing) {
+    return (
+      <div className="flex flex-wrap gap-2">
+        <input type="date" aria-label="Due date" value={date} onChange={(e) => setDate(e.target.value)}
+          className="border border-border-strong rounded-md px-2 py-1 text-sm min-w-0 flex-1" />
+        <input type="time" aria-label="Due time" value={time} disabled={!date} onChange={(e) => setTime(e.target.value)}
+          className="border border-border-strong rounded-md px-2 py-1 text-sm w-24 disabled:opacity-50" />
+        <button
+          onClick={async () => {
+            await onSave({ due_at: date ? new Date(`${date}T${time || "17:00"}`).toISOString() : null });
+            setEditing(false);
+          }}
+          disabled={saving}
+          className="btn-primary btn btn-sm"
+        >
+          Save
+        </button>
+        <button onClick={() => setEditing(false)} className="btn-secondary btn btn-sm">×</button>
+      </div>
+    );
+  }
+  const overdue = ticket.due_at && !ticket.resolved_at && new Date(ticket.due_at) < new Date();
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className="text-sm text-fg">
+        {ticket.due_at ? (
+          <>
+            <HybridTime value={ticket.due_at} />
+            {overdue && <span className="ml-2 rounded px-1.5 py-0.5 text-[11px] font-medium bg-red-500/15 text-red-700 dark:text-red-300">overdue</span>}
+          </>
+        ) : <span className="text-fg-dim">—</span>}
+      </span>
+      {canEdit && (
+        <span className="flex gap-2">
+          {ticket.due_at && (
+            <button onClick={() => onSave({ due_at: null })} disabled={saving} className="text-xs text-fg-muted hover:text-fg hover:underline">Clear</button>
+          )}
+          <button onClick={startEdit} className="text-xs text-brand hover:underline">{ticket.due_at ? "Edit" : "Set"}</button>
+        </span>
+      )}
+    </div>
+  );
+}
+
+// Where the ticket came from. Set automatically for email, alerts and
+// schedules; agents can correct it.
+function SourceField({ ticket, canEdit, saving, onSave }) {
+  const [sources, setSources] = useState(null);
+  const [editing, setEditing] = useState(false);
+  useEffect(() => {
+    api.get("/api/tickets/sources").then(setSources).catch(() => setSources([]));
+  }, []);
+  const label = (sources || []).find((x) => x.key === ticket.source)?.label || ticket.source || "—";
+  if (editing) {
+    return (
+      <select
+        autoFocus
+        value={ticket.source || "web"}
+        disabled={saving}
+        onBlur={() => setEditing(false)}
+        onChange={async (e) => { await onSave({ source: e.target.value }); setEditing(false); }}
+        className="w-full border border-border-strong rounded-md px-2 py-1 text-sm bg-surface"
+      >
+        {(sources || []).map((x) => <option key={x.key} value={x.key}>{x.label}</option>)}
+      </select>
+    );
+  }
+  return (
+    <div className="flex items-center justify-between">
+      <span className="text-sm text-fg">{label}</span>
+      {canEdit && sources && (
+        <button onClick={() => setEditing(true)} className="text-xs text-brand hover:underline">Edit</button>
+      )}
+    </div>
+  );
+}
+
 export default function TicketDetail() {
   const { id } = useParams();
   const navigate = useNavigate();
@@ -3240,6 +3338,16 @@ export default function TicketDetail() {
                     saving={saving}
                     onSave={patch}
                   />
+                </Field>
+              )}
+              {(isAdmin || ticket.due_at) && (
+                <Field label="Due date">
+                  <DueDateField ticket={ticket} canEdit={isAdmin} saving={saving} onSave={patch} />
+                </Field>
+              )}
+              {isAdmin && (
+                <Field label="Source">
+                  <SourceField ticket={ticket} canEdit={isAdmin} saving={saving} onSave={patch} />
                 </Field>
               )}
             </dl>

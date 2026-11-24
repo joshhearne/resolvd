@@ -47,6 +47,7 @@ import ProjectDetail from "./pages/ProjectDetail";
 import Inventory from "./pages/Inventory";
 import SoftwareInventory from "./pages/SoftwareInventory";
 import SoftwareLicenses from "./pages/SoftwareLicenses";
+import CalendarPage from "./pages/CalendarPage";
 import Consumables from "./pages/Consumables";
 import Alerts from "./pages/Alerts";
 import AlertDetail from "./pages/AlertDetail";
@@ -141,6 +142,7 @@ function AppRoutes() {
         <Route path="dashboard" element={<Dashboard />} />
         <Route path="tickets" element={<TicketList />} />
         <Route path="tasks" element={<Tasks />} />
+        <Route path="calendar" element={<CalendarPage />} />
         <Route path="time" element={<Time />} />
         <Route
           path="tickets/new"

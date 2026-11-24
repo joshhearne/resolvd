@@ -256,6 +256,9 @@ initSchema()
     // Prepaid block alerts (MSP mode): every 30 min, warn Admins/Managers
     // when a customer's block crosses its alert line or is used up.
     require('./services/billing').startScheduler();
+    // Software license renewal reminders: hourly, tell Admins/Managers
+    // about licenses renewing in 30 / 7 days or past their renewal date.
+    require('./services/licenseReminders').startScheduler();
     // Status page subscriptions: every minute, email subscribers about
     // services going down / recovering.
     require('./services/statusPageNotifier').startScheduler();
