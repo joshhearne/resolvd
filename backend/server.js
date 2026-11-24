@@ -217,8 +217,60 @@ app.use('/api/billing', require('./routes/billing'));
 // Health check
 app.get('/health', (req, res) => res.json({ ok: true }));
 
+// Single-container installs (Dockerfile.single: Fly.io, Render, Railway…)
+// have no nginx in front, so the backend serves the built frontend from
+// STATIC_DIR with the same caching rules as frontend/nginx-frontend.conf:
+// hashed /assets cached for a year, index.html and sw.js never cached,
+// and any other non-API path falls back to index.html for the SPA router.
+if (process.env.STATIC_DIR) {
+  const path = require('path');
+  const staticDir = path.resolve(process.env.STATIC_DIR);
+  const noStore = (res) => res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
+  app.use('/assets', express.static(path.join(staticDir, 'assets'), { immutable: true, maxAge: '1y', fallthrough: false }));
+  app.use(express.static(staticDir, {
+    index: false,
+    setHeaders: (res, file) => { if (/[\\/](index\.html|sw\.js)$/.test(file)) noStore(res); },
+  }));
+  app.get(/^(?!\/(api|auth)(\/|$)).*/, (req, res) => {
+    noStore(res);
+    res.sendFile(path.join(staticDir, 'index.html'));
+  });
+}
+
 initSchema()
   .then(async () => {
+    // Fresh installs can start encrypted: RESOLVD_INITIAL_ENCRYPTION=standard
+    // (with RESOLVD_MASTER_KEY set) switches encryption on at first boot,
+    // while the database is still empty, so there is nothing to backfill.
+    // It never touches an install that already has users or tickets;
+    // those follow the Admin → Encryption runbook.
+    if (process.env.RESOLVD_INITIAL_ENCRYPTION === 'standard') {
+      try {
+        if (!process.env.RESOLVD_MASTER_KEY) {
+          console.warn('[encryption] RESOLVD_INITIAL_ENCRYPTION=standard ignored: RESOLVD_MASTER_KEY is not set');
+        } else {
+          // Round-trip the key first so a bad key fails loudly at boot and
+          // leaves encryption off, instead of failing on the first save.
+          const { encrypt, decrypt } = require('./services/crypto');
+          if ((await decrypt(await encrypt('check', 'boot.check'), 'boot.check')) !== 'check') {
+            throw new Error('master key round-trip failed');
+          }
+          const r = await pool.query(
+            `UPDATE encryption_settings SET mode = 'standard', backfill_completed_at = NOW(), updated_at = NOW()
+              WHERE id = 1 AND mode = 'off'
+                AND NOT EXISTS (SELECT 1 FROM users) AND NOT EXISTS (SELECT 1 FROM tickets)
+              RETURNING mode`
+          );
+          if (r.rowCount) {
+            require('./services/fields').invalidateModeCache();
+            console.log('[encryption] fresh install: encryption mode set to standard');
+          }
+        }
+      } catch (err) {
+        console.error('[encryption] initial encryption setup failed:', err.message);
+        process.exit(1);
+      }
+    }
     // What's new: record change files this build brings in (and notify),
     // or drop ones a rollback took away. Never blocks startup.
     try {

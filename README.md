@@ -112,6 +112,10 @@ docker compose pull && docker compose up -d
 
 **Backups.** Schedule the commands in [Backup](#backup) (e.g. a nightly cron job) and copy the files off the server. Keep `RESOLVD_MASTER_KEY` with them, but stored separately.
 
+## Running on Fly.io (or another container host)
+
+`Dockerfile.single` builds Resolvd as one container: the backend serves the built frontend, with no nginx. It runs on Fly.io with the included `fly.toml`, or on Render, Railway or any Docker host, with Postgres and a volume at `/data` for uploads. A fresh install can start encrypted (`RESOLVD_INITIAL_ENCRYPTION=standard`). Walkthrough: [docs/DEPLOY-FLY.md](docs/DEPLOY-FLY.md).
+
 ---
 
 ## Environment Variables
@@ -158,6 +162,7 @@ Add `https://yourdomain/api/email-backends/oauth/callback` to the OAuth client's
 | Variable | Description |
 |---|---|
 | `RESOLVD_MASTER_KEY` | base64 of 32 random bytes. Required when `encryption_settings.mode` is `standard` **and** before AI Assist will accept API keys. Generate with `node -e "console.log(require('crypto').randomBytes(32).toString('base64'))"` (or click **Generate master key** in Admin → AI Assist → Integration). **Losing this key after enabling encryption or saving any AI provider key permanently destroys access.** |
+| `RESOLVD_INITIAL_ENCRYPTION` | Set to `standard` (with `RESOLVD_MASTER_KEY`) to switch encryption on at first boot of an **empty** database, so a new install never stores plaintext. Ignored once there are users or tickets; existing installs follow Admin → Encryption. A key that doesn't work stops the app at boot. |
 
 ### Web Push (browser notifications)
 

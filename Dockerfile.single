@@ -1,0 +1,43 @@
+# Resolvd in one container: the backend serves the built frontend itself
+# (STATIC_DIR), so there's no nginx. For platforms that run one image
+# behind their own TLS proxy: Fly.io (fly.toml), Render, Railway, or a
+# plain `docker run`. Postgres stays separate (DATABASE_URL), and uploads
+# need a persistent volume at /data. See docs/DEPLOY-FLY.md.
+#
+# The Docker Compose install (docker-compose.yml) is unchanged and still
+# uses the separate backend / frontend images.
+#
+#   docker build -f Dockerfile.single -t resolvd .
+
+FROM node:24-alpine AS frontend
+WORKDIR /app
+# No lockfile: see frontend/Dockerfile (npm/cli#4828, rollup's musl dep).
+COPY frontend/package.json ./
+RUN npm install --no-audit --no-fund
+COPY frontend/ ./
+RUN npm run build
+
+FROM node:24-alpine
+WORKDIR /app
+COPY backend/package*.json ./
+RUN npm install --omit=dev --no-audit --no-fund
+COPY backend/ ./
+COPY --from=frontend /app/dist ./public
+
+ARG APP_VERSION=dev
+ARG APP_COMMIT=unknown
+ARG BUILT_AT
+ENV APP_VERSION=$APP_VERSION \
+    APP_COMMIT=$APP_COMMIT \
+    BUILT_AT=$BUILT_AT \
+    NODE_ENV=production \
+    PORT=3001 \
+    STATIC_DIR=/app/public \
+    UPLOADS_DIR=/data/uploads
+
+# /data is the persistent volume. Platform volumes (Fly included) mount
+# owned by root, so this runs as root like backend/Dockerfile does.
+RUN mkdir -p /data/uploads
+
+EXPOSE 3001
+CMD ["node", "server.js"]

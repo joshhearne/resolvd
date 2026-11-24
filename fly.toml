@@ -1,0 +1,45 @@
+# Fly.io config for a single-container Resolvd (Dockerfile.single).
+# Walkthrough: docs/DEPLOY-FLY.md. Change `app` (globally unique) and
+# `primary_region` before the first deploy.
+
+app = "resolvd-example"
+primary_region = "dfw"
+
+[build]
+  dockerfile = "Dockerfile.single"
+
+[env]
+  NODE_ENV = "production"
+  PORT = "3001"
+  COOKIE_SECURE = "true"
+  STATIC_DIR = "/app/public"
+  UPLOADS_DIR = "/data/uploads"
+  # First boot of an empty database switches encryption on (needs the
+  # RESOLVD_MASTER_KEY secret). Ignored once there are users or tickets.
+  RESOLVD_INITIAL_ENCRYPTION = "standard"
+
+# Uploaded files (encrypted on disk in standard mode).
+[mounts]
+  source = "resolvd_data"
+  destination = "/data"
+
+[http_service]
+  internal_port = 3001
+  force_https = true
+  # Resolvd runs its schedulers (SLA timers, reminders, inbox renewals,
+  # digests, alert polling) inside the app, so it must stay up and there
+  # must be exactly one machine: never auto-stop, never scale past one.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "30s"
+    interval = "30s"
+    method = "GET"
+    path = "/health"
+    timeout = "5s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "512mb"
