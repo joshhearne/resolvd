@@ -295,7 +295,7 @@ function SectionTicketList({ role }) {
         <Feature name="+ New Ticket" roles={["Admin","Manager","Tech","Submitter"]} />
         <Feature name="Column picker" roles="all" note="Toggle ref / title / priority / internal / external / vendor ref / alert ref / blocker / flagged / updated columns. Per-user preference." />
         <Feature name="Bulk Edit (status / assignee / project)" roles={["Admin"]} note="Select up to 500 rows, change fields in one action. Per-ticket transaction so one failure doesn't roll back the batch." />
-        <Feature name="Bulk reply (same comment to many tickets)" roles={PRIV} note="Mirror of bulk-status flow. Each post goes through the regular comment pipeline — @mentions resolve, follower notifications fire." />
+        <Feature name="Bulk reply (same comment to many tickets)" roles={HANDLER} note="Mirror of bulk-status flow. Each post goes through the regular comment pipeline — @mentions resolve, follower notifications fire." />
       </div>
 
       <h3 className="text-sm font-semibold text-fg pt-1">Recently opened rail</h3>
@@ -316,7 +316,7 @@ function SectionTicketList({ role }) {
 }
 
 function SectionNewTicket({ role }) {
-  const canSubmit = ["Admin","Manager","Submitter"].includes(role);
+  const canSubmit = ["Admin","Manager","Tech","Submitter"].includes(role);
   return (
     <div className="space-y-4">
       {canSubmit
@@ -330,15 +330,15 @@ function SectionNewTicket({ role }) {
         </p>
         <HelpScreenshot src="/help/new-ticket-form.png?v=3" alt="New ticket form with project picker, title, description, attachment dropzone, and impact / urgency selects" />
         <div className="space-y-0">
-          <Feature name="Submit ticket" roles={["Admin","Manager","Submitter"]} />
-          <Feature name="Markdown in description" roles={["Admin","Manager","Submitter"]} note="Full GFM: bold, italic, code blocks, lists, tables." />
-          <Feature name="Set impact / urgency" roles={["Admin","Manager","Submitter"]} note="Determines computed priority P1–P5." />
-          <Feature name="Attach files on creation" roles={["Admin","Manager","Submitter"]} />
-          <Feature name="Duplicate detection" roles={["Admin","Manager","Submitter"]} note="System warns if a similar open ticket already exists." />
-          <Feature name="Select project" roles={PRIV} note="Submitters are scoped to projects they belong to." />
+          <Feature name="Submit ticket" roles={["Admin","Manager","Tech","Submitter"]} />
+          <Feature name="Markdown in description" roles={["Admin","Manager","Tech","Submitter"]} note="Full GFM: bold, italic, code blocks, lists, tables." />
+          <Feature name="Set impact / urgency" roles={["Admin","Manager","Tech","Submitter"]} note="Determines computed priority P1–P5." />
+          <Feature name="Attach files on creation" roles={["Admin","Manager","Tech","Submitter"]} />
+          <Feature name="Duplicate detection" roles={["Admin","Manager","Tech","Submitter"]} note="System warns if a similar open ticket already exists." />
+          <Feature name="Select project" roles={HANDLER} note="Submitters are scoped to projects they belong to." />
           <Feature name="Assign to a user" roles={PRIV} note="Submitters cannot set the assignee at creation." />
-          <Feature name="Pick a category + form" roles={["Admin","Manager","Submitter"]} note="(v0.10.0) Only shown when the project has forms. The category's default form is pre-selected. Agent-only fields stay hidden from the submitter; sensitive fields are masked once saved." />
-          <Feature name="Deep-linkable new-ticket URLs" roles={["Admin","Manager","Submitter"]} note="(v0.10.0) /tickets/new/<project-prefix>/<category-slug>/<form-slug>?<field-slug>=<value> pre-selects the form and pre-fills fields. Admin → Forms has a shareable-link builder." />
+          <Feature name="Pick a category + form" roles={["Admin","Manager","Tech","Submitter"]} note="(v0.10.0) Only shown when the project has forms. The category's default form is pre-selected. Agent-only fields stay hidden from the submitter; sensitive fields are masked once saved." />
+          <Feature name="Deep-linkable new-ticket URLs" roles={["Admin","Manager","Tech","Submitter"]} note="(v0.10.0) /tickets/new/<project-prefix>/<category-slug>/<form-slug>?<field-slug>=<value> pre-selects the form and pre-fills fields. Admin → Forms has a shareable-link builder." />
           <Feature name="Computed fields" roles="all" note="(v0.10.0) Formula fields (e.g. a UPN derived from first + last name + domain) are evaluated on create — nothing to type." />
         </div>
         <OverrideNote />
@@ -349,7 +349,7 @@ function SectionNewTicket({ role }) {
 
 function SectionTicketDetail({ role }) {
   const isPriv = PRIV.includes(role);
-  const canComment = ["Admin","Manager","Submitter"].includes(role);
+  const canComment = ["Admin","Manager","Tech","Submitter"].includes(role);
   return (
     <div className="space-y-4">
       {isPriv
@@ -407,7 +407,7 @@ function SectionTicketDetail({ role }) {
         <Feature name="Edit impact / urgency" roles={["Admin","Manager","Tech","Submitter"]} />
         <Feature name="Change internal status" roles={HANDLER} />
         <Feature name="One-click advance status" roles={HANDLER} note="Advances to the next logical status in the workflow." />
-        <Feature name="Change external / vendor status" roles={PRIV} />
+        <Feature name="Change external / vendor status" roles={HANDLER} />
         <Feature name="Priority override" roles={HANDLER} note="Manually pin priority regardless of computed score." />
         <Feature name="Assign ticket" roles={HANDLER} note="(v0.10.0) Inline picker on the ticket header: assign to me, change, clear. Pool matches the project's assignment-policy pool." />
         <Feature name="Custom Fields card" roles={HANDLER} note="(v0.10.0) Form fields captured at create plus agent-only fields handlers fill in. Per-field or save-all. Sensitive values are revealed only to the handler editing them." />
@@ -426,21 +426,21 @@ function SectionTicketDetail({ role }) {
 
       <h3 className="text-sm font-semibold text-fg">Vendor &amp; Contacts</h3>
       <div className="space-y-0">
-        <Feature name="View attached vendor contacts" roles={PRIV} />
-        <Feature name="Attach / detach contacts" roles={PRIV} />
-        <Feature name="Notify vendor manually" roles={PRIV} note="Sends a new-ticket or status email to all attached contacts." />
+        <Feature name="View attached vendor contacts" roles={HANDLER} />
+        <Feature name="Attach / detach contacts" roles={HANDLER} />
+        <Feature name="Notify vendor manually" roles={HANDLER} note="Sends a new-ticket or status email to all attached contacts." />
         <Feature name="Auto-mute vendor replies toggle" roles={PRIV} />
       </div>
 
       <h3 className="text-sm font-semibold text-fg">Followers, Merge &amp; Move</h3>
       <div className="space-y-0">
-        <Feature name="Follow / unfollow ticket" roles={["Admin","Manager","Submitter"]} note="Followers receive email on new comments." />
-        <Feature name="Manage followers (add/remove others)" roles={PRIV} />
+        <Feature name="Follow / unfollow ticket" roles={["Admin","Manager","Tech","Submitter"]} note="Followers receive email on new comments." />
+        <Feature name="Manage followers (add/remove others)" roles={HANDLER} />
         <Feature name="CC followers when creating a ticket" roles="all" note="The New Ticket form has a CC / Followers picker. CC'd users are added as followers and get an 'Added as a follower' notification (its own row in the notifications matrix; also fires when an agent adds a follower from the ticket page). When the project restricts followers to members, only project members (and Admins) can be picked; Admin filers can CC anyone. You (and the submitter, when filing on behalf) appear as automatic follower chips; remove a chip to leave that person off." />
-        <Feature name="Apply / change form on an existing ticket" roles={PRIV} note="Apply form… (ticket header, or the Request type card on tickets filed without one) converts a ticket to a request type. Pick project → category → form and optionally fill fields; if the form belongs to another project the ticket moves there (new ref, vendor contacts detached). The original title and description are kept. A system note records the conversion and move and quotes the form's template text. Required fields left blank can be filled later from Custom Fields. Audited as form_applied." />
+        <Feature name="Apply / change form on an existing ticket" roles={HANDLER} note="Apply form… (ticket header, or the Request type card on tickets filed without one) converts a ticket to a request type. Pick project → category → form and optionally fill fields; if the form belongs to another project the ticket moves there (new ref, vendor contacts detached). The original title and description are kept. A system note records the conversion and move and quotes the form's template text. Required fields left blank can be filled later from Custom Fields. Audited as form_applied." />
         <Feature name="Add individual custom fields to a ticket" roles={HANDLER} note="'+ Add field' on the Custom Fields card attaches any shared ticket field, or one local to the ticket's project, without applying a form (works on tickets with or without one). Added fields are marked (added), are never required, and can be removed again with × (which clears the value). Audited as custom_field_added / custom_field_removed." />
-        <Feature name="Move ticket to another project" roles={["Admin","Manager","Submitter"]} note="Re-issues a new ref from the target project." />
-        <Feature name="Merge ticket into another" roles={PRIV} note="Reassigns all comments and history then closes this ticket." />
+        <Feature name="Move ticket to another project" roles={["Admin","Manager","Tech","Submitter"]} note="Re-issues a new ref from the target project." />
+        <Feature name="Merge ticket into another" roles={["Admin"]} note="Reassigns all comments and history then closes this ticket." />
         <Feature name="Delete ticket" roles={["Admin"]} />
       </div>
 
@@ -549,7 +549,7 @@ function SectionAdmin({ role }) {
 }
 
 function SectionNotifications({ role }) {
-  const canAct = ["Admin","Manager","Submitter"].includes(role);
+  const canAct = ["Admin","Manager","Tech","Submitter"].includes(role);
   return (
     <div className="space-y-4">
       {canAct
@@ -595,7 +595,7 @@ function SectionNotifications({ role }) {
         <Feature name="Prepaid block alerts" roles={PRIV} note="(v0.11.0) MSP mode. Notifies Admins and Managers when a customer's prepaid block reaches the set percentage, and again when it's used up." />
         <Feature name="Status page email alerts" roles="all" note="(v0.11.0) Subscribe on a status page for up / down alerts and page changes. See Status + Maintenance." />
         <Feature name="Mark all read" roles="all" />
-        <Feature name="Auto-follow on comment + mention" roles={["Admin","Manager","Submitter"]} note="Posting a comment subscribes you to the ticket; being mentioned subscribes you." />
+        <Feature name="Auto-follow on comment + mention" roles={["Admin","Manager","Tech","Submitter"]} note="Posting a comment subscribes you to the ticket; being mentioned subscribes you." />
       </div>
     </div>
   );
@@ -769,7 +769,7 @@ function SectionSecurity({ role }) {
 }
 
 function SectionMentions({ role }) {
-  const canComment = ["Admin","Manager","Submitter"].includes(role);
+  const canComment = ["Admin","Manager","Tech","Submitter"].includes(role);
   return (
     <div className="space-y-4">
       {canComment
@@ -782,17 +782,17 @@ function SectionMentions({ role }) {
       </p>
       <HelpScreenshot src="/help/mentions-autocomplete.png" alt="Comment composer with @mention autocomplete dropdown filtered to project members" />
       <div className="space-y-0">
-        <Feature name="Trigger @mention autocomplete" roles={["Admin","Manager","Submitter"]} note="Scoped to current project's members." />
-        <Feature name="Arrow keys / Enter / Right arrow to select" roles={["Admin","Manager","Submitter"]} />
+        <Feature name="Trigger @mention autocomplete" roles={["Admin","Manager","Tech","Submitter"]} note="Scoped to current project's members." />
+        <Feature name="Arrow keys / Enter / Right arrow to select" roles={["Admin","Manager","Tech","Submitter"]} />
         <Feature name="Receive mention notification" roles="all" />
-        <Feature name="Auto-follow on mention" roles={["Admin","Manager","Submitter"]} note="Mentioned user is automatically added as a ticket follower." />
+        <Feature name="Auto-follow on mention" roles={["Admin","Manager","Tech","Submitter"]} note="Mentioned user is automatically added as a ticket follower." />
       </div>
     </div>
   );
 }
 
 function SectionMarkdown({ role }) {
-  const canEdit = ["Admin","Manager","Submitter"].includes(role);
+  const canEdit = ["Admin","Manager","Tech","Submitter"].includes(role);
   return (
     <div className="space-y-4">
       {canEdit
@@ -1008,7 +1008,7 @@ function SectionKb({ role }) {
         <Feature name="Agent-only article visibility" roles={HANDLER} note="Toggle on an article to restrict both read AND write to project handlers — same gate as Notes. Non-handlers don't see the article in lists, suggestions, or ticket links. Only a global Admin can delete an agent-only article." />
         <Feature name="Runbook kind (checklist articles)" roles={HANDLER} note="Set Kind=Runbook to mark an article as a step-by-step checklist. Any @canned:<title> token inside a step becomes a clickable pill on the ticket Runbook tab. Boxes persist per ticket so handoffs resume where the last handler left off." />
         <Feature name="Version history + restore" roles={HANDLER} note="Every save snapshots a version with optional change_summary; restore writes a fresh version marked 'Restored from vN'." />
-        <Feature name="Promote ticket to KB" roles={PRIV} note="Drafts a new article seeded from the ticket title + description + resolution_summary. Lands in the local KB, or in Trove KB as an internal-only draft when the project is mapped to a collection." />
+        <Feature name="Promote ticket to KB" roles={HANDLER} note="Drafts a new article seeded from the ticket title + description + resolution_summary. Lands in the local KB, or in Trove KB as an internal-only draft when the project is mapped to a collection." />
         <Feature name="Suggested article on ticket open" roles="all" note="pg_trgm ranker over title + tags + keywords. Auto-surfaces high-confidence matches; manual picker for the long tail." />
       </div>
 

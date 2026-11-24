@@ -116,7 +116,7 @@ router.get('/:id', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech
   try {
     const r = await pool.query(
       `SELECT a.*, u.display_name AS linked_user_name, u.email AS linked_user_email,
-              c.name AS company_name,
+              c.name AS company_name, c.name_enc AS company_name_enc,
               at.slug AS asset_type_slug, at.label AS asset_type_label,
               ${ORPHANED_SQL} AS source_orphaned
          FROM assets a
@@ -127,6 +127,8 @@ router.get('/:id', numericId, requireAuth, requireRole('Admin', 'Manager', 'Tech
       [Number(req.params.id)]
     );
     if (!r.rows[0]) return res.status(404).json({ error: 'Not found' });
+    // Company names are encrypted at rest when encryption is on.
+    await decryptRows('assets', r.rows, { aliases: { company_name: 'companies.name' } });
 
     const tickets = await pool.query(
       `SELECT id, internal_ref, title, title_enc, effective_priority,
@@ -422,7 +424,7 @@ router.get('/export.csv', requireAuth, requireRole('Admin', 'Manager', 'Tech'), 
     const r = await pool.query(
       `SELECT a.id, a.hostname, at.label AS type, a.manufacturer, a.model,
               a.serial, a.os, a.os_version, a.cpu, a.ram_bytes, a.storage_bytes,
-              a.mac, a.ip_address, a.organization, c.name AS company,
+              a.mac, a.ip_address, a.organization, c.name AS company, c.name_enc AS company_enc,
               u.display_name AS linked_user, u.email AS linked_user_email,
               a.missing_updates_critical, a.missing_updates_other,
               a.vulnerabilities_critical, a.vulnerabilities_other,
@@ -436,6 +438,7 @@ router.get('/export.csv', requireAuth, requireRole('Admin', 'Manager', 'Tech'), 
          ORDER BY a.last_seen_at DESC NULLS LAST, a.hostname`,
       params
     );
+    await decryptRows('assets', r.rows, { aliases: { company: 'companies.name' } });
     const cols = [
       'id', 'hostname', 'type', 'manufacturer', 'model',
       'serial', 'os', 'os_version', 'cpu', 'ram_bytes', 'storage_bytes',

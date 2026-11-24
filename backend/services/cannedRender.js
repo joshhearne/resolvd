@@ -36,6 +36,7 @@
 
 const { pool } = require('../db/pool');
 const ticketCustomFields = require('./ticketCustomFields');
+const { decryptRow } = require('./fields');
 
 const TAG_RE = /\{([a-z_]+)\.([a-z_0-9]+)\}/gi;
 // Custom-field tags use the field's slug, which can contain hyphens
@@ -93,7 +94,7 @@ async function loadConsumableContext(consumableId) {
   const r = await pool.query(
     `SELECT c.id, c.part_no, c.title, c.vendor_part_no, c.purchase_url,
             c.reorder_qty, c.current_stock, c.low_stock_threshold,
-            c.is_metered, co.name AS vendor_company_name
+            c.is_metered, co.name AS vendor_company_name, co.name_enc AS vendor_company_name_enc
        FROM consumables c
        LEFT JOIN companies co ON co.id = c.vendor_company_id
       WHERE c.id = $1`,
@@ -101,6 +102,8 @@ async function loadConsumableContext(consumableId) {
   );
   const row = r.rows[0];
   if (!row) return { consumable: {}, vendor: {} };
+  // Vendor company name is encrypted at rest when encryption is on.
+  await decryptRow('consumables', row, { aliases: { vendor_company_name: 'companies.name' } });
   return {
     consumable: {
       part_no: row.part_no || '',
