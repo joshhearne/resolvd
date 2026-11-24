@@ -543,7 +543,10 @@ router.delete('/tickets/:id/runbook-runs/:articleId', async (req, res) => {
 router.post('/tickets/:id/promote', async (req, res) => {
   try {
     const user = req.session.user;
-    if (!['Admin', 'Manager'].includes(user.role)) return res.status(403).json({ error: 'Forbidden' });
+    // Ticket handlers (Admin / Manager / Tech) may promote; loadTicket below
+    // limits them to tickets in projects they can read. The draft is
+    // written with Resolvd's key and lands internal-only for review.
+    if (!isGlobalHandler(user)) return res.status(403).json({ error: 'Forbidden' });
     const kind = req.body?.kind === 'runbook' ? 'runbook' : 'article';
     const { ticket } = await loadTicket(user, Number(req.params.id));
     const full = await pool.query(

@@ -554,12 +554,13 @@ router.get('/tags', requireAuth, async (req, res) => {
 // POST /api/kb/from-ticket/:id — Promote-to-KB shortcut.
 // Drafts a new KB article seeded from the ticket (title, description,
 // resolution_summary), creates a kind='system' link back to the
-// ticket, returns the new article's slug. Admin / Manager only.
-// Project = ticket's project. Article status starts as 'draft' so
-// the admin can review + publish from the editor.
+// ticket, returns the new article's slug. Same roles that can write KB
+// articles (EDIT_ROLES: Admin / Manager / Tech), on tickets in projects
+// they can read. Project = ticket's project. Article status starts as
+// 'draft' so it can be reviewed + published from the editor.
 router.post('/from-ticket/:id', requireAuth, async (req, res) => {
   const user = req.session.user;
-  if (!['Admin', 'Manager'].includes(user.role)) {
+  if (!canEdit(user.role)) {
     return res.status(403).json({ error: 'Forbidden' });
   }
   const ticketId = Number(req.params.id);

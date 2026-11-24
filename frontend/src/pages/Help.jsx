@@ -1008,7 +1008,7 @@ function SectionKb({ role }) {
         <Feature name="Agent-only article visibility" roles={HANDLER} note="Toggle on an article to restrict both read AND write to project handlers — same gate as Notes. Non-handlers don't see the article in lists, suggestions, or ticket links. Only a global Admin can delete an agent-only article." />
         <Feature name="Runbook kind (checklist articles)" roles={HANDLER} note="Set Kind=Runbook to mark an article as a step-by-step checklist. Any @canned:<title> token inside a step becomes a clickable pill on the ticket Runbook tab. Boxes persist per ticket so handoffs resume where the last handler left off." />
         <Feature name="Version history + restore" roles={HANDLER} note="Every save snapshots a version with optional change_summary; restore writes a fresh version marked 'Restored from vN'." />
-        <Feature name="Promote ticket to KB" roles={PRIV} note="Drafts a new article seeded from the ticket title + description + resolution_summary. Lands in the local KB, or in Trove KB as an internal-only draft when the project is mapped to a collection." />
+        <Feature name="Promote ticket to KB" roles={HANDLER} note="Drafts a new article seeded from the ticket title + description + resolution_summary. Lands in the local KB, or in Trove KB as an internal-only draft when the project is mapped to a collection." />
         <Feature name="Suggested article on ticket open" roles="all" note="pg_trgm ranker over title + tags + keywords. Auto-surfaces high-confidence matches; manual picker for the long tail." />
       </div>
 
