@@ -130,7 +130,7 @@ async function buildContext({ ticketId, actorId, consumableId }) {
 
   if (ticketId) {
     const r = await pool.query(
-      `SELECT t.id, t.internal_ref, t.title, t.effective_priority, t.external_ticket_ref,
+      `SELECT t.id, t.internal_ref, t.title, t.title_enc, t.effective_priority, t.external_ticket_ref,
               sub.display_name AS submitter_name, sub.email AS submitter_email,
               asgn.display_name AS assignee_name, asgn.email AS assignee_email
          FROM tickets t
@@ -140,6 +140,7 @@ async function buildContext({ ticketId, actorId, consumableId }) {
       [ticketId]
     );
     const t = r.rows[0];
+    if (t) await decryptRow('tickets', t);
     if (t) {
       ctx.ticket.id = t.id;
       ctx.ticket.ref = t.internal_ref;

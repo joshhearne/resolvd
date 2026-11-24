@@ -33,6 +33,7 @@ const TARGETS = [
       { plain: 'description',      enc: 'description_enc',      ctx: 'tickets.description' },
       { plain: 'review_note',      enc: 'review_note_enc',      ctx: 'tickets.review_note' },
       { plain: 'internal_blocker_note', enc: 'internal_blocker_note_enc', ctx: 'tickets.internal_blocker_note' },
+      { plain: 'resolution_summary', enc: 'resolution_summary_enc', ctx: 'tickets.resolution_summary' },
     ],
   },
   {
@@ -83,6 +84,75 @@ const TARGETS = [
     cols: [
       { plain: 'license_key', enc: 'license_key_enc', ctx: 'software_licenses.license_key' },
       { plain: 'notes',       enc: 'notes_enc',       ctx: 'software_licenses.notes' },
+    ],
+  },  {
+    table: 'ticket_notes',
+    pk: 'id',
+    cols: [
+      { plain: 'body', enc: 'body_enc', ctx: 'ticket_notes.body' },
+    ],
+  },
+  {
+    table: 'time_entries',
+    pk: 'id',
+    cols: [
+      { plain: 'note', enc: 'note_enc', ctx: 'time_entries.note' },
+    ],
+  },
+  {
+    table: 'alerts',
+    pk: 'id',
+    cols: [
+      { plain: 'title', enc: 'title_enc', ctx: 'alerts.title' },
+      { plain: 'description', enc: 'description_enc', ctx: 'alerts.description' },
+    ],
+  },
+  {
+    table: 'companies',
+    pk: 'id',
+    cols: [
+      { plain: 'name', enc: 'name_enc', ctx: 'companies.name' },
+      { plain: 'notes', enc: 'notes_enc', ctx: 'companies.notes' },
+    ],
+  },
+  {
+    table: 'inbound_email_queue',
+    pk: 'id',
+    cols: [
+      { plain: 'subject', enc: 'subject_enc', ctx: 'inbound_email_queue.subject' },
+      { plain: 'body', enc: 'body_enc', ctx: 'inbound_email_queue.body' },
+    ],
+  },
+  {
+    table: 'email_backend_accounts',
+    pk: 'id',
+    cols: [
+      { plain: 'oauth_access_token', enc: 'oauth_access_token_enc', ctx: 'email_backend_accounts.oauth_access_token' },
+      { plain: 'oauth_refresh_token', enc: 'oauth_refresh_token_enc', ctx: 'email_backend_accounts.oauth_refresh_token' },
+      { plain: 'smtp_password', enc: 'smtp_password_enc', ctx: 'email_backend_accounts.smtp_password' },
+    ],
+  },
+  {
+    table: 'external_alert_source',
+    pk: 'id',
+    cols: [
+      { plain: 'api_token', enc: 'api_token_enc', ctx: 'external_alert_source.api_token' },
+    ],
+  },
+  {
+    table: 'ticket_schedules',
+    pk: 'id',
+    cols: [
+      { plain: 'title', enc: 'title_enc', ctx: 'ticket_schedules.title' },
+      { plain: 'description', enc: 'description_enc', ctx: 'ticket_schedules.description' },
+    ],
+  },
+  {
+    table: 'tasks',
+    pk: 'id',
+    cols: [
+      { plain: 'title', enc: 'title_enc', ctx: 'tasks.title' },
+      { plain: 'body', enc: 'body_enc', ctx: 'tasks.body' },
     ],
   },
 ];

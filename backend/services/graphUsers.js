@@ -11,6 +11,7 @@
 
 const { pool } = require('../db/pool');
 const eb = require('./emailBackends');
+const { decryptRow } = require('./fields');
 
 const GRAPH = 'https://graph.microsoft.com/v1.0';
 const CACHE_TTL_MS = 24 * 60 * 60 * 1000;
@@ -38,7 +39,10 @@ async function pickAccount() {
       ORDER BY id ASC
       LIMIT 1`
   );
-  return r.rows[0] || null;
+  const row = r.rows[0] || null;
+  // Tokens live in *_enc columns once encryption is on.
+  if (row) await decryptRow('email_backend_accounts', row);
+  return row;
 }
 
 // Resolve an email to { displayName, officeLocation, department, mail,
