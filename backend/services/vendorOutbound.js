@@ -64,12 +64,14 @@ const ATTACH_TOTAL_BYTES    = Math.max(1, Number(process.env.VENDOR_ATTACH_TOTAL
 // Returns objects with `id` so the caller can stamp sent_to_vendor_at
 // on the rows that actually made it onto the wire (size-capped files
 // are excluded from the stamp so a later send can retry them).
-async function fetchUnsentAttachments({ ticketId }) {
+// includeSent: every attachment on the ticket (a one-off forward to a
+// vendor's helpdesk, which hasn't seen any of them).
+async function fetchUnsentAttachments({ ticketId, includeSent = false }) {
   const sql = `
     SELECT id, filename, original_name, mimetype, size, encrypted_at_rest
       FROM attachments
      WHERE ticket_id = $1
-       AND sent_to_vendor_at IS NULL
+       ${includeSent ? '' : 'AND sent_to_vendor_at IS NULL'}
      ORDER BY created_at ASC
   `;
   const r = await pool.query(sql, [ticketId]);
@@ -361,4 +363,47 @@ async function sendVendorEmail({ eventType, ticketId, actorId, commentId = null 
   return { sent, failed, audience: contacts.length };
 }
 
-module.exports = { sendVendorEmail };
+// One-off forward of a ticket to a vendor's support mailbox (a vendor
+// support channel, never a contact). Renders the vendor new_ticket
+// template, with the agent's optional message on top, and carries every
+// ticket attachment within the size caps. Loop safety: the support address isn't a contact, so nothing Resolvd sends later
+// goes to it unless an agent forwards again, and its replies land in the
+// inbound queue keyed by the ticket ref in the subject.
+async function forwardToSupportAddress({ ticketId, actorId, to, toName, companyName, message }) {
+  const tplRow = await loadTemplate('new_ticket', 'vendor');
+  if (!tplRow) throw new Error('No vendor "new ticket" email template is set up');
+  const ctx = await fetchTicketContext(ticketId, actorId);
+  if (!ctx) throw new Error('Ticket not found');
+  const attachments = await fetchUnsentAttachments({ ticketId, includeSent: true });
+  const personalCtx = {
+    ...ctx,
+    contact: { name: toName || companyName || '', email: to, role_title: '' },
+    company: { name: companyName || '', domain: String(to).split('@')[1] || '' },
+  };
+  const rendered = await render(tplRow, personalCtx);
+  const bodyHtml = tplRow.is_html ? rendered.body : htmlify(rendered.body);
+  const intro = message && String(message).trim()
+    ? htmlify(String(message).trim()) + '<hr style="border:none;border-top:1px solid #e5e7eb;margin:16px 0">'
+    : '';
+  const html = await baseHtml(rendered.subject, replyMarkerHtml(ctx.ticket.internal_ref) + intro + bodyHtml);
+  const actorLabel = ctx.actor?.display_name || ctx.actor?.email?.split('@')[0] || null;
+  await sendMail({
+    to,
+    subject: rendered.subject,
+    html,
+    replyTo: REPLY_TO,
+    senderName: actorLabel ? `${actorLabel} via ${ctx.site.name}` : ctx.site.name,
+    projectId: ctx.ticket.project_id,
+    attachments: attachments.map((a) => ({ filename: a.filename, mimetype: a.mimetype, data: a.data })),
+    // No Auto-Submitted / X-Auto-Response-Suppress here: an agent sent
+    // this on purpose, and the vendor helpdesk's acknowledgement (with
+    // their ticket number) is wanted.
+    headers: {
+      'X-Resolvd-No-Reply': '1',
+      'X-Resolvd-Ticket': String(ctx.ticket.internal_ref || ticketId),
+    },
+  });
+  return { subject: rendered.subject, attachments: attachments.length };
+}
+
+module.exports = { sendVendorEmail, forwardToSupportAddress };

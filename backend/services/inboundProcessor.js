@@ -857,6 +857,8 @@ async function tryAutoCreate({ subject, body, fromAddress, ccAddresses, attachme
     actorName: submitter.display_name || submitter.email,
     submitterId: submitter.id,
   }).catch(err => console.error('fanoutNewTicket (inbound) failed:', err.message));
+  // Agent-only note with the vendor's support channels, if any match.
+  require('./vendorSupport').autoPrompt(ticket.id);
 
   return {
     ok: true,

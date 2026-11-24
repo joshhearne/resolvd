@@ -22,6 +22,7 @@ const blindIndex = require('../services/blindIndex');
 const { logSupportRead } = require('../middleware/supportAccess');
 const { sendVendorEmail } = require('../services/vendorOutbound');
 const { auditLog, systemComment, isProjectHandler } = require('../services/ticketHelpers');
+const vendorSupport = require('../services/vendorSupport');
 const ticketCustomFields = require('../services/ticketCustomFields');
 const { getTicketScope, scopeClause, canViewTicket } = require('../services/ticketVisibility');
 
@@ -714,6 +715,9 @@ router.post('/', requireAuth, requireRole('Admin', 'Manager', 'Tech', 'Submitter
     } catch (e) {
       console.error('recompute computed fields (ticket create) failed:', e.message);
     }
+    // Agent-only note with the vendor's support channels (after the form
+    // fields are in, since a vendor can match on one). Best-effort.
+    vendorSupport.autoPrompt(ticket.id);
 
     await decryptRow('tickets', ticket);
     res.status(201).json(ticket);
@@ -1551,6 +1555,13 @@ router.patch('/:id', requireAuth, async (req, res) => {
       updated.custom_fields = await ticketCustomFields.readValues(pool, ticket.id, { reveal });
     } catch (err) {
       console.error('ticket patch: custom_fields read failed:', err.message);
+    }
+
+    // A priority change can change which vendor support channels suit the
+    // ticket (e.g. phone at P2 and above): note the new ones. Awaited so a
+    // refetch of notes sees it; it never fails the update.
+    if (updated.effective_priority !== ticket.effective_priority) {
+      await vendorSupport.autoPrompt(ticket.id, { reason: 'priority' });
     }
 
     res.json(updated);

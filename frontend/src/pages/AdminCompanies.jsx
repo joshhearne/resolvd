@@ -2,6 +2,7 @@ import React, { useEffect, useMemo, useState } from "react";
 import { useSearchParams } from "react-router-dom";
 import toast from "react-hot-toast";
 import { api } from "../utils/api";
+import VendorSupportAdmin from "../components/VendorSupportAdmin";
 import { useBranding } from "../context/BrandingContext";
 import { useAuth } from "../context/AuthContext";
 import CompanyNotificationPrefs from "../components/CompanyNotificationPrefs";
@@ -444,6 +445,7 @@ function CompanyDetail({ company, projects, onBack, onReload, onDeleted, initial
     if (company.kind === "vendor") {
       return [
         { id: "contacts", label: "Contacts" },
+        { id: "support", label: "Support" },
         { id: "locations", label: "Locations" },
         { id: "notifications", label: "Notifications" },
       ];
@@ -561,6 +563,9 @@ function CompanyDetail({ company, projects, onBack, onReload, onDeleted, initial
         {tab === "members" && <MembersTab company={company} onChange={onReload} />}
         {tab === "projects" && <ProjectsTab company={company} projects={projects} />}
         {tab === "notifications" && <CompanyNotificationPrefs company={company} />}
+        {tab === "support" && company.kind === "vendor" && (
+          <VendorSupportAdmin company={company} projects={projects} canEdit={["Admin", "Manager"].includes(user?.role)} />
+        )}
         {tab === "billing" && <CompanyContracts company={company} />}
       </div>
     </div>
