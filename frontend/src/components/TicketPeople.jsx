@@ -1,6 +1,6 @@
-import React, { useEffect, useState } from "react";
+import React, { useEffect, useRef, useState } from "react";
 import { api } from "../utils/api";
-import { callOptions } from "../utils/phone";
+import { callOptions, telHref } from "../utils/phone";
 import { useAuth } from "../context/AuthContext";
 
 // Contacts tab on a ticket (#153): the requester and the contacts attached
@@ -9,7 +9,10 @@ import { useAuth } from "../context/AuthContext";
 // Admin → Calling apps). When that isn't the phone app, a small Phone link
 // sits beside each button: a browser can't tell whether an app is
 // installed, and an app link with nothing to open it does nothing.
-// Numbers that aren't on file are left out. Ticket handlers only.
+// If an app link leaves the page untouched (nothing installed to open it),
+// the button shows a nudge to install the app, with the store page for the
+// viewer's platform when the admin has one. Numbers that aren't on file
+// are left out. Ticket handlers only.
 
 // The viewer's calling app: their preference if it's still enabled, else
 // the organisation default, else the built-in phone app.
@@ -32,8 +35,73 @@ export function useCallingApp() {
   return state;
 }
 
+// How long an app link has to take the page out of view before we assume
+// nothing opened it. Apps launch well inside this; iOS shows its "Open in
+// …?" prompt (which blurs the page) inside it too.
+const LAUNCH_WAIT_MS = 1800;
+
+function platform() {
+  const ua = typeof navigator !== "undefined" ? navigator.userAgent || "" : "";
+  if (/android/i.test(ua)) return "android";
+  // iPadOS reports itself as a Mac; touch support gives it away.
+  if (/iphone|ipad|ipod/i.test(ua) || (/macintosh/i.test(ua) && navigator.maxTouchPoints > 1)) return "ios";
+  return "other";
+}
+
+// Calls onFail if the page is still visible and focused LAUNCH_WAIT_MS
+// after an app link was tapped: the link went nowhere. Any sign the app
+// (or the browser's "open this app?" prompt) took over cancels it.
+function useLaunchWatch() {
+  const cleanup = useRef(null);
+  useEffect(() => () => cleanup.current?.(), []);
+  return (onFail) => {
+    cleanup.current?.();
+    const cancel = () => cleanup.current?.();
+    const onVis = () => { if (document.visibilityState === "hidden") cancel(); };
+    const timer = setTimeout(() => {
+      const stillHere = document.visibilityState === "visible" && (typeof document.hasFocus !== "function" || document.hasFocus());
+      cancel();
+      if (stillHere) onFail();
+    }, LAUNCH_WAIT_MS);
+    document.addEventListener("visibilitychange", onVis);
+    window.addEventListener("pagehide", cancel);
+    window.addEventListener("blur", cancel);
+    cleanup.current = () => {
+      clearTimeout(timer);
+      document.removeEventListener("visibilitychange", onVis);
+      window.removeEventListener("pagehide", cancel);
+      window.removeEventListener("blur", cancel);
+      cleanup.current = null;
+    };
+  };
+}
+
+function InstallNudge({ app, phoneHref, onClose }) {
+  const plat = platform();
+  const store = plat === "ios" ? app.ios_install_url : plat === "android" ? app.android_install_url : null;
+  const storeName = plat === "ios" ? "the App Store" : "Google Play";
+  return (
+    <div role="status" className="mt-1 max-w-xs rounded-md border border-amber-500/40 bg-amber-500/10 px-2.5 py-2 text-xs text-fg">
+      <div className="flex items-start gap-2">
+        <p className="flex-1">
+          Nothing happened? <b>{app.name}</b> may not be installed on this device.{" "}
+          {store ? (
+            <>Install it from <a href={store} target="_blank" rel="noopener noreferrer" className="text-brand underline">{storeName}</a>, then try again</>
+          ) : (
+            <>Install it from your device's app store, then try again</>
+          )}
+          {phoneHref ? <>, or <a href={phoneHref} className="text-brand underline">call with the Phone app</a>.</> : "."}
+        </p>
+        <button type="button" onClick={onClose} className="text-fg-muted hover:text-fg leading-none" aria-label="Dismiss">×</button>
+      </div>
+    </div>
+  );
+}
+
 function Person({ p, app }) {
   const calls = callOptions(p, app);
+  const [stuck, setStuck] = useState(null); // key of the button whose app didn't open
+  const watch = useLaunchWatch();
   const where = [p.title, p.company_name, p.location_name].filter(Boolean).join(" · ");
   return (
     <li className="py-3 first:pt-0 last:pb-0">
@@ -51,6 +119,7 @@ function Person({ p, app }) {
             <span key={c.key} className="inline-flex flex-col gap-1">
             <a
               href={c.href}
+              onClick={app && (c.phoneHref || c.key === "ext") ? () => { setStuck(null); watch(() => setStuck(c.key)); } : undefined}
               className="inline-flex items-center gap-2 rounded-md border border-border-strong bg-surface px-3 py-2 text-sm text-fg hover:border-brand hover:text-brand min-h-[2.5rem]"
               aria-label={`Call ${p.name}, ${c.label}: ${c.display}${c.viaPhone ? " with the phone app" : app && (c.phoneHref || c.key === "ext") ? ` with ${app.name}` : ""}`}
             >
@@ -73,6 +142,9 @@ function Person({ p, app }) {
                   </a>
                 )}
               </span>
+            )}
+            {stuck === c.key && app && (
+              <InstallNudge app={app} phoneHref={c.phoneHref || (telHref(p.direct || p.mobile) || telHref(p.location_phone, p.extension))} onClose={() => setStuck(null)} />
             )}
             </span>
           ))}

@@ -783,6 +783,23 @@ async function initSchema() {
         ('dialpad', 'Dialpad', 'dialpad://{number}', NULL, 'Check on your devices; edit the link if needed.', FALSE, FALSE, FALSE, 50)
       ON CONFLICT (key) DO NOTHING
     `);
+    // Store pages for the "didn't open?" nudge on the ticket Contacts tab:
+    // when an app link does nothing (app not installed), the button offers
+    // the store page for the viewer's platform. https only; admin-editable.
+    await client.query(`ALTER TABLE calling_apps ADD COLUMN IF NOT EXISTS ios_install_url TEXT`);
+    await client.query(`ALTER TABLE calling_apps ADD COLUMN IF NOT EXISTS android_install_url TEXT`);
+    await client.query(`
+      UPDATE calling_apps c SET
+        ios_install_url = COALESCE(c.ios_install_url, v.ios),
+        android_install_url = COALESCE(c.android_install_url, v.android)
+      FROM (VALUES
+        ('webex', 'https://apps.apple.com/app/id833967564', 'https://play.google.com/store/apps/details?id=com.cisco.wx2.android'),
+        ('teams', 'https://apps.apple.com/app/id1113153706', 'https://play.google.com/store/apps/details?id=com.microsoft.teams'),
+        ('zoom', 'https://apps.apple.com/app/id546505307', 'https://play.google.com/store/apps/details?id=us.zoom.videomeetings'),
+        ('ringcentral', 'https://apps.apple.com/app/id715886894', 'https://play.google.com/store/apps/details?id=com.glip.mobile')
+      ) AS v(key, ios, android)
+      WHERE c.key = v.key AND (c.ios_install_url IS NULL OR c.android_install_url IS NULL)
+    `);
 
     // Admin-controlled feature flags for which company modes are active.
     // Internal stays on by default since users always live somewhere.

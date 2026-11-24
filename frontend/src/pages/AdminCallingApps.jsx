@@ -23,11 +23,34 @@ function extPreview(tpl) {
   return /\{(number|digits)\}/.test(t) ? out : out + SAMPLE_EXT;
 }
 
+// App Store / Google Play pages offered when this app's link does nothing
+// on a device (the app isn't installed).
+function StoreFields({ value, onChange, className }) {
+  return (
+    <>
+      <label className="block">
+        <span className="block text-xs font-medium text-fg mb-1">App Store link <span className="text-fg-dim font-normal">(optional)</span></span>
+        <input className={className} value={value.ios_install_url} onChange={(e) => onChange("ios_install_url", e.target.value)}
+          maxLength={500} spellCheck={false} placeholder="https://apps.apple.com/app/id…" />
+      </label>
+      <label className="block">
+        <span className="block text-xs font-medium text-fg mb-1">Google Play link <span className="text-fg-dim font-normal">(optional)</span></span>
+        <input className={className} value={value.android_install_url} onChange={(e) => onChange("android_install_url", e.target.value)}
+          maxLength={500} spellCheck={false} placeholder="https://play.google.com/store/apps/details?id=…" />
+      </label>
+      <span className="block sm:col-span-2 -mt-2 text-[11px] text-fg-muted">
+        If tapping a call button doesn't open the app, people see a note that it may not be installed, with the store link for their phone.
+      </span>
+    </>
+  );
+}
+
 function AppRow({ app, onSaved, onDelete }) {
-  const [f, setF] = useState({ name: app.name, url_template: app.url_template, ext_template: app.ext_template || "", notes: app.notes || "" });
+  const [f, setF] = useState({ name: app.name, url_template: app.url_template, ext_template: app.ext_template || "", notes: app.notes || "", ios_install_url: app.ios_install_url || "", android_install_url: app.android_install_url || "" });
   const [open, setOpen] = useState(false);
   const [busy, setBusy] = useState(false);
-  const dirty = f.name !== app.name || f.url_template !== app.url_template || f.ext_template !== (app.ext_template || "") || f.notes !== (app.notes || "");
+  const dirty = f.name !== app.name || f.url_template !== app.url_template || f.ext_template !== (app.ext_template || "") || f.notes !== (app.notes || "")
+    || f.ios_install_url !== (app.ios_install_url || "") || f.android_install_url !== (app.android_install_url || "");
 
   async function patch(body, msg = "Saved") {
     setBusy(true);
@@ -84,7 +107,7 @@ function AppRow({ app, onSaved, onDelete }) {
 
       {open && (
         <form
-          onSubmit={(e) => { e.preventDefault(); patch({ name: f.name, url_template: f.url_template, ext_template: f.ext_template || null, notes: f.notes }); }}
+          onSubmit={(e) => { e.preventDefault(); patch({ name: f.name, url_template: f.url_template, ext_template: f.ext_template || null, notes: f.notes, ios_install_url: f.ios_install_url, android_install_url: f.android_install_url }); }}
           className="mt-3 p-3 rounded-md bg-surface-2/60 border border-border space-y-3"
         >
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
@@ -107,9 +130,12 @@ function AppRow({ app, onSaved, onDelete }) {
               <span className="block text-xs font-medium text-fg mb-1">Link with extension <span className="text-fg-dim font-normal">(optional, only if the app can dial a main line then an extension)</span></span>
               <input className={input} value={f.ext_template} onChange={(e) => setF((x) => ({ ...x, ext_template: e.target.value }))} maxLength={500} spellCheck={false} placeholder="e.g. tel:{number},{ext}" />
             </label>
+            {!/^tel:/i.test(f.url_template.trim()) && (
+              <StoreFields value={f} onChange={(k, v) => setF((x) => ({ ...x, [k]: v }))} className={input} />
+            )}
           </div>
           <div className="flex justify-end gap-2">
-            <button type="button" onClick={() => { setF({ name: app.name, url_template: app.url_template, ext_template: app.ext_template || "", notes: app.notes || "" }); setOpen(false); }} className="btn btn-secondary btn-sm">Cancel</button>
+            <button type="button" onClick={() => { setF({ name: app.name, url_template: app.url_template, ext_template: app.ext_template || "", notes: app.notes || "", ios_install_url: app.ios_install_url || "", android_install_url: app.android_install_url || "" }); setOpen(false); }} className="btn btn-secondary btn-sm">Cancel</button>
             <button type="submit" disabled={busy || !dirty} className="btn btn-primary btn-sm">Save</button>
           </div>
         </form>
@@ -120,7 +146,7 @@ function AppRow({ app, onSaved, onDelete }) {
 
 export default function AdminCallingApps() {
   const [apps, setApps] = useState(null);
-  const [form, setForm] = useState({ name: "", url_template: "", notes: "", ext_direct: false });
+  const [form, setForm] = useState({ name: "", url_template: "", notes: "", ext_direct: false, ios_install_url: "", android_install_url: "" });
   const [adding, setAdding] = useState(false);
 
   async function load() {
@@ -133,7 +159,7 @@ export default function AdminCallingApps() {
     setAdding(true);
     try {
       await api.post("/api/calling-apps", form);
-      setForm({ name: "", url_template: "", notes: "", ext_direct: false });
+      setForm({ name: "", url_template: "", notes: "", ext_direct: false, ios_install_url: "", android_install_url: "" });
       toast.success("App added");
       await load();
     } catch (err) {
@@ -162,7 +188,7 @@ export default function AdminCallingApps() {
       <div className="rounded-lg border border-amber-500/40 bg-amber-500/10 p-3 text-xs text-fg space-y-1">
         <p><b>Apps other than the phone app can't dial an extension after the main line,</b> so their buttons lead with the direct line and mobile; main line + extension stays available through the phone app.</p>
         <p><b>Dial internal extensions directly</b> adds an <b>Extension</b> button for internal users (members of an internal company) that dials just their extension. Turn it on for an app that shares your office phone system's extensions, like Webex Calling.</p>
-        <p><b>A browser can't tell whether an app is installed.</b> If the chosen app isn't on a device, its buttons do nothing, so each one has a small <b>Phone app</b> link underneath. Test a link on one iPhone and one Android before switching everyone over.</p>
+        <p><b>A browser can't tell whether an app is installed.</b> If the chosen app isn't on a device, its buttons do nothing, so each one has a small <b>Phone app</b> link underneath, and a tap that opens nothing shows a note to install the app (with the App Store or Google Play link set below). Test a link on one iPhone and one Android before switching everyone over.</p>
       </div>
 
       <section className="bg-surface border border-border rounded-lg">
@@ -199,6 +225,8 @@ export default function AdminCallingApps() {
               {form.url_template && <> Example: <code className="font-mono break-all">{preview({ url_template: form.url_template })}</code></>}
             </span>
           </label>
+          <StoreFields value={form} onChange={(k, v) => setForm((x) => ({ ...x, [k]: v }))}
+            className="w-full bg-surface border border-border rounded px-2 py-1.5 text-sm font-mono" />
           <label className="flex items-center gap-2 text-sm text-fg sm:col-span-2">
             <input type="checkbox" checked={form.ext_direct} onChange={(e) => setForm((x) => ({ ...x, ext_direct: e.target.checked }))} />
             Dial internal extensions directly

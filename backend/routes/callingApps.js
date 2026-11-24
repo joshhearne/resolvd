@@ -20,7 +20,7 @@ router.use(requireAuth);
 
 const BLOCKED_SCHEMES = new Set(['javascript', 'data', 'vbscript', 'file', 'about', 'blob', 'filesystem']);
 const TEMPLATE_MAX = 500;
-const COLS = 'id, key, name, url_template, ext_template, notes, enabled, is_default, ext_direct, sort_order';
+const COLS = 'id, key, name, url_template, ext_template, notes, enabled, is_default, ext_direct, ios_install_url, android_install_url, sort_order';
 
 // Returns an error message, or null when the template is acceptable.
 function templateError(t, { needsExt = false } = {}) {
@@ -33,6 +33,19 @@ function templateError(t, { needsExt = false } = {}) {
   if (/[\s<>"]/.test(v.replace(/\{(number|digits|ext)\}/g, ''))) return 'link must not contain spaces, quotes or angle brackets';
   if (needsExt && !v.includes('{ext}')) return 'the extension link must include {ext}';
   return null;
+}
+
+// Store links for the "didn't open?" nudge. Returns [value, error]. An
+// empty value is stored as '' (not NULL) so the built-in links filled in
+// at startup stay cleared once an admin removes them.
+function installUrl(v, label) {
+  if (v == null || String(v).trim() === '') return [''];
+  const s = String(v).trim();
+  if (s.length > TEMPLATE_MAX) return [null, `${label} must be at most ${TEMPLATE_MAX} characters`];
+  let u;
+  try { u = new URL(s); } catch { return [null, `${label} must be a full https:// link`]; }
+  if (u.protocol !== 'https:') return [null, `${label} must start with https://`];
+  return [u.toString()];
 }
 
 router.get('/', async (req, res) => {
@@ -71,10 +84,14 @@ router.post('/', requireRole('Admin'), async (req, res) => {
       if (e2) return res.status(400).json({ error: e2 });
       ext = b.ext_template.trim();
     }
+    const [ios, e3] = installUrl(b.ios_install_url, 'App Store link');
+    if (e3) return res.status(400).json({ error: e3 });
+    const [android, e4] = installUrl(b.android_install_url, 'Google Play link');
+    if (e4) return res.status(400).json({ error: e4 });
     const r = await pool.query(
-      `INSERT INTO calling_apps (name, url_template, ext_template, notes, enabled, ext_direct, sort_order)
-       VALUES ($1, $2, $3, $4, TRUE, $5, 200) RETURNING ${COLS}`,
-      [name, b.url_template.trim(), ext, String(b.notes || '').trim().slice(0, 300) || null, !!b.ext_direct]
+      `INSERT INTO calling_apps (name, url_template, ext_template, notes, enabled, ext_direct, ios_install_url, android_install_url, sort_order)
+       VALUES ($1, $2, $3, $4, TRUE, $5, $6, $7, 200) RETURNING ${COLS}`,
+      [name, b.url_template.trim(), ext, String(b.notes || '').trim().slice(0, 300) || null, !!b.ext_direct, ios, android]
     );
     res.status(201).json(r.rows[0]);
   } catch (err) {
@@ -111,6 +128,12 @@ router.patch('/:id', numericId, requireRole('Admin'), async (req, res) => {
     }
     if (b.notes !== undefined) sets.notes = String(b.notes || '').trim().slice(0, 300) || null;
     if (b.ext_direct !== undefined) sets.ext_direct = !!b.ext_direct;
+    for (const [k, label] of [['ios_install_url', 'App Store link'], ['android_install_url', 'Google Play link']]) {
+      if (b[k] === undefined) continue;
+      const [v, e] = installUrl(b[k], label);
+      if (e) return res.status(400).json({ error: e });
+      sets[k] = v;
+    }
     if (b.sort_order !== undefined && Number.isInteger(Number(b.sort_order))) sets.sort_order = Number(b.sort_order);
     const makeDefault = b.is_default === true;
     if (b.enabled !== undefined) {
@@ -162,3 +185,4 @@ router.delete('/:id', numericId, requireRole('Admin'), async (req, res) => {
 
 module.exports = router;
 module.exports.templateError = templateError;
+module.exports.installUrl = installUrl;
