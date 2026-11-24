@@ -554,7 +554,7 @@ export default function Layout() {
   }, [user?.preferences?.compact_mode]);
 
   const canCreateTicket =
-    ["Admin", "Manager"].includes(user?.role) || user?.role === "Submitter";
+    ["Admin", "Manager", "Tech", "Submitter"].includes(user?.role);
 
   return (
     <div className="min-h-screen flex flex-col">
