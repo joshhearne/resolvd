@@ -361,11 +361,15 @@ router.delete('/locations/:locationId', requireAuth, requireRole('Admin', 'Manag
 
 // ── Members ────────────────────────────────────────────────────────────
 
+// Phone numbers are only shown to staff (Admin / Manager / Tech).
+const PHONE_VIEWERS = ['Admin', 'Manager', 'Tech'];
+
 router.get('/:id/members', requireAuth, async (req, res) => {
   try {
     const r = await pool.query(
-      `SELECT cm.*, u.display_name, u.email, u.role,
-              l.name AS location_name, l.location_code
+      `SELECT cm.*, u.display_name, u.email, u.role, u.auth_provider,
+              u.phone_direct, u.phone_direct_enc, u.phone_extension, u.phone_mobile, u.phone_mobile_enc,
+              l.name AS location_name, l.location_code, l.phone AS location_phone, l.use_extensions
          FROM company_members cm
          JOIN users u ON u.id = cm.user_id
          LEFT JOIN locations l ON l.id = cm.location_id
@@ -373,10 +377,107 @@ router.get('/:id/members', requireAuth, async (req, res) => {
         ORDER BY u.display_name ASC`,
       [Number(req.params.id)]
     );
+    await decryptRows('users', r.rows);
+    if (!PHONE_VIEWERS.includes(req.session.user.role)) {
+      for (const row of r.rows) {
+        delete row.phone_direct; delete row.phone_extension; delete row.phone_mobile; delete row.location_phone;
+      }
+    }
     res.json(r.rows);
   } catch (err) {
     console.error(err);
     res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// PATCH /api/companies/:id/members/:userId — edit a member's details
+// (Admin / Manager). Membership fields: role_label (job title),
+// location_id. Person fields (apply everywhere the user appears):
+// phone_direct, phone_extension, phone_mobile, and display_name for
+// local-login users only — SSO sign-in resets the name on every login.
+const PHONE_MAX = 40;
+function cleanPhone(v) {
+  const s = v == null ? '' : String(v).trim();
+  if (!s) return null;
+  if (s.length > PHONE_MAX || !/^[0-9+().\-\s#*,xX]+$/.test(s)) return undefined;
+  return s;
+}
+
+router.patch('/:id/members/:userId', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
+  const companyId = Number(req.params.id);
+  const userId = Number(req.params.userId);
+  const b = req.body || {};
+  const client = await pool.connect();
+  try {
+    const m = await client.query(
+      `SELECT cm.user_id, u.auth_provider
+         FROM company_members cm JOIN users u ON u.id = cm.user_id
+        WHERE cm.company_id = $1 AND cm.user_id = $2`,
+      [companyId, userId]
+    );
+    if (!m.rows[0]) return res.status(404).json({ error: 'Member not found' });
+
+    const member = {};
+    if (b.role_label !== undefined) member.role_label = String(b.role_label || '').trim().slice(0, 120) || null;
+    if (b.location_id !== undefined) {
+      if (b.location_id === null || b.location_id === '') member.location_id = null;
+      else {
+        const loc = await client.query(
+          `SELECT id FROM locations WHERE id = $1 AND company_id = $2 AND is_archived = FALSE`,
+          [Number(b.location_id), companyId]
+        );
+        if (!loc.rows[0]) return res.status(400).json({ error: 'location not found on this company' });
+        member.location_id = Number(b.location_id);
+      }
+    }
+
+    const person = {};
+    for (const k of ['phone_direct', 'phone_mobile']) {
+      if (b[k] === undefined) continue;
+      const v = cleanPhone(b[k]);
+      if (v === undefined) return res.status(400).json({ error: `${k} must be a phone number` });
+      person[k] = v;
+    }
+    if (b.phone_extension !== undefined) {
+      const ext = String(b.phone_extension || '').trim();
+      if (ext && !/^[0-9]{1,10}$/.test(ext)) return res.status(400).json({ error: 'phone_extension must be digits' });
+      person.phone_extension = ext || null;
+    }
+    if (b.display_name !== undefined) {
+      if (m.rows[0].auth_provider !== 'local') return res.status(400).json({ error: 'This name comes from Microsoft / Google sign-in; change it there.' });
+      const name = String(b.display_name || '').trim();
+      if (!name) return res.status(400).json({ error: 'display_name required' });
+      person.display_name = name.slice(0, 200);
+    }
+
+    await client.query('BEGIN');
+    if (Object.keys(member).length) {
+      const keys = Object.keys(member);
+      await client.query(
+        `UPDATE company_members SET ${keys.map((k, i) => `${k} = $${i + 1}`).join(', ')}
+          WHERE company_id = $${keys.length + 1} AND user_id = $${keys.length + 2}`,
+        [...Object.values(member), companyId, userId]
+      );
+    }
+    if (Object.keys(person).length) {
+      const patch = await buildWritePatch(client, 'users', person);
+      await client.query(
+        `UPDATE users SET ${patch.cols.map((c, i) => `${c} = $${i + 1}`).join(', ')} WHERE id = $${patch.cols.length + 1}`,
+        [...patch.values, userId]
+      );
+    }
+    await client.query(
+      `INSERT INTO audit_log (ticket_id, user_id, action, note) VALUES (NULL, $1, 'company_member_updated', $2)`,
+      [req.session.user.id, `User #${userId} in company #${companyId}: ${[...Object.keys(member), ...Object.keys(person)].join(', ') || 'no changes'}`]
+    );
+    await client.query('COMMIT');
+    res.json({ ok: true });
+  } catch (err) {
+    await client.query('ROLLBACK').catch(() => {});
+    console.error('member update error:', err);
+    res.status(500).json({ error: 'Database error' });
+  } finally {
+    client.release();
   }
 });
 

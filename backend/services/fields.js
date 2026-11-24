@@ -61,6 +61,10 @@ const FIELD_MAP = {
     new_value: 'new_value_enc',
     note: 'note_enc',
   },
+  users: {
+    phone_direct: 'phone_direct_enc',
+    phone_mobile: 'phone_mobile_enc',
+  },
   software_licenses: {
     license_key: 'license_key_enc',
     notes: 'notes_enc',
@@ -76,6 +80,7 @@ const FIELD_MAP = {
     name: 'name_enc',
     email: 'email_enc',
     phone: 'phone_enc',
+    mobile: 'mobile_enc',
     notes: 'notes_enc',
   },
   inbound_email_queue: {

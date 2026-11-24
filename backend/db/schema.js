@@ -733,6 +733,19 @@ async function initSchema() {
     await client.query(`ALTER TABLE contacts ADD COLUMN IF NOT EXISTS extension TEXT`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_contacts_location ON contacts(location_id)`);
 
+    // Phone numbers for click-to-call (#153). A person's direct line (DID)
+    // and mobile are sensitive (encrypted via services/fields.js when
+    // encryption is on); the extension goes with their location's main
+    // line (locations.phone). Contacts already had phone (= direct line)
+    // and extension; they gain a mobile.
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_direct TEXT`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_direct_enc BYTEA`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_extension TEXT`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_mobile TEXT`);
+    await client.query(`ALTER TABLE users ADD COLUMN IF NOT EXISTS phone_mobile_enc BYTEA`);
+    await client.query(`ALTER TABLE contacts ADD COLUMN IF NOT EXISTS mobile TEXT`);
+    await client.query(`ALTER TABLE contacts ADD COLUMN IF NOT EXISTS mobile_enc BYTEA`);
+
     // Admin-controlled feature flags for which company modes are active.
     // Internal stays on by default since users always live somewhere.
     // Customer (MSP mode) defaults OFF since most installs run helpdesk
