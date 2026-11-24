@@ -155,6 +155,13 @@ const TARGETS = [
       { plain: 'body', enc: 'body_enc', ctx: 'tasks.body' },
     ],
   },
+  {
+    table: 'vendor_support_channels',
+    pk: 'id',
+    cols: [
+      { plain: 'notes', enc: 'notes_enc', ctx: 'vendor_support_channels.notes' },
+    ],
+  },
 ];
 
 async function backfillTable(client, target, mode) {

@@ -761,6 +761,62 @@ async function initSchema() {
     // Webex Calling / PBX extension), offered for internal users.
     // Exactly one row is the org default; users pick their own under
     // Account → Preferences (preferences.calling_app = id).
+    // Vendor support channels: how to lodge a ticket with a vendor's own
+    // helpdesk (a role mailbox, a portal, a phone line with call-tree
+    // notes). Kept apart from contacts on purpose: contacts receive
+    // Resolvd's outbound mail and their replies thread back in, which is
+    // why role mailboxes (support@) are refused there. A channel email is
+    // only ever sent to when an agent presses Forward.
+    // min/max_priority pick which channels are recommended for a ticket
+    // (e.g. phone for P1-P2, email or portal for P3-P5). notes may hold
+    // account numbers, so they encrypt like other free text.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS vendor_support_channels (
+        id SERIAL PRIMARY KEY,
+        company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL CHECK (kind IN ('email', 'portal', 'phone')),
+        label TEXT,
+        value TEXT NOT NULL,
+        notes TEXT,
+        notes_enc BYTEA,
+        min_priority INTEGER NOT NULL DEFAULT 1 CHECK (min_priority BETWEEN 1 AND 5),
+        max_priority INTEGER NOT NULL DEFAULT 5 CHECK (max_priority BETWEEN 1 AND 5),
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        sort_order INTEGER NOT NULL DEFAULT 100,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_vendor_support_channels_company ON vendor_support_channels(company_id)`);
+    // Per vendor: whether a matching new ticket gets an agent-only note
+    // with the recommended channels, and the conditions that narrow which
+    // tickets match (all set conditions must hold; none = every ticket in
+    // the vendor's projects). match_regex runs case-insensitively over
+    // title + description; match_field_slug / match_field_values compare a
+    // ticket form field.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS vendor_support_settings (
+        company_id INTEGER PRIMARY KEY REFERENCES companies(id) ON DELETE CASCADE,
+        auto_note BOOLEAN NOT NULL DEFAULT TRUE,
+        match_regex TEXT,
+        match_field_slug TEXT,
+        match_field_values TEXT[],
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    // The channels last suggested on a ticket per vendor, so a priority
+    // change only adds a note when the recommendation actually changes.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS ticket_vendor_prompts (
+        ticket_id INTEGER NOT NULL REFERENCES tickets(id) ON DELETE CASCADE,
+        company_id INTEGER NOT NULL REFERENCES companies(id) ON DELETE CASCADE,
+        channel_ids INTEGER[] NOT NULL DEFAULT '{}',
+        priority INTEGER,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (ticket_id, company_id)
+      )
+    `);
+
     await client.query(`
       CREATE TABLE IF NOT EXISTS calling_apps (
         id SERIAL PRIMARY KEY,

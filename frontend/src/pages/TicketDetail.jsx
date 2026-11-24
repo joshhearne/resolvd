@@ -48,6 +48,7 @@ import { hasKbLink } from "../utils/kbLinks";
 import TroveKbRunbookPanel from "../components/TroveKbRunbookPanel";
 import NumberInput from "../components/NumberInput";
 import TicketPeople from "../components/TicketPeople";
+import TicketVendorSupport from "../components/TicketVendorSupport";
 
 // External ticket refs may hold multiple vendor IDs separated by comma
 // or semicolon (e.g. "VND-1234, VND-5678" or "VND-1234;VND-5678").
@@ -819,6 +820,23 @@ export default function TicketDetail() {
       })
       .catch(() => setLoading(false));
   }, [id, loadTicket]);
+
+  // Vendor support channels for this ticket (agents only). Reloaded when
+  // the priority changes, since that changes which ones are recommended,
+  // and with the notes (the server may have added a vendor note).
+  const [vendorSupport, setVendorSupport] = useState(null);
+  const ticketPriority = ticket?.effective_priority;
+  useEffect(() => {
+    if (!isAdmin || !id) return;
+    let alive = true;
+    api.get(`/api/tickets/${id}/vendor-support`)
+      .then((r) => { if (alive) setVendorSupport(r); })
+      .catch(() => { if (alive) setVendorSupport({ priority: null, vendors: [] }); });
+    if (ticketPriority != null) {
+      api.get(`/api/tickets/${id}/notes`).then((n) => { if (alive && Array.isArray(n)) setNotes(n); }).catch(() => {});
+    }
+    return () => { alive = false; };
+  }, [id, isAdmin, ticketPriority]);
 
   // A work log lands as a private note or a public comment (plus an
   // audit row), so refresh all three.
@@ -2193,6 +2211,7 @@ export default function TicketDetail() {
               const tabs = [
                 { id: "comments", label: `Comments (${comments.length})`, show: true },
                 { id: "people", label: "Contacts", show: isAdmin },
+                { id: "vendor", label: "Vendor support", sub: "internal", show: isAdmin && !!vendorSupport?.vendors?.length },
                 { id: "notes", label: `Notes${notes.length > 0 ? ` (${notes.length})` : ""}`, sub: "internal", show: canHandleNotes },
                 { id: "runbook", label: "Runbook", sub: "internal", show: canHandleNotes },
                 { id: "attachments", label: `Attachments${attachments.length > 0 ? ` (${attachments.length})` : ""}`, show: true },
@@ -2701,7 +2720,7 @@ export default function TicketDetail() {
                   <div key={n.id} className="rounded-lg p-3 bg-amber-50/40 dark:bg-amber-950/20 border border-amber-200/60 dark:border-amber-800/60">
                     <div className="flex items-center justify-between mb-1 gap-2 flex-wrap">
                       <span className="text-xs font-semibold text-fg-muted">
-                        {n.user_name || "Unknown"}
+                        {n.user_name || (n.user_id == null ? "Resolvd" : "Unknown")}
                         <span className="ml-1.5 text-[10px] px-1 py-0.5 rounded bg-amber-200/70 dark:bg-amber-800/60 text-amber-900 dark:text-amber-100 uppercase">internal</span>
                       </span>
                       <span className="flex items-center gap-2">
@@ -2965,6 +2984,19 @@ export default function TicketDetail() {
                       setTicket(refreshed);
                       toast.success(next ? "Resolution saved" : "Resolution cleared");
                     } catch (e) { toast.error(e.message); }
+                  }}
+                />
+              </div>
+            )}
+
+            {activeTab === "vendor" && isAdmin && (
+              <div className="p-4">
+                <TicketVendorSupport
+                  ticketId={ticket.id}
+                  data={vendorSupport}
+                  onForwarded={() => {
+                    api.get(`/api/tickets/${id}/notes`).then((n) => setNotes(Array.isArray(n) ? n : [])).catch(() => {});
+                    api.get(`/api/tickets/${id}/audit`).then(setAuditLog).catch(() => {});
                   }}
                 />
               </div>

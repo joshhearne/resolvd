@@ -76,13 +76,19 @@ async function isVendorDomain(client, email) {
   if (at < 0) return false;
   const domain = email.slice(at + 1).toLowerCase().trim();
   if (!domain) return false;
+  // A vendor support mailbox (vendor_support_channels) often sits on the
+  // helpdesk product's domain (acme.zendesk.com), so match it exactly
+  // too: its acknowledgements must never mint a user and get a reply.
   const r = await client.query(
     `SELECT 1 FROM companies
       WHERE LOWER(domain) = $1
         AND kind = 'vendor'
         AND is_archived = FALSE
+     UNION ALL
+     SELECT 1 FROM vendor_support_channels
+      WHERE kind = 'email' AND LOWER(value) = $2
       LIMIT 1`,
-    [domain]
+    [domain, email.toLowerCase().trim()]
   );
   return r.rows.length > 0;
 }

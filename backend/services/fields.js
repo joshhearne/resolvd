@@ -103,6 +103,9 @@ const FIELD_MAP = {
     title: 'title_enc',
     body: 'body_enc',
   },
+  vendor_support_channels: {
+    notes: 'notes_enc',
+  },
 };
 
 // Build a column/value patch for a write. `plainObj` carries the human-

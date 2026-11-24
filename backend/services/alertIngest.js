@@ -668,6 +668,8 @@ async function promoteAlertToTicket(client, source, alertRow, rule, actingUserId
     ).then(async (r) => {
       const ticket = r.rows[0];
       if (!ticket) return;
+      // Agent-only note with the vendor's support channels, if any match.
+      require('./vendorSupport').autoPrompt(ticket.id);
       // Notify the auto-assignee directly — fanoutNewTicket excludes the
       // assignee on the assumption an assignment fanout covers them, so
       // promotion has to fire it itself.
