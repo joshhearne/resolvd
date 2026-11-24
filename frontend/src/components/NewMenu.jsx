@@ -1,7 +1,9 @@
 import React, { useEffect, useLayoutEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useLocation, useNavigate } from "react-router-dom";
+import toast from "react-hot-toast";
 import TaskQuickCreate from "./TaskQuickCreate";
+import { api } from "../utils/api";
 
 // Split "+|New v" button. Left half always fires the default (top of
 // the list — Ticket). Right half drops a menu of creation targets.
@@ -10,7 +12,9 @@ import TaskQuickCreate from "./TaskQuickCreate";
 // in place (Task). The KB option requires a project pick first
 // because KB articles are project-scoped; we shortcut to the user's
 // default project when set, otherwise navigate to the project
-// picker.
+// picker. With Trove KB connected, KB articles are written in Trove KB:
+// those allowed links into it (Admins) get its editor in a new tab; the
+// local editor stays for others only while the local KB is still on.
 //
 // Props:
 //   user        session user (drives role gating of menu items)
@@ -23,6 +27,13 @@ export default function NewMenu({ user, projects = [] }) {
   const [open, setOpen] = useState(false);
   const [coords, setCoords] = useState({ left: 0, top: 0, maxHeight: undefined });
   const [taskOpen, setTaskOpen] = useState(false);
+  // Trove KB status: null until loaded / unavailable.
+  const [troveKb, setTroveKb] = useState(null);
+  useEffect(() => {
+    let alive = true;
+    api.get("/api/trove-kb/status").then((s) => { if (alive) setTroveKb(s); }).catch(() => {});
+    return () => { alive = false; };
+  }, []);
 
   const role = user?.role;
   const isAgent = ["Admin", "Manager", "Tech"].includes(role);
@@ -39,7 +50,31 @@ export default function NewMenu({ user, projects = [] }) {
   function goNewProject() { navigate("/admin/projects"); }
   function goNewInventory() { navigate("/inventory/new"); }
   function goNewConsumable() { navigate("/consumables?new=1"); }
+  // Trove KB connected and this user may follow links into it (the
+  // status only carries base_url for those users).
+  const troveKbWrite = !!(troveKb?.enabled && troveKb.base_url);
+  const localKb = !troveKb?.enabled || troveKb.local_kb_enabled !== false;
+
+  function goNewTroveKb() {
+    // Open the tab inside the click so it isn't blocked as a pop-up, then
+    // point it at Trove KB once the URL for the project's collection is in.
+    const tab = window.open("about:blank", "_blank");
+    if (tab) tab.opener = null;
+    const projectId = user?.defaultProjectId || projects.find((p) => p.status === "active")?.id;
+    const qs = projectId ? `?project_id=${encodeURIComponent(projectId)}` : "";
+    api.get(`/api/trove-kb/new-article-url${qs}`)
+      .then(({ url }) => {
+        if (tab) tab.location.href = url;
+        else window.location.assign(url);
+      })
+      .catch((err) => {
+        tab?.close();
+        toast.error(err.message || "Couldn't open Trove KB");
+      });
+  }
+
   function goNewKb() {
+    if (troveKbWrite) return goNewTroveKb();
     // defaultProjectId = the user's own default, else the org default.
     if (user?.defaultProjectId) {
       navigate(`/kb/${user.defaultProjectId}/new`);
@@ -56,7 +91,11 @@ export default function NewMenu({ user, projects = [] }) {
     isAdminOrMgr && { label: "Project", description: "Admin → Projects", onClick: goNewProject },
     isAgent && { label: "Inventory item", description: "Add an asset", onClick: goNewInventory },
     isAgent && { label: "Consumable", description: "Add a stocked part", onClick: goNewConsumable },
-    isAgent && { label: "KB article", description: "Knowledge Base entry", onClick: goNewKb },
+    isAgent && (troveKbWrite || localKb) && {
+      label: "KB article",
+      description: troveKbWrite ? "Opens Trove KB in a new tab" : "Knowledge Base entry",
+      onClick: goNewKb,
+    },
   ].filter(Boolean);
 
   const PANEL_WIDTH = 240;
@@ -115,7 +154,7 @@ export default function NewMenu({ user, projects = [] }) {
       <div ref={triggerRef} className="inline-flex items-stretch rounded-md overflow-hidden bg-brand text-brand-fg text-sm font-medium shadow-sm">
         <button type="button"
           onClick={() => defaultAction.onClick()}
-          className="inline-flex items-center gap-1.5 pl-2.5 pr-2 py-1.5 hover:bg-brand-hover transition-colors"
+          className="inline-flex items-center gap-1.5 pl-2.5 pr-2 py-1.5 hover:bg-brand-bright transition-colors"
           aria-label={`New ${defaultAction.label.toLowerCase()}`}>
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4"
             strokeLinecap="round" strokeLinejoin="round" className="w-4 h-4">
@@ -129,7 +168,7 @@ export default function NewMenu({ user, projects = [] }) {
           onClick={() => setOpen((o) => !o)}
           aria-haspopup="menu" aria-expanded={open}
           aria-label="Choose what to create"
-          className="inline-flex items-center px-1.5 hover:bg-brand-hover transition-colors">
+          className="inline-flex items-center px-1.5 hover:bg-brand-bright transition-colors">
           <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.4"
             strokeLinecap="round" strokeLinejoin="round" className="w-3.5 h-3.5">
             <polyline points="6 9 12 15 18 9" />
