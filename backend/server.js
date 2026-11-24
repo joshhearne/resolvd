@@ -217,26 +217,6 @@ app.use('/api/billing', require('./routes/billing'));
 // Health check
 app.get('/health', (req, res) => res.json({ ok: true }));
 
-// Single-container installs (Dockerfile.single: Fly.io, Render, Railway…)
-// have no nginx in front, so the backend serves the built frontend from
-// STATIC_DIR with the same caching rules as frontend/nginx-frontend.conf:
-// hashed /assets cached for a year, index.html and sw.js never cached,
-// and any other non-API path falls back to index.html for the SPA router.
-if (process.env.STATIC_DIR) {
-  const path = require('path');
-  const staticDir = path.resolve(process.env.STATIC_DIR);
-  const noStore = (res) => res.set('Cache-Control', 'no-cache, no-store, must-revalidate');
-  app.use('/assets', express.static(path.join(staticDir, 'assets'), { immutable: true, maxAge: '1y', fallthrough: false }));
-  app.use(express.static(staticDir, {
-    index: false,
-    setHeaders: (res, file) => { if (/[\\/](index\.html|sw\.js)$/.test(file)) noStore(res); },
-  }));
-  app.get(/^(?!\/(api|auth)(\/|$)).*/, (req, res) => {
-    noStore(res);
-    res.sendFile(path.join(staticDir, 'index.html'));
-  });
-}
-
 initSchema()
   .then(async () => {
     // Fresh installs can start encrypted: RESOLVD_INITIAL_ENCRYPTION=standard

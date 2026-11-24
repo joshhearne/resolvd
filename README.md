@@ -61,6 +61,7 @@ Set at least these in `.env` (full list under [Environment Variables](#environme
 | `FRONTEND_URL` | `https://issues.example.com` |
 | `COOKIE_SECURE` | `true` |
 | `RESOLVD_MASTER_KEY` | `openssl rand -base64 32`. **Store a copy off the server**; encrypted data and AI keys can't be recovered without it. |
+| `RESOLVD_INITIAL_ENCRYPTION` | `standard` on a new install: encryption is on from the first boot. |
 
 Leave the Entra / Google variables empty to start with local accounts only. Then start it (this pulls the latest release's images):
 
@@ -112,9 +113,21 @@ docker compose pull && docker compose up -d
 
 **Backups.** Schedule the commands in [Backup](#backup) (e.g. a nightly cron job) and copy the files off the server. Keep `RESOLVD_MASTER_KEY` with them, but stored separately.
 
-## Running on Fly.io (or another container host)
+### On AWS
 
-`Dockerfile.single` builds Resolvd as one container: the backend serves the built frontend, with no nginx. It runs on Fly.io with the included `fly.toml`, or on Render, Railway or any Docker host, with Postgres and a volume at `/data` for uploads. A fresh install can start encrypted (`RESOLVD_INITIAL_ENCRYPTION=standard`). Walkthrough: [docs/DEPLOY-FLY.md](docs/DEPLOY-FLY.md).
+The steps above work unchanged on AWS, and so does the automatic updater. The published images are built for both x86 and ARM, so Graviton instances work.
+
+- **Lightsail** (simplest): an Ubuntu 24.04 instance with **2 GB** RAM.
+  - Attach a static IP.
+  - Under Networking, allow 80 and 443, and limit SSH to your IP.
+  - Turn on automatic daily snapshots.
+  - You can export it to EC2 later.
+- **EC2** (more control):
+  - Instance: `t4g.small` (ARM, 2 GB) or `t3.small`, with a 20–30 GB gp3 volume and an Elastic IP.
+  - Security group: 80 and 443 open, SSH from your IP only. With a Cloudflare Tunnel, only SSH.
+  - Backups: daily EBS snapshots with AWS Backup or Data Lifecycle Manager.
+
+On a new install, add `RESOLVD_INITIAL_ENCRYPTION=standard` to `.env` along with `RESOLVD_MASTER_KEY` before the first `docker compose up`. Resolvd then switches encryption on at first boot, so nothing is ever stored unencrypted. Snapshots cover the server, but still copy the [Backup](#backup) dumps off it, and keep the master key somewhere separate: a backup is unreadable without it.
 
 ---
 
