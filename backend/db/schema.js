@@ -746,6 +746,44 @@ async function initSchema() {
     await client.query(`ALTER TABLE contacts ADD COLUMN IF NOT EXISTS mobile TEXT`);
     await client.query(`ALTER TABLE contacts ADD COLUMN IF NOT EXISTS mobile_enc BYTEA`);
 
+    // Calling apps for click-to-call. url_template builds the link for a
+    // number ({number} = +E.164 where known, {digits} = without '+'; a
+    // template with neither is a prefix and the number is appended).
+    // ext_template, when set, also dials an extension ({ext}); apps
+    // without one dial the main line and show the extension. key is set
+    // for the built-ins (seeded once, editable, can't be deleted).
+    // ext_direct: the app can dial an internal extension on its own (a
+    // Webex Calling / PBX extension), offered for internal users.
+    // Exactly one row is the org default; users pick their own under
+    // Account → Preferences (preferences.calling_app = id).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS calling_apps (
+        id SERIAL PRIMARY KEY,
+        key TEXT UNIQUE,
+        name TEXT NOT NULL,
+        url_template TEXT NOT NULL,
+        ext_template TEXT,
+        notes TEXT,
+        enabled BOOLEAN NOT NULL DEFAULT TRUE,
+        is_default BOOLEAN NOT NULL DEFAULT FALSE,
+        ext_direct BOOLEAN NOT NULL DEFAULT FALSE,
+        sort_order INTEGER NOT NULL DEFAULT 100,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_calling_apps_one_default ON calling_apps(is_default) WHERE is_default`);
+    await client.query(`
+      INSERT INTO calling_apps (key, name, url_template, ext_template, notes, enabled, is_default, ext_direct, sort_order) VALUES
+        ('phone', 'Phone app', 'tel:{number}', 'tel:{number},{ext}', 'The device''s default calling app. Dials extensions after a pause.', TRUE, TRUE, FALSE, 0),
+        ('webex', 'Webex', 'webextel://{number}', NULL, 'Webex Calling. Check on your devices; edit the link if your Webex setup uses a different one.', FALSE, FALSE, TRUE, 10),
+        ('teams', 'Microsoft Teams', 'https://teams.microsoft.com/l/call/0/0?users=4:{number}', NULL, 'Teams Calling dials direct numbers (DIDs), not extensions. Outside numbers need a Teams Phone licence.', FALSE, FALSE, FALSE, 20),
+        ('zoom', 'Zoom Phone', 'zoomphonecall://{number}', NULL, NULL, FALSE, FALSE, FALSE, 30),
+        ('ringcentral', 'RingCentral', 'rcmobile://call?number={number}', NULL, NULL, FALSE, FALSE, FALSE, 40),
+        ('dialpad', 'Dialpad', 'dialpad://{number}', NULL, 'Check on your devices; edit the link if needed.', FALSE, FALSE, FALSE, 50)
+      ON CONFLICT (key) DO NOTHING
+    `);
+
     // Admin-controlled feature flags for which company modes are active.
     // Internal stays on by default since users always live somewhere.
     // Customer (MSP mode) defaults OFF since most installs run helpdesk

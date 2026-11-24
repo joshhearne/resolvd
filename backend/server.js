@@ -185,6 +185,7 @@ app.use('/api/maintenance', maintenanceRoutes);
 app.use('/api/software-aliases', require('./routes/softwareAliases'));
 app.use('/api/assets', assetRoutes);
 app.use('/api/software-licenses', require('./routes/softwareLicenses'));
+app.use('/api/calling-apps', require('./routes/callingApps'));
 app.use('/api/software', require('./routes/software'));
 app.use('/api/label-printer', labelPrinterRoutes);
 app.use('/api/consumables', consumableRoutes);

@@ -48,6 +48,7 @@ import Inventory from "./pages/Inventory";
 import SoftwareInventory from "./pages/SoftwareInventory";
 import SoftwareLicenses from "./pages/SoftwareLicenses";
 import CalendarPage from "./pages/CalendarPage";
+import AdminCallingApps from "./pages/AdminCallingApps";
 import Consumables from "./pages/Consumables";
 import Alerts from "./pages/Alerts";
 import AlertDetail from "./pages/AlertDetail";
@@ -291,6 +292,7 @@ function AppRoutes() {
           <Route path="alert-sources" element={<AdminAlertSources />} />
           <Route path="integrations" element={<AdminAlertSources />} />
           <Route path="software-aliases" element={<AdminSoftwareAliases />} />
+          <Route path="calling-apps" element={<AdminCallingApps />} />
           <Route path="system-health" element={<AdminSystemHealth />} />
           <Route path="canned-responses" element={<AdminCannedResponses />} />
           <Route path="label-printer" element={<AdminLabelPrinter />} />
