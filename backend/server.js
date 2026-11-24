@@ -75,6 +75,8 @@ app.use(securityHeaders);
 // the moment a vendor's mail has a signature image on it. Mounted ahead of
 // the global parser so only these routes get the bigger ceiling.
 app.use('/api/inbound', express.json({ limit: '30mb' }));
+// CSV imports post the whole file as JSON.
+app.use('/api/imports', express.json({ limit: '10mb' }));
 
 // Trove KB webhooks carry an HMAC over the raw body, so this route takes
 // the body as bytes and sits ahead of the JSON parser and session auth.
@@ -186,6 +188,7 @@ app.use('/api/software-aliases', require('./routes/softwareAliases'));
 app.use('/api/assets', assetRoutes);
 app.use('/api/software-licenses', require('./routes/softwareLicenses'));
 app.use('/api/calling-apps', require('./routes/callingApps'));
+app.use('/api/imports', require('./routes/imports'));
 app.use('/api/software', require('./routes/software'));
 app.use('/api/label-printer', labelPrinterRoutes);
 app.use('/api/consumables', consumableRoutes);

@@ -259,12 +259,34 @@ router.get('/:id/locations', requireAuth, async (req, res) => {
   }
 });
 
+// extension_location_id: another active, extension-mode site of the same
+// company whose main line dials this site's extensions. Returns
+// [value, error]; value is null to clear.
+async function extensionLocationValue(raw, companyId, selfId) {
+  if (raw == null || raw === '') return [null];
+  const id = Number(raw);
+  if (!Number.isInteger(id) || id <= 0) return [undefined, 'extension_location_id must be a location id'];
+  if (selfId && id === selfId) return [undefined, "A location can't route extensions through itself"];
+  const r = await pool.query(
+    `SELECT company_id, use_extensions, phone, is_archived FROM locations WHERE id = $1`, [id]);
+  const t = r.rows[0];
+  if (!t || t.company_id !== companyId) return [undefined, 'Pick a location of the same company'];
+  if (t.is_archived || !t.use_extensions || !t.phone) {
+    return [undefined, 'Pick a location with a main line and "Use extensions" turned on'];
+  }
+  return [id];
+}
+
 router.post('/:id/locations', requireAuth, requireRole('Admin', 'Manager'), async (req, res) => {
   try {
-    const { name, location_code, address, timezone, phone, use_extensions, is_primary } = req.body || {};
+    const { name, location_code, address, timezone, phone, use_extensions, is_primary, extension_location_id } = req.body || {};
     if (!name || !name.trim()) return res.status(400).json({ error: 'name required' });
     const company = await pool.query(`SELECT id FROM companies WHERE id = $1`, [Number(req.params.id)]);
     if (!company.rows[0]) return res.status(404).json({ error: 'Company not found' });
+    const [extLoc, extErr] = use_extensions
+      ? [null]
+      : await extensionLocationValue(extension_location_id, Number(req.params.id), null);
+    if (extErr) return res.status(400).json({ error: extErr });
 
     // If marking primary, demote any existing primary on this company.
     if (is_primary) {
@@ -275,8 +297,8 @@ router.post('/:id/locations', requireAuth, requireRole('Admin', 'Manager'), asyn
     }
     const r = await pool.query(
       `INSERT INTO locations
-         (company_id, name, location_code, address, timezone, phone, use_extensions, is_primary)
-       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING *`,
+         (company_id, name, location_code, address, timezone, phone, use_extensions, is_primary, extension_location_id)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING *`,
       [
         Number(req.params.id),
         name.trim(),
@@ -286,6 +308,7 @@ router.post('/:id/locations', requireAuth, requireRole('Admin', 'Manager'), asyn
         (phone || '').trim() || null,
         !!use_extensions,
         !!is_primary,
+        extLoc,
       ]
     );
     res.status(201).json(r.rows[0]);
@@ -318,6 +341,17 @@ router.patch('/locations/:locationId', requireAuth, requireRole('Admin', 'Manage
           values.push(v || null);
         }
       }
+    }
+    // A site that takes extensions itself doesn't route them elsewhere.
+    const willUseExt = Object.prototype.hasOwnProperty.call(body, 'use_extensions')
+      ? !!body.use_extensions : existing.rows[0].use_extensions;
+    if (willUseExt && existing.rows[0].extension_location_id != null) {
+      sets.push('extension_location_id = NULL');
+    } else if (!willUseExt && Object.prototype.hasOwnProperty.call(body, 'extension_location_id')) {
+      const [v, e] = await extensionLocationValue(body.extension_location_id, existing.rows[0].company_id, id);
+      if (e) return res.status(400).json({ error: e });
+      sets.push('extension_location_id = $' + (p++));
+      values.push(v);
     }
     if (!sets.length) return res.json(existing.rows[0]);
 

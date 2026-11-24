@@ -16,6 +16,7 @@ const NAV_GROUPS = [
     items: [
       { to: "/admin/users", label: "Users", manager: true, keywords: ["roles", "submitter", "tech", "manager", "admin role", "active inactive"] },
       { to: "/admin/companies", label: "Companies", manager: true, keywords: ["vendors", "contacts", "domain"] },
+      { to: "/admin/import", label: "Import", manager: true, keywords: ["csv", "upload", "bulk", "locations", "users", "export", "spreadsheet"] },
       { to: "/admin/support", label: "Support access", keywords: ["impersonate", "anthropic"] },
     ],
   },

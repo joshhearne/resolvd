@@ -573,6 +573,25 @@ function CompanyDetail({ company, projects, onBack, onReload, onDeleted, initial
 // Edit an external contact: name, title, location and phone numbers.
 // Email can't be changed here (it's the contact's identity for inbound
 // mail matching); deactivate and re-add to change it.
+// The main line an extension at `loc` is dialled on: the site's own number
+// when it uses extensions, else the site it routes extensions through,
+// else null (extensions there are internal use only).
+function extensionLine(loc, locations) {
+  if (!loc) return null;
+  if (loc.use_extensions && loc.phone) return { phone: loc.phone, name: loc.name, via: false };
+  const via = loc.extension_location_id && locations.find((l) => l.id === loc.extension_location_id);
+  if (via && via.use_extensions && via.phone && !via.is_archived) return { phone: via.phone, name: via.name, via: true };
+  return null;
+}
+
+function extensionHint(loc, line) {
+  if (!loc) return "Needs a location with a main phone line to dial.";
+  if (!line) return `${loc.name} doesn't take extensions on its number, so this extension is for internal use only.`;
+  return line.via
+    ? `Dialled after the ${line.name} main line (${loc.name} routes extensions there).`
+    : `Dialled after the ${line.name} main line.`;
+}
+
 function ContactEditor({ contact, locations, onDone, onCancel }) {
   const loc0 = locations.find((l) => l.id === contact.location_id);
   const [f, setF] = useState({
@@ -586,6 +605,7 @@ function ContactEditor({ contact, locations, onDone, onCancel }) {
   });
   const [saving, setSaving] = useState(false);
   const loc = locations.find((l) => String(l.id) === f.location_id);
+  const line = extensionLine(loc, locations);
   const set = (k) => (e) => setF((x) => ({ ...x, [k]: e.target.value }));
   const input = "w-full bg-surface border border-border rounded px-2 py-1.5 text-sm";
 
@@ -637,7 +657,8 @@ function ContactEditor({ contact, locations, onDone, onCancel }) {
         <label className="block">
           <span className="block text-xs font-medium text-fg mb-1">Extension</span>
           <input className={input} value={f.extension} onChange={set("extension")} inputMode="numeric" maxLength={10}
-            placeholder={loc?.phone ? `on ${loc.phone}` : ""} />
+            placeholder={line ? `on ${line.phone}` : ""} />
+          {f.extension && <span className="block text-[11px] text-fg-muted mt-1">{extensionHint(loc, line)}</span>}
         </label>
         <label className="block">
           <span className="block text-xs font-medium text-fg mb-1">Direct line (DID)</span>
@@ -684,9 +705,8 @@ function ContactsTab({ company, onChange }) {
   useEffect(() => { reload(); }, [company.id]);
 
   const selectedLocation = locations.find((l) => String(l.id) === String(form.location_id));
-  // When location has phone + use_extensions, the form prefills phone
-  // from the location and asks the user only for an extension.
-  const useExtMode = selectedLocation?.use_extensions && !!selectedLocation?.phone;
+  // The main line an extension at the chosen location is dialled on.
+  const addLine = extensionLine(selectedLocation, locations);
 
   async function submit(e) {
     e.preventDefault();
@@ -810,7 +830,7 @@ function ContactsTab({ company, onChange }) {
 
         <input
           className="bg-surface-2 border border-border rounded px-2 py-1 text-sm"
-          placeholder={useExtMode ? `Extension on ${selectedLocation.phone}` : "Extension (optional)"}
+          placeholder={addLine ? `Extension on ${addLine.phone}` : "Extension (optional)"}
           inputMode="numeric"
           value={form.extension}
           onChange={(e) => setForm((f) => ({ ...f, extension: e.target.value }))}
@@ -832,8 +852,8 @@ function ContactsTab({ company, onChange }) {
 
         <div className="sm:col-span-2 flex items-center justify-between gap-2 flex-wrap">
           <span className="text-[11px] text-fg-dim">
-            {useExtMode
-              ? `The extension is dialled after the "${selectedLocation.name}" main line. Generic addresses (support@, helpdesk@…) are rejected.`
+            {form.extension && selectedLocation
+              ? `${extensionHint(selectedLocation, addLine)} Generic addresses (support@, helpdesk@…) are rejected.`
               : "Generic addresses (support@, helpdesk@, noreply@…) are rejected."}
           </span>
           <button
@@ -917,6 +937,7 @@ function LocationsTab({ company, onChange }) {
       {editing && (
         <LocationEditor
           form={editing}
+          locations={locations}
           onCancel={() => setEditing(null)}
           onSubmit={save}
         />
@@ -944,6 +965,14 @@ function LocationsTab({ company, onChange }) {
                       ext mode
                     </span>
                   )}
+                  {!l.use_extensions && (() => {
+                    const line = extensionLine(l, locations);
+                    return line ? (
+                      <span className="text-[10px] uppercase px-1.5 py-0.5 rounded bg-amber-500/10 text-amber-700 dark:text-amber-300">
+                        ext via {line.name}
+                      </span>
+                    ) : null;
+                  })()}
                 </div>
                 <div className="text-xs text-fg-muted">
                   {l.address && <>{l.address}</>}
@@ -965,7 +994,7 @@ function LocationsTab({ company, onChange }) {
   );
 }
 
-function LocationEditor({ form, onCancel, onSubmit }) {
+function LocationEditor({ form, locations = [], onCancel, onSubmit }) {
   const [local, setLocal] = useState({
     id: form.id || null,
     name: form.name || "",
@@ -975,12 +1004,18 @@ function LocationEditor({ form, onCancel, onSubmit }) {
     phone: form.phone || "",
     use_extensions: !!form.use_extensions,
     is_primary: !!form.is_primary,
+    extension_location_id: form.extension_location_id ? String(form.extension_location_id) : "",
   });
+  // Sites whose main line can take this site's extensions instead.
+  const extTargets = locations.filter((l) => l.id !== local.id && !l.is_archived && l.use_extensions && l.phone);
 
   function submit(e) {
     e.preventDefault();
     if (!local.name.trim()) return toast.error("Name required");
-    onSubmit(local);
+    onSubmit({
+      ...local,
+      extension_location_id: !local.use_extensions && local.extension_location_id ? Number(local.extension_location_id) : null,
+    });
   }
 
   return (
@@ -1036,6 +1071,30 @@ function LocationEditor({ form, onCancel, onSubmit }) {
           />
           Primary site
         </label>
+        {!local.use_extensions && (
+          <label className="sm:col-span-2 block text-xs text-fg-muted">
+            <span className="block mb-1">
+              Dial extensions here through <span className="text-fg-dim">(optional)</span>
+            </span>
+            <select
+              value={local.extension_location_id}
+              onChange={(e) => setLocal((l) => ({ ...l, extension_location_id: e.target.value }))}
+              className="w-full sm:w-auto bg-surface border border-border rounded px-2 py-1 text-sm text-fg"
+            >
+              <option value="">No other line (extensions here are internal use only)</option>
+              {extTargets.map((l) => (
+                <option key={l.id} value={l.id}>
+                  {l.name}{l.location_code ? ` (${l.location_code})` : ""} · {l.phone}
+                </option>
+              ))}
+            </select>
+            <span className="block mt-1 text-[11px]">
+              This site's number doesn't take extensions. Pick a site whose main line reaches the same extensions,
+              and call buttons for people here dial that line + their extension.
+              {extTargets.length === 0 && " No site has \"Use extensions\" turned on yet."}
+            </span>
+          </label>
+        )}
       </div>
       <div className="flex justify-end gap-2">
         <button type="button" onClick={onCancel} className="btn btn-secondary btn-sm">Cancel</button>
@@ -1060,6 +1119,7 @@ function MemberEditor({ company, member, locations, onDone, onCancel }) {
   const [saving, setSaving] = useState(false);
   const localLogin = member.auth_provider === "local";
   const loc = locations.find((l) => String(l.id) === f.location_id);
+  const line = extensionLine(loc, locations);
   const set = (k) => (e) => setF((x) => ({ ...x, [k]: e.target.value }));
   const input = "w-full bg-surface border border-border rounded px-2 py-1.5 text-sm";
 
@@ -1110,10 +1170,8 @@ function MemberEditor({ company, member, locations, onDone, onCancel }) {
         <label className="block">
           <span className="block text-xs font-medium text-fg mb-1">Extension</span>
           <input className={input} value={f.phone_extension} onChange={set("phone_extension")} inputMode="numeric"
-            pattern="[0-9]{0,10}" maxLength={10} placeholder={loc?.phone ? `on ${loc.phone}` : "digits"} />
-          <span className="block text-[11px] text-fg-muted mt-1">
-            {loc?.phone ? `Dialled after the ${loc.name} main line.` : "Needs a location with a main phone line to dial."}
-          </span>
+            pattern="[0-9]{0,10}" maxLength={10} placeholder={line ? `on ${line.phone}` : "digits"} />
+          <span className="block text-[11px] text-fg-muted mt-1">{extensionHint(loc, line)}</span>
         </label>
         <label className="block">
           <span className="block text-xs font-medium text-fg mb-1">Direct line (DID)</span>
