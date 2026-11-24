@@ -11,6 +11,7 @@ import ImpersonationBanner from "./ImpersonationBanner";
 import ActiveTimerPill from "./ActiveTimerPill";
 import NewMenu from "./NewMenu";
 import PoweredByFooter from "./PoweredByFooter";
+import CalendarWidget from "./CalendarWidget";
 
 // Icon set — inline SVGs in the lucide-react visual style (stroke=2,
 // stroke-linecap/linejoin=round, 24x24 viewBox). Keeps bundle small and
@@ -139,6 +140,15 @@ const Icon = {
       strokeLinecap="round" strokeLinejoin="round" {...p}>
       <polyline points="9 11 12 14 22 4" />
       <path d="M21 12v7a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h11" />
+    </svg>
+  ),
+  Calendar: (p) => (
+    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"
+      strokeLinecap="round" strokeLinejoin="round" {...p}>
+      <rect x="3" y="4" width="18" height="18" rx="2" />
+      <line x1="16" y1="2" x2="16" y2="6" />
+      <line x1="8" y1="2" x2="8" y2="6" />
+      <line x1="3" y1="10" x2="21" y2="10" />
     </svg>
   ),
   Clock: (p) => (
@@ -351,6 +361,7 @@ function Sidebar({ collapsed, transientOpen, onSetCollapsed, onSetTransient, use
     { to: "/dashboard", label: "Dashboard", icon: Icon.LayoutDashboard, show: true },
     { to: "/tickets", label: "Tickets", icon: Icon.Ticket, show: true },
     { to: "/tasks", label: "Tasks", icon: Icon.CheckSquare, show: true },
+    { to: "/calendar", label: "Calendar", icon: Icon.Calendar, show: true },
     {
       to: "/time",
       label: "Time",
@@ -477,7 +488,7 @@ function Sidebar({ collapsed, transientOpen, onSetCollapsed, onSetTransient, use
       onClick={onEmptyClick}
     >
       <nav
-        className="flex flex-col gap-0.5 p-2 h-full"
+        className="flex flex-col gap-0.5 p-2 h-full overflow-y-auto"
         onClick={onEmptyClick}
       >
         {items.filter((i) => i.show).map((item) => {
@@ -495,6 +506,7 @@ function Sidebar({ collapsed, transientOpen, onSetCollapsed, onSetTransient, use
             </NavLink>
           );
         })}
+        {!effectiveCollapsed && <CalendarWidget />}
       </nav>
     </aside>
   );

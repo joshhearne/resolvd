@@ -413,4 +413,220 @@ router.delete('/me/token', requireAuth, async (req, res) => {
   }
 });
 
+// ---------- in-app calendar (sidebar widget + /calendar page) ----------
+//
+// GET /api/calendar/events?from=YYYY-MM-DD&to=YYYY-MM-DD&types=a,b
+//   → { events: [{ id, type, title, start, end, all_day, link, meta }], types: [...] }
+//
+// Types and who gets them:
+//   maintenance   maintenance windows in projects you can see (staff)
+//   scheduled     upcoming recurring-ticket runs in projects you can see (staff)
+//   holiday       org-wide business-hours holidays (everyone)
+//   license       software license renewals (staff)
+//   sla           response / resolve SLA deadlines on open tickets assigned to you
+//   due           due dates on open tickets assigned to you
+//   followup      follow-ups you scheduled
+//   task          your personal tasks' due dates
+// `to` is exclusive; the range is capped at CAL_MAX_DAYS.
+
+const CAL_TYPES_ALL = ['maintenance', 'scheduled', 'holiday', 'license', 'sla', 'due', 'followup', 'task'];
+const CAL_STAFF_ONLY = new Set(['maintenance', 'scheduled', 'license']);
+const CAL_MAX_DAYS = 62;
+const OPEN_TICKET_SQL = `t.resolved_at IS NULL AND NOT EXISTS (
+  SELECT 1 FROM statuses s WHERE s.kind = 'internal' AND s.name = t.internal_status AND s.is_terminal = TRUE)`;
+
+function calTypesFor(user, requested) {
+  const allowed = CAL_TYPES_ALL.filter((t) => STAFF.includes(user.role) || !CAL_STAFF_ONLY.has(t));
+  if (!requested) return allowed;
+  const want = String(requested).split(',').map((s) => s.trim());
+  return allowed.filter((t) => want.includes(t));
+}
+
+function parseRange(q) {
+  const re = /^\d{4}-\d{2}-\d{2}$/;
+  if (!re.test(q.from || '') || !re.test(q.to || '')) return null;
+  const from = new Date(`${q.from}T00:00:00Z`);
+  const to = new Date(`${q.to}T00:00:00Z`);
+  if (isNaN(from) || isNaN(to) || to <= from) return null;
+  if ((to - from) / 86400000 > CAL_MAX_DAYS) return null;
+  // Pad a day each side: the client works in local time, the range in UTC.
+  return { from: new Date(from.getTime() - 86400000), to: new Date(to.getTime() + 86400000), fromDay: q.from, toDay: q.to };
+}
+
+async function calTicketEvents(user, range, types) {
+  const out = [];
+  const want = (t) => types.includes(t);
+  if (want('sla') || want('due')) {
+    const r = await pool.query(
+      `SELECT t.id, t.internal_ref, t.title, t.title_enc, t.due_at,
+              CASE WHEN t.sla_first_response_at IS NULL THEN t.sla_response_due_at END AS response_due,
+              t.sla_resolve_due_at AS resolve_due,
+              t.sla_response_breached, t.sla_resolve_breached
+         FROM tickets t
+        WHERE t.assigned_to = $1 AND ${OPEN_TICKET_SQL}
+          AND (   (t.sla_first_response_at IS NULL AND t.sla_response_due_at >= $2 AND t.sla_response_due_at < $3)
+               OR (t.sla_resolve_due_at >= $2 AND t.sla_resolve_due_at < $3)
+               OR (t.due_at >= $2 AND t.due_at < $3))
+        LIMIT 1000`,
+      [user.id, range.from, range.to]
+    );
+    await decryptRows('tickets', r.rows);
+    const inRange = (d) => d && d >= range.from && d < range.to;
+    for (const t of r.rows) {
+      const label = `${t.internal_ref}${t.title ? ` · ${t.title}` : ''}`;
+      const link = `/tickets/${t.id}`;
+      if (want('sla') && inRange(t.response_due)) {
+        out.push({ id: `sla-r-${t.id}`, type: 'sla', title: `Response due: ${label}`, start: t.response_due, link,
+          meta: { kind: 'response', breached: t.sla_response_breached } });
+      }
+      if (want('sla') && inRange(t.resolve_due)) {
+        out.push({ id: `sla-s-${t.id}`, type: 'sla', title: `Resolve due: ${label}`, start: t.resolve_due, link,
+          meta: { kind: 'resolve', breached: t.sla_resolve_breached } });
+      }
+      if (want('due') && inRange(t.due_at)) {
+        out.push({ id: `due-${t.id}`, type: 'due', title: `Due: ${label}`, start: t.due_at, link });
+      }
+    }
+  }
+  if (want('followup')) {
+    const r = await pool.query(
+      `SELECT t.id, t.internal_ref, t.title, t.title_enc, t.followup_at
+         FROM tickets t
+        WHERE t.followup_user_id = $1 AND t.followup_at >= $2 AND t.followup_at < $3
+        LIMIT 500`,
+      [user.id, range.from, range.to]
+    );
+    await decryptRows('tickets', r.rows);
+    for (const t of r.rows) {
+      out.push({ id: `fu-${t.id}`, type: 'followup', title: `Follow up: ${t.internal_ref}${t.title ? ` · ${t.title}` : ''}`,
+        start: t.followup_at, link: `/tickets/${t.id}` });
+    }
+  }
+  return out;
+}
+
+async function calTaskEvents(user, range) {
+  const r = await pool.query(
+    `SELECT id, title, title_enc, next_due_at FROM tasks
+      WHERE owner_user_id = $1 AND completed_at IS NULL AND cancelled_at IS NULL
+        AND next_due_at >= $2 AND next_due_at < $3
+      LIMIT 500`,
+    [user.id, range.from, range.to]
+  );
+  await decryptRows('tasks', r.rows);
+  return r.rows.map((t) => ({ id: `task-${t.id}`, type: 'task', title: t.title || 'Task', start: t.next_due_at, link: '/tasks' }));
+}
+
+async function calMaintenanceEvents(projectIds, includeUnscoped, range) {
+  const r = await pool.query(
+    `SELECT w.id, w.title, w.starts_at, w.ends_at, p.prefix AS project_prefix
+       FROM maintenance_windows w
+       LEFT JOIN projects p ON p.id = w.project_id
+      WHERE w.starts_at < $2 AND w.ends_at >= $1
+        AND (w.project_id = ANY($3::int[]) OR ($4 AND w.project_id IS NULL))
+      ORDER BY w.starts_at LIMIT 500`,
+    [range.from, range.to, projectIds, includeUnscoped]
+  );
+  return r.rows.map((w) => ({
+    id: `mw-${w.id}`, type: 'maintenance', title: `${w.title}${w.project_prefix ? ` [${w.project_prefix}]` : ''}`,
+    start: w.starts_at, end: w.ends_at, link: '/maintenance',
+  }));
+}
+
+async function calScheduleEvents(user, projectIds, range) {
+  const r = await pool.query(
+    `SELECT s.*, p.prefix AS project_prefix FROM ticket_schedules s
+       JOIN projects p ON p.id = s.project_id
+      WHERE s.enabled = TRUE AND s.next_fire_at IS NOT NULL AND s.next_fire_at < $2
+        AND s.project_id = ANY($1::int[])`,
+    [projectIds, range.to]
+  );
+  await decryptRows('ticket_schedules', r.rows);
+  const link = ALL_PROJECTS.includes(user.role) ? '/admin/ticket-schedules' : null;
+  const out = [];
+  for (const s of r.rows) {
+    let cron;
+    try { cron = sched.normaliseToCron(s); } catch { continue; }
+    const ends = { endKind: s.end_kind, endDate: s.end_date };
+    let at = new Date(s.next_fire_at);
+    let fires = s.fires_count || 0;
+    for (let n = 0; n < MAX_RUNS_PER_SCHEDULE && at && at < range.to; n += 1) {
+      if (s.end_kind === 'count' && s.end_count && fires >= s.end_count) break;
+      if (at >= range.from) {
+        out.push({ id: `sch-${s.id}-${at.getTime()}`, type: 'scheduled', title: `${s.title || s.name} [${s.project_prefix}]`, start: at, link });
+      }
+      fires += 1;
+      try { at = sched.computeNextFire(cron, s.timezone, at, ends); } catch { at = null; }
+    }
+  }
+  return out;
+}
+
+async function calHolidayEvents(range) {
+  // Org-wide policies only (no project / location scope), deduped by
+  // date + name so two org-wide policies don't double up.
+  const pols = await pool.query(
+    `SELECT b.id FROM business_hours_policies b
+      WHERE b.enabled = TRUE AND b.project_id IS NULL AND b.location_id IS NULL
+        AND EXISTS (SELECT 1 FROM business_hours_holidays h WHERE h.business_hours_id = b.id)`
+  );
+  const seen = new Set();
+  const out = [];
+  for (const { id } of pols.rows) {
+    for (const ev of await holidayEvents(id)) {
+      const startDay = typeof ev.start === 'string' ? ev.start : ev.start.toISOString().slice(0, 10);
+      if (startDay < range.fromDay || startDay >= range.toDay) continue;
+      const key = `${startDay}|${ev.summary}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      out.push({ id: `hol-${id}-${startDay}-${out.length}`, type: 'holiday', title: ev.summary, start: ev.start, end: ev.end, all_day: !!ev.allDay });
+    }
+  }
+  return out;
+}
+
+async function calLicenseEvents(range) {
+  const r = await pool.query(
+    `SELECT id, name, auto_renew, to_char(renewal_date, 'YYYY-MM-DD') AS renewal_date
+       FROM software_licenses
+      WHERE NOT archived AND renewal_date >= $1::date AND renewal_date < $2::date
+      ORDER BY renewal_date LIMIT 500`,
+    [range.fromDay, range.toDay]
+  );
+  return r.rows.map((l) => ({
+    id: `lic-${l.id}`, type: 'license', title: `${l.auto_renew ? 'Renews' : 'Expires'}: ${l.name}`,
+    start: l.renewal_date, all_day: true, link: '/inventory/licenses?status=renewing',
+  }));
+}
+
+router.get('/events', requireAuth, async (req, res) => {
+  try {
+    const user = req.session.user;
+    const range = parseRange(req.query);
+    if (!range) return res.status(400).json({ error: `from and to must be YYYY-MM-DD dates, to after from, at most ${CAL_MAX_DAYS} days apart` });
+    const types = calTypesFor(user, req.query.types);
+    const want = (t) => types.includes(t);
+    const jobs = [];
+    if (want('sla') || want('due') || want('followup')) jobs.push(calTicketEvents(user, range, types));
+    if (want('task')) jobs.push(calTaskEvents(user, range));
+    if (want('holiday')) jobs.push(calHolidayEvents(range));
+    if (want('license')) jobs.push(calLicenseEvents(range));
+    if (want('maintenance') || want('scheduled')) {
+      const projectIds = (await visibleProjects(user)).map((p) => p.id);
+      // Windows with no project are org-wide: every staff member sees them
+      // (the staff-only types are already limited to STAFF above).
+      if (want('maintenance')) jobs.push(calMaintenanceEvents(projectIds, true, range));
+      if (want('scheduled')) jobs.push(calScheduleEvents(user, projectIds, range));
+    }
+    const events = (await Promise.all(jobs)).flat()
+      .map((e) => ({ end: null, all_day: false, link: null, meta: null, ...e }))
+      .sort((a, b) => String(a.start instanceof Date ? a.start.toISOString() : a.start)
+        .localeCompare(String(b.start instanceof Date ? b.start.toISOString() : b.start)));
+    res.json({ events, types: calTypesFor(user, null) });
+  } catch (err) {
+    console.error('calendar events error:', err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
 module.exports = router;
