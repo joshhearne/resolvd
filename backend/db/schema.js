@@ -1549,6 +1549,20 @@ async function initSchema() {
     `);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_software_licenses_key ON software_licenses(software_key) WHERE software_key IS NOT NULL`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_software_licenses_renewal ON software_licenses(renewal_date) WHERE NOT archived`);
+
+    // License renewal reminders already sent (services/licenseReminders.js).
+    // Keyed by the renewal date as well, so moving the date forward a term
+    // starts a fresh cycle of reminders.
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS software_license_reminders (
+        license_id INTEGER NOT NULL REFERENCES software_licenses(id) ON DELETE CASCADE,
+        renewal_date DATE NOT NULL,
+        stage TEXT NOT NULL CHECK (stage IN ('d30','d7','lapsed')),
+        sent_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        PRIMARY KEY (license_id, renewal_date, stage)
+      )
+    `);
+    await client.query(`INSERT INTO system_jobs (name) VALUES ('license_renewal_reminders') ON CONFLICT DO NOTHING`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_asset_software_canonical ON asset_software(LOWER(canonical_name)) WHERE canonical_name IS NOT NULL`);
     // One-time backfill from raw_data for existing Action1 rows. Cheap
     // — single UPDATE, only touches rows where the columns are still

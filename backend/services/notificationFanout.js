@@ -721,4 +721,6 @@ module.exports = {
   // and look up users without re-implementing the helpers.
   dispatchPerRecipient,
   getUserById,
+  // Non-ticket events (license renewals) send email through the same path.
+  routeEmail,
 };

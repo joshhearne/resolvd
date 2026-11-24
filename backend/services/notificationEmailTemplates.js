@@ -153,6 +153,22 @@ const RENDERERS = {
     return { subject, body };
   },
 
+  license_renewal(payload) {
+    const { name, lead, renewal_date, company_name, vendor, seats, days, link } = payload;
+    const subject = days < 0 ? `License renewal date passed: ${name}` : `License renewal ${days === 0 ? 'today' : days === 1 ? 'tomorrow' : `in ${days} days`}: ${name}`;
+    const rows = [
+      ['Renewal date', renewal_date],
+      company_name ? ['Company', company_name] : null,
+      vendor ? ['Vendor', vendor] : null,
+      seats != null ? ['Seats', String(seats)] : null,
+    ].filter(Boolean).map(([k, v]) => `<tr><td style="color:#6b7280;font-size:13px;padding:2px 12px 2px 0">${esc(k)}</td><td style="color:#111827;font-size:13px;padding:2px 0">${esc(v)}</td></tr>`).join('');
+    const body = `
+      <p style="color:#374151;font-size:14px;margin:0 0 12px">${esc(lead || '')}</p>
+      <table style="border-collapse:collapse;margin:0 0 16px">${rows}</table>
+      ${viewButton(`${APP_URL}${link || '/inventory/licenses'}`, 'Open licenses')}`;
+    return { subject, body };
+  },
+
   follow_up(payload) {
     const { ticket_id, ticket_ref, ticket_title, internal_status, recipient_name } = payload;
     const subject = `[${ticket_ref}] Follow-up reminder`;
@@ -196,6 +212,8 @@ function eventLineLabel(eventType, payload) {
       return `${esc(payload.actor_name || 'Someone')} mentioned you`;
     case 'follower_added':
       return `${esc(payload.actor_name || 'Someone')} added you as a follower`;
+    case 'license_renewal':
+      return esc(payload.lead || `License renewal: ${payload.name || ''}`);
     default:
       return esc(eventType);
   }

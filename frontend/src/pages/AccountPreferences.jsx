@@ -285,6 +285,7 @@ const NOTIFICATION_EVENTS = [
   { key: "pending_review", label: "Pending review", hint: "Ticket flagged for admin review.", locked: true },
   { key: "follow_up", label: "Follow-up reminder", hint: "Scheduled follow-up I set.", locked: true },
   { key: "follower_added", label: "Added as a follower", hint: "Someone CCs me on a new ticket or adds me as a follower." },
+  { key: "license_renewal", label: "License renewals", hint: "A software license renews or expires in 30 or 7 days, or its renewal date passes.", roles: ["Admin", "Manager"] },
 ];
 
 const DEFAULT_MATRIX = {
@@ -296,9 +297,10 @@ const DEFAULT_MATRIX = {
   pending_review: { in_app: true, email: true, push: false },
   follow_up: { in_app: true, email: true, push: false },
   follower_added: { in_app: true, email: true, push: false },
+  license_renewal: { in_app: true, email: true, push: false },
 };
 
-function NotificationMatrix({ value, onChange, disabled, pushAvailable }) {
+function NotificationMatrix({ value, onChange, disabled, pushAvailable, role }) {
   const matrix = value || DEFAULT_MATRIX;
   function setCell(eventKey, channel, v) {
     onChange({
@@ -320,7 +322,7 @@ function NotificationMatrix({ value, onChange, disabled, pushAvailable }) {
           </tr>
         </thead>
         <tbody>
-          {NOTIFICATION_EVENTS.map((ev) => {
+          {NOTIFICATION_EVENTS.filter((ev) => !ev.roles || ev.roles.includes(role)).map((ev) => {
             const row = matrix[ev.key] || DEFAULT_MATRIX[ev.key] || { in_app: false, email: false, push: false };
             return (
               <tr key={ev.key} className="border-t border-border">
@@ -1069,6 +1071,7 @@ export default function AccountPreferences() {
           onChange={(v) => set("notification_prefs", v)}
           disabled={busy}
           pushAvailable={pushSubscribed}
+          role={user?.role}
         />
       </div>
 
