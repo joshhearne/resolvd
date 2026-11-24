@@ -17,6 +17,86 @@ const CONTEXT_TAGS = [
   { token: "{actor.email}", hint: "Acting agent email" },
 ];
 
+// Sample inputs for the formula tester. Every {ns.key} a formula references
+// gets one editable input, pre-filled with a plausible value shaped the way
+// the real context delivers it (cannedRender.buildContext): yes/no as
+// "Yes"/"No", multi-select joined with ", ", priority as a number.
+const REF_RE = /\{([a-z0-9_]+)\.([a-z0-9_-]+)\}/gi;
+
+function formulaRefs(src) {
+  const out = [];
+  const seen = new Set();
+  let m;
+  REF_RE.lastIndex = 0;
+  while ((m = REF_RE.exec(String(src || "")))) {
+    const ns = m[1].toLowerCase();
+    const key = m[2].toLowerCase();
+    const id = `${ns}.${key}`;
+    if (!seen.has(id)) { seen.add(id); out.push({ id, ns, key }); }
+  }
+  return out;
+}
+
+const CONTEXT_SAMPLES = {
+  "ticket.title": "Demo ticket",
+  "ticket.ref": "HR-0312",
+  "ticket.priority": "3",
+  "ticket.id": "312",
+  "ticket.vendor_ref": "VEN-1001",
+  "site.name": "Resolvd",
+};
+const PEOPLE = {
+  submitter: { name: "John Doe", email: "john.doe@example.com" },
+  assignee: { name: "Jane Smith", email: "jane.smith@example.com" },
+  actor: { name: "Alex Agent", email: "alex.agent@example.com" },
+  user: { name: "John Doe", email: "john.doe@example.com" },
+};
+
+function defaultSample(ref, def) {
+  if (ref.ns === "field") {
+    if (def?.type === "number") return "42";
+    if (def?.type === "date") return "2000-03-12";
+    if (def?.type === "bool") return "Yes";
+    if (def?.type === "select") return def.options?.[0]?.value || "";
+    if (def?.type === "multiselect") return (def.options || []).slice(0, 2).map((o) => o.value).join(", ");
+    return /first/.test(ref.key) ? "John"
+      : /last|surname/.test(ref.key) ? "Doe"
+      : /dob|birth|date/.test(ref.key) ? "2000-03-12"
+      : "Sample";
+  }
+  if (CONTEXT_SAMPLES[ref.id] !== undefined) return CONTEXT_SAMPLES[ref.id];
+  const person = PEOPLE[ref.ns];
+  if (person) {
+    if (ref.key === "firstname") return person.name.split(" ")[0];
+    if (ref.key === "name" || ref.key === "display_name") return person.name;
+    if (ref.key === "email") return person.email;
+  }
+  return "";
+}
+
+function SampleInput({ refInfo, def, value, onChange }) {
+  const cls = "w-full border border-border-strong rounded px-2 py-1 text-sm bg-surface";
+  if (refInfo.ns === "field" && def?.type === "bool") {
+    return (
+      <select value={value} onChange={(e) => onChange(e.target.value)} className={cls}>
+        <option value="Yes">Yes</option>
+        <option value="No">No</option>
+      </select>
+    );
+  }
+  if (refInfo.ns === "field" && def?.type === "select" && def.options?.length) {
+    return (
+      <select value={value} onChange={(e) => onChange(e.target.value)} className={cls}>
+        <option value="">(empty)</option>
+        {def.options.map((o) => <option key={o.value} value={o.value}>{o.label}</option>)}
+      </select>
+    );
+  }
+  const type = refInfo.ns === "field" && def?.type === "date" ? "date"
+    : refInfo.ns === "field" && def?.type === "number" ? "number" : "text";
+  return <input type={type} value={value} onChange={(e) => onChange(e.target.value)} className={cls} />;
+}
+
 // Formula editor: a textarea plus clickable tag chips that insert {field.<slug>}
 // (and context tags) at the cursor, and an inline demo preview. fieldDefs is
 // the project's field-def list; computed/archived defs are excluded (a computed
@@ -24,6 +104,35 @@ const CONTEXT_TAGS = [
 function FormulaField({ value, onChange, placeholder, fieldDefs, onPreview }) {
   const ref = useRef(null);
   const [preview, setPreview] = useState(null);
+  // Sample values keyed "ns.key". Values the admin typed survive formula
+  // edits; refs that appear get a default, refs that disappear are dropped.
+  const [samples, setSamples] = useState({});
+  const defBySlug = Object.fromEntries((fieldDefs || []).map((d) => [String(d.slug).toLowerCase(), d]));
+  const refs = formulaRefs(value);
+  const refKey = refs.map((r) => r.id).join("|");
+  useEffect(() => {
+    setSamples((prev) => {
+      const next = {};
+      for (const r of refs) next[r.id] = prev[r.id] !== undefined ? prev[r.id] : defaultSample(r, defBySlug[r.key]);
+      return next;
+    });
+  }, [refKey]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  // Re-run the dry run as the formula or a sample changes (debounced).
+  // Random-word formulas re-roll on every run, which is expected.
+  useEffect(() => {
+    if (!value.trim()) { setPreview(null); return undefined; }
+    let alive = true;
+    const t = setTimeout(async () => {
+      const r = await onPreview(value, samples);
+      if (alive) setPreview(r);
+    }, 400);
+    return () => { alive = false; clearTimeout(t); };
+  }, [value, samples]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  function resetSamples() {
+    setSamples(Object.fromEntries(refs.map((r) => [r.id, defaultSample(r, defBySlug[r.key])])));
+  }
   const fieldTags = (fieldDefs || [])
     .filter((d) => !d.computed && !d.archived)
     .map((d) => ({ token: `{field.${d.slug}}`, hint: d.label }));
@@ -42,9 +151,9 @@ function FormulaField({ value, onChange, placeholder, fieldDefs, onPreview }) {
     });
   }
 
-  async function preview_() {
+  async function rerun() {
     if (!value.trim()) { setPreview({ ok: false, error: "Enter a formula first" }); return; }
-    setPreview(await onPreview(value));
+    setPreview(await onPreview(value, samples));
   }
 
   const Chip = ({ token, hint }) => (
@@ -77,12 +186,52 @@ function FormulaField({ value, onChange, placeholder, fieldDefs, onPreview }) {
           {CONTEXT_TAGS.map((t) => <Chip key={t.token} {...t} />)}
         </div>
       </div>
-      <div className="flex items-center gap-2">
-        <button type="button" onClick={preview_} className="btn btn-secondary btn-sm">Preview (demo: John Doe, DOB 2000-03-12)</button>
-        {preview && (preview.ok
-          ? <span className="text-xs text-fg">→ <code className="font-mono text-emerald-600">{preview.value || "(empty)"}</code></span>
-          : <span className="text-xs text-red-600">{preview.error}</span>)}
-      </div>
+      {value.trim() && (
+        <div className="rounded-md border border-border bg-surface-2/40 p-3 space-y-2">
+          <div className="flex items-center justify-between gap-2">
+            <span className="text-xs font-medium text-fg">Test with sample values</span>
+            <div className="flex items-center gap-2">
+              {refs.length > 0 && (
+                <button type="button" onClick={resetSamples} className="text-xs text-fg-muted hover:text-fg underline">Reset samples</button>
+              )}
+              <button type="button" onClick={rerun} className="btn btn-secondary btn-sm">Run again</button>
+            </div>
+          </div>
+          {refs.length > 0 ? (
+            <div className="grid grid-cols-1 sm:grid-cols-2 gap-2">
+              {refs.map((r) => {
+                const def = r.ns === "field" ? defBySlug[r.key] : null;
+                return (
+                  <label key={r.id} className="block min-w-0">
+                    <span className="flex items-baseline gap-1.5 text-xs text-fg-muted mb-0.5">
+                      <code className="font-mono text-fg">{`{${r.id}}`}</code>
+                      {def?.label && <span className="truncate">{def.label}</span>}
+                      {r.ns === "field" && !def && <span className="text-amber-600 dark:text-amber-400">not a field in this project</span>}
+                    </span>
+                    <SampleInput
+                      refInfo={r}
+                      def={def}
+                      value={samples[r.id] ?? ""}
+                      onChange={(v) => setSamples((prev) => ({ ...prev, [r.id]: v }))}
+                    />
+                  </label>
+                );
+              })}
+            </div>
+          ) : (
+            <p className="text-xs text-fg-muted">This formula doesn't reference any fields or tags.</p>
+          )}
+          <div className="text-xs">
+            {preview == null ? (
+              <span className="text-fg-dim">Running…</span>
+            ) : preview.ok ? (
+              <span className="text-fg">Result → <code className="font-mono text-emerald-600 dark:text-emerald-400 break-all">{preview.value || "(empty)"}</code></span>
+            ) : (
+              <span className="text-red-600 dark:text-red-400">{preview.error}</span>
+            )}
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -285,27 +434,20 @@ export default function AdminForms() {
     }
   }
 
-  // Dry-run a formula against demo inputs so the admin can eyeball the output
-  // before saving. Each {field.<slug>} referenced gets a sensible demo value:
-  // first→John, last→Doe, dob/birth/date→2000-03-12, else "Sample".
-  async function previewFormula(src) {
+  // Dry-run a formula against the tester's sample values ({ "ns.key": value }),
+  // grouped into namespaces the way the server's evaluation context is.
+  async function previewFormula(src, samples = {}) {
     const formula = String(src || "").trim();
     if (!formula) return { ok: false, error: "Enter a formula first" };
-    const field = {};
-    const re = /\{field\.([a-z0-9_-]+)\}/gi;
-    let m;
-    while ((m = re.exec(formula))) {
-      const slug = m[1].toLowerCase();
-      field[slug] = /first/.test(slug) ? "John"
-        : /last|surname/.test(slug) ? "Doe"
-        : /dob|birth|date/.test(slug) ? "2000-03-12"
-        : "Sample";
+    const body = { formula, field: {} };
+    for (const [id, v] of Object.entries(samples)) {
+      const dot = id.indexOf(".");
+      const ns = id.slice(0, dot);
+      if (ns === "formula") continue;
+      (body[ns] = body[ns] || {})[id.slice(dot + 1)] = v;
     }
     try {
-      return await api.post("/api/custom-field-defs/formula-preview", {
-        formula, field,
-        ticket: { title: "Demo ticket" }, submitter: { name: "John Doe", firstname: "John" },
-      });
+      return await api.post("/api/custom-field-defs/formula-preview", body);
     } catch (e) { return { ok: false, error: e.message }; }
   }
 

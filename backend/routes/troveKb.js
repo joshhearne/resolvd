@@ -3,6 +3,7 @@
 // public collections, else public only) and never expose the key.
 //
 //   GET    /api/trove-kb/status                       — enabled? urls? (any user)
+//   GET    /api/trove-kb/new-article-url?project_id=  — Trove KB's editor for a new article (Admin)
 //   GET    /api/trove-kb/collections                  — visible collections
 //   GET    /api/trove-kb/search?q=&collection_id=&limit=
 //   GET    /api/trove-kb/articles/:id                 — full article (markdown body)
@@ -93,6 +94,30 @@ router.get('/status', async (req, res) => {
       ai,
     });
   } catch (err) { fail(res, err, 'status'); }
+});
+
+// Where New+ → KB article goes when Trove KB is connected: Trove KB's own
+// editor, in the project's collection (falling back to the first internal
+// collection, then to Trove KB's KB home). Same audience as other links
+// into Trove KB itself: Admins only.
+router.get('/new-article-url', async (req, res) => {
+  try {
+    const user = req.session.user;
+    if (!isTroveKbAdmin(user)) return res.status(403).json({ error: 'forbidden' });
+    const s = await troveKb.getSettings();
+    if (!s.enabled || !s.base_url) return res.status(404).json({ error: 'Trove KB is not connected' });
+    let collectionId = null;
+    const pid = Number(req.query.project_id);
+    if (Number.isInteger(pid) && pid > 0) {
+      const p = await pool.query('SELECT trove_kb_collection_id FROM projects WHERE id = $1', [pid]);
+      collectionId = p.rows[0]?.trove_kb_collection_id || null;
+    }
+    if (!collectionId) collectionId = s.internal_collection_ids[0] || null;
+    const url = collectionId && UUID_RE.test(collectionId)
+      ? `${s.base_url}/kb/articles/new?collection=${encodeURIComponent(collectionId)}`
+      : `${s.base_url}/kb`;
+    res.json({ url, collection_id: collectionId });
+  } catch (err) { fail(res, err, 'new-article-url'); }
 });
 
 router.get('/collections', async (req, res) => {

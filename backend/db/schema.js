@@ -1512,6 +1512,43 @@ async function initSchema() {
     await client.query(`ALTER TABLE asset_software ADD COLUMN IF NOT EXISTS canonical_name TEXT`);
     await client.query(`ALTER TABLE asset_software ADD COLUMN IF NOT EXISTS canonical_vendor TEXT`);
     await client.query(`ALTER TABLE asset_software ADD COLUMN IF NOT EXISTS last_alias_id INTEGER REFERENCES software_aliases(id) ON DELETE SET NULL`);
+
+    // Software license management (manual). One row per license / contract.
+    // software_key links it to a title in the software inventory
+    // (LOWER(COALESCE(canonical_name, name)) on asset_software) so seats in
+    // use can be counted from installs; NULL = not tied to discovered
+    // software. company_id scopes it to one customer (installs counted on
+    // that company's assets only); NULL = whole organisation. seats NULL =
+    // unlimited / site licence. license_key and notes are sensitive
+    // (encrypted via services/fields.js when encryption is on).
+    await client.query(`
+      CREATE TABLE IF NOT EXISTS software_licenses (
+        id SERIAL PRIMARY KEY,
+        name TEXT NOT NULL,
+        software_key TEXT,
+        vendor TEXT,
+        license_type TEXT NOT NULL DEFAULT 'subscription'
+          CHECK (license_type IN ('subscription','perpetual','per_device','per_user','site','other')),
+        seats INTEGER CHECK (seats IS NULL OR seats >= 0),
+        company_id INTEGER REFERENCES companies(id) ON DELETE SET NULL,
+        license_key TEXT,
+        license_key_enc BYTEA,
+        purchase_date DATE,
+        renewal_date DATE,
+        auto_renew BOOLEAN NOT NULL DEFAULT FALSE,
+        cost NUMERIC(12,2) CHECK (cost IS NULL OR cost >= 0),
+        cost_period TEXT CHECK (cost_period IS NULL OR cost_period IN ('one_time','monthly','yearly')),
+        reference TEXT,
+        notes TEXT,
+        notes_enc BYTEA,
+        archived BOOLEAN NOT NULL DEFAULT FALSE,
+        created_by INTEGER REFERENCES users(id) ON DELETE SET NULL,
+        created_at TIMESTAMPTZ NOT NULL DEFAULT NOW(),
+        updated_at TIMESTAMPTZ NOT NULL DEFAULT NOW()
+      )
+    `);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_software_licenses_key ON software_licenses(software_key) WHERE software_key IS NOT NULL`);
+    await client.query(`CREATE INDEX IF NOT EXISTS idx_software_licenses_renewal ON software_licenses(renewal_date) WHERE NOT archived`);
     await client.query(`CREATE INDEX IF NOT EXISTS idx_asset_software_canonical ON asset_software(LOWER(canonical_name)) WHERE canonical_name IS NOT NULL`);
     // One-time backfill from raw_data for existing Action1 rows. Cheap
     // — single UPDATE, only touches rows where the columns are still

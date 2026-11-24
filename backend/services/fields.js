@@ -61,6 +61,10 @@ const FIELD_MAP = {
     new_value: 'new_value_enc',
     note: 'note_enc',
   },
+  software_licenses: {
+    license_key: 'license_key_enc',
+    notes: 'notes_enc',
+  },
   attachments: {
     original_name: 'original_name_enc',
   },

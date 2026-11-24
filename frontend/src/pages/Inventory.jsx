@@ -4,6 +4,7 @@ import { Link, useNavigate, useParams } from "react-router-dom";
 import { api } from "../utils/api";
 import HybridTime from "../components/HybridTime";
 import { useAuth } from "../context/AuthContext";
+import InventoryTabs from "../components/InventoryTabs";
 
 const SOURCE_LABELS = {
   action1: "Action1",
@@ -219,6 +220,7 @@ export default function Inventory() {
 
   return (
     <div className="space-y-4">
+      <InventoryTabs />
       <div className="flex items-start justify-between gap-3 flex-wrap">
         <div>
           <h1 className="text-xl font-semibold text-fg mb-1">Inventory</h1>

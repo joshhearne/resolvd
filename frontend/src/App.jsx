@@ -45,6 +45,8 @@ import PrintExport from "./pages/PrintExport";
 import Projects from "./pages/Projects";
 import ProjectDetail from "./pages/ProjectDetail";
 import Inventory from "./pages/Inventory";
+import SoftwareInventory from "./pages/SoftwareInventory";
+import SoftwareLicenses from "./pages/SoftwareLicenses";
 import Consumables from "./pages/Consumables";
 import Alerts from "./pages/Alerts";
 import AlertDetail from "./pages/AlertDetail";
@@ -203,6 +205,22 @@ function AppRoutes() {
           element={
             <ProtectedRoute>
               <AlertDetail />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="inventory/licenses"
+          element={
+            <ProtectedRoute handlerOnly>
+              <SoftwareLicenses />
+            </ProtectedRoute>
+          }
+        />
+        <Route
+          path="inventory/software"
+          element={
+            <ProtectedRoute handlerOnly>
+              <SoftwareInventory />
             </ProtectedRoute>
           }
         />
