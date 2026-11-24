@@ -699,6 +699,11 @@ async function initSchema() {
     await client.query(`CREATE INDEX IF NOT EXISTS idx_locations_company ON locations(company_id)`);
     await client.query(`CREATE UNIQUE INDEX IF NOT EXISTS idx_locations_one_primary
       ON locations(company_id) WHERE is_primary = TRUE AND is_archived = FALSE`);
+    // A site whose own number can't take extensions (use_extensions off)
+    // can name another site of the same company whose main line reaches
+    // the same extensions (e.g. a shared phone system answered at
+    // Corporate). NULL = extensions at this site are internal use only.
+    await client.query(`ALTER TABLE locations ADD COLUMN IF NOT EXISTS extension_location_id INTEGER REFERENCES locations(id) ON DELETE SET NULL`);
 
     // Internal/customer companies can attribute Resolvd users to themselves.
     // role kept as a free-text label for now; bare list w/ optional location.

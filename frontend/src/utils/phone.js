@@ -97,11 +97,14 @@ export function callOptions(p, app) {
   const hasMainExt = !!(p.location_phone && p.extension);
   // Older extension-mode contacts stored the main line as their direct
   // number; don't offer the same line twice.
-  const sameAsMain = p.direct && p.location_phone && digitsForDial(p.direct) === digitsForDial(p.location_phone);
+  const sameAsMain = p.direct && [p.location_phone, p.site_phone].some((m) => m && digitsForDial(p.direct) === digitsForDial(m));
+  // Extensions at a site whose own number doesn't take them are dialled
+  // on the line it routes them through (ext_via names that site).
+  const mainLabel = p.ext_via ? `${p.ext_via} + ext` : "Main + ext";
   const direct = p.direct && !sameAsMain;
 
   if (dialsExtAfterMain(app)) {
-    if (hasMainExt) add("main", "Main + ext", `${formatPhone(p.location_phone)} ext ${p.extension}`, p.location_phone, p.extension);
+    if (hasMainExt) add("main", mainLabel, `${formatPhone(p.location_phone)} ext ${p.extension}`, p.location_phone, p.extension);
     if (direct) add("direct", "Direct", formatPhone(p.direct), p.direct);
     if (p.mobile) add("mobile", "Mobile", formatPhone(p.mobile), p.mobile);
     return out;
@@ -116,7 +119,7 @@ export function callOptions(p, app) {
   if (hasMainExt) {
     const href = telHref(p.location_phone, p.extension);
     if (href) {
-      out.push({ key: "main", label: "Main + ext", display: `${formatPhone(p.location_phone)} ext ${p.extension}`,
+      out.push({ key: "main", label: mainLabel, display: `${formatPhone(p.location_phone)} ext ${p.extension}`,
         href, extToDial: null, phoneHref: null, viaPhone: true });
     }
   }

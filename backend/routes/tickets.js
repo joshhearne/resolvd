@@ -2381,6 +2381,31 @@ router.delete('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
 // on file. Ticket handlers (Admin / Manager / Tech) who can see the
 // ticket only. Per person: direct (DID), mobile, and the main line of
 // their location with their extension when the location uses extensions.
+
+// The main line a person's extension is dialled on: their site's own
+// number when the site uses extensions, else the site it routes
+// extensions through (locations.extension_location_id), else none — the
+// extension is then internal use only. `row` carries the site (l.*) and
+// routing site (xl_*) columns. site_phone is the site's own number, kept
+// so older contacts whose stored phone is that number aren't offered
+// twice.
+function extensionLine(row, ext) {
+  let phone = null;
+  let via = null;
+  if (row.use_extensions && row.location_phone) {
+    phone = row.location_phone;
+  } else if (row.xl_phone && row.xl_use_extensions && !row.xl_archived) {
+    phone = row.xl_phone;
+    via = row.xl_name || null;
+  }
+  return {
+    location_phone: phone,
+    ext_via: via,
+    ext_internal_only: !!(ext && !phone),
+    site_phone: row.location_phone || null,
+  };
+}
+
 router.get('/:id/people', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
   try {
     const ticketId = Number(req.params.id);
@@ -2396,7 +2421,8 @@ router.get('/:id/people', requireAuth, requireRole('Admin', 'Manager', 'Tech'), 
         `SELECT u.id, u.display_name, u.email, u.role,
                 u.phone_direct, u.phone_direct_enc, u.phone_extension, u.phone_mobile, u.phone_mobile_enc,
                 m.role_label, m.company_id, c.kind AS company_kind, c.name AS company_name, c.name_enc AS company_name_enc,
-                l.name AS location_name, l.phone AS location_phone, l.use_extensions
+                l.name AS location_name, l.phone AS location_phone, l.use_extensions,
+                xl.name AS xl_name, xl.phone AS xl_phone, xl.use_extensions AS xl_use_extensions, xl.is_archived AS xl_archived
            FROM users u
            LEFT JOIN LATERAL (
              SELECT cm.* FROM company_members cm WHERE cm.user_id = u.id
@@ -2404,6 +2430,7 @@ router.get('/:id/people', requireAuth, requireRole('Admin', 'Manager', 'Tech'), 
            ) m ON TRUE
            LEFT JOIN companies c ON c.id = m.company_id
            LEFT JOIN locations l ON l.id = m.location_id
+           LEFT JOIN locations xl ON xl.id = l.extension_location_id
           WHERE u.id = $1`,
         [t.rows[0].submitted_by]
       );
@@ -2416,7 +2443,7 @@ router.get('/:id/people', requireAuth, requireRole('Admin', 'Manager', 'Tech'), 
           // on their extension alone in apps that dial internal extensions.
           internal: u.company_kind === 'internal',
           title: u.role_label || null, company_name: u.company_name || null,
-          location_name: u.location_name || null, location_phone: u.location_phone || null,
+          location_name: u.location_name || null, ...extensionLine(u, u.phone_extension),
           use_extensions: !!u.use_extensions, extension: u.phone_extension || null,
           direct: u.phone_direct || null, mobile: u.phone_mobile || null,
         });
@@ -2427,11 +2454,13 @@ router.get('/:id/people', requireAuth, requireRole('Admin', 'Manager', 'Tech'), 
       `SELECT ct.id, ct.name, ct.name_enc, ct.email, ct.email_enc, ct.phone, ct.phone_enc,
               ct.mobile, ct.mobile_enc, ct.extension, ct.role_title,
               co.name AS company_name, co.name_enc AS company_name_enc,
-              l.name AS location_name, l.phone AS location_phone, l.use_extensions
+              l.name AS location_name, l.phone AS location_phone, l.use_extensions,
+              xl.name AS xl_name, xl.phone AS xl_phone, xl.use_extensions AS xl_use_extensions, xl.is_archived AS xl_archived
          FROM ticket_contacts tc
          JOIN contacts ct ON ct.id = tc.contact_id
          JOIN companies co ON co.id = ct.company_id
          LEFT JOIN locations l ON l.id = ct.location_id
+         LEFT JOIN locations xl ON xl.id = l.extension_location_id
         WHERE tc.ticket_id = $1
         ORDER BY tc.added_at ASC`,
       [ticketId]
@@ -2441,7 +2470,7 @@ router.get('/:id/people', requireAuth, requireRole('Admin', 'Manager', 'Tech'), 
       people.push({
         kind: 'contact', id: c.id, name: c.name || c.email, email: c.email, internal: false,
         title: c.role_title || null, company_name: c.company_name || null,
-        location_name: c.location_name || null, location_phone: c.location_phone || null,
+        location_name: c.location_name || null, ...extensionLine(c, c.extension),
         use_extensions: !!c.use_extensions, extension: c.extension || null,
         direct: c.phone || null, mobile: c.mobile || null,
       });

@@ -149,8 +149,13 @@ function Person({ p, app }) {
             </span>
           ))}
         </div>
-      ) : (
+      ) : !p.ext_internal_only ? (
         <p className="mt-1 text-xs text-fg-dim italic">No phone numbers on file.</p>
+      ) : null}
+      {p.ext_internal_only && !calls.some((c) => c.key === "ext") && (
+        <p className="mt-1 text-xs text-fg-muted">
+          Ext {String(p.extension).replace(/\D/g, "")} <span className="text-fg-dim">· internal use only</span>
+        </p>
       )}
     </li>
   );
