@@ -111,7 +111,10 @@ export function useMonthEvents(month, hidden) {
     let alive = true;
     setLoading(true);
     api.get(`/api/calendar/events?from=${from}&to=${to}`)
-      .then((r) => { if (alive) setData(r || { events: [], types: [] }); })
+      .then((r) => {
+        // Never let an unexpected reply take the sidebar down.
+        if (alive) setData({ events: Array.isArray(r?.events) ? r.events : [], types: Array.isArray(r?.types) ? r.types : [] });
+      })
       .catch(() => { if (alive) setData({ events: [], types: [] }); })
       .finally(() => { if (alive) setLoading(false); });
     return () => { alive = false; };

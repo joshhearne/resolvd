@@ -23,7 +23,7 @@ const { logSupportRead } = require('../middleware/supportAccess');
 const { sendVendorEmail } = require('../services/vendorOutbound');
 const { auditLog, systemComment, isProjectHandler } = require('../services/ticketHelpers');
 const ticketCustomFields = require('../services/ticketCustomFields');
-const { getTicketScope, scopeClause } = require('../services/ticketVisibility');
+const { getTicketScope, scopeClause, canViewTicket } = require('../services/ticketVisibility');
 
 const router = express.Router();
 
@@ -2372,6 +2372,80 @@ router.delete('/:id', requireAuth, requireRole('Admin'), async (req, res) => {
     res.json({ ok: true });
   } catch (err) {
     console.error(err);
+    res.status(500).json({ error: 'Database error' });
+  }
+});
+
+// GET /api/tickets/:id/people — who to call about this ticket (#153):
+// the requester and the contacts attached to it, with the phone numbers
+// on file. Ticket handlers (Admin / Manager / Tech) who can see the
+// ticket only. Per person: direct (DID), mobile, and the main line of
+// their location with their extension when the location uses extensions.
+router.get('/:id/people', requireAuth, requireRole('Admin', 'Manager', 'Tech'), async (req, res) => {
+  try {
+    const ticketId = Number(req.params.id);
+    const t = await pool.query('SELECT id, project_id, submitted_by FROM tickets WHERE id = $1', [ticketId]);
+    if (!t.rows[0] || !(await canViewTicket(req.session.user, t.rows[0]))) {
+      return res.status(404).json({ error: 'Ticket not found' });
+    }
+    const people = [];
+
+    if (t.rows[0].submitted_by) {
+      // Requester: their earliest company membership supplies title + site.
+      const r = await pool.query(
+        `SELECT u.id, u.display_name, u.email, u.role,
+                u.phone_direct, u.phone_direct_enc, u.phone_extension, u.phone_mobile, u.phone_mobile_enc,
+                m.role_label, m.company_id, c.name AS company_name, c.name_enc AS company_name_enc,
+                l.name AS location_name, l.phone AS location_phone, l.use_extensions
+           FROM users u
+           LEFT JOIN LATERAL (
+             SELECT cm.* FROM company_members cm WHERE cm.user_id = u.id
+              ORDER BY cm.added_at, cm.company_id LIMIT 1
+           ) m ON TRUE
+           LEFT JOIN companies c ON c.id = m.company_id
+           LEFT JOIN locations l ON l.id = m.location_id
+          WHERE u.id = $1`,
+        [t.rows[0].submitted_by]
+      );
+      await decryptRows('users', r.rows, { aliases: { company_name: 'companies.name' } });
+      const u = r.rows[0];
+      if (u) {
+        people.push({
+          kind: 'requester', id: u.id, name: u.display_name || u.email, email: u.email,
+          title: u.role_label || null, company_name: u.company_name || null,
+          location_name: u.location_name || null, location_phone: u.location_phone || null,
+          use_extensions: !!u.use_extensions, extension: u.phone_extension || null,
+          direct: u.phone_direct || null, mobile: u.phone_mobile || null,
+        });
+      }
+    }
+
+    const cs = await pool.query(
+      `SELECT ct.id, ct.name, ct.name_enc, ct.email, ct.email_enc, ct.phone, ct.phone_enc,
+              ct.mobile, ct.mobile_enc, ct.extension, ct.role_title,
+              co.name AS company_name, co.name_enc AS company_name_enc,
+              l.name AS location_name, l.phone AS location_phone, l.use_extensions
+         FROM ticket_contacts tc
+         JOIN contacts ct ON ct.id = tc.contact_id
+         JOIN companies co ON co.id = ct.company_id
+         LEFT JOIN locations l ON l.id = ct.location_id
+        WHERE tc.ticket_id = $1
+        ORDER BY tc.added_at ASC`,
+      [ticketId]
+    );
+    await decryptRows('contacts', cs.rows, { aliases: { company_name: 'companies.name' } });
+    for (const c of cs.rows) {
+      people.push({
+        kind: 'contact', id: c.id, name: c.name || c.email, email: c.email,
+        title: c.role_title || null, company_name: c.company_name || null,
+        location_name: c.location_name || null, location_phone: c.location_phone || null,
+        use_extensions: !!c.use_extensions, extension: c.extension || null,
+        direct: c.phone || null, mobile: c.mobile || null,
+      });
+    }
+    res.json({ people });
+  } catch (err) {
+    console.error('ticket people error:', err);
     res.status(500).json({ error: 'Database error' });
   }
 });

@@ -39,7 +39,7 @@ router.post('/companies/:companyId/contacts',
       const company = await pool.query(`SELECT id FROM companies WHERE id = $1`, [req.params.companyId]);
       if (!company.rows[0]) return res.status(404).json({ error: 'Company not found' });
 
-      const { name, email, phone, role_title, notes, location_id, extension } = req.body || {};
+      const { name, email, phone, mobile, role_title, notes, location_id, extension } = req.body || {};
       if (!email) return res.status(400).json({ error: 'email required' });
       const check = await checkContactEmail(email);
       if (!check.ok) return res.status(400).json({ error: check.message, code: check.code });
@@ -62,6 +62,7 @@ router.post('/companies/:companyId/contacts',
         name: (name || '').trim() || null,
         email: normalizedEmail,
         phone: phone || null,
+        mobile: mobile || null,
         notes: notes || null,
       });
       const cols = ['company_id', 'email_blind_idx', 'role_title', 'location_id', 'extension', 'created_by_user_id', ...patch.cols];
@@ -114,6 +115,7 @@ router.patch('/contacts/:id', requireAuth, requireRole('Admin', 'Manager'), asyn
 
     if (body.name !== undefined) sensitiveObj.name = (body.name || '').trim() || null;
     if (body.phone !== undefined) sensitiveObj.phone = body.phone || null;
+    if (body.mobile !== undefined) sensitiveObj.mobile = (body.mobile || '').toString().trim() || null;
     if (body.notes !== undefined) sensitiveObj.notes = body.notes || null;
     if (body.role_title !== undefined) passthrough.role_title = body.role_title || null;
     if (body.is_active !== undefined) passthrough.is_active = !!body.is_active;

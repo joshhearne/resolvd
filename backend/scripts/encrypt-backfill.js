@@ -59,6 +59,14 @@ const TARGETS = [
     ],
   },
   {
+    table: 'users',
+    pk: 'id',
+    cols: [
+      { plain: 'phone_direct', enc: 'phone_direct_enc', ctx: 'users.phone_direct' },
+      { plain: 'phone_mobile', enc: 'phone_mobile_enc', ctx: 'users.phone_mobile' },
+    ],
+  },
+  {
     table: 'software_licenses',
     pk: 'id',
     cols: [

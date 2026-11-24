@@ -47,6 +47,7 @@ import TargetLinksDialog from "../components/TargetLinksDialog";
 import { hasKbLink } from "../utils/kbLinks";
 import TroveKbRunbookPanel from "../components/TroveKbRunbookPanel";
 import NumberInput from "../components/NumberInput";
+import TicketPeople from "../components/TicketPeople";
 
 // External ticket refs may hold multiple vendor IDs separated by comma
 // or semicolon (e.g. "VND-1234, VND-5678" or "VND-1234;VND-5678").
@@ -2191,6 +2192,7 @@ export default function TicketDetail() {
               const resolutionUrgent = canEdit && !!ticket.resolved_at && !ticket.resolution_summary;
               const tabs = [
                 { id: "comments", label: `Comments (${comments.length})`, show: true },
+                { id: "people", label: "Contacts", show: isAdmin },
                 { id: "notes", label: `Notes${notes.length > 0 ? ` (${notes.length})` : ""}`, sub: "internal", show: canHandleNotes },
                 { id: "runbook", label: "Runbook", sub: "internal", show: canHandleNotes },
                 { id: "attachments", label: `Attachments${attachments.length > 0 ? ` (${attachments.length})` : ""}`, show: true },
@@ -2965,6 +2967,12 @@ export default function TicketDetail() {
                     } catch (e) { toast.error(e.message); }
                   }}
                 />
+              </div>
+            )}
+
+            {activeTab === "people" && isAdmin && (
+              <div className="p-4">
+                <TicketPeople ticketId={ticket.id} reloadKey={vendorContacts?.length ?? 0} />
               </div>
             )}
 
